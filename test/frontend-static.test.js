@@ -460,22 +460,70 @@ test("frontend exposes the redesigned ERP information architecture", async () =>
     readFile(new URL("../public/styles.css", import.meta.url), "utf8"),
   ]);
 
-  assert.match(html, /今日工作台/);
-  assert.match(html, /商品上架流水线/);
-  assert.match(html, /学习与素材/);
-  assert.match(html, /店铺运营/);
+  assert.match(html, /店铺总览/);
+  assert.match(html, /商品管理/);
+  assert.match(html, /选品采购/);
+  assert.match(html, /上架中心/);
+  assert.match(html, /订单履约/);
+  assert.match(html, /库存仓库/);
+  assert.match(html, /营销活动/);
+  assert.match(html, /财务利润/);
+  assert.match(html, /客户售后/);
+  assert.match(html, /数据报表/);
   assert.match(html, /系统配置/);
   assert.match(html, /erpArchitectureMap/);
   assert.match(html, /listingPrimaryFlow/);
-  assert.match(html, /只做一件事/);
+  assert.match(html, /店铺经营总览/);
   assert.match(html, /高级说明与系统诊断/);
   assert.match(js, /ERP_INFORMATION_ARCHITECTURE/);
   assert.match(js, /renderErpArchitectureMap/);
-  assert.match(js, /日常只看这里/);
-  assert.match(js, /高级工具/);
+  assert.match(js, /店铺总览/);
+  assert.match(js, /财务利润/);
   assert.match(css, /listing-primary-flow/);
   assert.match(css, /erp-architecture-map/);
   assert.match(css, /architecture-card/);
+});
+
+test("frontend exposes complete ecommerce ERP business domains", async () => {
+  const [html, js] = await Promise.all([
+    readFile(new URL("../public/index.html", import.meta.url), "utf8"),
+    readFile(new URL("../public/app.js", import.meta.url), "utf8"),
+  ]);
+
+  for (const label of ["店铺总览", "商品管理", "选品采购", "上架中心", "订单履约", "库存仓库", "营销活动", "财务利润", "客户售后", "数据报表", "系统配置"]) {
+    assert.match(html + js, new RegExp(label));
+  }
+  assert.doesNotMatch(html, /今日工作台[\s\S]{0,80}商品上架流水线/);
+});
+
+test("dashboard is store operating overview with reminders as side rail", async () => {
+  const [html, js, css] = await Promise.all([
+    readFile(new URL("../public/index.html", import.meta.url), "utf8"),
+    readFile(new URL("../public/app.js", import.meta.url), "utf8"),
+    readFile(new URL("../public/styles.css", import.meta.url), "utf8"),
+  ]);
+  const dashboard = html.slice(html.indexOf('<section id="dashboard"'), html.indexOf('<section id="workflow-console"'));
+
+  assert.match(dashboard, /店铺经营总览/);
+  assert.match(dashboard, /storeSalesOverview/);
+  assert.match(dashboard, /storeProductHealth/);
+  assert.match(dashboard, /storeOrderFulfillment/);
+  assert.match(dashboard, /storeInventoryRisk/);
+  assert.match(dashboard, /storeProfitSnapshot/);
+  assert.match(dashboard, /todayReminderRail/);
+  assert.match(css, /store-overview-layout/);
+  assert.match(js, /renderStoreOperatingOverview/);
+});
+
+test("listing workflow belongs under listing center, not dashboard", async () => {
+  const html = await readFile(new URL("../public/index.html", import.meta.url), "utf8");
+  const dashboard = html.slice(html.indexOf('<section id="dashboard"'), html.indexOf('<section id="workflow-console"'));
+
+  assert.doesNotMatch(dashboard, /listingPipelineWorkbench/);
+  assert.doesNotMatch(dashboard, /当前商品流程/);
+  assert.match(html, /上架中心/);
+  assert.match(html, /上架草稿/);
+  assert.match(html, /工作流诊断/);
 });
 
 test("frontend exposes a seller operating model instead of hidden developer navigation", async () => {

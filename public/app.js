@@ -53,18 +53,24 @@ const PACKAGE_WEIGHT_PADDING_G = 50;
 const PACKAGE_SIZE_PADDING_MM = 20;
 const DEFAULT_LISTING_STOCK = 100;
 const ERP_NAVIGATION_GROUPS = [
-  { key: "cockpit", label: "今日工作台", views: ["dashboard"] },
-  { key: "listing-pipeline", label: "商品上架流水线", views: ["sourcing", "listing", "workflow-console"] },
-  { key: "learning-assets", label: "学习与素材", views: ["research"] },
-  { key: "operations", label: "店铺运营", views: ["products", "warehouse", "orders", "promotions"] },
-  { key: "system", label: "系统配置", views: [] },
+  { key: "store-overview", label: "店铺总览", views: ["dashboard"] },
+  { key: "product-management", label: "商品管理", views: ["products"] },
+  { key: "sourcing-procurement", label: "选品采购", views: ["sourcing", "research"] },
+  { key: "listing-center", label: "上架中心", views: ["listing", "workflow-console"] },
+  { key: "order-fulfillment", label: "订单履约", views: ["orders"] },
+  { key: "inventory-warehouse", label: "库存仓库", views: ["warehouse"] },
+  { key: "marketing", label: "营销活动", views: ["promotions"] },
+  { key: "finance-profit", label: "财务利润", views: ["finance"] },
+  { key: "customer-service", label: "客户售后", views: ["service"] },
+  { key: "analytics", label: "数据报表", views: ["reports"] },
+  { key: "system", label: "系统配置", views: ["system"] },
 ];
 const ERP_VIEW_OWNERSHIP_CONTRACTS = {
   dashboard: {
-    title: "今日工作台",
-    handles: "只处理今天优先级、当前商品、店铺风险和需要继续推进的事项。",
-    excludes: "不直接编辑 Ozon payload、不承载采集表单、不处理活动商品明细。",
-    wrongPageHint: "如果你要编辑商品资料，去“上架草稿”；如果要处理活动，去“营销活动”。",
+    title: "店铺总览",
+    handles: "只处理店铺销售、订单、商品、库存、利润、活动风险和今日提醒。",
+    excludes: "不直接编辑 Ozon payload、不承载采集表单、不把上架流水线作为主区域。",
+    wrongPageHint: "如果你要编辑商品资料，去“上架中心”；如果要处理活动，去“营销活动”。",
   },
   sourcing: {
     title: "1688 采集",
@@ -114,15 +120,39 @@ const ERP_VIEW_OWNERSHIP_CONTRACTS = {
     excludes: "不处理新品上架表单、类目属性、标题描述、图片采集和库存提交。",
     wrongPageHint: "如果这里出现“无忧易售信息、描述、产品采集图、平台分类”，就是串到了上架草稿。",
   },
+  finance: {
+    title: "财务利润",
+    handles: "只处理销售额、采购成本、物流费、佣金、毛利、最低价和价格风险。",
+    excludes: "不处理上架表单、订单发货动作、采集任务和活动商品编辑。",
+    wrongPageHint: "如果你要改商品标题或图片，去“上架中心”；如果要发货，去“订单履约”。",
+  },
+  service: {
+    title: "客户售后",
+    handles: "只处理评价、退货、纠纷、客服问题和差评风险。",
+    excludes: "不处理新品上架、库存写入、活动商品和采集任务。",
+    wrongPageHint: "售后页不应该出现类目属性、上架图片或库存 JSON。",
+  },
+  reports: {
+    title: "数据报表",
+    handles: "只处理销售趋势、商品表现、库存周转、选品效果、上架成功率和异常趋势。",
+    excludes: "不承载日常操作表单、不直接提交 Ozon、不修改库存。",
+    wrongPageHint: "需要操作时从报表跳到对应业务模块，而不是在报表页直接编辑。",
+  },
+  system: {
+    title: "系统配置",
+    handles: "只处理店铺 API、Ozon 字典、1688 插件、自动化规则、运行日志和高级诊断。",
+    excludes: "不作为日常经营入口、不处理订单发货、不编辑商品上架资料。",
+    wrongPageHint: "普通卖家每天要处理的事应该回到业务模块，不塞进系统配置。",
+  },
 };
 const ERP_TAB_TASK_CARDS = {
   dashboard: {
-    title: "今天只看这里",
-    primary: "先看当前商品卡在哪，再处理订单、库存、活动和审核失败。",
+    title: "先看店铺现在怎么样",
+    primary: "先看销售、订单、商品、库存、利润和活动风险；今日提醒只做跳转，不抢主区域。",
     actions: [
-      { label: "处理当前商品", view: "workflow-console" },
-      { label: "去采集新品", view: "sourcing" },
+      { label: "处理商品风险", view: "products" },
       { label: "查看订单", view: "orders" },
+      { label: "进入上架中心", view: "listing" },
     ],
   },
   sourcing: {
@@ -195,6 +225,42 @@ const ERP_TAB_TASK_CARDS = {
       { label: "读取活动", view: "promotions" },
       { label: "查看活动商品", view: "promotions" },
       { label: "查看商品状态", view: "products" },
+    ],
+  },
+  finance: {
+    title: "核算利润风险",
+    primary: "这里汇总销售额、采购成本、物流费、佣金、毛利和最低价风险，先作为财务域入口承接价格逻辑。",
+    actions: [
+      { label: "看价格规则", view: "listing" },
+      { label: "看商品状态", view: "products" },
+      { label: "看活动风险", view: "promotions" },
+    ],
+  },
+  service: {
+    title: "处理售后风险",
+    primary: "这里承接评价、退货、纠纷和客服问题，避免售后被塞进商品或订单页。",
+    actions: [
+      { label: "查看订单", view: "orders" },
+      { label: "查看商品", view: "products" },
+      { label: "看报表", view: "reports" },
+    ],
+  },
+  reports: {
+    title: "看跨模块趋势",
+    primary: "这里看销售、商品、库存、选品、上架成功率和异常趋势，不直接承载业务操作表单。",
+    actions: [
+      { label: "店铺总览", view: "dashboard" },
+      { label: "商品管理", view: "products" },
+      { label: "财务利润", view: "finance" },
+    ],
+  },
+  system: {
+    title: "配置连接与自动化",
+    primary: "这里只处理 API、字典、插件、自动化规则、日志和高级诊断，日常经营回到业务域。",
+    actions: [
+      { label: "看 API 状态", view: "system" },
+      { label: "工作流诊断", view: "workflow-console" },
+      { label: "回店铺总览", view: "dashboard" },
     ],
   },
 };
@@ -1062,6 +1128,17 @@ function renderErpWorkflowNavigator() {
   renderErpModuleOwnership();
 }
 
+function workflowStatusBusinessLabel(status = "") {
+  const labels = {
+    waiting_human: "需要人工确认后继续",
+    node_failed: "业务步骤失败，需要修复字段或策略",
+    blocked: "当前步骤被安全闸阻止",
+    preflight_blocked: "提交前检查未通过",
+    manual_intervention: "需要人工处理页面或数据",
+  };
+  return labels[status] || workflowStatusLabel(status);
+}
+
 function cockpitWorkflowPhases() {
   const phases = {
     "采集": { count: 0, risk: false },
@@ -1084,7 +1161,85 @@ function cockpitWorkflowPhases() {
   return phases;
 }
 
+function renderStoreOperatingOverview() {
+  const sales = $("#storeSalesOverview");
+  const health = $("#storeBusinessHealthGrid");
+  const reminderRail = $("#todayReminderRail");
+  const orders = state.orderRows || [];
+  const products = state.productRows || [];
+  const promotions = state.promotionRows || [];
+  const workflows = state.workflowRuns || [];
+  const summary = state.workflowSummary || {};
+  const orderRevenue = orders.reduce((total, order) => {
+    const productsTotal = (order.products || []).reduce((sum, product) => sum + Number(product.price || product.offer_price || 0), 0);
+    return total + productsTotal;
+  }, 0);
+  const awaitingOrders = orders.filter((order) => ["awaiting_packaging", "awaiting_deliver"].includes(order.status)).length;
+  const riskyProducts = products.filter((item) => ["error", "needFix"].includes(item.status_group) || item.status === "error").length;
+  const lowStockProducts = products.filter((item) => Number(item.stocks?.present || item.stock || 0) <= 0).length;
+  const activePromotions = promotions.filter((item) => !/inactive|closed|finished/i.test(String(item.status || ""))).length;
+  const waitingHuman = Number(summary.waitingHuman || workflows.filter((run) => run.status === "waiting_human").length);
+  if (sales) {
+    sales.innerHTML = `
+      <article><span>今日销售额</span><strong>${orderRevenue ? orderRevenue.toFixed(0) : "-"}</strong><small>基于已加载订单估算</small></article>
+      <article><span>今日订单</span><strong>${orders.length || "-"}</strong><small>${awaitingOrders} 单待备货/发运</small></article>
+      <article><span>商品风险</span><strong>${riskyProducts}</strong><small>${products.length || 0} 个商品已加载</small></article>
+      <article><span>活动中</span><strong>${activePromotions}</strong><small>${promotions.length || 0} 个活动已加载</small></article>
+    `;
+  }
+  if (health) {
+    health.innerHTML = `
+      <section id="storeProductHealth" class="store-health-panel">
+        <div><span>商品健康</span><strong>${riskyProducts ? "需处理" : "稳定"}</strong></div>
+        <p>${riskyProducts ? `${riskyProducts} 个商品存在审核、缺价或资料风险。` : "当前已加载商品没有高风险状态。"}</p>
+        <button type="button" data-cockpit-view="products">进入商品管理</button>
+      </section>
+      <section id="storeOrderFulfillment" class="store-health-panel">
+        <div><span>订单履约</span><strong>${awaitingOrders ? "有待处理" : "暂无积压"}</strong></div>
+        <p>${awaitingOrders ? `${awaitingOrders} 单需要备货或发运。` : "已加载订单里没有待备货/待发运积压。"}</p>
+        <button type="button" data-cockpit-view="orders">进入订单履约</button>
+      </section>
+      <section id="storeInventoryRisk" class="store-health-panel">
+        <div><span>库存仓库</span><strong>${lowStockProducts ? "有风险" : "待同步"}</strong></div>
+        <p>${lowStockProducts ? `${lowStockProducts} 个商品可能缺库存。` : "库存风险会在商品和仓库数据加载后更新。"}</p>
+        <button type="button" data-cockpit-view="warehouse">进入库存仓库</button>
+      </section>
+      <section id="storeProfitSnapshot" class="store-health-panel">
+        <div><span>财务利润</span><strong>待核算</strong></div>
+        <p>销售额、采购成本、物流费、佣金和最低价风险统一进入财务利润域。</p>
+        <button type="button" data-cockpit-view="finance">进入财务利润</button>
+      </section>
+    `;
+  }
+  if (reminderRail) {
+    const reminders = [
+      waitingHuman ? { title: "上架安全闸", body: `${waitingHuman} 个流程需要人工确认`, view: "workflow-console", tone: "warning" } : null,
+      awaitingOrders ? { title: "订单履约", body: `${awaitingOrders} 单待处理`, view: "orders", tone: "warning" } : null,
+      riskyProducts ? { title: "商品管理", body: `${riskyProducts} 个商品需修复`, view: "products", tone: "danger" } : null,
+      activePromotions ? { title: "营销活动", body: `${activePromotions} 个活动可查看`, view: "promotions", tone: "info" } : null,
+    ].filter(Boolean);
+    reminderRail.innerHTML = `
+      <div class="today-reminder-head">
+        <span>今日提醒</span>
+        <strong>${reminders.length || 0}</strong>
+      </div>
+      <div class="today-reminder-list">
+        ${reminders.length ? reminders.map((item) => `
+          <button type="button" class="today-reminder-item ${escapeHtml(item.tone)}" data-cockpit-view="${escapeHtml(item.view)}">
+            <strong>${escapeHtml(item.title)}</strong>
+            <span>${escapeHtml(item.body)}</span>
+          </button>
+        `).join("") : `<p class="hint">当前没有高优先级提醒。订单、库存、商品和活动数据刷新后会自动更新。</p>`}
+      </div>
+      <section id="cockpitWorkflowFocus" class="cockpit-workflow-focus">
+        <div class="section-headline"><div><h2>上架诊断提醒</h2><p class="hint">只显示需要跳转处理的异常。</p></div></div>
+      </section>
+    `;
+  }
+}
+
 function renderCockpitDashboard() {
+  renderStoreOperatingOverview();
   const summary = state.workflowSummary || {};
   const riskBanner = $("#cockpitRiskBanner");
   const waitingHuman = Number(summary.waitingHuman || 0);
@@ -1117,7 +1272,7 @@ function renderCockpitDashboard() {
       <div class="cockpit-focus-list">${runs.length ? runs.map((run) => `
         <button type="button" class="cockpit-focus-item" data-cockpit-run-id="${escapeHtml(run.id)}">
           <span><strong>${escapeHtml(run.title || run.id)}</strong><small>${escapeHtml(run.currentNode || run.summary?.currentNodeName || "等待节点")}</small></span>
-          <em class="erp-status-pill ${run.status === "waiting_human" ? "warning" : "info"}">${escapeHtml(workflowStatusLabel(run.status))}</em>
+          <em class="erp-status-pill ${run.status === "waiting_human" ? "warning" : "info"}">${escapeHtml(workflowStatusBusinessLabel(run.status))}</em>
           <small>${escapeHtml(run.summary?.nextAction || "查看详情")}</small><b>诊断 →</b>
         </button>
       `).join("") : `<div class="erp-empty-state">暂无工作流，先从 Ozon 学习或 1688 选品开始。</div>`}</div>

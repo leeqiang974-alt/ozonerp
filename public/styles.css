@@ -117,6 +117,7 @@
 .sidebar-backdrop { display: none; }
 .page-eyebrow { color: var(--erp-cyan); font-size: 10px; font-weight: 800; letter-spacing: .14em; }
 .cockpit-page-head { align-items: flex-start; }
+.store-dashboard-head { align-items: flex-start; }
 .cockpit-head-actions { align-items: center; }
 .cockpit-global-search { width: min(320px, 28vw); display: flex; align-items: center; gap: 8px; padding: 0 10px; border: 1px solid var(--erp-line); border-radius: 11px; background: #0a1625; }
 .cockpit-global-search input { border: 0; box-shadow: none; background: transparent; }
@@ -157,6 +158,138 @@
 .listing-primary-actions { display: grid; grid-template-columns: 1fr; gap: 8px; min-width: 170px; }
 .cockpit-content-grid { display: grid; grid-template-columns: minmax(0,1.35fr) minmax(300px,.65fr); gap: 12px; margin-top: 12px; }
 .cockpit-focus-grid { grid-template-columns: 1fr; }
+.store-overview-layout {
+  display: grid;
+  grid-template-columns: minmax(0,1fr) minmax(280px,.28fr);
+  gap: 14px;
+  align-items: start;
+  margin-bottom: 14px;
+}
+.store-overview-main {
+  display: grid;
+  gap: 14px;
+}
+.store-metric-grid {
+  display: grid;
+  grid-template-columns: repeat(4,minmax(0,1fr));
+  gap: 12px;
+}
+.store-metric-grid article {
+  min-height: 118px;
+  padding: 16px;
+  border: 1px solid rgba(37,99,235,.16);
+  border-radius: 12px;
+  background: linear-gradient(145deg,#fff,#f8fbff);
+  box-shadow: 0 10px 26px rgba(15,23,42,.06);
+}
+.store-metric-grid span,
+.store-metric-grid small {
+  color: var(--business-muted);
+}
+.store-metric-grid strong {
+  display: block;
+  margin: 8px 0 4px;
+  color: var(--business-text);
+  font-size: 30px;
+  font-variant-numeric: tabular-nums;
+}
+.store-business-health-grid {
+  display: grid;
+  grid-template-columns: repeat(2,minmax(0,1fr));
+  gap: 12px;
+}
+.store-health-panel {
+  min-height: 150px;
+  padding: 16px;
+  border: 1px solid rgba(148,163,184,.24);
+  border-radius: 12px;
+  background: var(--business-panel);
+  box-shadow: 0 10px 26px rgba(15,23,42,.05);
+  display: grid;
+  gap: 10px;
+  align-content: start;
+}
+.store-health-panel div {
+  display: flex;
+  justify-content: space-between;
+  gap: 10px;
+}
+.store-health-panel span {
+  color: var(--business-muted);
+  font-weight: 800;
+}
+.store-health-panel strong {
+  color: var(--business-primary);
+}
+.store-health-panel p {
+  margin: 0;
+  color: var(--business-text);
+  line-height: 1.5;
+}
+.store-health-panel button,
+.today-reminder-item {
+  justify-self: start;
+  color: var(--business-primary);
+  background: rgba(37,99,235,.08);
+  border-radius: 999px;
+  font-weight: 800;
+}
+.today-reminder-rail {
+  position: sticky;
+  top: 18px;
+  display: grid;
+  gap: 12px;
+  padding: 14px;
+  border: 1px solid rgba(37,99,235,.16);
+  border-radius: 12px;
+  background: #fff;
+  box-shadow: 0 12px 30px rgba(15,23,42,.06);
+}
+.today-reminder-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}
+.today-reminder-head span {
+  color: var(--business-muted);
+  font-weight: 900;
+}
+.today-reminder-head strong {
+  width: 34px;
+  height: 34px;
+  display: grid;
+  place-items: center;
+  border-radius: 50%;
+  color: #fff;
+  background: var(--business-primary);
+}
+.today-reminder-list {
+  display: grid;
+  gap: 8px;
+}
+.today-reminder-item {
+  width: 100%;
+  justify-self: stretch;
+  display: grid;
+  gap: 4px;
+  text-align: left;
+  border: 1px solid rgba(37,99,235,.16);
+  border-radius: 10px;
+  padding: 10px 12px;
+}
+.today-reminder-item strong {
+  color: var(--business-text);
+}
+.today-reminder-item span {
+  color: var(--business-muted);
+}
+.today-reminder-item.warning { background: rgba(255,237,213,.74); border-color: rgba(251,146,60,.28); }
+.today-reminder-item.danger { background: rgba(254,226,226,.7); border-color: rgba(248,113,113,.26); }
+.today-reminder-item.info { background: rgba(219,234,254,.72); border-color: rgba(96,165,250,.28); }
+.placeholder-domain-panel {
+  max-width: 920px;
+  min-height: 180px;
+}
 .cockpit-focus-list { display: grid; gap: 8px; }
 .cockpit-focus-item { width: 100%; display: grid; grid-template-columns: minmax(180px,1.4fr) auto minmax(120px,.8fr) auto; gap: 10px; align-items: center; padding: 11px 12px; border: 1px solid #1d3450; border-radius: 11px; background: #0d1d30; color: var(--erp-text); text-align: left; }
 .cockpit-focus-item span strong,.cockpit-focus-item span small { display: block; }
@@ -3206,6 +3339,25 @@ code,
     padding: 14px 16px 32px;
   }
 
+  .business-erp-theme .main {
+    margin-left: 0;
+    padding: 14px 16px 32px;
+  }
+
+  .store-overview-layout,
+  .store-business-health-grid {
+    grid-template-columns: 1fr;
+  }
+
+  .store-metric-grid {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .today-reminder-rail {
+    position: static;
+    width: 100%;
+  }
+
   .mobile-topbar {
     align-items: center;
     background: rgba(8, 17, 31, 0.92);
@@ -3271,7 +3423,8 @@ code,
 
 @media (max-width: 620px) {
   .cockpit-kpis,
-  .cockpit-flow {
+  .cockpit-flow,
+  .store-metric-grid {
     grid-template-columns: 1fr;
   }
 

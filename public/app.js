@@ -685,6 +685,43 @@ const ERP_LISTING_PIPELINE_STAGES = [
     diagnostic: "重点看错误码、字段路径、SKU 组、是否需要换货源或重新提交。",
   },
 ];
+const ERP_AUTOMATION_GUARDRAILS = [
+  {
+    title: "Ozon 提交必须人工确认",
+    rule: "任何触发 /v3/product/import 的动作都必须带 confirmSubmit，并且先通过 payload 校验。",
+    node: "ozon_submit",
+    evidence: "confirmSubmit + submit-payload-draft",
+    view: "workflow-console",
+  },
+  {
+    title: "定价风险不能静默跳过",
+    rule: "低利润、最低价、佣金来源不明或阻塞型 PRICING 风险只能重新计算或人工接受。",
+    node: "match_profit",
+    evidence: "pricing-risk/recalculate + pricing-risk/accept",
+    view: "workflow-console",
+  },
+  {
+    title: "预检失败不能继续提交",
+    rule: "preflight_check 发现重复 offer、缺少型号属性或变体组合冲突时，必须回草稿修字段。",
+    node: "preflight_check",
+    evidence: "validateSubmitPayload",
+    view: "listing",
+  },
+  {
+    title: "浏览器人机验证只允许暂停恢复",
+    rule: "1688/Ozon 页面遇到人机验证时，自动化只能标记 waiting_human，人工通过后再恢复。",
+    node: "crawler_1688",
+    evidence: "waiting_human + manual-fix-retry",
+    view: "sourcing",
+  },
+  {
+    title: "库存写入等待审核成功",
+    rule: "Ozon 审核失败或变体组合失败时，不自动写库存，先进入审核回馈和修复草稿。",
+    node: "stock_sync",
+    evidence: "review_reconcile + stock queue",
+    view: "workflow-console",
+  },
+];
 
 const $ = (selector) => document.querySelector(selector);
 const on = (selector, event, handler) => {
@@ -963,6 +1000,24 @@ function renderListingPipelineWorkbench() {
   `;
 }
 
+function renderListingAutomationGuardrails() {
+  const grid = $("#listingAutomationGuardrailGrid");
+  if (!grid) return;
+  grid.innerHTML = ERP_AUTOMATION_GUARDRAILS.map((item) => `
+    <article class="automation-guardrail-card">
+      <div>
+        <strong>${escapeHtml(item.title)}</strong>
+        <span>${escapeHtml(workflowNodeTitle(item.node) || item.node)}</span>
+      </div>
+      <p>${escapeHtml(item.rule)}</p>
+      <footer>
+        <code>${escapeHtml(item.evidence)}</code>
+        <button type="button" data-cockpit-view="${escapeHtml(item.view)}">查看对应入口</button>
+      </footer>
+    </article>
+  `).join("");
+}
+
 function singleListingOutcomeState() {
   const latestRun = [...(state.workflowRuns || [])]
     .sort((left, right) => String(right.updatedAt || right.createdAt || "").localeCompare(String(left.updatedAt || left.createdAt || "")))[0];
@@ -1064,6 +1119,7 @@ function renderErpModuleOwnership() {
   renderSellerOperatingModel();
   renderErpArchitectureMap();
   renderListingPipelineWorkbench();
+  renderListingAutomationGuardrails();
   renderSingleListingOutcomePanel();
   renderSellerManagementScope();
   const navigator = $("#erpWorkflowNavigator");

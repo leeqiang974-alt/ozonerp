@@ -526,6 +526,26 @@ test("listing workflow belongs under listing center, not dashboard", async () =>
   assert.match(html, /工作流诊断/);
 });
 
+test("listing center exposes automation guardrails for safe workflow routing", async () => {
+  const [html, js, css] = await Promise.all([
+    readFile(new URL("../public/index.html", import.meta.url), "utf8"),
+    readFile(new URL("../public/app.js", import.meta.url), "utf8"),
+    readFile(new URL("../public/styles.css", import.meta.url), "utf8"),
+  ]);
+  const listing = html.slice(html.indexOf('<section id="listing"'), html.indexOf('<section id="finance"'));
+
+  assert.match(listing, /listingAutomationGuardrails/);
+  assert.match(js, /ERP_AUTOMATION_GUARDRAILS/);
+  assert.match(js, /renderListingAutomationGuardrails/);
+  assert.match(js, /Ozon 提交必须人工确认/);
+  assert.match(js, /定价风险不能静默跳过/);
+  assert.match(js, /浏览器人机验证只允许暂停恢复/);
+  assert.match(js, /preflight_check/);
+  assert.match(js, /confirmSubmit/);
+  assert.match(css, /listing-automation-guardrails/);
+  assert.match(css, /automation-guardrail-card/);
+});
+
 test("frontend exposes a seller operating model instead of hidden developer navigation", async () => {
   const [html, js, css] = await Promise.all([
     readFile(new URL("../public/index.html", import.meta.url), "utf8"),

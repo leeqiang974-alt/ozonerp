@@ -156,6 +156,62 @@
 .listing-primary-flow h2 { max-width: 980px; margin: 6px 0 8px; color: var(--erp-text); font-size: 22px; line-height: 1.28; }
 .listing-primary-flow p { margin: 0; color: var(--erp-muted); }
 .listing-primary-actions { display: grid; grid-template-columns: 1fr; gap: 8px; min-width: 170px; }
+.listing-automation-guardrails {
+  margin-bottom: 12px;
+  border-color: rgba(251,146,60,.3);
+  background: linear-gradient(145deg,rgba(255,251,235,.96),rgba(255,255,255,.94));
+}
+.listing-automation-guardrail-grid {
+  display: grid;
+  grid-template-columns: repeat(5,minmax(0,1fr));
+  gap: 10px;
+}
+.automation-guardrail-card {
+  min-height: 182px;
+  padding: 14px;
+  border: 1px solid rgba(251,146,60,.28);
+  border-radius: 12px;
+  background: #fff;
+  display: grid;
+  gap: 10px;
+  align-content: start;
+  box-shadow: 0 10px 24px rgba(15,23,42,.05);
+}
+.automation-guardrail-card div {
+  display: grid;
+  gap: 5px;
+}
+.automation-guardrail-card strong {
+  color: var(--business-text);
+  line-height: 1.35;
+}
+.automation-guardrail-card span {
+  color: #b45309;
+  font-size: 12px;
+  font-weight: 900;
+}
+.automation-guardrail-card p {
+  margin: 0;
+  color: var(--business-muted);
+  line-height: 1.45;
+}
+.automation-guardrail-card footer {
+  align-self: end;
+  display: grid;
+  gap: 8px;
+}
+.automation-guardrail-card code {
+  white-space: normal;
+  color: #92400e;
+  background: rgba(254,243,199,.72);
+}
+.automation-guardrail-card button {
+  justify-self: start;
+  color: #9a3412;
+  background: rgba(255,237,213,.8);
+  border-radius: 999px;
+  font-weight: 800;
+}
 .cockpit-content-grid { display: grid; grid-template-columns: minmax(0,1.35fr) minmax(300px,.65fr); gap: 12px; margin-top: 12px; }
 .cockpit-focus-grid { grid-template-columns: 1fr; }
 .store-overview-layout {
@@ -3228,6 +3284,10 @@ code,
     grid-template-columns: repeat(2, minmax(0, 1fr));
   }
 
+  .listing-automation-guardrail-grid {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
   .business-erp-theme .app-rail {
     width: 86px;
     padding: 14px 10px;
@@ -3412,6 +3472,10 @@ code,
   }
 
   .listing-pipeline-workbench {
+    grid-template-columns: 1fr;
+  }
+
+  .listing-automation-guardrail-grid {
     grid-template-columns: 1fr;
   }
 

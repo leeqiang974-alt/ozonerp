@@ -4,6 +4,7 @@ data/1688-openapi.json
 data/image-cache/
 node_modules/
 logs/
+.worktrees/
 .superpowers/
 __pycache__/
 *.pyc

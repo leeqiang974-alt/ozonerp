@@ -1,0 +1,116 @@
+# Ozon ERP Claude Code Guide
+
+This project is a seller operating system for Ozon, not a generic admin demo or a developer diagnostics page. Claude Code should act as the product and architecture reviewer before implementation, and should keep Codex aligned with the rules below.
+
+## Start Here
+
+Before proposing or changing anything, read these files:
+
+- `docs/SESSION_HANDOFF.zh-CN.md`
+- `docs/erp-ui-information-architecture.zh-CN.md`
+- `docs/pricing-logic.zh-CN.md` when pricing, logistics, old_price, min_price, commission, or profit is involved.
+- `src/pricing.js`, `src/autoListing.js`, `src/workflowRuns.js`, `public/index.html`, `public/app.js`, `public/styles.css`, and the relevant tests for the feature area.
+
+Use the project root:
+
+`C:\Users\Administrator\Documents\Codex\2026-05-27\c-users-administrator-documents-codex-2026\ozon-project-copy`
+
+## Operating Model
+
+The ERP must be organized around seller decisions:
+
+1. What should be handled today.
+2. Which product or workflow is blocked.
+3. Why it is blocked in business language.
+4. What the user can safely decide next.
+
+Avoid developer-only language such as "manual intervention" unless the UI also explains the concrete issue, cause, available actions, and result of each action.
+
+## Feature Ownership
+
+Every tab has a strict responsibility boundary:
+
+- Dashboard: today, current product, business risks, and next action.
+- Sourcing: 1688 source collection, collection box, candidate parsing, and draft creation.
+- Listing: Ozon listing draft, category, attributes, title, description, images, pricing, preflight, and submit gates.
+- Workflow console: blocked nodes, diagnostics, field location, retry, source replacement, and submit gates.
+- Research/materials: Ozon reference, image style, guidance, and image generation suggestions.
+- Products: Ozon product list, status, price, and listing anomalies.
+- Warehouse: warehouses, stock read/write, stock queue, and stock failures.
+- Orders: FBS orders, preparation, shipping, cancellation, dispute states.
+- Promotions: Ozon promotions, promotion products, joinable products, and removal from promotions only.
+
+If the promotions tab shows listing fields such as category, description, listing title, collected product images, or attribute forms, treat it as a routing/content ownership bug.
+
+## Safety Gates
+
+Never bypass these gates:
+
+- Ozon submission requires preflight and explicit human confirmation.
+- Payload edits must be validated before submission.
+- Workflow locks, waiting_human states, and paused states must be respected.
+- Human verification in browser automation must pause the workflow, not refresh or continue polling.
+- GPT/Image generation must be user-confirmed before spending money.
+- Pricing risk marked blocked cannot be accepted as safe; it must be corrected or moved to a new source.
+
+## Pricing Rules
+
+When touching prices, keep these aligned:
+
+- `src/pricing.js`
+- `src/autoListing.js`
+- frontend pricing/workflow diagnosis in `public/app.js`
+- tests in `test/listing-content-quality.test.js`, `test/workflow-runs.test.js`, and related pricing tests.
+
+Current pricing meaning:
+
+- `price`: listing price in CNY.
+- `old_price`: strike-through price, currently `price * 2`.
+- `min_price`: floor price for Ozon promotions. Decimal prices floor; integer prices subtract 1; never below `1`.
+- Commission source must be explicit. Do not present the default 15% as a real Ozon category commission.
+
+## UI Rules
+
+The ERP is a business workbench:
+
+- Use readable, light, dense business UI unless an existing screen requires otherwise.
+- Every tab starts with title, ownership contract, task entry card, key business panel, then collapsed advanced content.
+- Long forms and diagnostics must not dominate the first viewport.
+- Desktop sidebar text must remain visible.
+- The current product workflow should focus on the current product, not aggregate old historical failures into the main action area.
+
+## Development Discipline
+
+Use test-driven changes for behavior:
+
+1. Add or update a focused failing test for the business rule or regression.
+2. Implement the smallest code change that satisfies the rule.
+3. Run targeted tests.
+4. Run `npm test`.
+5. Run `npm run lint`.
+6. Update `docs/SESSION_HANDOFF.zh-CN.md` after a completed stage.
+
+Useful commands:
+
+```powershell
+npm test
+npm run lint
+node --test test/frontend-static.test.js
+node --test test/workflow-runs.test.js
+powershell -ExecutionPolicy Bypass -File .\scripts\ops.ps1 start
+powershell -ExecutionPolicy Bypass -File .\scripts\ops.ps1 stop
+powershell -ExecutionPolicy Bypass -File .\scripts\ops.ps1 status
+```
+
+## Claude Code Role
+
+For future Ozon ERP work, Claude Code should usually produce an implementation brief before Codex edits code:
+
+- Restate the user problem in business terms.
+- Identify the affected module ownership boundary.
+- Identify safety gates.
+- Name files and tests likely to change.
+- State the acceptance criteria.
+- Warn if the request would bypass preflight, human confirmation, pricing risk, workflow locks, or human verification pauses.
+
+Codex should then implement against that brief, keep changes scoped, and verify with tests.

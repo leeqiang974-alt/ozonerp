@@ -1,0 +1,44 @@
+﻿{
+  "manifest_version": 3,
+  "name": "Ozon 商品采集到 ERP",
+  "version": "0.1.0",
+  "description": "在已登录的 Ozon 页面采集搜索和详情数据，发回到本地 Ozon ERP。",
+  "action": {
+    "default_title": "采集 Ozon 商品",
+    "default_popup": "popup.html",
+    "default_icon": {
+      "16": "icons/icon16.png",
+      "32": "icons/icon32.png",
+      "48": "icons/icon48.png",
+      "128": "icons/icon128.png"
+    }
+  },
+  "icons": {
+    "16": "icons/icon16.png",
+    "32": "icons/icon32.png",
+    "48": "icons/icon48.png",
+    "128": "icons/icon128.png"
+  },
+  "permissions": ["activeTab", "alarms", "scripting", "storage", "tabs"],
+  "background": {
+    "service_worker": "background.js"
+  },
+  "host_permissions": [
+    "https://*.ozon.ru/*",
+    "http://localhost:5178/*",
+    "http://127.0.0.1:5178/*"
+  ],
+  "web_accessible_resources": [
+    {
+      "resources": ["injected.js"],
+      "matches": ["https://*.ozon.ru/*"]
+    }
+  ],
+  "content_scripts": [
+    {
+      "matches": ["https://*.ozon.ru/*"],
+      "js": ["content.js"],
+      "run_at": "document_idle"
+    }
+  ]
+}

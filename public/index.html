@@ -1,0 +1,1556 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Ozon FBS ERP</title>
+    <link rel="stylesheet" href="/styles.css" />
+  </head>
+  <body class="business-erp-theme">
+    <div class="app-shell">
+      <aside class="app-rail app-rail-wide" aria-label="一级导航">
+        <button class="app-rail-logo" type="button" data-nav-group="cockpit" aria-label="Ozon ERP">OZ</button>
+        <button class="app-rail-button active" type="button" data-nav-group="cockpit" title="今日工作台"><span>⌂</span><small>今日</small></button>
+        <button class="app-rail-button" type="button" data-nav-group="listing-pipeline" title="商品上架流水线"><span>⌁</span><small>上架</small></button>
+        <button class="app-rail-button" type="button" data-nav-group="learning-assets" title="学习与素材"><span>◈</span><small>学习</small></button>
+        <button class="app-rail-button" type="button" data-nav-group="operations" title="店铺运营"><span>▣</span><small>运营</small></button>
+        <button class="app-rail-button app-rail-settings" type="button" data-nav-group="system" title="系统配置"><span>⚙</span><small>配置</small></button>
+      </aside>
+
+      <aside class="app-sidebar sidebar" id="appSidebar">
+        <div class="brand sidebar-brand">
+          <span class="brand-mark">OZ</span>
+          <div>
+            <strong>智能运营</strong>
+            <small>Ozon FBS ERP</small>
+          </div>
+        </div>
+
+        <nav class="tabs app-secondary-nav nav-group-always-visible" aria-label="模块">
+          <div class="nav-group active" data-nav-group-panel="cockpit">
+            <span class="nav-group-label">今日工作台</span>
+            <button class="tab active" data-view="dashboard"><span class="tab-icon">⌂</span><span>今天该处理什么</span></button>
+          </div>
+          <div class="nav-group" data-nav-group-panel="listing-pipeline">
+            <span class="nav-group-label">商品上架流水线</span>
+            <button class="tab" data-view="sourcing"><span class="tab-icon">⌕</span><span>1. 1688 采集</span></button>
+            <button class="tab" data-view="listing"><span class="tab-icon">↑</span><span>2. 上架草稿</span></button>
+            <button class="tab" data-view="workflow-console"><span class="tab-icon">◎</span><span>3. 节点诊断</span></button>
+          </div>
+          <div class="nav-group" data-nav-group-panel="learning-assets">
+            <span class="nav-group-label">学习与素材</span>
+            <button class="tab" data-view="research"><span class="tab-icon">◈</span><span>Ozon 参照与图片</span></button>
+          </div>
+          <div class="nav-group" data-nav-group-panel="operations">
+            <span class="nav-group-label">店铺运营</span>
+            <button class="tab" data-view="products"><span class="tab-icon">◇</span><span>商品状态</span></button>
+            <button class="tab" data-view="warehouse"><span class="tab-icon">▦</span><span>仓库与库存</span></button>
+            <button class="tab" data-view="orders"><span class="tab-icon">≡</span><span>订单履约</span></button>
+            <button class="tab" data-view="promotions"><span class="tab-icon">％</span><span>营销活动</span></button>
+          </div>
+          <div class="nav-group" data-nav-group-panel="system">
+            <span class="nav-group-label">系统配置</span>
+            <button class="tab" data-view="dashboard"><span class="tab-icon">●</span><span>配置说明</span></button>
+          </div>
+        </nav>
+
+        <div class="sidebar-store">
+          <label class="field">
+            <span>当前店铺</span>
+            <select id="storeSelect"></select>
+          </label>
+          <div class="sidebar-store-actions">
+            <button id="testButton" class="ghost">测试 API</button>
+            <span class="sidebar-api-dot" aria-hidden="true"></span>
+          </div>
+          <p id="storeHint" class="hint"></p>
+        </div>
+      </aside>
+
+      <button id="sidebarBackdrop" class="sidebar-backdrop" type="button" aria-label="关闭导航"></button>
+
+      <main class="main">
+        <div class="mobile-topbar">
+          <button id="mobileNavToggle" class="mobile-nav-toggle" type="button" aria-label="打开导航">☰</button>
+          <strong>Ozon ERP</strong>
+          <span class="mobile-api-status">● 在线</span>
+        </div>
+      <section id="dashboard" class="view active">
+        <header class="page-head cockpit-page-head">
+          <div>
+            <span class="page-eyebrow">ONE FLOW WORKBENCH</span>
+            <h1>今日工作台</h1>
+            <p>只做一件事：把一个商品从 1688 采集推进到 Ozon 上架审核，不再在页面里找功能。</p>
+          </div>
+          <div class="actions cockpit-head-actions">
+            <label class="cockpit-global-search">
+              <span>⌕</span>
+              <input id="cockpitGlobalSearch" placeholder="搜索 SKU、任务、错误码" />
+            </label>
+            <button id="refreshDashboard" class="ghost">刷新状态</button>
+            <button class="primary" type="button" data-cockpit-view="sourcing">＋ 从 1688 开始</button>
+          </div>
+        </header>
+
+        <section id="sellerOperatingModel" class="panel seller-operating-model">
+          <div class="section-headline">
+            <div>
+              <span class="page-eyebrow">SELLER OPERATING MODEL</span>
+              <h2>ERP 运行逻辑</h2>
+              <p class="hint">先按卖家每天真实要处理的事组织页面：今天先处理什么、商品生命周期、店铺日常运营、异常与决策。</p>
+            </div>
+            <span class="module-map-badge soft">业务视角</span>
+          </div>
+          <div id="sellerOperatingModelGrid" class="seller-operating-model-grid"></div>
+        </section>
+
+        <section id="singleListingOutcomePanel" class="panel single-listing-outcome">
+          <div class="single-listing-outcome-head">
+            <span>核心任务</span>
+            <h2>上架一个商品</h2>
+            <p>这里只回答三件事：现在卡在哪、为什么不能继续、下一步点哪里。</p>
+          </div>
+          <div id="singleListingOutcomeBody" class="single-listing-outcome-body">
+            <article class="outcome-step-card active">
+              <strong>等待读取当前商品</strong>
+              <p>正在判断最近采集、草稿、预检、提交和审核状态。</p>
+            </article>
+          </div>
+        </section>
+
+        <section id="listingPrimaryFlow" class="panel listing-primary-flow">
+          <div>
+            <span>当前唯一主线</span>
+            <h2>采集 → 解析 → 参照 → 分类属性 → 文案图片 → 定价 → 预检 → 提交 → 审核</h2>
+            <p>如果不知道点哪里，就按下面 9 个节点从左到右处理；卡住就点“定位工作流”。</p>
+          </div>
+          <div class="listing-primary-actions">
+            <button class="primary" type="button" data-cockpit-view="sourcing">1. 开始采集</button>
+            <button class="primary tone-green" type="button" data-cockpit-view="listing">2. 上架草稿</button>
+            <button class="primary tone-purple" type="button" data-cockpit-view="workflow-console">3. 查看卡点</button>
+          </div>
+        </section>
+
+        <section class="panel listing-pipeline-workbench-panel">
+          <div class="section-headline">
+            <div>
+              <h2>当前商品流程</h2>
+              <p class="hint">默认只看当前商品的 9 个节点；历史问题已折叠，不再把旧任务统计堆到主界面。</p>
+            </div>
+            <span class="module-map-badge warning">HUMAN GATED</span>
+          </div>
+          <div id="listingPipelineWorkbench" class="listing-pipeline-workbench"></div>
+        </section>
+
+        <div class="cockpit-content-grid cockpit-focus-grid">
+          <section id="cockpitWorkflowFocus" class="panel cockpit-workflow-focus">
+            <div class="section-headline"><div><h2>当前工作流焦点</h2><p class="hint">优先显示等待人工和高风险任务。</p></div></div>
+          </section>
+        </div>
+
+        <section id="sellerManagementScope" class="panel seller-management-scope">
+          <div class="section-headline">
+            <div>
+              <h2>Seller 店铺管理</h2>
+              <p class="hint">ERP 能帮你管理什么：从新品上架，到库存、订单、促销、价格利润、异常回馈，每个能力都归到明确入口。</p>
+            </div>
+            <span class="module-map-badge soft">SELLER ERP</span>
+          </div>
+          <div id="sellerManagementScopeGrid" class="seller-management-scope-grid"></div>
+        </section>
+
+        <details class="cockpit-reference">
+          <summary>高级说明与系统诊断</summary>
+          <div id="cockpitRiskBanner" class="cockpit-risk-banner">
+            <strong>正在读取工作流风险...</strong>
+          </div>
+          <div id="cockpitKpis" class="cockpit-kpis">
+            <article><span>运行中工作流</span><strong>0</strong><small>等待数据</small></article>
+            <article><span>等待人工</span><strong>0</strong><small>无阻塞</small></article>
+            <article><span>近 14 天 FBS 单</span><strong id="orderCount">-</strong><small>订单履约</small></article>
+            <article><span>系统状态</span><strong id="healthStatus">未测试</strong><small><span id="storeCount">0</span> 店铺 · <span id="warehouseCount">-</span> 仓库</small></article>
+          </div>
+          <section class="panel erp-workflow-navigator cockpit-flow-panel">
+            <div class="section-headline">
+              <div>
+                <h2>流程概览</h2>
+                <p class="hint">这里仅用于总览；实际操作以上面的 9 个节点卡为准。</p>
+              </div>
+              <span class="module-map-badge soft">LIVE FLOW</span>
+            </div>
+            <div id="erpWorkflowNavigator" class="erp-workflow-navigator-grid cockpit-flow"></div>
+          </section>
+          <section class="panel erp-architecture-panel">
+            <div class="section-headline">
+              <div>
+                <h2>功能归属地图</h2>
+                <p class="hint">先判断你要做的是“今天处理、上架推进、学习素材、店铺运营、系统配置”哪一类，再进对应模块。</p>
+              </div>
+              <a class="module-map-badge soft" href="https://www.figma.com/board/sy7fZ0JGQI5QCRYKCLdAXY" target="_blank">Figma 结构图</a>
+            </div>
+            <div id="erpArchitectureMap" class="erp-architecture-map"></div>
+          </section>
+          <section class="panel cockpit-system-pulse">
+            <div class="section-headline"><div><h2>系统脉冲</h2><p class="hint">关键服务的即时状态。</p></div><span class="pulse-live">● 实时</span></div>
+            <div id="systemPulseGrid" class="system-pulse-grid"></div>
+          </section>
+          <section class="panel module-map-panel"><div class="section-headline"><div><h2>ERP 模块归属地图</h2></div><span class="module-map-badge">主链优先</span></div><div id="moduleOwnershipGrid" class="module-ownership-grid"></div></section>
+          <section class="panel api-coverage-panel"><div class="section-headline"><div><h2>Ozon Seller API 对齐概览</h2></div><span class="module-map-badge soft">API 边界</span></div><div id="sellerApiCoverageGrid" class="seller-api-coverage-grid"></div></section>
+          <section class="panel api-gap-panel"><div class="section-headline"><div><h2>Seller API 缺口开发清单</h2></div><span class="module-map-badge warning">缺口优先级</span></div><div id="sellerApiGapGrid" class="seller-api-gap-grid"></div></section>
+          <section class="panel"><h2>最近响应</h2><pre id="lastResponse">等待操作...</pre></section>
+        </details>
+      </section>
+      <section id="workflow-console" class="view">
+        <header class="page-head">
+          <div>
+            <h1>工作流控制台</h1>
+            <p>把 1688 采集、Ozon 学习、上架、审核回馈和库存写入拆成可诊断节点。</p>
+          </div>
+          <div class="actions">
+            <button id="workflowReconcileStale" class="ghost">清理陈旧状态</button>
+            <button id="workflowRefresh" class="ghost">刷新</button>
+          </div>
+        </header>
+
+        <div id="workflowSummaryCards" class="workflow-summary-cards">
+          <article><span>工作流</span><strong>-</strong></article>
+          <article><span>等待人工</span><strong>-</strong></article>
+          <article><span>高风险</span><strong>-</strong></article>
+          <article><span>阻塞</span><strong>-</strong></article>
+        </div>
+
+        <div id="workflowFocusBar" class="workflow-focus-bar">
+          <span>当前焦点</span>
+          <strong>等待读取工作流</strong>
+          <small>选择一条工作流后显示节点、风险和下一步动作。</small>
+        </div>
+
+        <div id="workflowFilterChips" class="workflow-filter-chips">
+          <button class="workflow-filter-chip active" data-filter="all">全部</button>
+          <button class="workflow-filter-chip" data-filter="waiting_human">等待人工</button>
+          <button class="workflow-filter-chip" data-filter="high_risk">高风险</button>
+          <button class="workflow-filter-chip" data-filter="blocking">阻塞</button>
+          <button class="workflow-filter-chip" data-filter="live">已在售</button>
+        </div>
+
+        <div class="workflow-console-layout">
+          <aside id="workflowRunList" class="workflow-run-list">
+            <p class="hint">等待读取工作流记录...</p>
+          </aside>
+          <section id="workflowNodeTimeline" class="workflow-node-timeline">
+            <p class="hint">选择一条工作流后查看节点状态。</p>
+          </section>
+          <aside id="workflowNodeDetail" class="workflow-node-detail">
+            <p class="hint">选择节点后查看输入、输出、诊断和可重试操作。</p>
+          </aside>
+        </div>
+      </section>
+      <section id="orders" class="view">
+        <header class="page-head">
+          <div>
+            <h1>来自我的仓库的订单</h1>
+            <p>FBS 订单运营台，按状态、仓库、服务和日期筛选。</p>
+          </div>
+          <div class="actions">
+            <button class="ghost">下载</button>
+            <button id="loadOrders" class="primary">全部备货</button>
+          </div>
+        </header>
+
+        <div class="product-tabs" id="orderStatusTabs">
+          <button class="product-tab active" data-status="">所有 <span>0</span></button>
+          <button class="product-tab" data-status="awaiting_packaging">等待备货 <span>0</span></button>
+          <button class="product-tab" data-status="awaiting_deliver">等待发运 <span>0</span></button>
+          <button class="product-tab" data-status="delivering">运输中 <span>0</span></button>
+          <button class="product-tab" data-status="dispute">争议 <span>0</span></button>
+          <button class="product-tab" data-status="delivered">已签收 <span>0</span></button>
+          <button class="product-tab" data-status="cancelled">已取消 <span>0</span></button>
+        </div>
+
+        <div class="filters order-filters">
+          <label class="field">
+            <span>仓库</span>
+            <select id="orderWarehouse">
+              <option value="">全部仓库</option>
+            </select>
+          </label>
+          <label class="field">
+            <span>服务</span>
+            <select id="orderService">
+              <option value="">全部服务</option>
+            </select>
+          </label>
+          <label class="field">
+            <span>开始时间</span>
+            <input id="orderSince" type="datetime-local" />
+          </label>
+          <label class="field">
+            <span>结束时间</span>
+            <input id="orderTo" type="datetime-local" />
+          </label>
+          <label class="field search-box order-search">
+            <input id="orderSearch" placeholder="发货编号、货号、SKU、商品名" />
+          </label>
+        </div>
+
+        <div class="table-wrap product-table-wrap">
+          <table class="product-table">
+            <thead>
+              <tr>
+                <th>货件编号</th>
+                <th>状态</th>
+                <th>已接收</th>
+                <th>发运日期</th>
+                <th>照片</th>
+                <th>数量、货号<br />商品名称</th>
+                <th>价格</th>
+                <th>仓库</th>
+                <th>配送服务<br />方式</th>
+                <th>声明重量，千克</th>
+              </tr>
+            </thead>
+            <tbody id="ordersTable"></tbody>
+          </table>
+        </div>
+      </section>
+            <section id="warehouse" class="view">
+        <header class="page-head">
+          <div>
+            <h2>仓储库存</h2>
+          </div>
+        </header>
+        <div class="erp-panel">
+
+        <header class="page-head">
+          <div>
+            <h1>仓库</h1>
+            <p>这里作为库存入口，所有库存更新都绑定 Ozon 仓库。</p>
+          </div>
+          <button id="loadWarehouses" class="primary">读取仓库</button>
+        </header>
+        <div id="warehouseList" class="grid-list"></div>
+      
+
+        <header class="page-head">
+          <div>
+            <h1>仓库库存</h1>
+            <p>独立仓库库存模块，调用 /v2/products/stocks。</p>
+          </div>
+          <div class="actions">
+            <button id="readStock" class="ghost">读取库存</button>
+            <button id="submitStocks" class="primary">提交库存</button>
+          </div>
+        </header>
+        <div class="filters">
+          <label class="field">
+            <span>Offer ID</span>
+            <input id="stockOfferId" value="SKU00259-оранжевый-hello" />
+          </label>
+        </div>
+        <div class="table-wrap stock-preview">
+          <table>
+            <thead>
+              <tr>
+                <th>Offer ID</th>
+                <th>Product ID</th>
+                <th>类型</th>
+                <th>当前库存</th>
+                <th>预留</th>
+              </tr>
+            </thead>
+            <tbody id="stockTable"></tbody>
+          </table>
+        </div>
+        <textarea id="stockJson" spellcheck="false">[
+  {
+    "offer_id": "SKU00259-оранжевый-hello",
+    "stock": 419,
+    "warehouse_id": 1020002236235000
+  }
+]</textarea>
+      
+        </div>
+      </section>
+      <section id="promotions" class="view">
+        <header class="page-head">
+          <div>
+            <h1>来自 Ozon 的促销活动</h1>
+            <p>查看每个活动里正在参加、即将参加和可添加的商品，并支持一键移除活动商品。</p>
+          </div>
+          <div class="actions">
+            <button id="loadPromotions" class="primary">读取促销活动</button>
+          </div>
+        </header>
+
+        <div class="promotion-layout">
+          <section class="promotion-list-panel">
+            <div id="promotionList" class="promotion-list">
+              <p class="hint">点击“读取促销活动”后显示 Ozon 返回的活动。</p>
+            </div>
+          </section>
+
+          <section class="promotion-detail-panel">
+            <header class="promotion-detail-head">
+              <div>
+                <h2 id="promotionDetailTitle">请选择一个活动</h2>
+                <p id="promotionDetailMeta" class="hint">可查看正在参加和可加入商品。</p>
+              </div>
+              <button id="removePromotionProducts" class="danger" disabled>一键全删除活动商品</button>
+            </header>
+
+            <div class="promotion-stats">
+              <article>
+                <span>正在/即将参加</span>
+                <strong id="promotionProductCount">-</strong>
+              </article>
+              <article>
+                <span>可添加商品</span>
+                <strong id="promotionCandidateCount">-</strong>
+              </article>
+              <article>
+                <span>活动状态</span>
+                <strong id="promotionStatus">-</strong>
+              </article>
+            </div>
+
+            <div class="product-tabs" id="promotionProductTabs">
+              <button class="product-tab active" data-kind="products">活动商品 <span id="promotionProductsTabCount">0</span></button>
+              <button class="product-tab" data-kind="candidates">可添加商品 <span id="promotionCandidatesTabCount">0</span></button>
+            </div>
+
+            <div class="table-wrap promotion-products-wrap">
+              <table class="product-table">
+                <thead>
+                  <tr>
+                    <th>Product ID</th>
+                    <th>Offer ID</th>
+                    <th>商品名称</th>
+                    <th>当前价</th>
+                    <th>活动价</th>
+                    <th>折扣</th>
+                    <th>状态</th>
+                  </tr>
+                </thead>
+                <tbody id="promotionProductRows">
+                  <tr><td colspan="7" class="empty">暂无数据</td></tr>
+                </tbody>
+              </table>
+            </div>
+          </section>
+      </section>
+            <section id="research" class="view">
+        <header class="page-head">
+          <div>
+            <h2>竞品调研 <span id="pipelineStatusBadge" class="badge badge-idle">空闲</span></h2>
+          </div>
+        </header>
+        <div class="erp-panel">
+          <section class="erp-section">
+            <header>流程驾驶舱（主链收口）</header>
+            <div class="erp-body">
+              <div class="erp-row">
+                <label>主流程</label>
+                <div class="erp-inline">
+                  <button id="cockpitRunAll" class="primary tone-orange" type="button">0) 一键推进主链</button>
+                  <button id="cockpitReverseRun" class="primary" type="button">1) 1688盲采→Ozon指导</button>
+                  <button id="cockpitPipelineRun" class="primary tone-green" type="button">2) 启动自动流水线</button>
+                  <button id="cockpitAutoFix" class="primary tone-purple" type="button">3) 停滞自愈</button>
+                  <button id="cockpitRefreshAll" class="ghost" type="button">刷新主链状态</button>
+                </div>
+              </div>
+              <div class="erp-row">
+                <span id="cockpitSummary" class="hint">状态: 等待执行主链</span>
+              </div>
+              <div class="erp-row">
+                <span id="cockpitNextAction" class="hint">下一步: 等待状态计算</span>
+              </div>
+            </div>
+          </section>
+
+          <details class="erp-advanced-toggle">
+            <summary>高级操作（默认折叠）</summary>
+            <div class="erp-advanced-body">
+          <div class="erp-section">
+            <header>自动盲搜</header>
+            <div class="erp-body">
+              <div class="erp-row">
+                <label>种子词(可选)</label>
+                <div class="erp-inline crawler-search-line">
+                  <input id="ozonBlindSeeds" class="flex-1" placeholder="指定种子词，多个用逗号分隔，留空则随机" />
+                </div>
+              </div>
+<div class="erp-row">
+                <label>关键词池</label>
+                <div class="erp-inline crawler-search-line">
+                  <span class="hint">内置 20 个俄语品类词，随机盲选</span>
+                </div>
+              </div>
+              <div class="erp-row">
+                <label></label>
+                <div class="erp-inline crawler-search-line">
+                  每批盲选 <select id="ozonBlindBatchSize" class="w-60"><option>2</option><option>3</option><option>5</option></select>
+                  个词，每词采 <select id="ozonBlindMaxProducts" class="w-60"><option>5</option><option>10</option><option selected>20</option></select>
+                  个商品，取前 <select id="ozonBlindDetailSampleSize" class="w-60"><option selected>3</option><option>5</option><option>10</option></select>
+                  个查看详情
+                  <button id="ozonBlindStart" class="small-blue tone-purple" type="button">启动一轮盲搜</button>
+                  <button id="ozonLearningRefresh" class="small-blue" type="button">刷新</button>
+                </div>
+              </div>
+            </div>
+          </div>
+
+          <div class="erp-section">
+            <header>自动流水线</header>
+            <div class="erp-body">
+              <div class="pipeline-info">
+                <div class="pipeline-info-item">
+                  状态: <span class="pipeline-info-value" id="pipelineStatusText">等待执行</span>
+                </div>
+                <div class="pipeline-info-item">
+                  进度: <span class="pipeline-info-value" id="pipelineProgress">0/4</span>
+                </div>
+                <div class="pipeline-info-item">
+                  <span id="pipelineStartTime" class="hint"></span>
+                </div>
+                <div class="pipeline-info-item">
+                  <button id="runPipelineBtn" class="small-blue tone-green" type="button">一键全自动流水线</button>
+                  <button id="resetPipelineBtn" class="small-blue tone-gray small-btn" type="button">重置</button>
+                  <button id="refreshPipelineBtn" class="small-blue small-btn" type="button">刷新</button>
+                </div>
+              </div>
+              <div class="pipeline-track" id="pipelineTrack">
+                <div class="pipeline-step-card" data-step="分析机会品"><div class="pipeline-step-icon">1</div><div class="pipeline-step-label">分析机会品</div></div>
+                <div class="pipeline-connector" data-connector="0-1"></div>
+                <div class="pipeline-step-card" data-step="提取上架规则"><div class="pipeline-step-icon">2</div><div class="pipeline-step-label">提取规则</div></div>
+                <div class="pipeline-connector" data-connector="1-2"></div>
+                <div class="pipeline-step-card" data-step="1688扩词采集"><div class="pipeline-step-icon">3</div><div class="pipeline-step-label">1688扩词</div></div>
+                <div class="pipeline-connector" data-connector="2-3"></div>
+                <div class="pipeline-step-card" data-step="匹配货源并上架"><div class="pipeline-step-icon">4</div><div class="pipeline-step-label">匹配上架</div></div>
+              </div>
+            </div>
+          </div>
+
+          <div class="erp-section">
+      
+
+        <section class="erp-section">
+          <header>采样任务</header>
+          <div class="erp-body">
+            <div class="erp-row">
+              <label>来源类型</label>
+              <select id="ozonLearningSourceType">
+                <option value="keyword">关键词</option>
+                <option value="search_url">搜索页链接</option>
+              </select>
+            </div>
+            <div class="erp-row">
+              <label>关键词 / 链接</label>
+              <div class="erp-inline crawler-search-line">
+                <input id="ozonLearningSourceValue" placeholder="例如：детский песочный набор / https://www.ozon.ru/search/..." />
+                <button id="ozonLearningStart" class="primary" type="button">开始采样</button>
+              </div>
+            </div>
+            <div class="erp-row three-col">
+              <label>搜索页商品数 <input id="ozonLearningMaxProducts" type="number" min="1" max="200" value="30" /></label>
+              <label>详情页样本数 <input id="ozonLearningDetailSampleSize" type="number" min="0" max="50" value="8" /></label>
+              <label class="hint">插件会打开 Ozon 前台页面采集真实可见数据</label>
+            </div>
+          </div>
+        </section>
+        <section class="erp-section">
+          <header>自动拓词</header>
+          <div class="erp-body">
+            <div class="erp-row">
+              <label>种子词</label>
+              <div class="erp-inline crawler-search-line">
+                <input id="crawlerExpandSeeds" class="flex-1" placeholder="输入种子词，多个词用逗号分隔" />
+                <button id="crawlerExpandBtn" class="primary tone-purple" type="button">拓词</button>
+                <button id="crawlerExpandAndRunBtn" class="primary" type="button">拓词并创建任务</button>
+              </div>
+            </div>
+            <div class="erp-row hidden" id="crawlerExpandResult">
+              <div class="erp-inline wrap-gap-6"></div>
+            </div>
+            <div class="erp-row three-col">
+              <label>每词商品数 <input id="crawlerExpandMaxProducts" type="number" min="1" max="200" value="20" /></label>
+              <label>最大翻页 <input id="crawlerExpandMaxPages" type="number" min="1" max="10" value="2" /></label>
+              <label></label>
+            </div>
+            <div class="erp-row">
+              <small class="hint">AI 根据种子词生成一批相关 1688 搜索词，自动创建多个采集任务。</small>
+            </div>
+          </div>
+        </section>
+        <section class="erp-section">
+          <header>任务列表</header>
+          <div class="erp-body">
+            <div class="table-wrap">
+              <table class="product-table">
+                <thead>
+                  <tr>
+                    <th>任务ID</th>
+                    <th>来源</th>
+                    <th>状态</th>
+                    <th>搜索结果</th>
+                    <th>详情样本</th>
+                    <th>更新时间</th>
+                    <th>操作</th>
+                  </tr>
+                </thead>
+                <tbody id="ozonLearningTaskRows">
+                  <tr><td colspan="7" class="product-empty">暂无任务</td></tr>
+                </tbody>
+              </table>
+            </div>
+          </div>
+        </section>
+        <section class="erp-section">
+          <header>机会池</header>
+          <div class="erp-body">
+            <div class="erp-row">
+              <label>机会筛选</label>
+              <div class="erp-inline crawler-search-line">
+                <input id="ozonOpportunityQuery" placeholder="标题 / 类目 / 评分原因" />
+                <input id="ozonOpportunityMinScore" class="max-w-110" type="number" min="0" max="100" value="60" />
+                <button id="ozonOpportunityFilter" class="small-blue" type="button">刷新机会</button>
+                <button id="analyzeOpportunitiesBtn" class="small-blue tone-purple" type="button">Ozon分析→1688选品</button>
+                <button id="analyzeRulesBtn" class="small-blue tone-orange" type="button">构建上架规则</button>
+                <span id="rulesResult" class="hint"></span>
+                <span id="analyzeResult" class="hint"></span>
+              </div>
+            </div>
+            <div class="table-wrap">
+              <table class="product-table ozon-learning-table">
+                <thead>
+                  <tr>
+                    <th>机会商品</th>
+                    <th>机会分</th>
+                    <th>价格/评分</th>
+                    <th>原因</th>
+                    <th>下一步</th>
+                  </tr>
+                </thead>
+                <tbody id="ozonOpportunityRows">
+                  <tr><td colspan="5" class="product-empty">暂无机会数据</td></tr>
+                </tbody>
+              </table>
+            </div>
+          </div>
+        </section>
+        <section class="erp-section ozon-reference-guidance">
+          <header>单品实时参照</header>
+          <div class="erp-body">
+            <div class="erp-row">
+              <label>按需学习</label>
+              <div class="erp-inline crawler-search-line">
+                <button id="ozonReferenceGuidanceRun" class="small-blue tone-purple" type="button">生成单品指导卡</button>
+                <span class="hint">使用最新 1688 采集商品 + 当前 Ozon 样本，输出文案、属性、图片重构和 image2 指导。</span>
+              </div>
+            </div>
+            <div id="ozonReferenceGuidanceResult" class="ozon-reference-guidance-result">
+              <p class="hint">先采集 1688 商品，再同步采集同类 Ozon 样本；这里生成当前单品的参照指导卡。</p>
+            </div>
+            <div class="erp-row ozon-image2-controls">
+              <label>GPT Image 2</label>
+              <div class="erp-inline crawler-search-line">
+                <select id="ozonImage2Size">
+                  <option value="1:1">1:1 主图</option>
+                  <option value="4:3">4:3 商品图</option>
+                  <option value="16:9">16:9 场景图</option>
+                  <option value="auto">auto</option>
+                </select>
+                <select id="ozonImage2Resolution">
+                  <option value="1k">1k 测试</option>
+                  <option value="2k">2k 精修</option>
+                  <option value="4k">4k 高质</option>
+                </select>
+                <button id="ozonImage2SubmitFirstPrompt" class="small-blue tone-purple" type="button">生成第1张测试图</button>
+                <span class="hint">点击才会调用 APIMart 生图；默认只生成 1 张。</span>
+              </div>
+            </div>
+            <div id="ozonImage2TaskResult" class="ozon-image2-task-result">
+              <p class="hint">生成指导卡后，可用第 1 条 image2 prompt 提交异步生图任务。</p>
+            </div>
+          </div>
+        </section>
+        <section class="erp-section">
+          <header>Ozon 图片观察库</header>
+          <div class="erp-body">
+            <div class="erp-row">
+              <label>样本范围</label>
+              <div class="erp-inline crawler-search-line">
+                <input id="ozonImageStyleQuery" placeholder="可选：按标题/类目筛选，例如 кабель / чехол" />
+                <input id="ozonImageStyleLimit" class="max-w-110" type="number" min="10" max="5000" value="300" />
+                <button id="ozonImageStyleRefresh" class="small-blue" type="button">读取观察库</button>
+                <button id="ozonImageStyleRebuild" class="small-blue tone-purple" type="button">重建观察库</button>
+                <button id="ozonImageStyleAnalyze" class="small-blue tone-purple" type="button">GPT分析观察库</button>
+              </div>
+            </div>
+            <div class="collector-summary">
+              <article><span>商品样本</span><strong id="ozonImageStyleTotal">0</strong></article>
+              <article><span>图片总数</span><strong id="ozonImageStyleImages">0</strong></article>
+              <article><span>类目组</span><strong id="ozonImageStyleGroups">0</strong></article>
+              <article><span>视觉队列</span><strong id="ozonImageStyleQueue">0</strong></article>
+              <article><span>GPT已分析</span><strong id="ozonImageAnalysisTotal">0</strong></article>
+              <article><span>图片风险</span><strong id="ozonImageAnalysisRisks">0</strong></article>
+            </div>
+            <div id="ozonImageStyleNotes" class="warning-list"></div>
+            <div id="ozonImageAnalysisRows" class="warning-list"></div>
+            <div class="table-wrap">
+              <table class="product-table ozon-learning-table">
+                <thead>
+                  <tr>
+                    <th>类目组</th>
+                    <th>样本/详情</th>
+                    <th>图片</th>
+                    <th>价格/评价</th>
+                    <th>代表样本</th>
+                  </tr>
+                </thead>
+                <tbody id="ozonImageStyleRows">
+                  <tr><td colspan="5" class="product-empty">暂无图片观察数据</td></tr>
+                </tbody>
+              </table>
+            </div>
+          </div>
+        </section>
+        <section class="erp-section">
+          <header>竞品样本库</header>
+          <div class="erp-body">
+            <div class="erp-row">
+              <label>筛选</label>
+              <div class="erp-inline crawler-search-line">
+                <input id="ozonLearningQuery" placeholder="标题 / 链接 / 类目" />
+                <button id="ozonLearningFilter" class="small-blue" type="button">筛选</button>
+              </div>
+            </div>
+            <div class="table-wrap">
+              <table class="product-table ozon-learning-table">
+                <thead>
+                  <tr>
+                    <th>商品</th>
+                    <th>价格</th>
+                    <th>评分</th>
+                    <th>类目/标签</th>
+                    <th>详情</th>
+                  </tr>
+                </thead>
+                <tbody id="ozonLearningItemRows">
+                  <tr><td colspan="5" class="product-empty">暂无样本数据</td></tr>
+                </tbody>
+              </table>
+            </div>
+          </div>
+        </section>
+            </div>
+          </details>
+      </section>
+
+      <section id="products" class="view">
+        <header class="page-head">
+          <div>
+            <h1>商品</h1>
+            <p>按状态区分商品，展示图片、货号、SKU、状态、价格和 FBS 仓库库存。</p>
+          </div>
+          <div class="actions">
+            <button id="loadProducts" class="primary">刷新商品</button>
+          </div>
+        </header>
+
+        <div class="product-tabs" id="productStatusTabs">
+          <button class="product-tab active" data-status="all">所有 <span>0</span></button>
+          <button class="product-tab" data-status="selling">销售中 <span>0</span></button>
+          <button class="product-tab" data-status="ready">准备销售 <span>0</span></button>
+          <button class="product-tab" data-status="error">错误 <span>0</span></button>
+          <button class="product-tab" data-status="needFix">待修改 <span>0</span></button>
+          <button class="product-tab" data-status="delisted">商品已下架 <span>0</span></button>
+          <button class="product-tab" data-status="archived">档案 <span>0</span></button>
+        </div>
+
+        <div class="product-toolbar">
+          <label class="search-box">
+            <input id="productSearch" placeholder="名称、货号、SKU、条形码" />
+          </label>
+          <button id="applyProductSearch" class="ghost">筛选器</button>
+        </div>
+
+        <div class="table-wrap product-table-wrap">
+          <table class="product-table">
+            <thead>
+              <tr>
+                <th class="check-col"><input type="checkbox" /></th>
+                <th>照片</th>
+                <th>货号</th>
+                <th>商品名称</th>
+                <th>状态</th>
+                <th>标记</th>
+                <th>您的价格</th>
+                <th>在 FBS 仓库</th>
+                <th class="action-col">操作</th>
+              </tr>
+            </thead>
+            <tbody id="productsTable"></tbody>
+          </table>
+        </div>
+      </section>
+
+      <section id="sourcing" class="view">
+        <section class="erp-section">
+          <header>图片与详情</header>
+          <div class="erp-body">
+            <div id="collectImageGrid" class="image-preview-grid"></div>
+            <textarea id="collectDetailText" class="description-textarea" readonly></textarea>
+          </div>
+        </section>
+
+        <header class="page-head">
+          <div>
+            <h2>1688选品</h2>
+          </div>
+        </header>
+        <div class="erp-panel">
+          <section class="erp-section">
+            <header>反向单入口（1688盲采 → Ozon指导）</header>
+            <div class="erp-body">
+              <div class="erp-row">
+                <label>1688盲采种子词</label>
+                <div class="erp-inline">
+                  <input id="reverseSeeds" placeholder="例如：宠物玩具, 收纳盒, 厨房硅胶模具" />
+                  <button id="runReverseWorkflow" class="primary" type="button">一键执行反向链路</button>
+                </div>
+              </div>
+              <div class="erp-row three-col">
+                <label>最低机会分 <input id="reverseMinScore" type="number" value="60" min="0" max="100" /></label>
+                <label>每词最大商品 <input id="reverseMaxProducts" type="number" value="20" min="1" max="100" /></label>
+                <label>指导卡数量 <input id="reverseMaxCards" type="number" value="20" min="1" max="100" /></label>
+              </div>
+              <div id="reverseWorkflowSummary" class="hint">待执行</div>
+              <div class="table-wrap">
+                <table class="product-table">
+                  <thead>
+                    <tr>
+                      <th>#</th>
+                      <th>Ozon参考</th>
+                      <th>1688候选</th>
+                      <th>上架指导</th>
+                    </tr>
+                  </thead>
+                  <tbody id="reverseGuidanceRows">
+                    <tr><td colspan="4" class="product-empty">暂无指导卡</td></tr>
+                  </tbody>
+                </table>
+              </div>
+            </div>
+          </section>
+
+          <div class="erp-section">
+            <header>插件状态</header>
+            <div class="erp-body">
+              <div id="crawlerWorkerStatus">加载中...</div>
+            </div>
+          </div>
+
+        <header class="page-head">
+          <div>
+            <h1>1688 采集插件</h1>
+            <p>采集标题、SKU 变体、变体图片、价格、详情、属性和尺重，并生成 Ozon 上品草稿。</p>
+          </div>
+          <div class="actions">
+            <button id="collect1688" class="primary">开始采集</button>
+            <button id="refreshCaptureBox" class="ghost">刷新采集箱</button>
+          </div>
+        </header>
+
+        <section class="erp-section">
+          <header>采集箱</header>
+          <div class="erp-body">
+            <div class="collector-box-toolbar">
+              <label>归属店铺 <select id="captureStoreSelect"></select></label>
+              <label><input id="captureIncludeVideo" type="checkbox" checked /> 探测到视频时采集并上传视频</label>
+              <button id="selectAllCaptures" class="small-blue" type="button">全选</button>
+              <button id="batchDraftCaptures" class="small-blue" type="button">批量生成草稿</button>
+              <button id="batchPublishCaptures" class="primary" type="button">批量自动上架</button>
+            </div>
+            <div class="table-wrap">
+              <table class="product-table">
+                <thead>
+                  <tr>
+                    <th><input id="captureSelectAll" type="checkbox" /></th>
+                    <th>时间</th>
+                    <th>店铺</th>
+                    <th>商品</th>
+                    <th>SKU</th>
+                    <th>视频</th>
+                    <th>状态</th>
+                    <th>操作</th>
+                  </tr>
+                </thead>
+                <tbody id="captureBoxTable"></tbody>
+              </table>
+            </div>
+          </div>
+        
+
+        <header class="page-head">
+          <div>
+            <h1>1688 自动选品</h1>
+            <p>自动采集结果先进入候选池，二次筛选后再入采集箱，不直接触发上架。</p>
+          </div>
+          <div class="actions">
+            <button id="crawlerTaskRefresh" class="ghost">刷新</button>
+          </div>
+        </header>
+
+        
+
+
+        <section class="erp-section crawler-live-panel" id="crawlerLivePanel">
+          <header>
+            <span>采集现场</span>
+            <small id="crawlerLiveUpdated">等待刷新</small>
+          </header>
+          <div class="erp-body">
+            <div class="crawler-live-grid">
+              <article id="crawlerLiveNow" class="crawler-live-now">
+                <span>当前动作</span>
+                <strong>读取中...</strong>
+              </article>
+              <div id="crawlerLiveMetrics" class="crawler-live-metrics"></div>
+            </div>
+            <div id="crawlerLiveLanes" class="crawler-live-lanes"></div>
+            <div id="crawlerLiveIssues" class="crawler-live-issues"></div>
+          </div>
+        </section>
+
+        <section class="erp-section open1688-status-panel" id="open1688StatusPanel">
+          <header>
+            <span>1688 官方接口</span>
+            <small id="open1688StatusUpdated">等待检测</small>
+          </header>
+          <div class="erp-body">
+            <div id="open1688StatusBody" class="open1688-status-body">
+              <span class="hint">正在读取官方 API 配置...</span>
+            </div>
+          </div>
+        </section>
+
+        <section class="erp-section">
+          <header>真实浏览器插件</header>
+          <div class="erp-body">
+            <p class="hint">Chrome / Edge 统一扩展已经生成，一个插件同时处理 1688 货源采集和 Ozon 前台竞品反哺任务。</p>
+            <div class="plugin-install">
+              <div>
+                <strong>加载目录</strong>
+                <code>C:\Users\Administrator\Documents\Codex\2026-05-27\c-users-administrator-documents-codex-2026\ozon-project-copy\browser-extension\1688-collector</code>
+              </div>
+              <div>
+                <strong>安装步骤</strong>
+                <span>扩展程序 → 开发者模式 → 加载已解压的扩展程序 → 选择上面的目录</span>
+              </div>
+              <a class="small-blue" href="/1688-collector-extension.zip" download>下载统一采集插件</a>
+            </div>
+          </div>
+        </section>
+
+        <section class="erp-section">
+          <header>采集来源</header>
+          <div class="erp-body">
+            <div class="erp-row">
+              <label>1688 链接</label>
+              <input id="collect1688Url" placeholder="https://detail.1688.com/offer/xxxx.html" />
+            </div>
+            <div class="erp-row">
+              <label>视频采集</label>
+              <label class="inline-check"><input id="manualIncludeVideo" type="checkbox" checked /> 如果页面有视频，采集视频链接并随商品上传</label>
+            </div>
+            <div class="erp-row">
+              <label>页面源码</label>
+              <textarea id="collect1688Html" class="description-textarea" placeholder="如果链接采集被登录/风控拦截，可在浏览器打开商品页后粘贴页面源码"></textarea>
+            </div>
+          </div>
+        </section>
+
+        <section class="erp-section">
+          <header>采集结果</header>
+          <div class="erp-body">
+            <div class="collector-summary">
+              <article>
+                <span>标题</span>
+                <strong id="collectTitle">-</strong>
+              </article>
+              <article>
+                <span>SKU 变体</span>
+                <strong id="collectSkuCount">0</strong>
+              </article>
+              <article>
+                <span>图片</span>
+                <strong id="collectImageCount">0</strong>
+              </article>
+              <article>
+                <span>属性</span>
+                <strong id="collectAttrCount">0</strong>
+              </article>
+            </div>
+            <div id="collectWarnings" class="warning-list"></div>
+          </div>
+        </section>
+
+        <section class="erp-section">
+          <header>SKU 变体</header>
+          <div class="erp-body">
+            <div class="table-wrap">
+              <table class="product-table">
+                <thead>
+                  <tr>
+                    <th>图片</th>
+                    <th>SKU ID</th>
+                    <th>规格</th>
+                    <th>价格</th>
+                    <th>库存</th>
+                  </tr>
+                </thead>
+                <tbody id="collectSkuTable"></tbody>
+              </table>
+            </div>
+          </div>
+        </section>
+
+        <section class="erp-section">
+          <header>商品属性与尺重</header>
+          <div class="erp-body two-col">
+            <div>
+              <div class="table-wrap">
+                <table>
+                  <thead>
+                    <tr>
+                      <th>属性</th>
+                      <th>值</th>
+                    </tr>
+                  </thead>
+                  <tbody id="collectAttrTable"></tbody>
+                </table>
+              </div>
+            </div>
+            <div class="collector-size">
+              <p>重量：<strong id="collectWeight">-</strong> g</p>
+              <p>长：<strong id="collectLength">-</strong> mm</p>
+              <p>宽：<strong id="collectWidth">-</strong> mm</p>
+              <p>高：<strong id="collectHeight">-</strong> mm</p>
+              <p>视频：<a id="collectVideo" href="#" target="_blank">-</a></p>
+            </div>
+          </div>
+        </section>
+
+        <section class="erp-section">
+          <header>任务配置</header>
+          <div class="erp-body">
+            <div class="erp-row">
+              <label>来源类型</label>
+              <select id="crawlerSourceType">
+                <option value="keyword">关键词</option>
+                <option value="shop">店铺链接</option>
+                <option value="search_url">搜索页链接</option>
+              </select>
+            </div>
+            <div class="erp-row crawler-source-row">
+              <label>来源内容</label>
+              <div class="erp-inline crawler-search-line">
+                <input id="crawlerSourceValue" placeholder="例如：折叠运动水壶 / https://s.1688.com/..."/>
+                <button id="crawlerTaskStart" class="primary" type="button">开始任务</button>
+              </div>
+            </div>
+            <div class="erp-row three-col">
+              <label>最大商品数 <input id="crawlerMaxProducts" type="number" min="1" max="200" value="20" /></label>
+              <label><input id="crawlerMustHaveSku" type="checkbox" checked /> 必须有 SKU</label>
+              <label><input id="crawlerMustHaveSizeWeight" type="checkbox" checked /> 必须有尺重</label>
+            </div>
+            <div class="erp-row">
+              <small class="hint">任务会进入 ERP 队列，由已登录 1688 的浏览器插件后台自动打开页面、采集并回传候选池。</small>
+            </div>
+          </div>
+        </section>
+
+          <header>任务列表</header>
+          <div class="erp-body">
+            <div class="table-wrap">
+              <table class="product-table">
+                <thead>
+                  <tr>
+                    <th>任务ID</th>
+                    <th>来源</th>
+                    <th>状态</th>
+                    <th>候选数</th>
+                    <th>更新时间</th>
+                    <th>操作</th>
+                  </tr>
+                </thead>
+                <tbody id="crawlerTaskRows">
+                  <tr><td colspan="6" class="product-empty">暂无任务</td></tr>
+                </tbody>
+              </table>
+            </div>
+          </div>
+        </section>
+
+        <section class="erp-section">
+          <header>候选池</header>
+          <div class="erp-body">
+            <div class="erp-row">
+              <label>筛选状态
+                <select id="crawlerCandidateStatus">
+                  <option value="">全部</option>
+                  <option value="pending_review">待筛选</option>
+                  <option value="ignored">已忽略</option>
+                  <option value="captured">已入采集箱</option>
+                </select>
+              </label>
+              <label>关键词 <input id="crawlerCandidateQuery" placeholder="标题/链接/供应商"/></label>
+              <button id="crawlerCandidateFilter" class="small-blue" type="button">筛选</button>
+            </div>
+            <div class="table-wrap">
+              <table class="product-table">
+                <thead>
+                  <tr>
+                    <th>标题</th>
+                    <th>价格</th>
+                    <th>SKU</th>
+                    <th>尺重</th>
+                    <th>风险</th>
+                    <th>利润预估</th>
+                    <th>评分</th>
+                    <th>状态</th>
+                    <th>操作</th>
+                  </tr>
+                </thead>
+                <tbody id="crawlerCandidateRows">
+                  <tr><td colspan="9" class="product-empty">暂无候选数据</td></tr>
+                </tbody>
+              </table>
+            </div>
+          </div>
+        </section>
+
+        <section class="erp-section">
+          <header>自动铺货记录</header>
+          <div class="erp-body">
+            <div class="erp-row">
+              <button id="autoListRefresh" class="small-blue" type="button">刷新</button>
+              <button id="autoFlowAutoFix" class="small-blue tone-purple" type="button">停滞自愈</button>
+              <span class="hint ml-12">自动铺货全流程: 翻译 → 搜索1688 → 匹配 → 算利润 → 生成上架内容</span>
+            </div>
+            <div class="erp-row">
+              <span id="autoFlowStatusSummary" class="hint">状态: 等待刷新</span>
+            </div>
+            <div class="table-wrap">
+              <table class="product-table">
+                <thead>
+                  <tr>
+                    <th>Ozon商品</th>
+                    <th>状态</th>
+                    <th>中文关键词</th>
+                    <th>匹配结果</th>
+                    <th>利润率</th>
+                    <th>步骤</th>
+                    <th>更新时间</th>
+                  </tr>
+                </thead>
+                <tbody id="autoListJobRows">
+                  <tr><td colspan="7" class="product-empty">暂无自动铺货记录</td></tr>
+                </tbody>
+              </table>
+            </div>
+          </div>
+        </section>
+
+      </section>
+
+      <section id="listing" class="view">
+        <header class="page-head">
+          <div>
+            <h1>产品上架</h1>
+            <p>中文类目与属性，提交后用任务 ID 检查 Ozon 审核结果。</p>
+          </div>
+          <div class="actions listing-action-groups">
+            <div class="action-group">
+              <span class="action-group-label">草稿</span>
+              <button id="saveListingDraft" class="ghost">保存草稿</button>
+              <button id="rebuildListingDraft" class="small-blue">重建草稿</button>
+            </div>
+            <div class="action-group">
+              <span class="action-group-label">提交</span>
+              <button id="submitListing" class="primary">提交上架</button>
+              <button id="saveAndSubmitListing" class="primary">保存并发布</button>
+            </div>
+            <div class="action-group">
+              <span class="action-group-label">回查</span>
+              <button id="checkListingTask" class="small-blue">检查任务</button>
+            </div>
+            <div class="action-group">
+              <span class="action-group-label">导航</span>
+              <button id="backToCaptureBox" class="ghost">返回采集箱</button>
+            </div>
+          </div>
+        </header>
+
+        <div class="listing-workbench">
+          <section class="erp-section">
+            <header>店铺和类目</header>
+            <div class="erp-body">
+              <div class="erp-row">
+                <label>店铺</label>
+                <select id="listingStoreMirror" disabled></select>
+              </div>
+              <div class="erp-row">
+                <label><b>*</b> 平台分类</label>
+                <div class="erp-inline">
+                  <input id="listingCategoryPath" readonly placeholder="请选择中文类目" />
+                  <button id="loadCategoryTree" class="small-blue">读取中文类目</button>
+                  <button id="refreshCategoryCache" class="small-blue">刷新本地类目库</button>
+                  <button id="autoMatchCategory" class="small-blue">自动匹配</button>
+                  <button id="searchCategory" class="small-blue">选择分类</button>
+                </div>
+              </div>
+              <div class="erp-row">
+                <label>类目关键词</label>
+                <div class="category-search-box">
+                  <input id="categoryKeyword" autocomplete="off" placeholder="输入中文类目关键词，例如 衣架、收纳、厨房" />
+                  <div id="categoryResults" class="category-picker"></div>
+                </div>
+              </div>
+              <div class="erp-row">
+                <label>类目 ID</label>
+                <div class="erp-inline">
+                  <input id="listingCategoryId" placeholder="description_category_id" />
+                  <input id="listingTypeId" placeholder="type_id" />
+                  <button id="loadListingAttributes" class="small-blue">读取属性</button>
+                </div>
+              </div>
+              <div class="erp-row">
+                <label>Parent SKU</label>
+                <input id="listingParentSku" placeholder="用于组合变体，可为空" />
+              </div>
+              <div class="erp-row">
+                <label>Task ID</label>
+                <input id="listingTaskId" placeholder="提交后粘贴 task_id，用于回查审核与条码" />
+              </div>
+              <div class="erp-row">
+                <label><b>*</b> 标题</label>
+                <div class="erp-inline">
+                  <input id="listingName" value="中文测试商品名称" maxlength="200" />
+                  <span class="counter"><span id="listingNameCount">7</span>/200</span>
+                </div>
+              </div>
+              <div class="erp-row">
+                <label>俄文标题提示词</label>
+                <textarea id="listingTitlePrompt" class="mini-textarea" readonly></textarea>
+              </div>
+              <div class="erp-row">
+                <label>1688 原标题</label>
+                <input id="listingOriginalTitle" readonly placeholder="采集后自动保留原始中文标题" />
+              </div>
+            </div>
+          
+<div class="erp-section"><header>价格计算<div class="erp-body">
+        
+            
+          </div>
+          <button id="submitPrices" class="primary">提交价格</button>
+        </header>
+        <section class="panel pricing-calculator">
+          <div class="page-head compact-head">
+            <div>
+              <h2>Ozon 定价计算器</h2>
+              <p>只匹配 Extra Small、Budget、Small、Big，利润率默认 30%。</p>
+            </div>
+            <button id="calculatePrice" class="primary">计算预计售价</button>
+          </div>
+
+          <div class="form-grid">
+            <label class="field">
+              <span>采购价格 RMB</span>
+              <input id="calcPurchaseCost" type="number" value="30" step="0.01" />
+            </label>
+            <label class="field">
+              <span>重量 g</span>
+              <input id="calcWeight" type="number" value="480" step="1" />
+            </label>
+            <label class="field">
+              <span>长 mm</span>
+              <input id="calcLength" type="number" value="200" step="1" />
+            </label>
+            <label class="field">
+              <span>宽 mm</span>
+              <input id="calcWidth" type="number" value="150" step="1" />
+            </label>
+            <label class="field">
+              <span>高 mm</span>
+              <input id="calcHeight" type="number" value="80" step="1" />
+            </label>
+            <label class="field">
+              <span>佣金率 %</span>
+              <input id="calcCommissionRate" type="number" value="15" step="0.1" />
+            </label>
+            <label class="field">
+              <span>杂费率 %</span>
+              <input id="calcMiscRate" type="number" value="2" step="0.1" />
+            </label>
+            <label class="field">
+              <span>固定杂费 RMB</span>
+              <input id="calcFixedMisc" type="number" value="2" step="0.01" />
+            </label>
+            <label class="field">
+              <span>利润率 %</span>
+              <input id="calcProfitRate" type="number" value="30" step="0.1" />
+            </label>
+          </div>
+
+          <div class="price-result">
+            <article>
+              <span>预计售价 RMB</span>
+              <strong id="calcResultPrice">-</strong>
+            </article>
+            <article>
+              <span>物流等级</span>
+              <strong id="calcResultLevel">-</strong>
+            </article>
+            <article>
+              <span>物流费用 RMB</span>
+              <strong id="calcResultLogistics">-</strong>
+            </article>
+            <article>
+              <span>预计利润 RMB</span>
+              <strong id="calcResultProfit">-</strong>
+            </article>
+          </div>
+
+          <div class="table-wrap">
+            <table>
+              <thead>
+                <tr>
+                  <th>等级</th>
+                  <th>重量</th>
+                  <th>售价 RMB</th>
+                  <th>尺寸限制</th>
+                  <th>物流费</th>
+                </tr>
+              </thead>
+              <tbody id="shippingLevelTable"></tbody>
+            </table>
+          </div>
+
+          <div class="table-wrap iteration-table">
+            <table>
+              <thead>
+                <tr>
+                  <th>轮次</th>
+                  <th>假设售价</th>
+                  <th>匹配等级</th>
+                  <th>物流费</th>
+                  <th>佣金</th>
+                  <th>杂费</th>
+                  <th>下一轮售价</th>
+                </tr>
+              </thead>
+              <tbody id="pricingStepsTable"></tbody>
+            </table>
+          </div>
+        </div></div>
+</section>
+
+          <section class="erp-section">
+            <header>产品属性</header>
+            <div class="erp-body two-col">
+              <div>
+                <div class="erp-row">
+                  <label><b>*</b> 品牌</label>
+                  <input id="listingBrand" value="无品牌" />
+                </div>
+                <div class="erp-row">
+                  <label><b>*</b> 型号名称</label>
+                  <input id="listingModelName" value="SKU0001" />
+                </div>
+                <div class="erp-row">
+                  <label>关键词</label>
+                  <input id="listingKeywords" placeholder="#关键词1 #关键词2" />
+                </div>
+                <div class="erp-row">
+                  <label>制造国家</label>
+                  <input id="listingCountry" value="中国" />
+                </div>
+                <textarea id="listingAttributesJson" hidden>[]</textarea>
+              </div>
+              <div>
+                <div id="attributeList" class="attribute-form-list"></div>
+              </div>
+            </div>
+          </section>
+
+          <section class="erp-section">
+            <header>无忧易售信息</header>
+            <div class="erp-body">
+              <div class="erp-row">
+                <label>本地分类</label>
+                <input id="localCategory" placeholder="本地分类，不同步到 Ozon" />
+              </div>
+              <div class="erp-row">
+                <label>来源 URL</label>
+                <input id="sourceUrl" placeholder="采集来源，仅 ERP 留存" />
+              </div>
+              <div class="erp-row">
+                <label>备注</label>
+                <textarea id="listingRemark" class="mini-textarea" placeholder="内部备注，不同步到 Ozon"></textarea>
+              </div>
+            </div>
+          </section>
+
+          <section class="erp-section">
+            <header>描述</header>
+            <div class="erp-body">
+              <div class="erp-row">
+                <label>文字描述</label>
+                <textarea id="listingDescription" class="description-textarea" placeholder="商品描述，可作为 Ozon 富内容素材"></textarea>
+              </div>
+              <div class="erp-row">
+                <label>JSON 富描述</label>
+                <textarea id="listingRichContent" class="description-textarea" placeholder="Ozon rich_content JSON，可为空"></textarea>
+              </div>
+            </div>
+          </section>
+
+          <section class="erp-section">
+            <header>产品采集图</header>
+            <div class="erp-body">
+              <div class="media-toolbar">
+                <button id="previewListingImages" class="small-blue">图片预览</button>
+                <span>图片 URL 每行一个，第一张作为主图。</span>
+              </div>
+              <textarea id="listingImages" class="image-url-box" spellcheck="false"></textarea>
+              <div id="imagePreviewGrid" class="image-preview-grid"></div>
+              <div class="erp-row">
+                <label>视频封面</label>
+                <input id="listingVideoCover" placeholder="视频封面 URL，可为空" />
+              </div>
+              <div class="erp-row">
+                <label>产品视频</label>
+                <input id="listingVideoUrl" placeholder="视频 URL，可为空" />
+              </div>
+            </div>
+          </section>
+
+          <section class="erp-section">
+            <header>变体设置</header>
+            <div class="erp-body">
+              <div class="variant-toolbar variant-toolbar-split">
+                <div class="variant-checks">
+                  <label><input id="autoCreateVariant" type="checkbox" checked /> 自动成组变体</label>
+                  <label><input id="enableLowestPrice" type="checkbox" checked /> 是否启用最低价</label>
+                  <label><input type="checkbox" /> 变体单独设置视频</label>
+                </div>
+                <div class="variant-actions">
+                  <label class="variant-markup-field">定价加价 RMB <input id="listingPriceMarkup" type="number" value="5" step="0.01" readonly /></label>
+                  <button id="addVariantRow" class="small-green" type="button">添加一行</button>
+                  <button id="batchDuplicateVariant" class="small-green" type="button">批量添加</button>
+                  <button id="batchDeleteVariants" class="small-red" type="button">批量移除</button>
+                  <button id="showVariantTips" class="small-purple" type="button">查看技巧</button>
+                  <button id="batchApplyVariantPrice" class="small-blue" type="button">批量价格</button>
+                  <button id="batchApplyVariantSize" class="small-blue" type="button">批量尺重</button>
+                  <button id="batchSelectVariants" class="small-blue" type="button">全选</button>
+                </div>
+              </div>
+              <div id="variantGroupPanel" class="hint" hidden></div>
+              <div class="table-wrap variant-table-wrap">
+                <table class="variant-table">
+                  <thead>
+                    <tr id="variantTableHeader">
+                      <th class="variant-check-col"><input id="variantSelectAll" type="checkbox" /></th>
+                      <th>上架状态<br /><span>按 SKU 回填</span></th>
+                      <th>颜色样本</th>
+                      <th><b>*</b>产品图</th>
+                      <th><b>*</b>SKU编号<br /><span>唯一生成</span></th>
+                      <th>条形码<br /><span>任务成功后请求生成</span></th>
+                      <th><b>*</b>售价<br /><span>CNY</span></th>
+                      <th>成本价<br /><span>CNY</span></th>
+                      <th>划线价<br /><span>CNY</span></th>
+                      <th>最低价<br /><span>CNY</span></th>
+                      <th><b>*</b>仓库</th>
+                      <th><b>*</b>库存</th>
+                      <th><b>*</b>重量(g)<br /><span>含包装</span></th>
+                      <th><b>*</b>长(mm)</th>
+                      <th><b>*</b>宽(mm)</th>
+                      <th><b>*</b>高(mm)</th>
+                      <th>变体属性<br /><span>读取分类后生成</span></th>
+                      <th>操作</th>
+                    </tr>
+                  </thead>
+                  <tbody id="listingVariantRows">
+                    <tr>
+                      <td><input class="variant-row-check" type="checkbox" checked /></td>
+                      <td class="variant-status-cell" data-status="unlisted"><span class="variant-status-badge neutral">未上架</span></td>
+                      <td><div class="variant-color-sample"><div class="photo-placeholder">＋</div></div></td>
+                      <td>
+                        <button class="variant-image-editor" type="button" title="编辑该 SKU 图片">
+                          <div class="variant-image-box"><div class="photo-placeholder">＋</div></div>
+                        </button>
+                        <textarea class="variant-images-json" hidden>[]</textarea>
+                      </td>
+                      <td><input id="listingOfferId" value="TEST-CN-OFFER-001" /></td>
+                      <td><input class="variant-barcode" placeholder="留空自动生成" /></td>
+                      <td><input id="listingPrice" value="99" /></td>
+                      <td><input class="variant-cost-price" value="0" /></td>
+                      <td><input id="listingOldPrice" value="199" /></td>
+                      <td><input id="listingMinPrice" value="89" /></td>
+                      <td><select id="listingWarehouse"></select></td>
+                      <td><input id="listingStock" value="100" /></td>
+                      <td><input id="listingWeight" value="500" /></td>
+                      <td><input id="listingDepth" value="200" /></td>
+                      <td><input id="listingWidth" value="150" /></td>
+                      <td><input id="listingHeight" value="80" /></td>
+                      <td class="variant-aspect-cell"><input id="listingVariantValue" class="variant-value" placeholder="读取分类属性后自动切换" /></td>
+                      <td><button class="row-delete variant-delete" type="button">移除</button></td>
+                    </tr>
+                  </tbody>
+                </table>
+              </div>
+              <div class="form-grid compact-form">
+                <label class="field">
+                  <span>货币</span>
+                  <select id="listingCurrency">
+                    <option value="CNY" selected>CNY</option>
+                    <option value="RUB">RUB</option>
+                    <option value="USD">USD</option>
+                  </select>
+                </label>
+                <label class="field">
+                  <span>VAT</span>
+                  <select id="listingVat">
+                    <option value="0" selected>0</option>
+                    <option value="0.1">10%</option>
+                    <option value="0.2">20%</option>
+                  </select>
+                </label>
+              </div>
+            </div>
+          </section>
+
+          
+
+      <!-- prices moved to listing -->
+        <textarea id="priceJson" spellcheck="false">[
+  {
+    "offer_id": "YOUR-OFFER-ID",
+    "price": "999",
+    "old_price": "1299",
+    "currency_code": "RUB"
+  }
+]</textarea>
+      </section>
+      </section>
+      </main>
+    </div>
+
+  <div id="toast" class="toast"></div>
+  <script src="https://browser.sentry-cdn.com/8.33.0/bundle.tracing.replay.min.js" crossorigin="anonymous"></script>
+  <script src="/sentry-init.js"></script>
+  <script src="/app.js"></script>
+</body>
+</html>

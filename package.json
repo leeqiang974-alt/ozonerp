@@ -1,0 +1,25 @@
+{
+  "name": "ozon-fbs-erp",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "start": "node src/server.js",
+    "dev": "node src/server.js",
+    "run:distributor": "node src/dailyDistributor.js",
+    "lint": "node scripts/lint-check.mjs",
+    "test": "node --test test/*.test.js",
+    "smoke": "node scripts/smoke-auto-list.mjs",
+    "health-check": "node scripts/health-check.mjs",
+    "analyze:ozon-required-attributes": "node scripts/analyze-ozon-required-attributes.mjs"
+  },
+  "dependencies": {
+    "@sentry/node": "^9.31.0",
+    "@sentry/browser": "^9.31.0",
+    "@supabase/supabase-js": "^2.49.8",
+    "ali-oss": "^6.23.0",
+    "cors": "^2.8.5",
+    "express": "^4.19.2",
+    "iconv-lite": "^0.6.3"
+  }
+}

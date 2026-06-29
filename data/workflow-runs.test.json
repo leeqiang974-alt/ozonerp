@@ -1,0 +1,28 @@
+{
+  "items": [
+    {
+      "id": "wr_mqyo4l1c7z2cm",
+      "source": "auto_listing",
+      "status": "draft",
+      "currentNode": "",
+      "title": "宠物喂食器",
+      "createdAt": "2026-06-29T03:38:45.504Z",
+      "updatedAt": "2026-06-29T03:38:45.507Z",
+      "entity": {
+        "autoListingJobId": "al_bind",
+        "candidateId": "",
+        "candidateUrl": "https://detail.1688.com/offer/1.html",
+        "parentSku": "SKUlq00998",
+        "taskId": 123,
+        "storeId": ""
+      },
+      "nodes": [],
+      "events": [],
+      "locks": {
+        "paused": false,
+        "waitingHuman": false,
+        "submitLocked": false
+      }
+    }
+  ]
+}

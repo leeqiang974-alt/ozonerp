@@ -635,6 +635,43 @@ test("buildRequiredAttributeFillPlan suggests size package and scenario dictiona
   assert.deepEqual(materialPlan.dictionaryCandidates, []);
 });
 
+test("buildRequiredAttributeFillPlan suggests size dimension combinations only from current dictionary", () => {
+  const plan = buildRequiredAttributeFillPlan({
+    categoryMatch: { description_category_id: 17028673, type_id: 95183 },
+    attrsMeta: [
+      { id: 9016, name: "Размер", is_required: true, dictionary_id: 111 },
+    ],
+    attributeValuesById: {
+      9016: [
+        { id: 171, value: "10 x 20 см" },
+        { id: 172, value: "20 x 30 см" },
+      ],
+    },
+    productText: "1688 参数：尺寸 10x20cm，适合桌面收纳",
+  })[0];
+
+  assert.equal(plan.action, "suggest_dictionary");
+  assert.equal(plan.dictionaryValueId, undefined);
+  assert.deepEqual(plan.dictionaryCandidates, [{
+    dictionaryValueId: 171,
+    value: "10 x 20 см",
+    confidence: 0.68,
+    source: "size_synonym",
+  }]);
+
+  const noMatch = buildRequiredAttributeFillPlan({
+    categoryMatch: { description_category_id: 17028673, type_id: 95183 },
+    attrsMeta: [
+      { id: 9016, name: "Размер", is_required: true, dictionary_id: 111 },
+    ],
+    attributeValuesById: {
+      9016: [{ id: 173, value: "30 x 40 см" }],
+    },
+    productText: "1688 参数：尺寸 10*20 см",
+  })[0];
+  assert.deepEqual(noMatch.dictionaryCandidates, []);
+});
+
 test("buildListingPayloadDraftFromJob applies explainable pricing policy fields", () => {
   const draft = buildListingPayloadDraftFromJob({
     pendingParentSku: "SKUlq01007",

@@ -495,6 +495,25 @@ function sizeSynonymDictionaryCandidatesForMeta({
   if (!["size_from_sku_or_package", "dictionary_lookup_from_product_text"].includes(classified.strategy)) return [];
   if (!/размер|尺码|尺寸|size/.test(normalizeText(`${meta.name || ""} ${meta.description || ""}`))) return [];
   const text = normalizeText(productText);
+  const dimensionCombos = [...text.matchAll(/(\d+(?:[.,]\d+)?)\s*(?:x|х|\*)\s*(\d+(?:[.,]\d+)?)\s*(?:см|cm|мм|mm)?\b/g)]
+    .map((match) => `${match[1].replace(",", ".")}x${match[2].replace(",", ".")}`);
+  const values = dictionaryValuesForPlan({ meta, categoryMatch, attributeValuesById, categoryCache });
+  if (dimensionCombos.length) {
+    return values.map((entry) => {
+      const value = String(entry?.value || entry?.name || "").replace(/\s+/g, " ").trim();
+      const normalizedValue = normalizeText(value);
+      const valueCombo = normalizedValue.match(/(\d+(?:[.,]\d+)?)\s*(?:x|х|\*)\s*(\d+(?:[.,]\d+)?)/);
+      if (!value || !valueCombo) return null;
+      const signature = `${valueCombo[1].replace(",", ".")}x${valueCombo[2].replace(",", ".")}`;
+      if (!dimensionCombos.includes(signature)) return null;
+      return {
+        dictionaryValueId: dictionaryValueId(entry),
+        value,
+        confidence: 0.68,
+        source: "size_synonym",
+      };
+    }).filter(Boolean);
+  }
   const numericNumbers = [...text.matchAll(/(\d+(?:[.,]\d+)?)\s*(?:см|cm|мм|mm)\b/g)]
     .map((match) => match[1].replace(",", "."));
   const numericCandidates = numericDictionaryCandidates({
@@ -509,7 +528,6 @@ function sizeSynonymDictionaryCandidatesForMeta({
   });
   const letterSizes = [...text.matchAll(/(?:размер|size|尺码)\s*(xs|s|m|l|xl|xxl)\b/g)]
     .map((match) => match[1]);
-  const values = dictionaryValuesForPlan({ meta, categoryMatch, attributeValuesById, categoryCache });
   const letterCandidates = values.map((entry) => {
     const value = String(entry?.value || entry?.name || "").replace(/\s+/g, " ").trim();
     const normalizedValue = normalizeText(value);

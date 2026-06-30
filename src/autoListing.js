@@ -10,6 +10,7 @@ import { ozonRequest } from "./ozon.js";
 import { nextParentSku } from "./skuSequence.js";
 import { recordListingExperience } from "./learningMemory.js";
 import { attributeValueCacheKey, flattenCategories, loadCategoryCache, matchCategory } from "./ozonCategoryCache.js";
+import { buildRequiredAttributeFillPlan } from "./ozonRequiredAttributeAnalysis.js";
 import { enqueueStockJob, recordFailedStockJob, resolveWarehouseIdForStore } from "./stockQueue.js";
 import { buildVisualCardPrompt } from "./visualCardTemplate.js";
 import { prepareOzonImages } from "./imageOss.js";
@@ -1746,6 +1747,23 @@ export function buildListingPayloadDraftFromJob(job = {}, options = {}) {
     categoryCache: options.categoryCache || null,
     categoryMatch,
   };
+  const requiredAttributeFillPlan = buildRequiredAttributeFillPlan({
+    categoryMatch,
+    attrsMeta,
+    attributeValuesById: options.attributeValuesById || {},
+    categoryCache: options.categoryCache || null,
+    modelName,
+    parentSku,
+    productText: [
+      title,
+      description,
+      categoryMatch.path || "",
+      job.bestMatch?.candidateTitle || "",
+      job.candidateData?.title || "",
+      ...(job.candidateData?.attributes || []).map((entry) => `${entry?.name || ""} ${entry?.value || ""}`),
+    ].filter(Boolean).join(" "),
+    packageInfo,
+  });
   const baseAttrs = dedupeAttrs(highConfidenceRequiredAttributes(attrsMeta, attributeOptions)
     .concat(modelAttributesForMeta(modelName, attrsMeta))
     .concat(countryAttributes())
@@ -1839,6 +1857,7 @@ export function buildListingPayloadDraftFromJob(job = {}, options = {}) {
       imageCount: ozonImages.length,
       priceCny: finalPriceCny,
       pricingDiagnosis,
+      requiredAttributeFillPlan,
     },
   };
 }

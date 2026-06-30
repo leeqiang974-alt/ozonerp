@@ -119,7 +119,7 @@ npm run lint
 - Docs: `docs/ozon-dictionary-fill-rules.zh-CN.md`
 - Docs: `docs/SESSION_HANDOFF.zh-CN.md`
 
-- [ ] **Step 1: Add failing tests for source-explained autofill**
+- [x] **Step 1: Add failing tests for source-explained autofill**
 
 Test cases:
 
@@ -128,7 +128,7 @@ Test cases:
 - dictionary fields never use IDs outside the current `description_category_id:type_id:attribute_id` cache.
 - medium-confidence fields create candidates, not automatic writes.
 
-- [ ] **Step 2: Implement unified fill-plan output**
+- [x] **Step 2: Implement unified fill-plan output**
 
 Create a local object shape inside existing modules before extracting a new file:
 
@@ -146,7 +146,7 @@ Create a local object shape inside existing modules before extracting a new file
 }
 ```
 
-- [ ] **Step 3: UI display**
+- [x] **Step 3: UI display**
 
 Show fill-plan rows in listing/preflight, grouped as:
 
@@ -155,7 +155,7 @@ Show fill-plan rows in listing/preflight, grouped as:
 - 必须人工处理。
 - 合规敏感，不自动填。
 
-- [ ] **Step 4: Verification**
+- [x] **Step 4: Verification**
 
 ```powershell
 node --test test/auto-listing-payload-draft.test.js test/workflow-runs.test.js test/frontend-static.test.js

@@ -3,6 +3,7 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { diagnoseListingQuality } from "./listingQuality.js";
 import { loadCategoryCache } from "./ozonCategoryCache.js";
+import { buildRequiredAttributeFillPlan } from "./ozonRequiredAttributeAnalysis.js";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const DATA_DIR = path.resolve(__dirname, "..", "data");
@@ -702,6 +703,60 @@ function listingAttributeMatrixIssues(attributeMatrix = null) {
   return issues;
 }
 
+function categoryMatchFromPayload(payload = {}) {
+  const item = payloadItems(payload)[0] || {};
+  return {
+    description_category_id: Number(item.description_category_id || 0),
+    type_id: Number(item.type_id || 0),
+    path: "",
+  };
+}
+
+function packageInfoFromPayload(payload = {}) {
+  const item = payloadItems(payload)[0] || {};
+  return {
+    weight: Number(item.weight || item.weightG || item.weight_g || 0),
+    depth: Number(item.depth || item.length || item.lengthMm || item.length_mm || 0),
+    width: Number(item.width || item.widthMm || item.width_mm || 0),
+    height: Number(item.height || item.heightMm || item.height_mm || 0),
+  };
+}
+
+function modelNameFromPayload(payload = {}, attrsMeta = []) {
+  const item = payloadItems(payload)[0] || {};
+  const modelIds = (attrsMeta || [])
+    .filter((meta) => /название модели.*объедин|model.*(?:group|card)|模型名称|型号名称/i.test(String(meta?.name || "")))
+    .map((meta) => Number(meta.id || 0))
+    .filter(Boolean);
+  const ids = modelIds.length ? modelIds : [9048];
+  const attribute = (item.attributes || []).find((entry) => ids.includes(Number(entry?.id || 0)));
+  return attributeDisplayValue(attribute || {});
+}
+
+function productTextFromPayload(payload = {}, contentSummary = {}) {
+  const items = payloadItems(payload);
+  return [
+    contentSummary.productText || "",
+    contentSummary.title || "",
+    contentSummary.description || "",
+    ...items.map((item) => `${item.name || ""} ${item.description || ""}`),
+  ].filter(Boolean).join(" ");
+}
+
+function buildRequiredAttributePlanForPayload(payload = {}, options = {}) {
+  const attrsMeta = Array.isArray(options.attrsMeta) ? options.attrsMeta : [];
+  if (!attrsMeta.length) return [];
+  return buildRequiredAttributeFillPlan({
+    categoryMatch: options.categoryMatch || categoryMatchFromPayload(payload),
+    attrsMeta,
+    attributeValuesById: options.dictionaryValuesByAttributeId || {},
+    categoryCache: { attributeValues: options.dictionaryValueCache || {} },
+    modelName: options.modelName || modelNameFromPayload(payload, attrsMeta),
+    productText: productTextFromPayload(payload, options.contentSummary || {}),
+    packageInfo: options.packageInfo || packageInfoFromPayload(payload),
+  });
+}
+
 function buildPayloadDraftValidation(payload = {}, options = {}) {
   const payloadValidation = validateSubmitPayload(payload, { attrsMeta: options.attrsMeta || [] });
   const attributeMatrix = buildListingAttributeMatrix({
@@ -723,6 +778,7 @@ function buildPayloadDraftValidation(payload = {}, options = {}) {
   const qualityIssues = listingQualityIssues(listingQuality);
   const matrixIssues = listingAttributeMatrixIssues(attributeMatrix);
   const issues = [...(payloadValidation.issues || []), ...qualityIssues, ...matrixIssues];
+  const requiredAttributeFillPlan = buildRequiredAttributePlanForPayload(payload, options);
   return {
     ...payloadValidation,
     ok: issues.length === 0,
@@ -730,6 +786,7 @@ function buildPayloadDraftValidation(payload = {}, options = {}) {
     listingQuality,
     listingQualityWarnings: Array.isArray(listingQuality.warnings) ? listingQuality.warnings : [],
     attributeMatrix,
+    requiredAttributeFillPlan,
   };
 }
 
@@ -752,6 +809,13 @@ export function buildPreflightGateNode(input = {}) {
     dictionaryValueCache: input.dictionaryValueCache || {},
     dictionaryLanguage: input.dictionaryLanguage || "ZH_HANS",
     dictionaryValuesByAttributeId: input.dictionaryValuesByAttributeId || {},
+  });
+  const requiredAttributeFillPlan = input.requiredAttributeFillPlan || buildRequiredAttributePlanForPayload(input.payload || {}, {
+    attrsMeta: input.attrsMeta || [],
+    categoryMatch: input.category || categoryMatchFromPayload(input.payload || {}),
+    dictionaryValueCache: input.dictionaryValueCache || {},
+    dictionaryValuesByAttributeId: input.dictionaryValuesByAttributeId || {},
+    contentSummary: input.contentSummary || {},
   });
   issues.push(...listingQualityIssues(listingQuality));
   issues.push(...listingAttributeMatrixIssues(attributeMatrix));
@@ -794,6 +858,7 @@ export function buildPreflightGateNode(input = {}) {
       listingQuality,
       listingQualityWarnings: Array.isArray(listingQuality.warnings) ? listingQuality.warnings : [],
       attributeMatrix,
+      requiredAttributeFillPlan,
       summary: {
         itemCount: payloadItems(input.payload || {}).length,
         variantCount: Number(input.variantCount || 0),
@@ -1269,6 +1334,7 @@ export async function submitPayloadDraftToOzon(runId, input = {}, deps = {}) {
       attrsMeta: run.payloadDraftAttrsMeta || [],
       listingQuality: validation.listingQuality,
       attributeMatrix: validation.attributeMatrix,
+      requiredAttributeFillPlan: validation.requiredAttributeFillPlan,
     }));
     await updateRun(runId, (current) => ({
       ...current,
@@ -1283,6 +1349,7 @@ export async function submitPayloadDraftToOzon(runId, input = {}, deps = {}) {
     attrsMeta: run.payloadDraftAttrsMeta || [],
     listingQuality: validation.listingQuality,
     attributeMatrix: validation.attributeMatrix,
+    requiredAttributeFillPlan: validation.requiredAttributeFillPlan,
   }));
   await updateRun(runId, (current) => ({
     ...current,

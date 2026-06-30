@@ -116,6 +116,34 @@ export function analyzeRequiredAttributes(cache = {}) {
   };
 }
 
+export function buildRequiredAttributeFillPlan(input = {}) {
+  const attrsMeta = Array.isArray(input.attrsMeta) ? input.attrsMeta : [];
+  const categoryMatch = input.categoryMatch || {};
+  const attributeValuesById = input.attributeValuesById || {};
+  const categoryCache = input.categoryCache || {};
+  const modelName = String(input.modelName || input.parentSku || "").replace(/\s+/g, " ").trim();
+  const productText = normalizeText([
+    input.productText,
+    input.title,
+    input.description,
+    input.categoryPath || categoryMatch.path,
+  ].filter(Boolean).join(" "));
+  const packageInfo = normalizePackageInfo(input.packageInfo || {});
+
+  return attrsMeta
+    .filter((meta) => Boolean(meta?.is_required) && Number(meta?.id || 0))
+    .map((meta) => fillPlanRow({
+      meta,
+      categoryMatch,
+      attributeValuesById,
+      categoryCache,
+      modelName,
+      productText,
+      packageInfo,
+    }))
+    .filter(Boolean);
+}
+
 export function categoryAttributeCacheKey(category = {}) {
   return `${Number(category.description_category_id || 0)}:${Number(category.type_id || 0)}`;
 }
@@ -126,6 +154,228 @@ export function attributeValueCacheKey(category = {}, attribute = {}, language =
 
 function strategy(strategyName, fillLogic, confidence) {
   return { strategy: strategyName, fillLogic, confidence };
+}
+
+function fillPlanRow({
+  meta = {},
+  categoryMatch = {},
+  attributeValuesById = {},
+  categoryCache = {},
+  modelName = "",
+  productText = "",
+  packageInfo = {},
+} = {}) {
+  const attributeId = Number(meta.id || 0);
+  const classified = classifyAttributeFillStrategy(meta);
+  const base = {
+    attributeId,
+    name: meta.name || `属性 ${attributeId}`,
+    strategy: classified.strategy,
+    confidence: classified.confidence,
+    action: "manual_required",
+    source: "",
+    reasonZh: classified.fillLogic || "需要人工确认属性值。",
+  };
+  if (isComplianceSensitive(meta)) {
+    return {
+      ...base,
+      strategy: "compliance_sensitive",
+      confidence: "low",
+      action: "blocked_sensitive",
+      source: "manual_compliance_review",
+      reasonZh: "该字段涉及合规或商品安全信息，不能由系统自动填写，必须人工确认。",
+    };
+  }
+  if (classified.strategy === "model_name_from_parent_sku") {
+    return modelName
+      ? {
+          ...base,
+          action: "auto_fill",
+          source: "parent_sku",
+          value: modelName,
+          reasonZh: "型号名称来自父 SKU/商品族名，同一父 SKU 下所有变体保持一致，用于 Ozon 合并商品卡。",
+        }
+      : {
+          ...base,
+          action: "manual_required",
+          reasonZh: "缺少父 SKU 或商品族名，不能生成稳定型号名称。",
+        };
+  }
+  if (classified.strategy === "fixed_no_brand") {
+    return fixedDictionaryOrTextPlan({
+      base,
+      meta,
+      categoryMatch,
+      attributeValuesById,
+      categoryCache,
+      pattern: /нет бренда|без бренда|no brand|без торговой марки|无品牌/i,
+      value: "Нет бренда",
+      source: "fixed_no_brand",
+      reasonZh: "当前无授权品牌时固定使用无品牌；字典 ID 只来自当前 Ozon 类目缓存。",
+    });
+  }
+  if (classified.strategy === "fixed_country_china") {
+    return fixedDictionaryOrTextPlan({
+      base,
+      meta,
+      categoryMatch,
+      attributeValuesById,
+      categoryCache,
+      pattern: /китай|кнр|china|中国|中國/i,
+      value: "Китай",
+      source: "fixed_country_china",
+      reasonZh: "1688 跨境货源默认原产国中国；字典 ID 只来自当前 Ozon 类目缓存。",
+    });
+  }
+  if (classified.strategy === "package_data") {
+    const value = packageValueForMeta(meta, packageInfo);
+    return value
+      ? {
+          ...base,
+          action: "auto_fill",
+          source: "1688_package",
+          value,
+          reasonZh: "尺重来自 1688 详情解析，用于 Ozon 属性、定价和物流判断；缺失时不能猜。",
+        }
+      : {
+          ...base,
+          action: "manual_required",
+          source: "1688_package_missing",
+          reasonZh: "当前货源缺少完整尺重，不能自动填写包装/重量属性。",
+        };
+  }
+  if (classified.strategy === "dictionary_lookup_from_product_text"
+    || classified.strategy === "dictionary_lookup_or_manual_rule") {
+    const candidates = dictionaryCandidatesForMeta({
+      meta,
+      categoryMatch,
+      attributeValuesById,
+      categoryCache,
+      productText,
+    });
+    return {
+      ...base,
+      action: "suggest_dictionary",
+      source: "current_category_dictionary",
+      dictionaryCandidates: candidates,
+      reasonZh: candidates.length
+        ? "根据商品文本匹配到当前类目合法字典候选；需人工确认后才可写入草稿。"
+        : "当前类目没有匹配到可靠字典候选，需人工选择合法值。",
+    };
+  }
+  return base;
+}
+
+function fixedDictionaryOrTextPlan({
+  base,
+  meta = {},
+  categoryMatch = {},
+  attributeValuesById = {},
+  categoryCache = {},
+  pattern,
+  value = "",
+  source = "",
+  reasonZh = "",
+} = {}) {
+  if (Number(meta.dictionary_id || meta.dictionaryId || 0)) {
+    const match = dictionaryValuesForPlan({ meta, categoryMatch, attributeValuesById, categoryCache })
+      .find((entry) => pattern.test(String(entry?.value || entry?.name || "")));
+    if (!match) {
+      return {
+        ...base,
+        action: "manual_required",
+        source,
+        reasonZh: "当前类目字典没有找到合法固定值，不能硬编码或跨类目复用字典 ID。",
+      };
+    }
+    return {
+      ...base,
+      action: "auto_fill",
+      source,
+      value: String(match.value || match.name || value || "").trim(),
+      dictionaryValueId: dictionaryValueId(match),
+      reasonZh,
+    };
+  }
+  return {
+    ...base,
+    action: "auto_fill",
+    source,
+    value,
+    reasonZh,
+  };
+}
+
+function dictionaryCandidatesForMeta({
+  meta = {},
+  categoryMatch = {},
+  attributeValuesById = {},
+  categoryCache = {},
+  productText = "",
+} = {}) {
+  return dictionaryValuesForPlan({ meta, categoryMatch, attributeValuesById, categoryCache })
+    .map((entry) => {
+      const value = String(entry?.value || entry?.name || "").replace(/\s+/g, " ").trim();
+      if (!value) return null;
+      const normalizedValue = normalizeText(value);
+      const matched = normalizedValue && productText.includes(normalizedValue);
+      return matched ? {
+        dictionaryValueId: dictionaryValueId(entry),
+        value,
+        confidence: 0.78,
+        source: "product_text",
+      } : null;
+    })
+    .filter(Boolean)
+    .slice(0, 5);
+}
+
+function dictionaryValuesForPlan({
+  meta = {},
+  categoryMatch = {},
+  attributeValuesById = {},
+  categoryCache = {},
+} = {}) {
+  const id = Number(meta.id || 0);
+  if (!id) return [];
+  if (Array.isArray(attributeValuesById[id])) return attributeValuesById[id];
+  if (Array.isArray(attributeValuesById[String(id)])) return attributeValuesById[String(id)];
+  const cache = categoryCache.attributeValues || {};
+  const keys = [
+    attributeValueCacheKey(categoryMatch, { id }),
+    attributeValueCacheKey(categoryMatch, { id }, "RU"),
+  ];
+  for (const key of keys) {
+    if (Array.isArray(cache[key]?.values)) return cache[key].values;
+  }
+  return [];
+}
+
+function dictionaryValueId(entry = {}) {
+  return Number(entry.dictionary_value_id || entry.dictionaryValueId || entry.id || entry.value_id || 0) || undefined;
+}
+
+function normalizePackageInfo(packageInfo = {}) {
+  return {
+    weight: Number(packageInfo.weight || packageInfo.weightG || packageInfo.weight_g || 0),
+    depth: Number(packageInfo.depth || packageInfo.lengthMm || packageInfo.length_mm || packageInfo.length || 0),
+    width: Number(packageInfo.width || packageInfo.widthMm || packageInfo.width_mm || 0),
+    height: Number(packageInfo.height || packageInfo.heightMm || packageInfo.height_mm || 0),
+  };
+}
+
+function packageValueForMeta(meta = {}, packageInfo = {}) {
+  const text = normalizeText(meta.name || "");
+  if (/вес|重量|weight/.test(text)) return packageInfo.weight > 0 ? String(Math.round(packageInfo.weight)) : "";
+  if (/длина|глубина|长|length|depth/.test(text)) return packageInfo.depth > 0 ? String(Math.round(packageInfo.depth)) : "";
+  if (/ширина|宽|width/.test(text)) return packageInfo.width > 0 ? String(Math.round(packageInfo.width)) : "";
+  if (/высота|高|height/.test(text)) return packageInfo.height > 0 ? String(Math.round(packageInfo.height)) : "";
+  return "";
+}
+
+function isComplianceSensitive(attribute = {}) {
+  const text = normalizeText(`${attribute.name || ""} ${attribute.description || ""}`);
+  return /срок годности|годност|условия хран|хранени|состав|опасн|hazard|danger|температур|сертификат|сертификац|медицин|лекарств|аккумулятор|батаре|детск|пище|космет|изготовител|производител|保质期|储存|成分|危险|温度|认证|医疗|电池|儿童|食品|化妆|制造商/.test(text);
 }
 
 function normalizeText(value = "") {

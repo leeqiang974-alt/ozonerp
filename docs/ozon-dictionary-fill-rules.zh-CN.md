@@ -201,13 +201,38 @@ low：不自动填，进入人工规则池
 - 温度范围。
 - 涉及儿童、食品、化妆品、医疗、化学、电池、机动车配件的合规属性。
 
+## 当前代码接入状态
+
+已接入 `buildRequiredAttributeFillPlan()`，输入 `categoryMatch + attrsMeta + attributeValues + categoryCache + 1688 尺重/商品文本`，输出当前类目必填属性的可解释计划：
+
+```js
+{
+  attributeId,
+  name,
+  strategy,
+  confidence,
+  action: "auto_fill" | "suggest_dictionary" | "manual_required" | "blocked_sensitive",
+  source,
+  value,
+  dictionaryValueId,
+  dictionaryCandidates,
+  reasonZh
+}
+```
+
+当前规则：
+
+1. 高置信自动填：品牌无品牌、型号名称、原产国中国、尺重类字段；字典 ID 必须来自当前 `description_category_id:type_id:attribute_id` 缓存。
+2. 中置信字典匹配：材质、类型、用途等只生成当前类目合法候选，动作是 `suggest_dictionary`，不自动写入。
+3. 合规敏感：保质期、储存条件、成分、危险、温度、儿童/食品/化妆品/医疗/电池等进入 `blocked_sensitive`。
+4. Payload 草稿和 preflight 总闸都会输出该计划，前端只读展示，不提交 Ozon。
+
 ## 后续接入建议
 
-1. 做统一 `requiredAttributeAutofill` 模块，输入 `categoryMatch + attrsMeta + attributeValues + 1688商品 + Ozon学习样本`。
-2. 先实现高置信策略：品牌、型号、原产国、颜色、尺重。
-3. 再实现中置信字典匹配：类型、材质、用途、性别、尺码、容量。
-4. 所有低置信和合规敏感字段进入工作流人工节点。
-5. Payload 预检中新增“必填属性覆盖率”和“字典值合法性”诊断。
+1. 把 `suggest_dictionary` 候选接入现有“人工确认写回本地草稿”入口，继续保持重新预检。
+2. 扩展 `variant_aspect_from_sku` 的可解释计划，显示每个 SKU 的 aspect 来源、字典候选和重复风险。
+3. 为高频 `manual_rule_needed` 属性沉淀人工规则池。
+4. 在 Payload 预检中增加必填属性覆盖率汇总。
 
 ## 参考资料
 

@@ -196,6 +196,24 @@ test("frontend renders a read-only listing attribute matrix", async () => {
   assert.match(css, /attribute-matrix-cell/);
 });
 
+test("frontend renders required attribute fill plan groups", async () => {
+  const [js, css] = await Promise.all([
+    readFile(new URL("../public/app.js", import.meta.url), "utf8"),
+    readFile(new URL("../public/styles.css", import.meta.url), "utf8"),
+  ]);
+
+  assert.match(js, /renderRequiredAttributeFillPlan/);
+  assert.match(js, /requiredAttributeFillPlan/);
+  assert.match(js, /已安全补齐/);
+  assert.match(js, /建议确认/);
+  assert.match(js, /必须人工处理/);
+  assert.match(js, /合规敏感/);
+  assert.match(js, /不会自动提交 Ozon/);
+  assert.match(js, /dictionaryCandidates/);
+  assert.match(css, /workflow-required-fill-plan/);
+  assert.match(css, /required-fill-plan-row/);
+});
+
 test("frontend exposes human repair entrypoints from listing attribute matrix cells", async () => {
   const [js, css] = await Promise.all([
     readFile(new URL("../public/app.js", import.meta.url), "utf8"),

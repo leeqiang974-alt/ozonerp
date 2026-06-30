@@ -1,6 +1,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import { buildListingPayloadDraftFromJob } from "../src/autoListing.js";
+import { buildRequiredAttributeFillPlan } from "../src/ozonRequiredAttributeAnalysis.js";
 import { validateSubmitPayload } from "../src/workflowRuns.js";
 
 test("buildListingPayloadDraftFromJob creates workflow payload draft without Ozon submit", () => {
@@ -196,4 +197,89 @@ test("buildListingPayloadDraftFromJob reads high-confidence attributes from cate
   const attrs = draft.items[0].attributes;
   assert.equal(attrs.find((attribute) => Number(attribute.id) === 85)?.values[0].dictionary_value_id, 971082);
   assert.equal(attrs.find((attribute) => Number(attribute.id) === 4389)?.values[0].dictionary_value_id, 356971);
+});
+
+test("buildListingPayloadDraftFromJob records source-explained model autofill across variants", () => {
+  const draft = buildListingPayloadDraftFromJob({
+    pendingParentSku: "SKUlq01004",
+    ozonTitle: "Набор органайзеров для кухни",
+    listingContent: {
+      title_ru: "Набор органайзеров для кухни",
+      description_ru: "Практичный набор органайзеров для аккуратного хранения.",
+    },
+    visualCard: { url: "https://example.com/cover.jpg" },
+    bestMatch: {
+      candidateTitle: "厨房收纳盒",
+      candidateUrl: "https://detail.1688.com/offer/6.html",
+      purchasePriceCny: 20,
+    },
+    candidateData: {
+      images: ["https://example.com/a.jpg", "https://example.com/b.jpg", "https://example.com/c.jpg"],
+      sizeWeight: { weightG: 700, lengthMm: 220, widthMm: 160, heightMm: 80 },
+      skuVariants: [
+        { spec: "白色", price: 20, image: "https://example.com/white.jpg" },
+        { spec: "黑色", price: 21, image: "https://example.com/black.jpg" },
+      ],
+    },
+  }, {
+    categoryMatch: {
+      description_category_id: 17028673,
+      type_id: 95183,
+      path: "Дом / Кухня",
+    },
+    attrsMeta: [
+      { id: 85, name: "Бренд", is_required: true, dictionary_id: 971082 },
+      { id: 9048, name: "Название модели (для объединения в одну карточку)", is_required: true },
+      { id: 10097, name: "Название цвета", is_aspect: true },
+    ],
+    attributeValuesById: {
+      85: [{ id: 971082, value: "Нет бренда" }],
+    },
+  });
+
+  const modelValues = draft.items.map((item) => item.attributes
+    .find((attribute) => Number(attribute.id) === 9048)?.values[0]?.value);
+  assert.equal(draft.items.length, 2);
+  assert.deepEqual(new Set(modelValues).size, 1);
+  assert.ok(modelValues[0].length > 0);
+  const modelPlan = draft.summary.requiredAttributeFillPlan.find((row) => row.attributeId === 9048);
+  assert.equal(modelPlan.strategy, "model_name_from_parent_sku");
+  assert.equal(modelPlan.action, "auto_fill");
+  assert.equal(modelPlan.source, "parent_sku");
+  assert.equal(modelPlan.value, modelValues[0]);
+});
+
+test("buildRequiredAttributeFillPlan keeps dictionary candidates in current category and marks package/sensitive fields", () => {
+  const plan = buildRequiredAttributeFillPlan({
+    categoryMatch: { description_category_id: 17028673, type_id: 95183 },
+    attrsMeta: [
+      { id: 9048, name: "Название модели (для объединения в одну карточку)", is_required: true },
+      { id: 777, name: "Материал", is_required: true, dictionary_id: 100 },
+      { id: 888, name: "Вес товара, г", is_required: true },
+      { id: 999, name: "Срок годности", is_required: true },
+    ],
+    attributeValuesById: {
+      777: [
+        { id: 11, value: "пластик" },
+        { id: 12, value: "металл" },
+      ],
+    },
+    modelName: "Органайзер SKUlq01005",
+    productText: "Кухонный органайзер из пластика",
+    packageInfo: { weight: 700, depth: 220, width: 160, height: 80 },
+  });
+
+  const dictionaryPlan = plan.find((row) => row.attributeId === 777);
+  assert.equal(dictionaryPlan.action, "suggest_dictionary");
+  assert.equal(dictionaryPlan.dictionaryValueId, undefined);
+  assert.deepEqual(dictionaryPlan.dictionaryCandidates.map((item) => item.dictionaryValueId), [11]);
+
+  const packagePlan = plan.find((row) => row.attributeId === 888);
+  assert.equal(packagePlan.action, "auto_fill");
+  assert.equal(packagePlan.source, "1688_package");
+  assert.equal(packagePlan.value, "700");
+
+  const sensitivePlan = plan.find((row) => row.attributeId === 999);
+  assert.equal(sensitivePlan.action, "blocked_sensitive");
+  assert.equal(sensitivePlan.confidence, "low");
 });

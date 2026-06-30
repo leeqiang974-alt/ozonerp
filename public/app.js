@@ -5946,6 +5946,79 @@ function renderListingAttributeMatrix(run = {}, node = {}) {
   `;
 }
 
+function requiredFillPlanActionText(action = "") {
+  const map = {
+    auto_fill: "已安全补齐",
+    suggest_dictionary: "建议确认",
+    manual_required: "必须人工处理",
+    blocked_sensitive: "合规敏感",
+  };
+  return map[action] || "必须人工处理";
+}
+
+function requiredFillPlanGroups(plan = []) {
+  return [
+    { key: "auto_fill", title: "已安全补齐" },
+    { key: "suggest_dictionary", title: "建议确认" },
+    { key: "manual_required", title: "必须人工处理" },
+    { key: "blocked_sensitive", title: "合规敏感" },
+  ].map((group) => ({
+    ...group,
+    rows: (plan || []).filter((row) => String(row.action || "manual_required") === group.key),
+  })).filter((group) => group.rows.length);
+}
+
+function renderRequiredFillPlanCandidates(row = {}) {
+  const candidates = Array.isArray(row.dictionaryCandidates) ? row.dictionaryCandidates : [];
+  if (!candidates.length) return "";
+  return `
+    <div class="required-fill-plan-candidates">
+      ${candidates.slice(0, 5).map((candidate) => `
+        <span>#${escapeHtml(candidate.dictionaryValueId || "")} · ${escapeHtml(candidate.value || "")}</span>
+      `).join("")}
+    </div>
+  `;
+}
+
+function renderRequiredAttributeFillPlan(run = {}, node = {}) {
+  const plan = run.payloadDraftValidation?.requiredAttributeFillPlan || node?.output?.requiredAttributeFillPlan || [];
+  if (!Array.isArray(plan) || !plan.length) return "";
+  const groups = requiredFillPlanGroups(plan);
+  return `
+    <section class="workflow-required-fill-plan">
+      <div class="workflow-required-fill-plan-head">
+        <div>
+          <strong>必填属性填充计划</strong>
+          <p class="hint">只读计划：展示来源、置信度和安全动作；建议项需人工确认，且不会自动提交 Ozon。</p>
+        </div>
+        <span>${plan.length} 个必填属性</span>
+      </div>
+      ${groups.map((group) => `
+        <div class="required-fill-plan-group required-fill-plan-group-${escapeHtml(group.key)}">
+          <strong>${escapeHtml(group.title)}</strong>
+          <div class="required-fill-plan-list">
+            ${group.rows.slice(0, 12).map((row) => `
+              <div class="required-fill-plan-row required-fill-plan-row-${escapeHtml(row.action || "manual_required")}">
+                <div>
+                  <strong>${escapeHtml(row.name || `属性 ${row.attributeId || ""}`)}</strong>
+                  <small>#${escapeHtml(row.attributeId || "")} · ${escapeHtml(row.strategy || "")} · ${escapeHtml(row.confidence || "")}</small>
+                </div>
+                <div>
+                  <span>${escapeHtml(requiredFillPlanActionText(row.action))}</span>
+                  ${row.value ? `<code>${escapeHtml(row.value)}</code>` : ""}
+                  ${row.dictionaryValueId ? `<small>字典 #${escapeHtml(row.dictionaryValueId)}</small>` : ""}
+                  ${renderRequiredFillPlanCandidates(row)}
+                </div>
+                <p>${escapeHtml(row.reasonZh || "修复后重新预检；不会自动提交 Ozon。")}</p>
+              </div>
+            `).join("")}
+          </div>
+        </div>
+      `).join("")}
+    </section>
+  `;
+}
+
 function workflowPayloadIssueSummary(issues = []) {
   const counts = new Map();
   for (const issue of issues) {
@@ -6143,6 +6216,7 @@ function renderWorkflowDetail(run, node) {
       <span>Payload 草稿</span>
       ${workflowPayloadDraftSummary(payloadDraft)}
       ${renderListingQualityPanel(run, node)}
+      ${renderRequiredAttributeFillPlan(run, node)}
       ${renderListingAttributeMatrix(run, node)}
       ${payloadIssues.length ? `
         <div class="workflow-payload-issues">

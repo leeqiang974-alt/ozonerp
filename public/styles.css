@@ -3090,6 +3090,109 @@ tr:hover td {
   gap: 8px;
   padding: 10px;
 }
+.workflow-required-fill-plan {
+  background: #f8fafc;
+  border: 1px solid #dbeafe;
+  border-radius: 8px;
+  display: grid;
+  gap: 10px;
+  padding: 12px;
+}
+.workflow-required-fill-plan-head {
+  align-items: flex-start;
+  display: flex;
+  gap: 12px;
+  justify-content: space-between;
+}
+.workflow-required-fill-plan-head strong,
+.required-fill-plan-group > strong {
+  color: #0f172a;
+}
+.workflow-required-fill-plan-head p {
+  margin: 3px 0 0;
+}
+.workflow-required-fill-plan-head > span {
+  background: #eff6ff;
+  border: 1px solid #bfdbfe;
+  border-radius: 999px;
+  color: #1d4ed8;
+  flex: 0 0 auto;
+  font-size: 12px;
+  font-weight: 800;
+  padding: 4px 10px;
+}
+.required-fill-plan-group {
+  display: grid;
+  gap: 8px;
+}
+.required-fill-plan-list {
+  display: grid;
+  gap: 8px;
+}
+.required-fill-plan-row {
+  background: #fff;
+  border: 1px solid #e2e8f0;
+  border-radius: 8px;
+  display: grid;
+  gap: 8px 12px;
+  grid-template-columns: minmax(180px, 1fr) minmax(180px, 1fr);
+  padding: 10px;
+}
+.required-fill-plan-row strong,
+.required-fill-plan-row small,
+.required-fill-plan-row p {
+  display: block;
+}
+.required-fill-plan-row small {
+  color: #64748b;
+  margin-top: 2px;
+}
+.required-fill-plan-row span {
+  background: #e0f2fe;
+  border-radius: 999px;
+  color: #075985;
+  display: inline-flex;
+  font-size: 12px;
+  font-weight: 800;
+  padding: 3px 8px;
+  width: fit-content;
+}
+.required-fill-plan-row code {
+  background: #e2e8f0;
+  border-radius: 6px;
+  color: #0f172a;
+  display: inline-block;
+  margin-left: 6px;
+  padding: 2px 6px;
+}
+.required-fill-plan-row p {
+  color: #475569;
+  grid-column: 1 / -1;
+  margin: 0;
+}
+.required-fill-plan-row-blocked_sensitive span {
+  background: #fee2e2;
+  color: #991b1b;
+}
+.required-fill-plan-row-manual_required span,
+.required-fill-plan-row-suggest_dictionary span {
+  background: #fef3c7;
+  color: #92400e;
+}
+.required-fill-plan-row-auto_fill span {
+  background: #dcfce7;
+  color: #166534;
+}
+.required-fill-plan-candidates {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-top: 6px;
+}
+.required-fill-plan-candidates span {
+  background: #f1f5f9;
+  color: #334155;
+}
 .workflow-attribute-matrix {
   background: #f8fafc;
   border: 1px solid #dbeafe;

@@ -8,6 +8,48 @@
 
 本轮 Codex 桌面环境以 `C:\Users\Administrator\Documents\ozonerp` 为实际项目根；继续开发前仍需先确认 `git status` 和最近提交，避免误入旧复制目录。
 
+## 2026-06-30 必填属性规则引擎 V2：可解释填充计划
+
+### 已完成
+
+- 新增 `buildRequiredAttributeFillPlan()`，为当前类目必填属性输出可解释计划：
+  - `attributeId` / `name` / `strategy` / `confidence`。
+  - `action`: `auto_fill`、`suggest_dictionary`、`manual_required`、`blocked_sensitive`。
+  - `source`、`value`、`dictionaryValueId`、`dictionaryCandidates`、`reasonZh`。
+- `buildListingPayloadDraftFromJob()` 现在把 `requiredAttributeFillPlan` 写入草稿 `summary`：
+  - 型号名称来自父 SKU/商品族上下文，跨变体保持一致，并记录 `source=parent_sku`。
+  - 品牌无品牌、原产国中国仍只使用当前类目合法字典值，不硬编码字典 ID。
+  - 尺重类必填字段仅在 1688 尺重存在时进入自动填充计划，缺失时进入人工处理。
+  - 材质/类型/用途等中置信字典字段只给当前类目合法候选，不自动写入。
+  - 保质期、储存条件、成分、危险、温度、儿童/食品/化妆品/医疗/电池等合规敏感字段进入 `blocked_sensitive`。
+- `buildPayloadDraftValidation()` 与 `buildPreflightGateNode()` 输出 `requiredAttributeFillPlan`，让工作流总闸展示“系统准备怎么填、为什么、是否需要人工”。
+- 工作流 Payload 草稿区新增“必填属性填充计划”只读面板，按“已安全补齐 / 建议确认 / 必须人工处理 / 合规敏感”分组展示。
+
+### 安全边界
+
+- fill-plan 是本地解释与计划，不调用 Ozon 写接口，不提交商品。
+- 中置信字典候选不自动写草稿；仍需人工确认后走已有本地草稿修复和重新预检。
+- 合规敏感字段不自动填，不能被当作安全通过。
+- 不改变 preflight、payload validation、workflow lock、`waiting_human`、pricing blocked 或人工二次确认。
+
+### Claude Code 搭配
+
+- 开发前已使用 `scripts/claude-ozon-review-nvidia.ps1` 做 Task 2 简报。
+- Claude 重点提醒：字典缓存必须按当前 category/type/attribute 校验；`package_data` 不能缺尺重硬猜；合规敏感字段必须人工处理；fill-plan 不能推进状态机或绕过 preflight。
+
+### 已验证
+
+- TDD 红灯：
+  - `test/auto-listing-payload-draft.test.js` 先因 `buildRequiredAttributeFillPlan` 未导出失败。
+  - `test/workflow-runs.test.js` 先因 `requiredAttributeFillPlan` 未接入 preflight 输出失败。
+  - `test/frontend-static.test.js` 先因前端缺少 `renderRequiredAttributeFillPlan` 失败。
+- 目标验证：`node --test test/auto-listing-payload-draft.test.js test/workflow-runs.test.js test/frontend-static.test.js`，130/130 通过。
+
+### 下一步
+
+- 继续开发“变体配置工作台”：逐 SKU 展示型号、aspect 字段、SKU 图、重复组合和安全下一步，集中解决多 SKU 合并失败。
+- 之后再进入定价策略升级，把 `price/min_price/old_price` 从固定公式升级为可解释商业策略。
+
 ## 2026-06-30 Ozon 内容评分与媒体质量闸口
 
 ### 已完成

@@ -357,6 +357,58 @@ test("buildPreflightGateNode carries listing content score breakdown from conten
   assert.ok(node.output.listingQualityWarnings.some((warning) => warning.code === "PACKAGE_SIZE_WEIGHT_MISSING"));
 });
 
+test("buildPreflightGateNode carries required attribute fill plan without unlocking submit", () => {
+  const node = buildPreflightGateNode({
+    payload: {
+      items: [{
+        offer_id: "SKU-plan",
+        name: "Органайзер для кухни",
+        description_category_id: 17028673,
+        type_id: 95183,
+        price: "1200",
+        images: ["https://example.com/1.jpg", "https://example.com/2.jpg", "https://example.com/3.jpg"],
+        weight: 700,
+        depth: 220,
+        width: 160,
+        height: 80,
+        attributes: [
+          { id: 85, values: [{ dictionary_value_id: 971082, value: "Нет бренда" }] },
+          { id: 9048, values: [{ value: "Органайзер SKUlq01006" }] },
+        ],
+      }],
+    },
+    attrsMeta: [
+      { id: 85, name: "Бренд", is_required: true, dictionary_id: 971082 },
+      { id: 9048, name: "Название модели (для объединения в одну карточку)", is_required: true },
+      { id: 777, name: "Материал", is_required: true, dictionary_id: 100 },
+      { id: 999, name: "Срок годности", is_required: true },
+    ],
+    dictionaryValuesByAttributeId: {
+      85: [{ id: 971082, value: "Нет бренда" }],
+      777: [{ id: 11, value: "пластик" }],
+    },
+    category: { description_category_id: 17028673, type_id: 95183, path: "Дом / Кухня" },
+    variantCount: 1,
+    contentSummary: {
+      candidateImageCount: 3,
+      skuVariantCount: 1,
+      descriptionLength: 120,
+      richContentReady: true,
+      sizeWeightReady: true,
+      productText: "Органайзер из пластика",
+      contentIssues: [],
+    },
+  });
+
+  const plan = node.output.requiredAttributeFillPlan;
+  assert.ok(Array.isArray(plan));
+  assert.equal(plan.find((row) => row.attributeId === 9048)?.action, "auto_fill");
+  assert.equal(plan.find((row) => row.attributeId === 777)?.action, "suggest_dictionary");
+  assert.equal(plan.find((row) => row.attributeId === 999)?.action, "blocked_sensitive");
+  assert.equal(node.status, "failed");
+  assert.equal(node.runStatus, "waiting_human");
+});
+
 test("buildListingAttributeMatrix summarizes required dictionary and variant attributes by SKU", () => {
   const payload = { items: [
     {

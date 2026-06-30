@@ -1110,7 +1110,7 @@ function isLikelyPddVariantSpec(text) {
   if (!value || value.length > 40) return false;
   if (/购买|客服|收藏|分享|店铺|评价|登录/.test(value)) return false;
   if (/^¥?\s*\d+(?:\.\d+)?$/.test(value)) return false;
-  if (/大促价|券后|满\d+减|件\d+\.?\d*折|^\d+(?:\.\d+)?折|买了又买|拼单|即将结束|立刻拼|这些人已拼|我拼过的店|人已拼/.test(value)) return false;
+  if (/大促价|券后|满\d+减|件\d+\.?\d*折|^\d+(?:\.\d+)?折|买了又买|拼单|即将结束|即将恢复\d+(?:\.\d+)?元|恢复\d+(?:\.\d+)?元|立刻拼|这些人已拼|我拼过的店|人已拼/.test(value)) return false;
   if (/满\d+返|返\d+|优惠|券|活动|促销/.test(value)) return false;
   if (/畅销榜|榜第\d+名/.test(value)) return false;
   if (/查看|确定|顶部|首页|帮助|反馈|进店|价格说明|历史浏览|更多|开始采集|找货源|确认采集|采集本页|采集到\s*ERP|跳过/.test(value)) return false;

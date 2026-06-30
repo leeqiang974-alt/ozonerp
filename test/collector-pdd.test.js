@@ -198,6 +198,7 @@ test("PDD parser keeps real specs and rejects review or promo chips", () => {
         { spec: "材质耐用(86)", price: 20 },
         { spec: "属性", price: 20 },
         { spec: "默认配22毫米螺丝", price: 20 },
+        { spec: "即将恢复14元", price: "" },
         { spec: "8620-6.4厘米孔距（古银）", price: 20 },
         { spec: "8620-6.4厘米孔距（仿金）即将售罄", price: 20 },
       ],

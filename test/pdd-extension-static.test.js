@@ -18,3 +18,12 @@ test("ERP collector extension can collect PDD product pages into ERP", async () 
   assert.match(content, /\/api\/pdd\/capture/);
   assert.match(content, /pageNeedsPddHumanCheck/);
 });
+
+test("ERP collector popup can actively collect current PDD tab", async () => {
+  const popup = await readFile(new URL("../browser-extension/erp-collector-extension/popup.js", import.meta.url), "utf8");
+
+  assert.match(popup, /isPddTab/);
+  assert.match(popup, /COLLECT_PDD_PRODUCT/);
+  assert.match(popup, /\/api\/pdd\/capture/);
+  assert.match(popup, /拼多多商品详情页/);
+});

@@ -9,7 +9,7 @@
   <body>
     <main>
       <h1>Ozon ERP 统一采集助手</h1>
-      <p>一个插件同时处理 1688 货源采集和 Ozon 前台竞品任务，数据会发送到本地 Ozon ERP。</p>
+      <p>一个插件同时处理 1688、拼多多货源采集和 Ozon 前台竞品任务，数据会发送到本地 Ozon ERP。</p>
       <label class="field">
         <span>归属店铺</span>
         <select id="storeSelect"></select>
@@ -20,7 +20,7 @@
           <strong>SKU 采集</strong>
           <button id="skuToggleButton" type="button">不全选</button>
         </div>
-        <div id="skuList" class="sku-list">打开 1688 商品详情页后自动读取</div>
+        <div id="skuList" class="sku-list">打开 1688 或拼多多商品详情页后自动读取</div>
       </section>
       <section id="sizeWeightBox" class="size-weight-box">
         <strong>手动尺重（选填）</strong>
@@ -35,7 +35,7 @@
       <button id="collectButton">采集当前商品</button>
       <section class="worker-box">
         <div>
-          <strong>1688 / Ozon 自动采集后台</strong>
+          <strong>1688 / 拼多多 / Ozon 自动采集后台</strong>
           <span id="workerStatus">检测中...</span>
         </div>
         <button id="pollWorkerButton" type="button">立即检查任务</button>

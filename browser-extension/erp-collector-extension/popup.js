@@ -40,47 +40,94 @@ async function ensureContentScript(tabId) {
   }
 }
 
+function is1688Tab(tab) {
+  return /^https:\/\/[^/]*1688\.com\//i.test(tab?.url || "");
+}
+
+function isPddTab(tab) {
+  return /^https:\/\/[^/]*(pinduoduo|yangkeduo)\.com\//i.test(tab?.url || "");
+}
+
 async function collectCurrentProduct() {
   button.disabled = true;
   button.textContent = pendingPayload ? "补齐后入箱..." : "采集中...";
-  setStatus(pendingPayload ? "正在补齐尺重并发送到 ERP..." : "正在读取当前 1688 页面...");
+  setStatus(pendingPayload ? "正在补齐尺重并发送到 ERP..." : "正在读取当前页面...");
 
   try {
     const tab = await activeTab();
-    if (!/^https:\/\/[^/]*1688\.com\//i.test(tab.url || "")) {
-      throw new Error("请先打开 1688 商品详情页，再点击采集。");
-    }
-    await ensureContentScript(tab.id);
-    const result = await chrome.tabs.sendMessage(tab.id, {
-      type: "COLLECT_1688_PRODUCT",
-      includeVideo: includeVideo.checked,
-      storeId: storeSelect.value,
-      preflightOnly: !pendingPayload,
-      manualPackageInfo: readManualPackageInfo(),
-      applyAllSku: applyAllSku.checked,
-      selectedSkuKeys: [...selectedSkuKeys],
-    });
-    if (!result?.ok) throw new Error(result?.error || "采集失败。");
-    if (result.needsSizeWeight) {
-      pendingPayload = true;
-      prefillManualPackageInfo(result.packageInfo || {});
-      renderSkuSelector(result.skuVariants || skuVariants);
-      button.textContent = "补齐后入箱";
-      setStatus(result.message || "尺重不完整，请补齐重量和长宽高。", "error");
+    if (isPddTab(tab)) {
+      await collectPddProduct(tab);
       return;
     }
-    pendingPayload = null;
-    if (result.duplicate) {
-      setStatus(`已采集过：${result.title || "未命名商品"}\nERP 已保留原记录。`, "ok");
-      return;
+    if (!is1688Tab(tab)) {
+      throw new Error("请先打开 1688 或拼多多商品详情页，再点击采集。");
     }
-    setStatus(`采集成功：${result.title || "未命名商品"}\n回到 ERP 点“读取助手结果”。`, "ok");
+    await collect1688Product(tab);
   } catch (error) {
     setStatus(error.message, "error");
   } finally {
     button.disabled = false;
     button.textContent = pendingPayload ? "补齐后入箱" : "采集当前商品";
   }
+}
+
+async function collect1688Product(tab) {
+  setStatus(pendingPayload ? "正在补齐尺重并发送到 ERP..." : "正在读取当前 1688 页面...");
+  await ensureContentScript(tab.id);
+  const result = await chrome.tabs.sendMessage(tab.id, {
+    type: "COLLECT_1688_PRODUCT",
+    includeVideo: includeVideo.checked,
+    storeId: storeSelect.value,
+    preflightOnly: !pendingPayload,
+    manualPackageInfo: readManualPackageInfo(),
+    applyAllSku: applyAllSku.checked,
+    selectedSkuKeys: [...selectedSkuKeys],
+  });
+  if (!result?.ok) throw new Error(result?.error || "采集失败。");
+  if (result.needsSizeWeight) {
+    pendingPayload = true;
+    prefillManualPackageInfo(result.packageInfo || {});
+    renderSkuSelector(result.skuVariants || skuVariants);
+    button.textContent = "补齐后入箱";
+    setStatus(result.message || "尺重不完整，请补齐重量和长宽高。", "error");
+    return;
+  }
+  pendingPayload = null;
+  if (result.duplicate) {
+    setStatus(`已采集过：${result.title || "未命名商品"}\nERP 已保留原记录。`, "ok");
+    return;
+  }
+  setStatus(`采集成功：${result.title || "未命名商品"}\n回到 ERP 点“读取助手结果”。`, "ok");
+}
+
+async function collectPddProduct(tab) {
+  pendingPayload = null;
+  setStatus("正在读取当前拼多多页面...");
+  await ensureContentScript(tab.id);
+  const result = await chrome.tabs.sendMessage(tab.id, {
+    type: "COLLECT_PDD_PRODUCT",
+    includeVideo: includeVideo.checked,
+  });
+  if (!result?.ok) throw new Error(result?.error || "拼多多采集失败。");
+  if (result.needsHuman) {
+    throw new Error("拼多多商品详情页需要登录或人工验证，处理完成后再采集。");
+  }
+  const response = await fetchErp("/api/pdd/capture", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({
+      ...(result.payload || {}),
+      storeId: storeSelect.value,
+      includeVideo: includeVideo.checked,
+    }),
+  });
+  const data = await response.json().catch(() => ({}));
+  if (!response.ok || !data.ok) throw new Error(data.error || "ERP 接收拼多多商品失败。");
+  if (data.duplicate) {
+    setStatus(`已采集过：${data.title || "未命名商品"}\nERP 已保留原记录。`, "ok");
+    return;
+  }
+  setStatus(`拼多多采集成功：${data.title || "未命名商品"}\n回到 ERP 点“读取助手结果”。`, "ok");
 }
 
 function getSavedStoreId() {
@@ -183,7 +230,11 @@ function renderSkuSelector(variants = []) {
 async function loadPageOptions() {
   try {
     const tab = await activeTab();
-    if (!/^https:\/\/[^/]*1688\.com\//i.test(tab.url || "")) return;
+    if (isPddTab(tab)) {
+      skuList.textContent = "拼多多商品详情页可直接点击“采集当前商品”。";
+      return;
+    }
+    if (!is1688Tab(tab)) return;
     await ensureContentScript(tab.id);
     const result = await chrome.tabs.sendMessage(tab.id, {
       type: "COLLECT_1688_PRODUCT_RAW",

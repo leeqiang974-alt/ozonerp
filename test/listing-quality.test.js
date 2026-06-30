@@ -19,14 +19,70 @@ test("diagnoseListingQuality blocks required dictionary attributes without dicti
       }],
     },
     attrsMeta: [
-      { id: 85, name: "Бренд", is_required: true, dictionary_id: 971082 },
+      {
+        id: 85,
+        name: "Бренд",
+        is_required: true,
+        dictionary_id: 971082,
+        dictionary_values: [
+          { id: 971082, value: "Нет бренда" },
+          { id: 123456, value: "Acme" },
+        ],
+      },
       { id: 9048, name: "Название модели (для объединения в одну карточку)", is_required: true },
     ],
   });
 
   assert.equal(diagnosis.status, "blocked");
-  assert.equal(diagnosis.blockedReasons.some((reason) => reason.code === "DICTIONARY_VALUE_INVALID"), true);
+  const reason = diagnosis.blockedReasons.find((item) => item.code === "DICTIONARY_VALUE_INVALID");
+  assert.ok(reason);
+  assert.deepEqual(reason.enteredValues, ["Нет бренда"]);
+  assert.equal(reason.dictionaryCandidates[0].dictionary_value_id, 971082);
+  assert.equal(reason.dictionaryCandidates[0].value, "Нет бренда");
+  assert.equal(reason.dictionaryCandidates[0].source, "attrs_meta_dictionary");
+  assert.ok(reason.dictionaryCandidates[0].confidence >= 0.9);
   assert.equal(diagnosis.nextActions.includes("为字典属性选择当前类目合法的 dictionary_value_id"), true);
+});
+
+test("diagnoseListingQuality blocks dictionary value ids outside the current category cache", () => {
+  const diagnosis = diagnoseListingQuality({
+    payload: {
+      items: [{
+        offer_id: "SKU-dict-invalid-id",
+        name: "Кормушка для кошек",
+        description_category_id: 17028673,
+        type_id: 95183,
+        price: "1200",
+        images: ["https://example.com/1.jpg", "https://example.com/2.jpg", "https://example.com/3.jpg"],
+        attributes: [
+          { id: 85, values: [{ dictionary_value_id: 999999, value: "Нет бренда" }] },
+          { id: 9048, values: [{ value: "SKU-dict-invalid-id" }] },
+        ],
+      }],
+    },
+    attrsMeta: [
+      { id: 85, name: "Бренд", is_required: true, dictionary_id: 971082 },
+      { id: 9048, name: "Название модели (для объединения в одну карточку)", is_required: true },
+    ],
+    dictionaryValueCache: {
+      "17028673:95183:85:ZH_HANS": {
+        values: [
+          { id: 971082, value: "Нет бренда" },
+          { id: 123456, value: "Acme" },
+        ],
+      },
+      "999:888:85:ZH_HANS": {
+        values: [{ id: 999999, value: "Wrong category brand" }],
+      },
+    },
+  });
+
+  const reason = diagnosis.blockedReasons.find((item) => item.code === "DICTIONARY_VALUE_INVALID");
+  assert.equal(diagnosis.status, "blocked");
+  assert.ok(reason);
+  assert.deepEqual(reason.enteredValues, ["#999999 Нет бренда"]);
+  assert.equal(reason.dictionaryCandidates[0].dictionary_value_id, 971082);
+  assert.equal(reason.dictionaryCandidates.some((item) => item.dictionary_value_id === 999999), false);
 });
 
 test("diagnoseListingQuality keeps warning-only detail image advice non-blocking", () => {

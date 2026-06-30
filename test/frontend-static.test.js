@@ -160,10 +160,15 @@ test("frontend renders listing quality field repair panel", async () => {
   assert.match(js, /listingQualityWarnings/);
   assert.match(js, /只读诊断/);
   assert.match(js, /重新预检/);
+  assert.match(js, /renderListingQualityDictionaryCandidates/);
+  assert.match(js, /候选字典值/);
+  assert.match(js, /dictionaryCandidates/);
+  assert.match(js, /ozon_dictionary_cache/);
   assert.match(js, /LISTING_QUALITY_DICTIONARY_VALUE_INVALID/);
   assert.match(js, /LISTING_QUALITY_PRICING_BLOCKED/);
   assert.match(css, /workflow-listing-quality/);
   assert.match(css, /workflow-listing-quality-issue/);
+  assert.match(css, /workflow-listing-quality-candidates/);
 });
 
 test("frontend exposes payload issue field locator", async () => {

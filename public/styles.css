@@ -2986,6 +2986,39 @@ tr:hover td {
   color: #7f1d1d;
   line-height: 1.42;
 }
+.workflow-listing-quality-candidates {
+  background: #fff7ed;
+  border: 1px solid #fed7aa;
+  border-radius: 8px;
+  display: grid;
+  gap: 6px;
+  margin-top: 6px;
+  padding: 8px;
+}
+.workflow-listing-quality-candidates strong {
+  color: #9a3412;
+  font-size: 12px;
+}
+.workflow-listing-quality-candidates div {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+.workflow-listing-quality-candidates span {
+  background: #fff;
+  border: 1px solid #fed7aa;
+  border-radius: 999px;
+  color: #9a3412;
+  font-size: 12px;
+  font-weight: 700;
+  padding: 4px 8px;
+}
+.workflow-listing-quality-candidates em {
+  color: #c2410c;
+  font-style: normal;
+  font-weight: 600;
+  margin-left: 4px;
+}
 .workflow-listing-quality-warnings,
 .workflow-listing-quality-actions {
   background: rgba(255, 255, 255, 0.72);

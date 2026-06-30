@@ -2,6 +2,7 @@ import fs from "node:fs/promises";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { diagnoseListingQuality } from "./listingQuality.js";
+import { loadCategoryCache } from "./ozonCategoryCache.js";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const DATA_DIR = path.resolve(__dirname, "..", "data");
@@ -443,6 +444,8 @@ function listingQualityIssues(listingQuality = null) {
     offerId: reason.offerId || "",
     attributeId: reason.attributeId || 0,
     qualityCode: reason.code || "",
+    enteredValues: Array.isArray(reason.enteredValues) ? reason.enteredValues : [],
+    dictionaryCandidates: Array.isArray(reason.dictionaryCandidates) ? reason.dictionaryCandidates : [],
   }));
 }
 
@@ -453,6 +456,9 @@ function buildPayloadDraftValidation(payload = {}, options = {}) {
     attrsMeta: options.attrsMeta || [],
     pricing: options.pricing || null,
     workflowRun: options.workflowRun || null,
+    dictionaryValueCache: options.dictionaryValueCache || {},
+    dictionaryLanguage: options.dictionaryLanguage || "ZH_HANS",
+    dictionaryValuesByAttributeId: options.dictionaryValuesByAttributeId || {},
   });
   const qualityIssues = listingQualityIssues(listingQuality);
   const issues = [...(payloadValidation.issues || []), ...qualityIssues];
@@ -473,6 +479,8 @@ export function buildPreflightGateNode(input = {}) {
     attrsMeta: input.attrsMeta || [],
     pricing: input.pricing || null,
     workflowRun: input.workflowRun || null,
+    dictionaryValueCache: input.dictionaryValueCache || {},
+    dictionaryLanguage: input.dictionaryLanguage || "ZH_HANS",
   });
   issues.push(...listingQualityIssues(listingQuality));
   const duplicate = input.duplicate || null;
@@ -789,10 +797,12 @@ export async function savePayloadDraft(runId, payloadDraft, options = {}) {
 }
 
 export async function validatePayloadDraft(runId) {
+  const categoryCache = await loadCategoryCache();
   const run = await updateRun(runId, (current) => {
     const validation = buildPayloadDraftValidation(current.payloadDraft || {}, {
       attrsMeta: current.payloadDraftAttrsMeta || [],
       workflowRun: current,
+      dictionaryValueCache: categoryCache.attributeValues || {},
     });
     return {
       ...current,
@@ -823,10 +833,13 @@ export async function submitPayloadDraftToOzon(runId, input = {}, deps = {}) {
   }
   const payloadDraft = run.payloadDraft || {};
   const items = payloadItems(payloadDraft);
+  const categoryCache = await loadCategoryCache();
+  const dictionaryValueCache = categoryCache.attributeValues || {};
   if (!items.length) {
     const validation = buildPayloadDraftValidation(payloadDraft, {
       attrsMeta: run.payloadDraftAttrsMeta || [],
       workflowRun: run,
+      dictionaryValueCache,
     });
     await upsertWorkflowNode(runId, {
       key: "preflight_check",
@@ -844,6 +857,7 @@ export async function submitPayloadDraftToOzon(runId, input = {}, deps = {}) {
   const validation = buildPayloadDraftValidation(payloadDraft, {
     attrsMeta: run.payloadDraftAttrsMeta || [],
     workflowRun: run,
+    dictionaryValueCache,
   });
   if (!validation.ok) {
     await upsertWorkflowNode(runId, buildPreflightGateNode({

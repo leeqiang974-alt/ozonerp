@@ -28,6 +28,123 @@ function hasAnyValue(attribute = {}) {
   ));
 }
 
+function normalizeDictionaryText(value = "") {
+  return String(value || "")
+    .toLowerCase()
+    .replace(/ё/g, "е")
+    .replace(/[^\p{Script=Han}\p{Script=Cyrillic}a-z0-9]+/gu, " ")
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
+function dictionaryValueId(value = {}) {
+  return Number(value.dictionary_value_id || value.value_id || value.id || 0);
+}
+
+function dictionaryValueText(value = {}) {
+  return String(value.value || value.name || value.label || "").trim();
+}
+
+function dictionaryValueSources(input = {}, item = {}, meta = {}) {
+  const attributeId = Number(meta?.id || 0);
+  const sources = [];
+  const descriptionCategoryId = Number(item?.description_category_id || item?.descriptionCategoryId || 0);
+  const typeId = Number(item?.type_id || item?.typeId || 0);
+  const cache = input.dictionaryValueCache && typeof input.dictionaryValueCache === "object"
+    ? input.dictionaryValueCache
+    : {};
+  const languages = [
+    input.dictionaryLanguage || "",
+    "ZH_HANS",
+    "RU",
+    "EN",
+    "DEFAULT",
+  ].filter(Boolean);
+
+  for (const language of [...new Set(languages)]) {
+    if (!descriptionCategoryId || !typeId || !attributeId) continue;
+    const key = [descriptionCategoryId, typeId, attributeId, language].join(":");
+    if (Array.isArray(cache[key]?.values)) {
+      sources.push({ source: "ozon_dictionary_cache", values: cache[key].values });
+    }
+  }
+  const byAttribute = input.dictionaryValuesByAttributeId || input.dictionaryValues || {};
+  const directValues = byAttribute[String(attributeId)] || byAttribute[attributeId];
+  if (Array.isArray(directValues)) {
+    sources.push({ source: "provided_dictionary_values", values: directValues });
+  }
+  for (const values of [meta.dictionary_values, meta.dictionaryValues, meta.values]) {
+    if (Array.isArray(values) && values.some((value) => dictionaryValueId(value))) {
+      sources.push({ source: "attrs_meta_dictionary", values });
+    }
+  }
+  return sources;
+}
+
+function knownDictionaryValueIds(input = {}, item = {}, meta = {}) {
+  const ids = new Set();
+  for (const source of dictionaryValueSources(input, item, meta)) {
+    for (const value of source.values || []) {
+      const id = dictionaryValueId(value);
+      if (id) ids.add(id);
+    }
+  }
+  return ids;
+}
+
+function displayEnteredDictionaryValue(value = {}) {
+  const id = Number(value?.dictionary_value_id || 0);
+  const text = String(value?.value || "").trim();
+  return [id ? `#${id}` : "", text].filter(Boolean).join(" ");
+}
+
+function candidateConfidence(enteredValues = [], candidate = {}) {
+  const candidateText = normalizeDictionaryText(dictionaryValueText(candidate));
+  if (!candidateText) return 0.4;
+  let best = 0.42;
+  for (const entered of enteredValues) {
+    const enteredText = normalizeDictionaryText(entered);
+    if (!enteredText) continue;
+    if (enteredText === candidateText) best = Math.max(best, 0.96);
+    else if (candidateText.includes(enteredText) || enteredText.includes(candidateText)) best = Math.max(best, 0.78);
+    else {
+      const enteredTokens = new Set(enteredText.split(" ").filter((token) => token.length >= 2));
+      const candidateTokens = candidateText.split(" ").filter((token) => token.length >= 2);
+      const overlap = candidateTokens.filter((token) => enteredTokens.has(token)).length;
+      if (overlap) best = Math.max(best, 0.62 + Math.min(0.14, overlap * 0.04));
+    }
+  }
+  return Number(best.toFixed(2));
+}
+
+function dictionaryCandidatesForAttribute(input = {}, item = {}, meta = {}, attribute = {}) {
+  const enteredValues = attrValues(attribute)
+    .map((value) => String(value?.value || "").trim())
+    .filter(Boolean);
+  const seen = new Set();
+  const candidates = [];
+  for (const source of dictionaryValueSources(input, item, meta)) {
+    for (const value of source.values || []) {
+      const id = dictionaryValueId(value);
+      const text = dictionaryValueText(value);
+      if (!id || !text) continue;
+      const key = `${id}:${normalizeDictionaryText(text)}`;
+      if (seen.has(key)) continue;
+      seen.add(key);
+      candidates.push({
+        dictionary_value_id: id,
+        value: text,
+        confidence: candidateConfidence(enteredValues, value),
+        source: source.source,
+      });
+    }
+  }
+  return candidates
+    .sort((left, right) => Number(right.confidence || 0) - Number(left.confidence || 0)
+      || String(left.value || "").localeCompare(String(right.value || "")))
+    .slice(0, 5);
+}
+
 function findPricingBlockedReason(workflowRun = null, pricing = null) {
   const directCode = String(pricing?.reasonCode || pricing?.status || "").trim();
   if (/^PRICING_/.test(directCode) || directCode === "blocked") {
@@ -132,12 +249,22 @@ export function diagnoseListingQuality(input = {}) {
         continue;
       }
       if (!dictionary || !attribute) continue;
-      const invalid = attrValues(attribute).some((value) => !Number(value?.dictionary_value_id || 0));
+      const values = attrValues(attribute);
+      const legalIds = knownDictionaryValueIds(input, item, meta);
+      const invalid = values.some((value) => !Number(value?.dictionary_value_id || 0)
+        || (legalIds.size > 0 && !legalIds.has(Number(value.dictionary_value_id || 0))));
       if (invalid) {
+        const enteredValues = values
+          .filter((value) => !Number(value?.dictionary_value_id || 0)
+            || (legalIds.size > 0 && !legalIds.has(Number(value.dictionary_value_id || 0))))
+          .map(displayEnteredDictionaryValue)
+          .filter(Boolean);
         blockedReasons.push({
           code: "DICTIONARY_VALUE_INVALID",
           offerId,
           attributeId: id,
+          enteredValues,
+          dictionaryCandidates: dictionaryCandidatesForAttribute(input, item, meta, attribute),
           message: `${offerId || "当前商品"} 的字典属性 ${metaName(meta)} 缺少合法 dictionary_value_id。`,
         });
         nextActions.push("为字典属性选择当前类目合法的 dictionary_value_id");

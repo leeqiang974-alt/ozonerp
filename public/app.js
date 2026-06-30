@@ -5653,6 +5653,35 @@ function listingQualityStatusText(status = "") {
   return labels[status] || status || "未校验";
 }
 
+function listingQualityCandidateSourceText(source = "") {
+  const labels = {
+    ozon_dictionary_cache: "本地 Ozon 字典缓存",
+    attrs_meta_dictionary: "属性元数据",
+    provided_dictionary_values: "传入字典值",
+  };
+  return labels[source] || source || "字典候选";
+}
+
+function renderListingQualityDictionaryCandidates(issue = {}) {
+  const candidates = Array.isArray(issue.dictionaryCandidates) ? issue.dictionaryCandidates : [];
+  if (!candidates.length) return "";
+  const enteredValues = Array.isArray(issue.enteredValues) ? issue.enteredValues.filter(Boolean) : [];
+  return `
+    <div class="workflow-listing-quality-candidates">
+      <strong>候选字典值（人工选择后重新预检）</strong>
+      ${enteredValues.length ? `<small>当前文本：${enteredValues.map(escapeHtml).join(" / ")}</small>` : ""}
+      <div>
+        ${candidates.slice(0, 5).map((candidate) => `
+          <span title="${escapeHtml(listingQualityCandidateSourceText(candidate.source))}">
+            #${escapeHtml(candidate.dictionary_value_id || "")} · ${escapeHtml(candidate.value || "")}
+            <em>${Math.round(Number(candidate.confidence || 0) * 100)}% · ${escapeHtml(listingQualityCandidateSourceText(candidate.source))}</em>
+          </span>
+        `).join("")}
+      </div>
+    </div>
+  `;
+}
+
 function renderListingQualityPanel(run = {}, node = {}) {
   const { listingQuality, qualityIssues, listingQualityWarnings } = collectListingQualityDiagnosis(run, node);
   if (!listingQuality && !qualityIssues.length && !listingQualityWarnings.length) {
@@ -5675,6 +5704,8 @@ function renderListingQualityPanel(run = {}, node = {}) {
     message: reason.message || "",
     offerId: reason.offerId || "",
     attributeId: reason.attributeId || 0,
+    enteredValues: Array.isArray(reason.enteredValues) ? reason.enteredValues : [],
+    dictionaryCandidates: Array.isArray(reason.dictionaryCandidates) ? reason.dictionaryCandidates : [],
   }));
   const warnings = listingQualityWarnings.length ? listingQualityWarnings : (listingQuality?.warnings || []);
   const nextActions = Array.isArray(listingQuality?.nextActions) ? listingQuality.nextActions : [];
@@ -5697,6 +5728,7 @@ function renderListingQualityPanel(run = {}, node = {}) {
                   <span>#${index + 1} ${escapeHtml(issue.code || "LISTING_QUALITY_BLOCKED")}</span>
                   <strong>${escapeHtml(issue.message || "上架质量诊断存在阻塞项。")}</strong>
                   <small>offerId：${escapeHtml(issue.offerId || "-")} · attributeId：${escapeHtml(issue.attributeId || "-")}</small>
+                  ${renderListingQualityDictionaryCandidates(issue)}
                 </div>
                 <button class="ghost" type="button" data-payload-path="${escapeHtml(meta.path)}" data-payload-label="${escapeHtml(meta.label)}">定位 Payload 字段</button>
               </article>

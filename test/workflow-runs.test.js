@@ -35,10 +35,13 @@ import {
 } from "../src/workflowRuns.js";
 
 const tmpFile = path.join(process.cwd(), "data", "workflow-runs.test.json");
+const tmpCategoryCacheFile = path.join(process.cwd(), "data", "ozon-category-cache.test.json");
 
 function reset() {
   try { fs.unlinkSync(tmpFile); } catch {}
+  try { fs.unlinkSync(tmpCategoryCacheFile); } catch {}
   process.env.WORKFLOW_RUNS_FILE = tmpFile;
+  process.env.OZON_CATEGORY_CACHE_FILE = tmpCategoryCacheFile;
 }
 
 test("stale workflow reconciliation moves old running runs to human review", async () => {
@@ -398,6 +401,105 @@ test("payload draft validation blocks listing quality dictionary issues", async 
   assert.equal(validation.issues.some((issue) => issue.code === "LISTING_QUALITY_DICTIONARY_VALUE_INVALID"), true);
   const updated = await getWorkflowRun(run.id);
   assert.equal(updated.locks.submitLocked, true);
+});
+
+test("payload draft validation suggests cached legal dictionary candidates", async () => {
+  reset();
+  fs.writeFileSync(tmpCategoryCacheFile, JSON.stringify({
+    attributeValues: {
+      "17028673:95183:85:ZH_HANS": {
+        values: [
+          { id: 971082, value: "Нет бренда" },
+          { value_id: 112233, value: "Acme" },
+          { dictionary_value_id: 445566, value: "Petkit" },
+        ],
+      },
+    },
+  }, null, 2));
+  const run = await createWorkflowRun({ title: "字典候选推荐" });
+  await savePayloadDraft(run.id, {
+    items: [{
+      offer_id: "SKU-quality-dict-cache",
+      name: "Кормушка для кошек",
+      description_category_id: 17028673,
+      type_id: 95183,
+      price: "1200",
+      images: ["https://example.com/a.jpg", "https://example.com/b.jpg", "https://example.com/c.jpg"],
+      attributes: [
+        { id: 85, values: [{ value: "Нет бренда" }] },
+        { id: 9048, values: [{ value: "SKU-quality-dict-cache" }] },
+      ],
+    }],
+  }, {
+    attrsMeta: [
+      { id: 85, name: "Бренд", is_required: true, dictionary_id: 971082 },
+      { id: 9048, name: "Название модели (для объединения в одну карточку)", is_required: true },
+    ],
+  });
+
+  const validation = await validatePayloadDraft(run.id);
+  const reason = validation.listingQuality.blockedReasons.find((item) => item.code === "DICTIONARY_VALUE_INVALID");
+  const issue = validation.issues.find((item) => item.code === "LISTING_QUALITY_DICTIONARY_VALUE_INVALID");
+
+  assert.ok(reason);
+  assert.equal(reason.dictionaryCandidates[0].dictionary_value_id, 971082);
+  assert.equal(reason.dictionaryCandidates[0].source, "ozon_dictionary_cache");
+  assert.ok(reason.dictionaryCandidates[0].confidence >= 0.9);
+  assert.ok(issue);
+  assert.deepEqual(issue.dictionaryCandidates, reason.dictionaryCandidates);
+  assert.deepEqual(issue.enteredValues, ["Нет бренда"]);
+});
+
+test("payload draft submit blocks non-current dictionary value ids before Ozon import", async () => {
+  reset();
+  fs.writeFileSync(tmpCategoryCacheFile, JSON.stringify({
+    attributeValues: {
+      "17028673:95183:85:ZH_HANS": {
+        values: [{ id: 971082, value: "Нет бренда" }],
+      },
+      "999:888:85:ZH_HANS": {
+        values: [{ id: 999999, value: "Wrong category brand" }],
+      },
+    },
+  }, null, 2));
+  const run = await createWorkflowRun({ title: "非法字典值阻断提交", entity: { storeId: "3815760-4" } });
+  await savePayloadDraft(run.id, {
+    items: [{
+      offer_id: "SKU-invalid-dict-id",
+      name: "Кормушка для кошек",
+      description_category_id: 17028673,
+      type_id: 95183,
+      price: "1200",
+      images: ["https://example.com/a.jpg", "https://example.com/b.jpg", "https://example.com/c.jpg"],
+      attributes: [
+        { id: 85, values: [{ dictionary_value_id: 999999, value: "Нет бренда" }] },
+        { id: 9048, values: [{ value: "SKU-invalid-dict-id" }] },
+      ],
+    }],
+  }, {
+    attrsMeta: [
+      { id: 85, name: "Бренд", is_required: true, dictionary_id: 971082 },
+      { id: 9048, name: "Название модели (для объединения в одну карточку)", is_required: true },
+    ],
+  });
+  const calls = [];
+
+  const result = await submitPayloadDraftToOzon(run.id, { confirmSubmit: true }, {
+    getStore: (storeId) => ({ id: storeId }),
+    ozonRequest: async (...args) => {
+      calls.push(args);
+      return { result: { task_id: 1 } };
+    },
+  });
+
+  assert.equal(result.ok, false);
+  assert.equal(result.status, "blocked");
+  assert.equal(calls.length, 0);
+  assert.equal(result.validation.issues.some((issue) => issue.code === "LISTING_QUALITY_DICTIONARY_VALUE_INVALID"), true);
+  assert.equal(
+    result.validation.listingQuality.blockedReasons[0].dictionaryCandidates.some((item) => item.dictionary_value_id === 999999),
+    false,
+  );
 });
 
 test("payload draft submit blocks invalid drafts before Ozon import", async () => {

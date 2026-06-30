@@ -1160,6 +1160,43 @@ function listingFillTaskTextRepairCandidate(run = currentListingWorkflowRun()) {
   return null;
 }
 
+function listingFillTaskVariantAspectSuggestion(variantConfiguration = null) {
+  const rows = Array.isArray(variantConfiguration?.rows) ? variantConfiguration.rows : [];
+  const affectedRows = rows.filter((row) => ["duplicate_aspect", "missing_aspect"].includes(row.rowStatus));
+  if (!affectedRows.length) return null;
+  const duplicateRows = affectedRows.filter((row) => row.rowStatus === "duplicate_aspect");
+  const missingRows = affectedRows.filter((row) => row.rowStatus === "missing_aspect");
+  const offers = affectedRows.map((row) => row.offerId).filter(Boolean);
+  const previewOffers = offers.slice(0, 5);
+  const firstIssue = affectedRows[0];
+  const firstReason = (firstIssue.reasons || []).find((reason) => ["DUPLICATE_ASPECT", "MISSING_ASPECT"].includes(reason.code)) || {};
+  const aspectLabels = [...new Set(affectedRows
+    .flatMap((row) => row.aspects || [])
+    .map((aspect) => aspect.name || `属性 ${aspect.id || ""}`)
+    .filter(Boolean))];
+  const issueSummary = [
+    duplicateRows.length ? `${duplicateRows.length} 个 SKU 变体属性重复` : "",
+    missingRows.length ? `${missingRows.length} 个 SKU 缺少可变特性` : "",
+  ].filter(Boolean).join("，");
+  const action = duplicateRows.length
+    ? "为重复 SKU 填写不同的颜色、尺码或其他 Ozon 可变特性；同父 SKU 可以共用型号名称，但 aspect 组合必须不同。"
+    : "先读取当前类目 aspect 属性，再给每个 SKU 补齐颜色、尺码或其他可变特性。";
+  const copyText = [
+    `问题：${issueSummary || firstReason.message || "变体属性异常"}`,
+    `受影响 SKU：${offers.join("、") || "-"}`,
+    `涉及属性：${aspectLabels.join("、") || "当前类目可变特性"}`,
+    `建议：${action}`,
+    "下一步：查看变体配置工作簿，修正后重新预检；不会自动写入、不会提交 Ozon。",
+  ].join("\n");
+  return {
+    issueSummary: issueSummary || "变体属性异常",
+    affectedSkuText: previewOffers.join("、") + (offers.length > previewOffers.length ? ` 等 ${offers.length} 个` : ""),
+    detail: firstReason.message || firstIssue.safeNextAction || "检查每个 SKU 的 Ozon 可变特性是否完整且互不重复。",
+    action,
+    copyText,
+  };
+}
+
 function listingFillTaskQueueItems(run = currentListingWorkflowRun()) {
   if (!run) {
     return [{
@@ -1179,6 +1216,7 @@ function listingFillTaskQueueItems(run = currentListingWorkflowRun()) {
   const listingQuality = validation.listingQuality || preflightOutput.listingQuality || null;
   const repairCandidate = listingFillTaskRepairCandidate(run);
   const textRepairCandidate = listingFillTaskTextRepairCandidate(run);
+  const variantAspectSuggestion = listingFillTaskVariantAspectSuggestion(variantConfiguration);
   const items = [];
   if (Array.isArray(requiredAttributeFillPlan) && requiredAttributeFillPlan.length) {
     const autoCount = requiredAttributeFillPlan.filter((row) => row.action === "auto_fill").length;
@@ -1207,6 +1245,7 @@ function listingFillTaskQueueItems(run = currentListingWorkflowRun()) {
       body: `${blockedCount} 个变体组合阻塞，${imageWarningCount} 个 SKU 图提醒。`,
       meta: "数据来自 variantConfiguration；修复后必须重新预检。",
       target: blockedCount ? "preflight-submit" : "content-images",
+      variantAspectSuggestion,
     });
   }
   if (listingQuality) {
@@ -1273,7 +1312,35 @@ function renderListingFillTaskQueue(run = currentListingWorkflowRun()) {
               data-repair-attribute-id="${escapeHtml(item.textRepairCandidate.attributeId)}"
               title="${escapeHtml(item.textRepairCandidate.attributeName || "文本属性")}"
             >填写文本属性并预检</button>` : ""}
-            <button type="button" data-listing-task-view="${escapeHtml(item.target)}">定位处理区</button>
+            ${item.variantAspectSuggestion ? `
+              <div class="listing-variant-suggestion">
+                <strong>变体属性修复建议</strong>
+                <span>受影响 SKU：${escapeHtml(item.variantAspectSuggestion.affectedSkuText || "-")}</span>
+                <p>${escapeHtml(item.variantAspectSuggestion.detail || item.variantAspectSuggestion.issueSummary)}</p>
+                <small>${escapeHtml(item.variantAspectSuggestion.action || "修复后重新预检；不会自动提交 Ozon。")}</small>
+                <div class="listing-variant-suggestion-actions">
+                  <button
+                    type="button"
+                    class="ghost"
+                    data-listing-variant-suggestion-copy="true"
+                    data-workflow-action="copy-repair-template"
+                    data-repair-copy="${escapeHtml(item.variantAspectSuggestion.copyText)}"
+                  >复制修复建议</button>
+                  <button
+                    type="button"
+                    data-listing-task-view="workflow-console"
+                    data-listing-task-run-id="${escapeHtml(run?.id || "")}"
+                    data-listing-task-node-key="preflight_check"
+                  >查看变体工作簿</button>
+                </div>
+              </div>
+            ` : ""}
+            <button
+              type="button"
+              data-listing-task-view="${escapeHtml(item.target)}"
+              data-listing-task-run-id="${escapeHtml(run?.id || "")}"
+              data-listing-task-node-key="preflight_check"
+            >定位处理区</button>
           </article>
         `).join("")}
       </div>
@@ -8901,6 +8968,8 @@ async function init() {
     }
     const listingTaskViewTarget = event.target.closest("[data-listing-task-view]");
     if (listingTaskViewTarget) {
+      state.selectedWorkflowRunId = listingTaskViewTarget.dataset.listingTaskRunId || currentListingWorkflowRun()?.id || state.selectedWorkflowRunId;
+      state.selectedWorkflowNodeKey = listingTaskViewTarget.dataset.listingTaskNodeKey || state.selectedWorkflowNodeKey;
       const target = listingTaskViewTarget.dataset.listingTaskView || "";
       if (LISTING_CENTER_STAGES.some((stage) => stage.key === target)) setListingStage(target);
       else activateErpView(target || "listing");

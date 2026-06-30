@@ -173,10 +173,15 @@
   - 只有当前 workflow 处于等待人工时才展示“填写文本属性并预检”按钮。
   - 点击后复用现有 `apply-attribute-text-repair` prompt、`/payload-draft/attribute-repair` API 和重新预检流程。
   - 后端同样要求 `waiting_human` / `locks.waitingHuman=true`、`confirmLocalDraftRepair=true`，且只能修复非字典、非变体的缺失普通文本属性。
+- 上架中心任务队列已接入变体 aspect 安全修复建议：
+  - 从当前 workflow 的 `variantConfiguration.rows` 读取 `duplicate_aspect` / `missing_aspect` 行。
+  - 在“变体/SKU 图”任务卡内显示“变体属性修复建议”、受影响 SKU、首个业务原因和人工修法。
+  - 提供“复制修复建议”和“查看变体工作簿”两个本地动作；定位时带当前 workflow run 与 `preflight_check` 节点。
+  - 本轮不写 Payload、不自动补 aspect、不提交 Ozon；修正后仍必须重新预检和人工确认。
 
 ### 下一步
 
-- 继续做“变体 aspect 安全修复建议”：先不直接写入，先把重复/缺失 aspect 的可复制修复建议和对应 SKU 定位放到任务队列，避免多 SKU 变体配置继续转圈。
+- 继续做“变体 aspect 字段级定位”：把工作簿中的重复/缺失 SKU 与 Payload 编辑器字段定位打通，让用户能一键高亮对应 `offer_id` / aspect attribute，再人工修改并重新预检。
 
 ## 2026-06-30 仓库匹配规则引擎 V1
 

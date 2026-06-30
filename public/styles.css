@@ -330,6 +330,30 @@
   border-radius: 999px;
   font-weight: 800;
 }
+.listing-variant-suggestion {
+  border: 1px solid rgba(248, 113, 113, .26);
+  border-radius: 8px;
+  background: rgba(255, 255, 255, .72);
+  display: grid;
+  gap: 5px;
+  padding: 8px;
+}
+.listing-variant-suggestion strong {
+  color: #991b1b;
+  font-size: 13px;
+}
+.listing-variant-suggestion span {
+  color: #334155;
+}
+.listing-variant-suggestion p,
+.listing-variant-suggestion small {
+  color: #475569;
+}
+.listing-variant-suggestion-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
 .listing-fill-task-card-success { border-color: rgba(34, 197, 94, .26); background: #f0fdf4; }
 .listing-fill-task-card-info { border-color: rgba(96, 165, 250, .3); background: #eff6ff; }
 .listing-fill-task-card-warning { border-color: rgba(245, 158, 11, .3); background: #fffbeb; }

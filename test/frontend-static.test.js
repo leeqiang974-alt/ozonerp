@@ -227,17 +227,25 @@ test("listing center exposes a read-only fill task queue from existing diagnosti
   assert.match(js, /listingFillTaskQueueItems/);
   assert.match(js, /listingFillTaskRepairCandidate/);
   assert.match(js, /listingFillTaskTextRepairCandidate/);
+  assert.match(js, /listingFillTaskVariantAspectSuggestion/);
   assert.match(js, /waitingHuman/);
   assert.match(js, /requiredAttributeFillPlan/);
   assert.match(js, /variantConfiguration/);
   assert.match(js, /listingQuality/);
   assert.match(js, /data-listing-task-view/);
+  assert.match(js, /data-listing-task-run-id/);
+  assert.match(js, /data-listing-task-node-key/);
   assert.match(js, /data-workflow-action="apply-attribute-dictionary-repair"/);
   assert.match(js, /data-workflow-action="apply-attribute-text-repair"/);
   assert.match(js, /确认写入草稿并预检/);
   assert.match(js, /填写文本属性并预检/);
+  assert.match(js, /变体属性修复建议/);
+  assert.match(js, /data-listing-variant-suggestion-copy/);
+  assert.match(js, /查看变体工作簿/);
+  assert.match(js, /受影响 SKU/);
   assert.match(css, /listing-fill-task-queue/);
   assert.match(css, /listing-fill-task-card/);
+  assert.match(css, /listing-variant-suggestion/);
 });
 
 test("frontend renders read-only variant configuration workbench", async () => {

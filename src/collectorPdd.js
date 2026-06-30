@@ -80,6 +80,7 @@ function normalizeAttributes(items) {
 function normalizeVariants(items, fallbackPrice, images) {
   const variants = Array.isArray(items) ? items : [];
   const normalized = variants
+    .filter((item) => isLikelyPddVariantSpec(item.spec || item.specText || item.name || item.label || ""))
     .map((item, index) => ({
       skuId: cleanupText(item.skuId || item.sku_id || item.id || ""),
       spec: cleanupText(item.spec || item.specText || item.name || item.label || ""),
@@ -164,7 +165,18 @@ function normalizeImage(value) {
 }
 
 function isLikelyPddImage(image) {
-  return /pddpic\.com|pinduoduo\.com|yangkeduo\.com/i.test(image) && !/avatar|logo|icon|sprite/i.test(image);
+  return /pddpic\.com|pinduoduo\.com|yangkeduo\.com/i.test(image)
+    && !/avatar|logo|icon|sprite|coupon|promotion|brand|ddpay|oms_img_ng|funimg/i.test(image);
+}
+
+function isLikelyPddVariantSpec(value) {
+  const text = cleanupText(value);
+  if (!text) return true;
+  if (text.length > 40) return false;
+  if (/大促价|券后|满\d+减|件\d+\.?\d*折|买了又买|拼单|即将结束|立刻拼|查看|确定|顶部|首页|帮助|反馈|进店|价格说明|历史浏览|更多/.test(text)) return false;
+  if (/质量|外观|实用|包装|做工|态度|回头客|效果|评价|已抢\d+件/.test(text)) return false;
+  if (/^\d+$/.test(text)) return false;
+  return true;
 }
 
 function cleanupText(value) {

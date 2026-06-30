@@ -935,7 +935,7 @@ function pickPddImages() {
     .map((image) => image.currentSrc || image.src || image.getAttribute("data-src") || "")
     .map(normalizeImage)
     .filter((src) => /pddpic\.com|pinduoduo\.com|yangkeduo\.com/i.test(src))
-    .filter((src) => !/avatar|logo|icon|sprite/i.test(src));
+    .filter((src) => !/avatar|logo|icon|sprite|coupon|promotion|brand|ddpay|oms_img_ng|funimg/i.test(src));
   return dedupe(images).slice(0, 80);
 }
 
@@ -963,7 +963,7 @@ function pickPddSkuVariants() {
   const images = pickPddImages();
   const chips = [...document.querySelectorAll("button, [role='button'], [class*='sku'], [class*='spec']")]
     .map((node) => cleanText(node.innerText || node.textContent || ""))
-    .filter((text) => text.length > 0 && text.length < 60 && !/购买|客服|收藏|分享|店铺|评价|登录/.test(text))
+    .filter((text) => isLikelyPddVariantSpec(text))
     .slice(0, 60);
   const unique = dedupe(chips);
   if (!unique.length) {
@@ -976,6 +976,16 @@ function pickPddSkuVariants() {
     stock: "",
     image: images[index % Math.max(images.length, 1)] || "",
   }));
+}
+
+function isLikelyPddVariantSpec(text) {
+  const value = cleanText(text);
+  if (!value || value.length > 40) return false;
+  if (/购买|客服|收藏|分享|店铺|评价|登录/.test(value)) return false;
+  if (/大促价|券后|满\d+减|件\d+\.?\d*折|买了又买|拼单|即将结束|立刻拼|查看|确定|顶部|首页|帮助|反馈|进店|价格说明|历史浏览|更多/.test(value)) return false;
+  if (/质量|外观|实用|包装|做工|态度|回头客|效果|已抢\d+件/.test(value)) return false;
+  if (/^\d+$/.test(value)) return false;
+  return true;
 }
 
 function pageNeedsOzonHumanCheck() {

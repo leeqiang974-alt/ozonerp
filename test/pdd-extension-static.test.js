@@ -27,3 +27,11 @@ test("ERP collector popup can actively collect current PDD tab", async () => {
   assert.match(popup, /\/api\/pdd\/capture/);
   assert.match(popup, /拼多多商品详情页/);
 });
+
+test("ERP collector extension filters PDD page chrome before capture", async () => {
+  const content = await readFile(new URL("../browser-extension/erp-collector-extension/content.js", import.meta.url), "utf8");
+
+  assert.match(content, /isLikelyPddVariantSpec/);
+  assert.match(content, /拼单\|即将结束/);
+  assert.match(content, /coupon\|promotion\|brand/);
+});

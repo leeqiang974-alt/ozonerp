@@ -50,3 +50,30 @@ test("PDD parser warns when page data needs manual completion", () => {
   assert.ok(parsed.warnings.includes("未解析到标题，请在已登录拼多多商品页用插件读取页面。"));
   assert.ok(parsed.warnings.includes("未解析到完整包装尺寸，上架前必须补齐尺重。"));
 });
+
+test("PDD parser filters page chrome from variants and product images", () => {
+  const parsed = parsePddProduct({
+    url: "https://mobile.yangkeduo.com/goods.html?goods_id=546151830201",
+    hints: {
+      title: "防黄大仙超强烟灰缸",
+      price: "6.81",
+      images: [
+        "https://img.pddpic.com/mms-material-img/2023-10-31/product-a.jpeg",
+        "https://img.pddpic.com/a/coupon/d8c60a2e-d3dd-48e8-9fe5-1125742075b1.png.slim.png",
+        "https://promotion.pddpic.com/oms-img-promotion/2026-05-19/activity.png",
+        "https://funimg.pddpic.com/brand/logo.png.slim.png",
+      ],
+      skuVariants: [
+        { spec: "大促价¥ 6.81", price: "6.81" },
+        { spec: "小黄 买了又买 拼单即将结束 23:23:59.7 立刻拼", price: "6.81" },
+        { spec: "质量很好(257)", price: "6.81" },
+        { spec: "圆形烟灰缸", price: "6.81" },
+        { spec: "正方形烟灰缸", price: "6.81" },
+        { spec: "确定", price: "6.81" },
+      ],
+    },
+  });
+
+  assert.deepEqual(parsed.images, ["https://img.pddpic.com/mms-material-img/2023-10-31/product-a.jpeg"]);
+  assert.deepEqual(parsed.skuVariants.map((item) => item.spec), ["圆形烟灰缸", "正方形烟灰缸"]);
+});

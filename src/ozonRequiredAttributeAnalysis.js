@@ -328,6 +328,7 @@ function dictionaryCandidatesForMeta({
     })
     .filter(Boolean)
     .concat(synonymDictionaryCandidatesForMeta({ meta, categoryMatch, attributeValuesById, categoryCache, productText }))
+    .concat(typeSynonymDictionaryCandidatesForMeta({ meta, categoryMatch, attributeValuesById, categoryCache, productText }))
     .filter((candidate, index, list) => (
       candidate.dictionaryValueId
       && list.findIndex((item) => item.dictionaryValueId === candidate.dictionaryValueId) === index
@@ -368,6 +369,41 @@ function synonymDictionaryCandidatesForMeta({
   ];
   const values = dictionaryValuesForPlan({ meta, categoryMatch, attributeValuesById, categoryCache });
   return materialRules
+    .filter((rule) => rule.sourcePattern.test(text))
+    .flatMap((rule) => values.map((entry) => {
+      const value = String(entry?.value || entry?.name || "").replace(/\s+/g, " ").trim();
+      if (!value || !rule.valuePattern.test(value)) return null;
+      return {
+        dictionaryValueId: dictionaryValueId(entry),
+        value,
+        confidence: rule.confidence,
+        source: rule.source,
+      };
+    }))
+    .filter(Boolean);
+}
+
+function typeSynonymDictionaryCandidatesForMeta({
+  meta = {},
+  categoryMatch = {},
+  attributeValuesById = {},
+  categoryCache = {},
+  productText = "",
+} = {}) {
+  const classified = classifyAttributeFillStrategy(meta);
+  if (classified.strategy !== "dictionary_lookup_from_product_text") return [];
+  if (!/тип|вид|категор|用途|类型|种类/.test(normalizeText(`${meta.name || ""} ${meta.description || ""}`))) return [];
+  const text = normalizeText(productText);
+  const typeRules = [
+    {
+      sourcePattern: /органайзер|organizer|organiser|收纳盒|收纳架|整理盒|置物架/,
+      valuePattern: /органайзер|organizer|organiser|收纳/i,
+      source: "type_synonym",
+      confidence: 0.7,
+    },
+  ];
+  const values = dictionaryValuesForPlan({ meta, categoryMatch, attributeValuesById, categoryCache });
+  return typeRules
     .filter((rule) => rule.sourcePattern.test(text))
     .flatMap((rule) => values.map((entry) => {
       const value = String(entry?.value || entry?.name || "").replace(/\s+/g, " ").trim();

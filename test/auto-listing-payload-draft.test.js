@@ -336,6 +336,44 @@ test("buildRequiredAttributeFillPlan suggests dictionary candidates from materia
   assert.deepEqual(colorPlan.dictionaryCandidates, []);
 });
 
+test("buildRequiredAttributeFillPlan suggests type dictionary candidates from product synonyms only", () => {
+  const plan = buildRequiredAttributeFillPlan({
+    categoryMatch: { description_category_id: 17028673, type_id: 95183 },
+    attrsMeta: [
+      { id: 8229, name: "Тип", is_required: true, dictionary_id: 101 },
+    ],
+    attributeValuesById: {
+      8229: [
+        { id: 31, value: "органайзер" },
+        { id: 32, value: "корзина" },
+      ],
+    },
+    productText: "1688 标题：厨房收纳盒 organizer для кухни",
+  });
+
+  const typePlan = plan.find((row) => row.attributeId === 8229);
+  assert.equal(typePlan.action, "suggest_dictionary");
+  assert.equal(typePlan.dictionaryValueId, undefined);
+  assert.deepEqual(typePlan.dictionaryCandidates, [{
+    dictionaryValueId: 31,
+    value: "органайзер",
+    confidence: 0.7,
+    source: "type_synonym",
+  }]);
+
+  const materialPlan = buildRequiredAttributeFillPlan({
+    categoryMatch: { description_category_id: 17028673, type_id: 95183 },
+    attrsMeta: [
+      { id: 777, name: "Материал", is_required: true, dictionary_id: 100 },
+    ],
+    attributeValuesById: {
+      777: [{ id: 11, value: "органайзер" }],
+    },
+    productText: "1688 标题：厨房收纳盒 organizer",
+  })[0];
+  assert.deepEqual(materialPlan.dictionaryCandidates, []);
+});
+
 test("buildListingPayloadDraftFromJob applies explainable pricing policy fields", () => {
   const draft = buildListingPayloadDraftFromJob({
     pendingParentSku: "SKUlq01007",

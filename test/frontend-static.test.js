@@ -171,6 +171,21 @@ test("frontend renders listing quality field repair panel", async () => {
   assert.match(css, /workflow-listing-quality-candidates/);
 });
 
+test("frontend renders a read-only listing attribute matrix", async () => {
+  const [js, css] = await Promise.all([
+    readFile(new URL("../public/app.js", import.meta.url), "utf8"),
+    readFile(new URL("../public/styles.css", import.meta.url), "utf8"),
+  ]);
+
+  assert.match(js, /renderListingAttributeMatrix/);
+  assert.match(js, /attributeMatrix/);
+  assert.match(js, /属性矩阵/);
+  assert.match(js, /只读矩阵/);
+  assert.match(js, /duplicate_variant/);
+  assert.match(css, /workflow-attribute-matrix/);
+  assert.match(css, /attribute-matrix-cell/);
+});
+
 test("frontend exposes payload issue field locator", async () => {
   const js = await readFile(new URL("../public/app.js", import.meta.url), "utf8");
 

@@ -5752,6 +5752,84 @@ function renderListingQualityPanel(run = {}, node = {}) {
   `;
 }
 
+function listingAttributeMatrixStatusText(status = "") {
+  const labels = {
+    ok: "已填",
+    empty: "未填",
+    missing: "缺失",
+    invalid_dictionary: "字典不合法",
+    duplicate_variant: "变体重复",
+    missing_variant_aspect_metadata: "缺变体元数据",
+  };
+  return labels[status] || status || "-";
+}
+
+function listingAttributeMatrixKindText(kind = "") {
+  const labels = {
+    required_dictionary: "必填字典",
+    required: "必填",
+    variant_aspect: "变体特征",
+    dictionary: "字典",
+    attribute: "属性",
+    variant_aspect_missing_metadata: "变体元数据",
+  };
+  return labels[kind] || kind || "属性";
+}
+
+function renderListingAttributeMatrix(run = {}, node = {}) {
+  const matrix = run.payloadDraftValidation?.attributeMatrix || node?.output?.attributeMatrix || null;
+  const rows = Array.isArray(matrix?.rows) ? matrix.rows : [];
+  const offers = Array.isArray(matrix?.offers) ? matrix.offers : [];
+  if (!rows.length || !offers.length) return "";
+  const summary = matrix.summary || {};
+  const blockedStatuses = new Set(["missing", "invalid_dictionary", "duplicate_variant", "missing_variant_aspect_metadata"]);
+  const sortedRows = rows.slice().sort((left, right) => {
+    const leftBlocked = (left.cells || []).some((cell) => blockedStatuses.has(cell.status));
+    const rightBlocked = (right.cells || []).some((cell) => blockedStatuses.has(cell.status));
+    return Number(rightBlocked) - Number(leftBlocked);
+  });
+  return `
+    <section class="workflow-attribute-matrix">
+      <div class="workflow-attribute-matrix-head">
+        <div>
+          <strong>属性矩阵</strong>
+          <p class="hint">只读矩阵：逐 SKU 查看必填属性、字典值和变体特征，修复后必须重新预检。</p>
+        </div>
+        <span>${Number(summary.blockedCellCount || 0)} 个卡点</span>
+      </div>
+      <div class="workflow-attribute-matrix-table-wrap">
+        <table class="workflow-attribute-matrix-table">
+          <thead>
+            <tr>
+              <th>属性</th>
+              ${offers.map((offer) => `<th>${escapeHtml(offer)}</th>`).join("")}
+            </tr>
+          </thead>
+          <tbody>
+            ${sortedRows.slice(0, 28).map((row) => `
+              <tr>
+                <th>
+                  <strong>${escapeHtml(row.name || `属性 ${row.attributeId || ""}`)}</strong>
+                  <small>#${escapeHtml(row.attributeId || "")} · ${escapeHtml(listingAttributeMatrixKindText(row.kind))}</small>
+                </th>
+                ${(row.cells || []).map((cell) => `
+                  <td>
+                    <span class="attribute-matrix-cell attribute-matrix-cell-${escapeHtml(cell.status || "empty")}">
+                      ${escapeHtml(listingAttributeMatrixStatusText(cell.status))}
+                    </span>
+                    <small>${escapeHtml(cell.value || "-")}</small>
+                  </td>
+                `).join("")}
+              </tr>
+            `).join("")}
+          </tbody>
+        </table>
+      </div>
+      ${rows.length > 28 ? `<p class="hint">已优先显示有卡点的属性行；其余低风险属性在重新预检后继续汇总。</p>` : ""}
+    </section>
+  `;
+}
+
 function workflowPayloadIssueSummary(issues = []) {
   const counts = new Map();
   for (const issue of issues) {
@@ -5949,6 +6027,7 @@ function renderWorkflowDetail(run, node) {
       <span>Payload 草稿</span>
       ${workflowPayloadDraftSummary(payloadDraft)}
       ${renderListingQualityPanel(run, node)}
+      ${renderListingAttributeMatrix(run, node)}
       ${payloadIssues.length ? `
         <div class="workflow-payload-issues">
           ${workflowPayloadIssueSummary(payloadIssues)}

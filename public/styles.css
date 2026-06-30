@@ -3045,6 +3045,93 @@ tr:hover td {
   gap: 8px;
   padding: 10px;
 }
+.workflow-attribute-matrix {
+  background: #f8fafc;
+  border: 1px solid #dbeafe;
+  border-radius: 8px;
+  display: grid;
+  gap: 10px;
+  padding: 12px;
+}
+.workflow-attribute-matrix-head {
+  align-items: flex-start;
+  display: flex;
+  gap: 12px;
+  justify-content: space-between;
+}
+.workflow-attribute-matrix-head strong {
+  color: #0f172a;
+}
+.workflow-attribute-matrix-head p {
+  margin: 3px 0 0;
+}
+.workflow-attribute-matrix-head > span {
+  background: #eff6ff;
+  border: 1px solid #bfdbfe;
+  border-radius: 999px;
+  color: #1d4ed8;
+  flex: 0 0 auto;
+  font-size: 12px;
+  font-weight: 800;
+  padding: 4px 10px;
+}
+.workflow-attribute-matrix-table-wrap {
+  overflow-x: auto;
+}
+.workflow-attribute-matrix-table {
+  border-collapse: collapse;
+  min-width: 720px;
+  width: 100%;
+}
+.workflow-attribute-matrix-table th,
+.workflow-attribute-matrix-table td {
+  border: 1px solid #e2e8f0;
+  padding: 8px;
+  text-align: left;
+  vertical-align: top;
+}
+.workflow-attribute-matrix-table thead th {
+  background: #eff6ff;
+  color: #1e3a8a;
+  font-size: 12px;
+}
+.workflow-attribute-matrix-table tbody th {
+  background: #fff;
+  min-width: 180px;
+}
+.workflow-attribute-matrix-table tbody th strong,
+.workflow-attribute-matrix-table td small {
+  display: block;
+}
+.workflow-attribute-matrix-table tbody th small,
+.workflow-attribute-matrix-table td small {
+  color: #64748b;
+  font-size: 12px;
+  margin-top: 4px;
+}
+.attribute-matrix-cell {
+  border-radius: 999px;
+  display: inline-flex;
+  font-size: 12px;
+  font-weight: 800;
+  line-height: 1;
+  padding: 5px 8px;
+}
+.attribute-matrix-cell-ok {
+  background: #dcfce7;
+  color: #166534;
+}
+.attribute-matrix-cell-empty {
+  background: #f1f5f9;
+  color: #475569;
+}
+.attribute-matrix-cell-missing,
+.attribute-matrix-cell-invalid_dictionary,
+.attribute-matrix-cell-duplicate_variant,
+.attribute-matrix-cell-missing_variant_aspect_metadata {
+  background: #fee2e2;
+  color: #991b1b;
+}
 .workflow-payload-issue-summary {
   border-bottom: 1px dashed #fcd34d;
   display: grid;

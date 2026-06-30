@@ -295,6 +295,157 @@ function attributeDisplayValue(attribute = {}) {
   )).filter(Boolean).join(", ");
 }
 
+function metaName(meta = {}) {
+  return String(meta.name || meta.attribute_name || `属性 ${Number(meta.id || 0)}`);
+}
+
+function attributeValueIds(attribute = {}) {
+  return (attribute.values || [])
+    .map((value) => Number(value?.dictionary_value_id || 0))
+    .filter(Boolean);
+}
+
+function dictionaryValueId(value = {}) {
+  return Number(value?.dictionary_value_id || value?.value_id || value?.id || 0);
+}
+
+function dictionaryCacheValuesForAttribute(item = {}, meta = {}, dictionaryValueCache = {}, language = "ZH_HANS") {
+  const descriptionCategoryId = Number(item?.description_category_id || item?.descriptionCategoryId || 0);
+  const typeId = Number(item?.type_id || item?.typeId || 0);
+  const attributeId = Number(meta?.id || 0);
+  if (!descriptionCategoryId || !typeId || !attributeId) return [];
+  const languages = [language, "ZH_HANS", "RU", "EN", "DEFAULT"].filter(Boolean);
+  const values = [];
+  const seenKeys = new Set();
+  for (const lang of [...new Set(languages)]) {
+    const key = [descriptionCategoryId, typeId, attributeId, lang].join(":");
+    if (seenKeys.has(key)) continue;
+    seenKeys.add(key);
+    values.push(...(dictionaryValueCache?.[key]?.values || []));
+  }
+  return values;
+}
+
+function dictionaryValuesForMatrix(input = {}, item = {}, meta = {}) {
+  const values = [
+    ...dictionaryCacheValuesForAttribute(item, meta, input.dictionaryValueCache || {}, input.dictionaryLanguage || "ZH_HANS"),
+  ];
+  const attributeId = Number(meta?.id || 0);
+  const byAttribute = input.dictionaryValuesByAttributeId || input.dictionaryValues || {};
+  const directValues = byAttribute[String(attributeId)] || byAttribute[attributeId];
+  if (Array.isArray(directValues)) values.push(...directValues);
+  for (const metaValues of [meta.dictionary_values, meta.dictionaryValues, meta.values]) {
+    if (Array.isArray(metaValues) && metaValues.some((value) => dictionaryValueId(value))) {
+      values.push(...metaValues);
+    }
+  }
+  return values;
+}
+
+function dictionaryValueIdSet(values = []) {
+  return new Set((values || []).map(dictionaryValueId).filter(Boolean));
+}
+
+function matrixAttributeKind(meta = {}) {
+  const required = meta?.is_required === true;
+  const aspect = meta?.is_aspect === true;
+  const dictionary = Number(meta?.dictionary_id || meta?.dictionaryId || 0) > 0;
+  if (required && dictionary) return "required_dictionary";
+  if (required) return "required";
+  if (aspect) return "variant_aspect";
+  if (dictionary) return "dictionary";
+  return "attribute";
+}
+
+function matrixAttributeRows(attrsMeta = []) {
+  return (attrsMeta || [])
+    .filter((meta) => Number(meta?.id || 0))
+    .filter((meta) => meta?.is_required === true || meta?.is_aspect === true || Number(meta?.dictionary_id || meta?.dictionaryId || 0) > 0)
+    .map((meta) => ({
+      attributeId: Number(meta.id),
+      name: metaName(meta),
+      kind: matrixAttributeKind(meta),
+      required: meta?.is_required === true,
+      aspect: meta?.is_aspect === true,
+      dictionary: Number(meta?.dictionary_id || meta?.dictionaryId || 0) > 0,
+      meta,
+    }));
+}
+
+export function buildListingAttributeMatrix(input = {}) {
+  const payload = input.payload || {};
+  const attrsMeta = Array.isArray(input.attrsMeta) ? input.attrsMeta : [];
+  const dictionaryValueCache = input.dictionaryValueCache || {};
+  const dictionaryLanguage = input.dictionaryLanguage || "ZH_HANS";
+  const items = payloadItems(payload);
+  const offers = items.map((item, index) => String(item?.offer_id || `item-${index + 1}`));
+  const variantDiagnosis = buildVariantGroupingDiagnosis({ items, attrsMeta });
+  const duplicateAspectOffers = new Set((variantDiagnosis.duplicateGroups || []).flatMap((group) => group.offerIds || []));
+  const rows = matrixAttributeRows(attrsMeta).map((row) => {
+    const cells = items.map((item, index) => {
+      const offerId = offers[index];
+      const attribute = (item.attributes || []).find((entry) => Number(entry?.id || 0) === row.attributeId) || null;
+      const hasValue = attribute && attributeDisplayValue(attribute);
+      let status = hasValue ? "ok" : (row.required || row.aspect ? "missing" : "empty");
+      const valueIds = attributeValueIds(attribute || {});
+      const legalValues = row.dictionary ? dictionaryValuesForMatrix({
+        dictionaryValueCache,
+        dictionaryLanguage,
+        dictionaryValuesByAttributeId: input.dictionaryValuesByAttributeId || input.dictionaryValues || {},
+      }, item, row.meta) : [];
+      const legalIds = dictionaryValueIdSet(legalValues);
+      if (hasValue && row.dictionary) {
+        const invalid = !valueIds.length || (legalIds.size > 0 && valueIds.some((id) => !legalIds.has(id)));
+        if (invalid) status = "invalid_dictionary";
+      }
+      if (status === "ok" && row.aspect && duplicateAspectOffers.has(offerId)) {
+        status = "duplicate_variant";
+      }
+      return {
+        offerId,
+        status,
+        value: hasValue || "",
+        dictionaryValueIds: valueIds,
+      };
+    });
+    return { ...row, cells, meta: undefined };
+  });
+  const hasMultipleItems = items.length > 1;
+  const hasAspectMeta = attrsMeta.some((meta) => meta?.is_aspect && Number(meta?.id || 0));
+  if (hasMultipleItems && !hasAspectMeta) {
+    rows.push({
+      attributeId: 0,
+      name: "Ozon 可变特性元数据",
+      kind: "variant_aspect_missing_metadata",
+      required: true,
+      aspect: true,
+      dictionary: false,
+      cells: offers.map((offerId) => ({
+        offerId,
+        status: "missing_variant_aspect_metadata",
+        value: "当前类目没有可用于区分变体的 aspect 属性元数据",
+        dictionaryValueIds: [],
+      })),
+    });
+  }
+  const blockedStatuses = new Set(["missing", "invalid_dictionary", "duplicate_variant"]);
+  blockedStatuses.add("missing_variant_aspect_metadata");
+  const blockedCellCount = rows.reduce((count, row) => count + row.cells.filter((cell) => blockedStatuses.has(cell.status)).length, 0);
+  return {
+    offers,
+    rows,
+    summary: {
+      offerCount: offers.length,
+      attributeCount: rows.length,
+      blockedCellCount,
+      missingCellCount: rows.reduce((count, row) => count + row.cells.filter((cell) => cell.status === "missing").length, 0),
+      invalidDictionaryCellCount: rows.reduce((count, row) => count + row.cells.filter((cell) => cell.status === "invalid_dictionary").length, 0),
+      duplicateVariantCellCount: rows.reduce((count, row) => count + row.cells.filter((cell) => cell.status === "duplicate_variant").length, 0),
+      missingVariantAspectMetadata: rows.some((row) => row.kind === "variant_aspect_missing_metadata"),
+    },
+  };
+}
+
 export function buildVariantGroupingDiagnosis(input = {}) {
   const items = Array.isArray(input.items) ? input.items : payloadItems(input.submitPayload || {});
   const attrsMeta = Array.isArray(input.attrsMeta) ? input.attrsMeta : [];
@@ -449,8 +600,27 @@ function listingQualityIssues(listingQuality = null) {
   }));
 }
 
+function listingAttributeMatrixIssues(attributeMatrix = null) {
+  const issues = [];
+  if (attributeMatrix?.summary?.missingVariantAspectMetadata) {
+    issues.push({
+      code: "NO_VARIANT_ASPECT_METADATA",
+      message: "当前多 SKU payload 缺少 Ozon 可变特性元数据，不能确认变体合并。",
+      source: "attribute_matrix",
+    });
+  }
+  return issues;
+}
+
 function buildPayloadDraftValidation(payload = {}, options = {}) {
   const payloadValidation = validateSubmitPayload(payload, { attrsMeta: options.attrsMeta || [] });
+  const attributeMatrix = buildListingAttributeMatrix({
+    payload,
+    attrsMeta: options.attrsMeta || [],
+    dictionaryValueCache: options.dictionaryValueCache || {},
+    dictionaryLanguage: options.dictionaryLanguage || "ZH_HANS",
+    dictionaryValuesByAttributeId: options.dictionaryValuesByAttributeId || {},
+  });
   const listingQuality = diagnoseListingQuality({
     payload,
     attrsMeta: options.attrsMeta || [],
@@ -461,13 +631,15 @@ function buildPayloadDraftValidation(payload = {}, options = {}) {
     dictionaryValuesByAttributeId: options.dictionaryValuesByAttributeId || {},
   });
   const qualityIssues = listingQualityIssues(listingQuality);
-  const issues = [...(payloadValidation.issues || []), ...qualityIssues];
+  const matrixIssues = listingAttributeMatrixIssues(attributeMatrix);
+  const issues = [...(payloadValidation.issues || []), ...qualityIssues, ...matrixIssues];
   return {
     ...payloadValidation,
     ok: issues.length === 0,
     issues,
     listingQuality,
     listingQualityWarnings: Array.isArray(listingQuality.warnings) ? listingQuality.warnings : [],
+    attributeMatrix,
   };
 }
 
@@ -481,8 +653,17 @@ export function buildPreflightGateNode(input = {}) {
     workflowRun: input.workflowRun || null,
     dictionaryValueCache: input.dictionaryValueCache || {},
     dictionaryLanguage: input.dictionaryLanguage || "ZH_HANS",
+    dictionaryValuesByAttributeId: input.dictionaryValuesByAttributeId || {},
+  });
+  const attributeMatrix = input.attributeMatrix || buildListingAttributeMatrix({
+    payload: input.payload || {},
+    attrsMeta: input.attrsMeta || [],
+    dictionaryValueCache: input.dictionaryValueCache || {},
+    dictionaryLanguage: input.dictionaryLanguage || "ZH_HANS",
+    dictionaryValuesByAttributeId: input.dictionaryValuesByAttributeId || {},
   });
   issues.push(...listingQualityIssues(listingQuality));
+  issues.push(...listingAttributeMatrixIssues(attributeMatrix));
   const duplicate = input.duplicate || null;
   if (duplicate?.duplicateJobId || duplicate?.duplicateSku) {
     issues.push({
@@ -521,6 +702,7 @@ export function buildPreflightGateNode(input = {}) {
       payload: payloadValidation,
       listingQuality,
       listingQualityWarnings: Array.isArray(listingQuality.warnings) ? listingQuality.warnings : [],
+      attributeMatrix,
       summary: {
         itemCount: payloadItems(input.payload || {}).length,
         variantCount: Number(input.variantCount || 0),
@@ -864,6 +1046,7 @@ export async function submitPayloadDraftToOzon(runId, input = {}, deps = {}) {
       payload: payloadDraft,
       attrsMeta: run.payloadDraftAttrsMeta || [],
       listingQuality: validation.listingQuality,
+      attributeMatrix: validation.attributeMatrix,
     }));
     await updateRun(runId, (current) => ({
       ...current,
@@ -877,6 +1060,7 @@ export async function submitPayloadDraftToOzon(runId, input = {}, deps = {}) {
     payload: payloadDraft,
     attrsMeta: run.payloadDraftAttrsMeta || [],
     listingQuality: validation.listingQuality,
+    attributeMatrix: validation.attributeMatrix,
   }));
   await updateRun(runId, (current) => ({
     ...current,

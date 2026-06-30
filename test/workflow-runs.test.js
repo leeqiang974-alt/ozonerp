@@ -5,6 +5,7 @@ import path from "node:path";
 import {
   acceptWorkflowPricingRisk,
   appendWorkflowEvent,
+  buildListingAttributeMatrix,
   buildVariantGroupingDiagnosis,
   buildVariantGroupingRepairDraft,
   buildPreflightGateNode,
@@ -311,6 +312,169 @@ test("buildPreflightGateNode blocks duplicate Ozon aspect combinations", () => {
 
   assert.equal(node.output.ok, false);
   assert.ok(node.output.issues.some((issue) => issue.code === "DUPLICATE_VARIANT_ASPECTS"));
+});
+
+test("buildListingAttributeMatrix summarizes required dictionary and variant attributes by SKU", () => {
+  const payload = { items: [
+    {
+      offer_id: "SKU-WHITE",
+      description_category_id: 17028673,
+      type_id: 95183,
+      attributes: [
+        { id: 85, values: [{ dictionary_value_id: 971082, value: "Нет бренда" }] },
+        { id: 9048, values: [{ value: "Cat feeder" }] },
+        { id: 10097, values: [{ value: "белый" }] },
+      ],
+    },
+    {
+      offer_id: "SKU-BLUE",
+      description_category_id: 17028673,
+      type_id: 95183,
+      attributes: [
+        { id: 85, values: [{ value: "Нет бренда" }] },
+        { id: 10097, values: [{ value: "белый" }] },
+      ],
+    },
+  ] };
+  const attrsMeta = [
+    { id: 85, name: "Бренд", is_required: true, dictionary_id: 971082 },
+    { id: 9048, name: "Название модели (для объединения в одну карточку)", is_required: true },
+    { id: 10097, name: "Название цвета", is_aspect: true },
+  ];
+
+  const matrix = buildListingAttributeMatrix({
+    payload,
+    attrsMeta,
+    dictionaryValueCache: {
+      "17028673:95183:85:ZH_HANS": { values: [{ id: 971082, value: "Нет бренда" }] },
+    },
+  });
+
+  assert.equal(matrix.summary.offerCount, 2);
+  assert.equal(matrix.summary.attributeCount, 3);
+  assert.equal(matrix.summary.blockedCellCount, 4);
+  assert.deepEqual(matrix.offers, ["SKU-WHITE", "SKU-BLUE"]);
+  const brand = matrix.rows.find((row) => row.attributeId === 85);
+  const model = matrix.rows.find((row) => row.attributeId === 9048);
+  const color = matrix.rows.find((row) => row.attributeId === 10097);
+  assert.equal(brand.kind, "required_dictionary");
+  assert.equal(brand.cells[0].status, "ok");
+  assert.equal(brand.cells[1].status, "invalid_dictionary");
+  assert.equal(model.cells[1].status, "missing");
+  assert.equal(color.kind, "variant_aspect");
+  assert.equal(color.cells[0].status, "duplicate_variant");
+  assert.equal(color.cells[1].status, "duplicate_variant");
+});
+
+test("buildListingAttributeMatrix uses metadata dictionary values and flags missing aspect metadata", () => {
+  const payload = { items: [
+    {
+      offer_id: "SKU-ONE",
+      description_category_id: 17028673,
+      type_id: 95183,
+      attributes: [{ id: 85, values: [{ dictionary_value_id: 999999, value: "Wrong brand" }] }],
+    },
+    {
+      offer_id: "SKU-TWO",
+      description_category_id: 17028673,
+      type_id: 95183,
+      attributes: [{ id: 85, values: [{ dictionary_value_id: 971082, value: "Нет бренда" }] }],
+    },
+  ] };
+  const attrsMeta = [
+    {
+      id: 85,
+      name: "Бренд",
+      is_required: true,
+      dictionary_id: 971082,
+      dictionary_values: [{ id: 971082, value: "Нет бренда" }],
+    },
+  ];
+
+  const matrix = buildListingAttributeMatrix({ payload, attrsMeta });
+  const brand = matrix.rows.find((row) => row.attributeId === 85);
+  const aspectMeta = matrix.rows.find((row) => row.kind === "variant_aspect_missing_metadata");
+
+  assert.equal(brand.cells[0].status, "invalid_dictionary");
+  assert.equal(brand.cells[1].status, "ok");
+  assert.equal(aspectMeta.attributeId, 0);
+  assert.equal(aspectMeta.cells[0].status, "missing_variant_aspect_metadata");
+  assert.equal(aspectMeta.cells[1].status, "missing_variant_aspect_metadata");
+  assert.equal(matrix.summary.missingVariantAspectMetadata, true);
+});
+
+test("buildPreflightGateNode blocks multi variant payloads without aspect metadata", () => {
+  const node = buildPreflightGateNode({
+    payload: { items: [
+      {
+        offer_id: "SKU-ONE",
+        name: "Cat feeder",
+        description_category_id: 17028673,
+        type_id: 95183,
+        price: "1200",
+        images: ["1", "2", "3"],
+        attributes: [
+          { id: 85, values: [{ dictionary_value_id: 971082, value: "Нет бренда" }] },
+          { id: 9048, values: [{ value: "Cat feeder" }] },
+        ],
+      },
+      {
+        offer_id: "SKU-TWO",
+        name: "Cat feeder",
+        description_category_id: 17028673,
+        type_id: 95183,
+        price: "1200",
+        images: ["1", "2", "3"],
+        attributes: [
+          { id: 85, values: [{ dictionary_value_id: 971082, value: "Нет бренда" }] },
+          { id: 9048, values: [{ value: "Cat feeder" }] },
+        ],
+      },
+    ] },
+    attrsMeta: [],
+    variantCount: 2,
+    contentSummary: { candidateImageCount: 3, sizeWeightReady: true, skuVariantCount: 2, contentIssues: [] },
+    category: { path: "宠物用品", description_category_id: 17028673, type_id: 95183 },
+  });
+
+  assert.equal(node.output.ok, false);
+  assert.equal(node.status, "failed");
+  assert.equal(node.output.issues.some((issue) => issue.code === "NO_VARIANT_ASPECT_METADATA"), true);
+  assert.equal(node.output.attributeMatrix.summary.missingVariantAspectMetadata, true);
+});
+
+test("buildPreflightGateNode blocks dictionary ids from direct dictionary sources", () => {
+  const node = buildPreflightGateNode({
+    payload: {
+      items: [{
+        offer_id: "SKU-DIRECT-DICT",
+        name: "Cat feeder",
+        description_category_id: 17028673,
+        type_id: 95183,
+        price: "1200",
+        images: ["1", "2", "3"],
+        attributes: [
+          { id: 85, values: [{ dictionary_value_id: 999999, value: "Wrong brand" }] },
+          { id: 9048, values: [{ value: "Cat feeder" }] },
+        ],
+      }],
+    },
+    attrsMeta: [
+      { id: 85, name: "Бренд", is_required: true, dictionary_id: 971082 },
+      { id: 9048, name: "Название модели (для объединения в одну карточку)", is_required: true },
+    ],
+    dictionaryValuesByAttributeId: {
+      85: [{ id: 971082, value: "Нет бренда" }],
+    },
+    variantCount: 1,
+    contentSummary: { candidateImageCount: 3, sizeWeightReady: true, skuVariantCount: 1, contentIssues: [] },
+    category: { path: "宠物用品", description_category_id: 17028673, type_id: 95183 },
+  });
+
+  assert.equal(node.output.ok, false);
+  assert.equal(node.status, "failed");
+  assert.equal(node.output.issues.some((issue) => issue.code === "LISTING_QUALITY_DICTIONARY_VALUE_INVALID"), true);
+  assert.equal(node.output.attributeMatrix.summary.invalidDictionaryCellCount, 1);
 });
 
 test("workflow run can be paused, resumed, and payload draft validated", async () => {

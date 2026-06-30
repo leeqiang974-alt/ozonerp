@@ -217,6 +217,22 @@ test("frontend renders required attribute fill plan groups", async () => {
   assert.match(css, /required-fill-plan-row/);
 });
 
+test("listing center exposes a read-only fill task queue from existing diagnostics", async () => {
+  const [js, css] = await Promise.all([
+    readFile(new URL("../public/app.js", import.meta.url), "utf8"),
+    readFile(new URL("../public/styles.css", import.meta.url), "utf8"),
+  ]);
+
+  assert.match(js, /renderListingFillTaskQueue/);
+  assert.match(js, /listingFillTaskQueueItems/);
+  assert.match(js, /requiredAttributeFillPlan/);
+  assert.match(js, /variantConfiguration/);
+  assert.match(js, /listingQuality/);
+  assert.match(js, /data-listing-task-view/);
+  assert.match(css, /listing-fill-task-queue/);
+  assert.match(css, /listing-fill-task-card/);
+});
+
 test("frontend renders read-only variant configuration workbench", async () => {
   const [js, css] = await Promise.all([
     readFile(new URL("../public/app.js", import.meta.url), "utf8"),

@@ -398,6 +398,7 @@ npm run lint
 - After fixing the Claude NVIDIA wrapper, verified `node --test test/claude-nvidia-scripts.test.js test/workflow-runs.test.js test/frontend-static.test.js` (133/133 pass), `npm test` (297/297 pass), `npm run lint` (pass), and `git diff --check` (pass).
 - After workflow console display, verified `node --test test/frontend-static.test.js test/workflow-runs.test.js` (133/133 pass), `npm test` (298/298 pass), `npm run lint` (pass), and `git diff --check` (pass).
 - After Dashboard/Product Center reuse, verified `node --test test/frontend-static.test.js` (73/73 pass).
+- After listing fill task queue V1, Listing Center now shows a read-only task queue from `requiredAttributeFillPlan`, `variantConfiguration`, and `listingQuality`; verified `node --test test/frontend-static.test.js` (74/74 pass).
 
 ## Recommended Order
 

@@ -1108,6 +1108,103 @@ function listingStageStatus(stage) {
   return stage.status;
 }
 
+function listingFillTaskQueueItems(run = currentListingWorkflowRun()) {
+  if (!run) {
+    return [{
+      tone: "muted",
+      label: "等待当前商品",
+      title: "先绑定一个采集商品",
+      body: "还没有当前 workflow，无法汇总类目属性、变体和内容分值任务。",
+      meta: "安全下一步：采集商品或生成 Ozon 草稿。",
+      target: "collect-parse",
+    }];
+  }
+  const preflightNode = (run.nodes || []).find((node) => node.key === "preflight_check") || {};
+  const preflightOutput = preflightNode.output || {};
+  const validation = run.payloadDraftValidation || {};
+  const requiredAttributeFillPlan = validation.requiredAttributeFillPlan || preflightOutput.requiredAttributeFillPlan || [];
+  const variantConfiguration = validation.variantConfiguration || preflightOutput.variantConfiguration || null;
+  const listingQuality = validation.listingQuality || preflightOutput.listingQuality || null;
+  const items = [];
+  if (Array.isArray(requiredAttributeFillPlan) && requiredAttributeFillPlan.length) {
+    const autoCount = requiredAttributeFillPlan.filter((row) => row.action === "auto_fill").length;
+    const confirmCount = requiredAttributeFillPlan.filter((row) => row.action === "suggest_dictionary").length;
+    const manualCount = requiredAttributeFillPlan.filter((row) => ["manual_required", "blocked_sensitive"].includes(row.action)).length;
+    items.push({
+      tone: manualCount ? "warning" : confirmCount ? "info" : "success",
+      label: "分类属性",
+      title: `${requiredAttributeFillPlan.length} 个必填属性任务`,
+      body: `${autoCount} 个已安全补齐，${confirmCount} 个需确认字典，${manualCount} 个需人工处理。`,
+      meta: "数据来自 requiredAttributeFillPlan，只读汇总，不自动写入或提交。",
+      target: "content-images",
+    });
+  }
+  const variantRows = Array.isArray(variantConfiguration?.rows) ? variantConfiguration.rows : [];
+  if (variantRows.length) {
+    const summary = variantConfiguration.summary || {};
+    const blockedCount = Number(summary.blockedRowCount || 0);
+    const imageWarningCount = Number(summary.imageWarningRowCount || 0);
+    items.push({
+      tone: blockedCount ? "danger" : imageWarningCount ? "warning" : "success",
+      label: "变体/SKU 图",
+      title: `${variantRows.length} 个 SKU 变体`,
+      body: `${blockedCount} 个变体组合阻塞，${imageWarningCount} 个 SKU 图提醒。`,
+      meta: "数据来自 variantConfiguration；修复后必须重新预检。",
+      target: blockedCount ? "preflight-submit" : "content-images",
+    });
+  }
+  if (listingQuality) {
+    const status = String(listingQuality.status || "");
+    const score = Number.isFinite(Number(listingQuality.score)) ? `${Number(listingQuality.score)} 分` : "待评分";
+    const warnings = Array.isArray(listingQuality.warnings) ? listingQuality.warnings.length : 0;
+    const blockers = Array.isArray(listingQuality.blockedReasons) ? listingQuality.blockedReasons.length : 0;
+    items.push({
+      tone: status === "blocked" || blockers ? "danger" : warnings ? "warning" : "success",
+      label: "内容分值",
+      title: `Ozon 内容质量 ${score}`,
+      body: `${blockers} 个阻塞项，${warnings} 个优化提醒；图片、属性、描述和尺重一起看。`,
+      meta: "数据来自 listingQuality；不会触发 GPT/Image 成本或 Ozon 写操作。",
+      target: "content-images",
+    });
+  }
+  if (items.length) return items;
+  return [{
+    tone: "muted",
+    label: "等待预检",
+    title: "还没有填报诊断",
+    body: "当前 workflow 尚未生成必填属性、变体或内容分值摘要。",
+    meta: "安全下一步：继续生成草稿并运行提交前预检。",
+    target: "preflight-submit",
+  }];
+}
+
+function renderListingFillTaskQueue(run = currentListingWorkflowRun()) {
+  const items = listingFillTaskQueueItems(run);
+  const productTitle = run?.source?.title || run?.payloadDraft?.items?.[0]?.name || run?.id || "未绑定当前商品";
+  return `
+    <section class="listing-fill-task-queue" aria-label="上架填报任务队列">
+      <div class="listing-fill-task-head">
+        <div>
+          <strong>只读填报任务队列</strong>
+          <p>当前商品：${escapeHtml(productTitle)}。只汇总属性、变体/SKU 图和内容分值诊断，不编辑、不提交、不调用外部平台。</p>
+        </div>
+        <span>${items.length} 项</span>
+      </div>
+      <div class="listing-fill-task-list">
+        ${items.map((item) => `
+          <article class="listing-fill-task-card listing-fill-task-card-${escapeHtml(item.tone)}">
+            <span>${escapeHtml(item.label)}</span>
+            <strong>${escapeHtml(item.title)}</strong>
+            <p>${escapeHtml(item.body)}</p>
+            <small>${escapeHtml(item.meta)}</small>
+            <button type="button" data-listing-task-view="${escapeHtml(item.target)}">定位处理区</button>
+          </article>
+        `).join("")}
+      </div>
+    </section>
+  `;
+}
+
 function renderListingStagePanels() {
   const tabs = $("#listingSecondaryTabs");
   const panels = $("#listingStagePanels");
@@ -1116,7 +1213,7 @@ function renderListingStagePanels() {
   tabs.querySelectorAll("[data-listing-stage]").forEach((button) => {
     button.classList.toggle("active", button.dataset.listingStage === active);
   });
-  panels.innerHTML = LISTING_CENTER_STAGES.map((stage, index) => {
+  panels.innerHTML = renderListingFillTaskQueue(currentListingWorkflowRun()) + LISTING_CENTER_STAGES.map((stage, index) => {
     const selected = stage.key === active;
     return `
       <article class="listing-stage-panel ${selected ? "active" : ""}" data-listing-stage-panel="${escapeHtml(stage.key)}">
@@ -8714,6 +8811,14 @@ async function init() {
     const listingStageViewTarget = event.target.closest("[data-listing-stage-view]");
     if (listingStageViewTarget) {
       activateErpView(listingStageViewTarget.dataset.listingStageView);
+      return;
+    }
+    const listingTaskViewTarget = event.target.closest("[data-listing-task-view]");
+    if (listingTaskViewTarget) {
+      const target = listingTaskViewTarget.dataset.listingTaskView || "";
+      if (LISTING_CENTER_STAGES.some((stage) => stage.key === target)) setListingStage(target);
+      else activateErpView(target || "listing");
+      if (target === "workflow-console") renderWorkflowConsole();
     }
   });
     on("#refreshDashboard", "click", async () => {

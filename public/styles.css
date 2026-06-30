@@ -263,6 +263,78 @@
   border-radius: 999px;
   font-weight: 800;
 }
+.listing-fill-task-queue {
+  grid-column: 1 / -1;
+  display: grid;
+  gap: 10px;
+  padding: 14px;
+  border: 1px solid rgba(37, 99, 235, .18);
+  border-radius: 12px;
+  background: #f8fbff;
+}
+.listing-fill-task-head {
+  display: flex;
+  justify-content: space-between;
+  gap: 12px;
+}
+.listing-fill-task-head strong {
+  color: var(--business-text);
+}
+.listing-fill-task-head p {
+  margin: 4px 0 0;
+  color: var(--business-muted);
+  line-height: 1.45;
+}
+.listing-fill-task-head span {
+  align-self: start;
+  border-radius: 999px;
+  background: rgba(37, 99, 235, .1);
+  color: var(--business-primary);
+  font-weight: 900;
+  padding: 4px 10px;
+}
+.listing-fill-task-list {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 10px;
+}
+.listing-fill-task-card {
+  min-height: 156px;
+  display: grid;
+  align-content: start;
+  gap: 6px;
+  padding: 12px;
+  border: 1px solid rgba(148, 163, 184, .26);
+  border-radius: 10px;
+  background: #fff;
+}
+.listing-fill-task-card span {
+  color: var(--business-muted);
+  font-size: 12px;
+  font-weight: 900;
+}
+.listing-fill-task-card strong {
+  color: var(--business-text);
+}
+.listing-fill-task-card p,
+.listing-fill-task-card small {
+  margin: 0;
+  color: var(--business-muted);
+  line-height: 1.45;
+}
+.listing-fill-task-card button {
+  align-self: end;
+  justify-self: start;
+  color: var(--business-primary);
+  background: rgba(37, 99, 235, .08);
+  border-radius: 999px;
+  font-weight: 800;
+}
+.listing-fill-task-card-success { border-color: rgba(34, 197, 94, .26); background: #f0fdf4; }
+.listing-fill-task-card-info { border-color: rgba(96, 165, 250, .3); background: #eff6ff; }
+.listing-fill-task-card-warning { border-color: rgba(245, 158, 11, .3); background: #fffbeb; }
+.listing-fill-task-card-danger { border-color: rgba(248, 113, 113, .3); background: #fef2f2; }
+.listing-fill-task-card-muted { background: #f8fafc; }
 .listing-automation-guardrails {
   margin-bottom: 12px;
   border-color: rgba(251,146,60,.3);
@@ -4371,7 +4443,8 @@ code,
 
   .store-metric-grid,
   .product-asset-summary,
-  .domain-operating-grid {
+  .domain-operating-grid,
+  .listing-fill-task-list {
     grid-template-columns: repeat(2, minmax(0, 1fr));
   }
 
@@ -4456,7 +4529,8 @@ code,
   .cockpit-flow,
   .store-metric-grid,
   .product-asset-summary,
-  .domain-operating-grid {
+  .domain-operating-grid,
+  .listing-fill-task-list {
     grid-template-columns: 1fr;
   }
 

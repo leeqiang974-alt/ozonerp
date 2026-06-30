@@ -96,6 +96,37 @@
 - 继续推进“分类属性与变体填写主动化”主线：把当前类目的必填属性、字典候选、变体 aspect/SKU 图、商品分值影响项做成更明确的填报任务队列。
 - 后续仍默认 Claude NVIDIA 搭配开发：实现后必须复审，Codex 以项目规则、测试和安全边界为最终判断。
 
+## 2026-06-30 上架填报任务队列 V1
+
+### 已完成
+
+- 上架中心二级流程顶部新增只读“填报任务队列”：
+  - 从当前 workflow 的 `payloadDraftValidation.requiredAttributeFillPlan` 汇总必填属性任务。
+  - 从 `variantConfiguration` 汇总变体组合阻塞与 SKU 图提醒。
+  - 从 `listingQuality` 汇总内容分值、图片/属性/描述/尺重影响项。
+- 队列卡只提供“定位处理区”本地跳转：
+  - 可切换到上架中心内部阶段，如内容图片、预检提交。
+  - 不新增保存、自动填充、提交、重试、GPT/Image 生图或 Ozon API 调用。
+- 窄屏响应式已处理，任务卡在平板两列、手机单列，避免信息挤压。
+
+### 安全边界
+
+- 数据源只读，沿用当前 workflow 摘要和预检结果，不创造新的属性真源。
+- 建议字典值仍需人工确认；合规敏感和人工必填项不会自动写入。
+- 变体阻塞必须回到草稿/预检修复，不绕过 payload validation。
+- 内容分值提醒不会触发 GPT/Image 成本，不绕过 preflight 或人工确认。
+
+### 已验证
+
+- TDD 红灯：
+  - `node --test test/frontend-static.test.js` 先因缺少 `renderListingFillTaskQueue` 失败。
+- 已通过：
+  - `node --test test/frontend-static.test.js`，74/74 通过。
+
+### 下一步
+
+- 继续把任务队列从“只读导航”推进到“安全修复入口”：允许人工确认的字典候选可一键写入本地草稿并重新预检，但仍不提交 Ozon。
+
 ## 2026-06-30 仓库匹配规则引擎 V1
 
 ### 已完成

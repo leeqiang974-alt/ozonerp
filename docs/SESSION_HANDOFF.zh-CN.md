@@ -8,6 +8,48 @@
 
 本轮 Codex 桌面环境以 `C:\Users\Administrator\Documents\ozonerp` 为实际项目根；继续开发前仍需先确认 `git status` 和最近提交，避免误入旧复制目录。
 
+## 2026-06-30 定价策略 V1：最低价/原价来源解释
+
+### 已完成
+
+- `src/pricing.js` 新增 `derivePricingPolicyFields()`：
+  - 无 `pricingPolicy` 时保持旧规则：`old_price = price * 2`，`min_price` 继续使用小数向下取整/整数减一。
+  - 有 `pricingPolicy` 时支持 `targetProfitRate`、`minimumProfitRate`、`minimumProfitCny`、`oldPriceMode`、`oldPriceMultiplier`。
+  - `min_price` 可按最低利润底线计算，并输出 `minPriceSource`、`marginFloor`。
+  - `old_price` 输出 `oldPriceSource`，当前策略模式支持促销倍率。
+  - 若最低价不低于售价，标记 `blocked=true` 与 `PRICING_MIN_PRICE_INVALID`。
+- `buildListingPayloadDraftFromJob()` 和真实 `completeListing()` 路径都接入策略字段，避免草稿和真实流程分叉。
+- `pricingDiagnosis` 新增 `pricingPolicy`、`oldPriceSource`、`minPriceSource`、`marginFloor`、`pricingBlockedReasonCode`。
+- 前端定价诊断卡新增“最低价来源 / 原价策略 / 利润底线”说明。
+
+### 安全边界
+
+- 定价策略只计算本地 payload 字段和诊断，不调用 Ozon 写接口。
+- `PRICING_MIN_PRICE_INVALID` 仍走既有 pricing blocked/preflight 阻塞逻辑，不能被当作安全通过。
+- 不改变 workflow lock、`waiting_human`、preflight 或人工二次确认。
+- 旧路径默认保持兼容，只有显式传入 `pricingPolicy` 才启用最低利润底线策略。
+
+### Claude Code 搭配
+
+- 开发前已使用 `scripts/claude-ozon-review-nvidia.ps1` 做 Task 4 简报。
+- Claude 重点提醒：旧自动上架不能破坏；最低价低于利润底线必须阻断；来源字段必须可追溯；pricing blocked 不能被接受为安全。
+
+### 已验证
+
+- TDD 红灯：
+  - `test/pricing-source.test.js` 先因 `derivePricingPolicyFields` 未导出失败。
+  - `test/auto-listing-payload-draft.test.js` 先因草稿缺少 `oldPriceSource/minPriceSource/pricingPolicy` 失败。
+  - `test/frontend-static.test.js` 先因前端缺少“最低价来源/原价策略/利润底线”失败。
+- 已通过：
+  - `node --test test/pricing-source.test.js`，3/3 通过。
+  - `node --test test/auto-listing-payload-draft.test.js`，8/8 通过。
+  - `node --test test/frontend-static.test.js`，69/69 通过。
+
+### 下一步
+
+- 继续开发“仓库匹配规则引擎”：仓库选择不再取第一个可用，而是按仓库状态、店铺/配送模式、历史失败原因和商品 readiness 排名。
+- 定价后续可继续接类目真实佣金、汇率策略和前端策略配置入口；所有策略修改仍需人工确认和重新预检。
+
 ## 2026-06-30 变体配置工作簿
 
 ### 已完成

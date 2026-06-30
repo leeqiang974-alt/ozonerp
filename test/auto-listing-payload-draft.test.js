@@ -283,3 +283,45 @@ test("buildRequiredAttributeFillPlan keeps dictionary candidates in current cate
   assert.equal(sensitivePlan.action, "blocked_sensitive");
   assert.equal(sensitivePlan.confidence, "low");
 });
+
+test("buildListingPayloadDraftFromJob applies explainable pricing policy fields", () => {
+  const draft = buildListingPayloadDraftFromJob({
+    pendingParentSku: "SKUlq01007",
+    ozonTitle: "Органайзер для кухни",
+    listingContent: {
+      title_ru: "Органайзер для кухни",
+      description_ru: "Практичный органайзер для хранения.",
+    },
+    visualCard: { url: "https://example.com/cover.jpg" },
+    bestMatch: {
+      candidateTitle: "厨房收纳盒",
+      candidateUrl: "https://detail.1688.com/offer/7.html",
+      purchasePriceCny: 20,
+    },
+    candidateData: {
+      images: ["https://example.com/a.jpg", "https://example.com/b.jpg", "https://example.com/c.jpg"],
+      sizeWeight: { weightG: 700, lengthMm: 220, widthMm: 160, heightMm: 80 },
+      skuVariants: [],
+    },
+  }, {
+    categoryMatch: {
+      description_category_id: 17028673,
+      type_id: 95183,
+      path: "Дом / Кухня",
+    },
+    pricingPolicy: {
+      targetProfitRate: 0.3,
+      minimumProfitRate: 0.08,
+      minimumProfitCny: 3,
+      oldPriceMode: "promo_multiplier",
+      oldPriceMultiplier: 1.6,
+    },
+  });
+
+  const item = draft.items[0];
+  assert.equal(item.old_price, String(draft.summary.pricingDiagnosis.oldPriceCny));
+  assert.equal(item.min_price, String(draft.summary.pricingDiagnosis.minPriceCny));
+  assert.equal(draft.summary.pricingDiagnosis.oldPriceSource.mode, "promo_multiplier");
+  assert.equal(draft.summary.pricingDiagnosis.minPriceSource.mode, "minimum_profit_floor");
+  assert.equal(draft.summary.pricingDiagnosis.pricingPolicy.oldPriceMultiplier, 1.6);
+});

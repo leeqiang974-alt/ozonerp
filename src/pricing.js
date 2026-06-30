@@ -142,6 +142,31 @@ export function calculateOzonPrice(input) {
   };
 }
 
+export function derivePricingPolicyFields(input = {}) {
+  const priceCny = roundMoney(input.priceCny || 0);
+  const baseCost = roundMoney(input.baseCost || 0);
+  const hasPolicy = input.policy && typeof input.policy === "object";
+  const policy = normalizePricingPolicy(input.policy || {});
+  const oldPriceCny = deriveOldPrice(priceCny, policy, hasPolicy);
+  const minPrice = hasPolicy
+    ? derivePolicyMinimumPrice(priceCny, baseCost, policy)
+    : deriveLegacyMinimumPrice(priceCny);
+  return {
+    pricingPolicy: policy,
+    oldPriceCny,
+    oldPriceSource: {
+      mode: hasPolicy ? policy.oldPriceMode : "legacy_double",
+      multiplier: hasPolicy ? policy.oldPriceMultiplier : 2,
+      label: hasPolicy ? "原价按促销倍率生成" : "旧规则：售价乘以 2",
+    },
+    minPriceCny: String(minPrice.value),
+    minPriceSource: minPrice.source,
+    marginFloor: minPrice.marginFloor,
+    blocked: minPrice.value >= priceCny,
+    reasonCode: minPrice.value >= priceCny ? "PRICING_MIN_PRICE_INVALID" : "",
+  };
+}
+
 function resultPayload(priceCny, level, logisticsFee, commission, miscFee, baseCost, profitRate, steps, commissionRate, commissionSource) {
   return {
     priceCny: roundMoney(priceCny),
@@ -161,6 +186,60 @@ function resultPayload(priceCny, level, logisticsFee, commission, miscFee, baseC
 
 function roundMoney(value) {
   return Math.round(Number(value) * 100) / 100;
+}
+
+function normalizePricingPolicy(policy = {}) {
+  return {
+    targetProfitRate: Number(policy.targetProfitRate ?? policy.profitRate ?? 0.3),
+    minimumProfitRate: Number(policy.minimumProfitRate ?? 0.08),
+    minimumProfitCny: Number(policy.minimumProfitCny ?? 3),
+    oldPriceMode: String(policy.oldPriceMode || "promo_multiplier"),
+    oldPriceMultiplier: Number(policy.oldPriceMultiplier || 1.6),
+    version: String(policy.version || "pricing_policy_v1"),
+  };
+}
+
+function deriveOldPrice(priceCny, policy, hasPolicy) {
+  const multiplier = hasPolicy ? policy.oldPriceMultiplier : 2;
+  return roundMoney(priceCny * multiplier);
+}
+
+function deriveLegacyMinimumPrice(priceCny) {
+  const floored = Math.floor(Number(priceCny || 0));
+  const value = Math.max(1, Number.isInteger(Number(priceCny)) ? floored - 1 : floored);
+  return {
+    value: String(value),
+    source: {
+      mode: "legacy_below_sale_price",
+      label: "旧规则：小数向下取整，整数减一",
+    },
+    marginFloor: null,
+  };
+}
+
+function derivePolicyMinimumPrice(priceCny, baseCost, policy) {
+  const rateFloor = policy.minimumProfitRate > 0 && policy.minimumProfitRate < 1
+    ? baseCost / (1 - policy.minimumProfitRate)
+    : baseCost;
+  const fixedFloor = baseCost + Math.max(0, policy.minimumProfitCny || 0);
+  const floor = Math.max(rateFloor, fixedFloor, 1);
+  const value = Math.ceil(floor);
+  return {
+    value: String(value),
+    source: {
+      mode: "minimum_profit_floor",
+      label: "按最低利润底线生成",
+      minimumProfitRate: policy.minimumProfitRate,
+      minimumProfitCny: policy.minimumProfitCny,
+    },
+    marginFloor: {
+      baseCost: roundMoney(baseCost),
+      minimumProfitRate: policy.minimumProfitRate,
+      minimumProfitCny: policy.minimumProfitCny,
+      floorCny: roundMoney(floor),
+      salePriceCny: roundMoney(priceCny),
+    },
+  };
 }
 
 function normalizeCommissionSource(source, commissionRate) {

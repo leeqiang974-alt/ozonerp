@@ -8,8 +8,8 @@
 |---|---|---|
 | `purchaseCost` | 采购成本 | 自动上架取匹配货源价/1688 SKU 价，再加 `5 RMB` 采购缓冲 |
 | `price` | Ozon 售价 | 通过运费、佣金、杂费、利润率迭代计算，币种为 `CNY` |
-| `old_price` | 原价/划线价 | 自动上架固定为 `price * 2` |
-| `min_price` | 最低价 | 按 `minPriceFromPrice(price)` 生成，必须低于或不等于售价 |
+| `old_price` | 原价/划线价 | 默认兼容旧规则 `price * 2`；传入 `pricingPolicy` 时按策略倍率生成并记录来源 |
+| `min_price` | 最低价 | 默认兼容 `minPriceFromPrice(price)`；传入 `pricingPolicy` 时按最低利润底线生成 |
 | `logisticsFee` | 运费/物流成本 | 按重量、尺寸、售价匹配人民币物流等级后计算 |
 | `commission` | Ozon 佣金预估 | 默认 `price * 15%` |
 | `miscFee` | 杂费 | 默认 `price * 2% + 2 RMB` |
@@ -53,7 +53,7 @@
 
 ## 4. 原价/划线价逻辑
 
-自动上架时：
+默认兼容路径仍保持：
 
 ```text
 old_price = round(price * 2)
@@ -61,13 +61,22 @@ old_price = round(price * 2)
 
 也就是说，售价 58.6 RMB 时，原价约为 117.2 RMB；售价 59 RMB 时，原价为 118 RMB。
 
+当传入 `pricingPolicy` 时，原价会按策略生成：
+
+```text
+old_price = round(price * oldPriceMultiplier)
+oldPriceSource.mode = oldPriceMode
+```
+
+当前首版策略支持 `oldPriceMode = promo_multiplier`，例如 `oldPriceMultiplier = 1.6`。
+
 这个字段主要用于 Ozon 展示折扣/划线价，不参与当前利润公式。
 
-核心实现位置：`src/autoListing.js` 自动上架 payload 组装。
+核心实现位置：`src/pricing.js` 的 `derivePricingPolicyFields()` 和 `src/autoListing.js` 自动上架 payload 组装。
 
 ## 5. 最低价逻辑
 
-最低价规则为：
+默认兼容路径的最低价规则为：
 
 ```text
 如果 price 非法或 <= 0：返回空
@@ -86,7 +95,17 @@ old_price = round(price * 2)
 
 这样做的目的：避免 `min_price` 等于 `price`，降低 Ozon 拒绝或促销价异常风险。
 
-核心实现位置：`src/autoListing.js` 的 `minPriceFromPrice()`，对应测试在 `test/listing-content-quality.test.js`。
+当传入 `pricingPolicy` 时，最低价按利润底线生成：
+
+```text
+rateFloor = baseCost / (1 - minimumProfitRate)
+fixedFloor = baseCost + minimumProfitCny
+min_price = ceil(max(rateFloor, fixedFloor, 1))
+```
+
+如果策略最低价不低于售价，诊断会标记 `blocked=true` 和 `PRICING_MIN_PRICE_INVALID`，不能当作安全价格继续。
+
+核心实现位置：`src/autoListing.js` 的 `minPriceFromPrice()` 和 `src/pricing.js` 的 `derivePricingPolicyFields()`。
 
 ## 6. 自动上架中的整体价格流程
 
@@ -95,8 +114,8 @@ old_price = round(price * 2)
 ```text
 purchaseCost = max(bestMatchPrice + 5, 1)
 price = calculateOzonPrice(purchaseCost, weight, dimensions, profitRate=30%).priceCny
-old_price = round(price * 2)
-min_price = minPriceFromPrice(price)
+old_price = round(price * 2) 或 pricingPolicy 策略价
+min_price = minPriceFromPrice(price) 或 pricingPolicy 利润底线价
 currency_code = CNY
 ```
 
@@ -105,8 +124,8 @@ currency_code = CNY
 ```text
 variantPurchase = max(variant.price 或 bestMatchPrice + 5, 1)
 variantPrice = calculateOzonPrice(variantPurchase, variantPackage 或 parentPackage).priceCny
-variant.old_price = round(variantPrice * 2)
-variant.min_price = minPriceFromPrice(variantPrice)
+variant.old_price = round(variantPrice * 2) 或 pricingPolicy 策略价
+variant.min_price = minPriceFromPrice(variantPrice) 或 pricingPolicy 利润底线价
 ```
 
 如果某个变体缺少独立尺重，会回退使用父商品尺重；如果价格计算失败，会尽量回退父商品价格，但该情况后续应在工作流诊断里暴露出来。

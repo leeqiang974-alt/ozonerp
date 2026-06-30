@@ -6162,6 +6162,9 @@ function renderWorkflowPricingDiagnosis(node = {}) {
   const variants = Array.isArray(pricingDiagnosis.variants) ? pricingDiagnosis.variants : [];
   const steps = Array.isArray(pricingDiagnosis.steps) ? pricingDiagnosis.steps : [];
   const commissionSource = pricingDiagnosis.commissionSource || {};
+  const minPriceSource = pricingDiagnosis.minPriceSource || {};
+  const oldPriceSource = pricingDiagnosis.oldPriceSource || {};
+  const marginFloor = pricingDiagnosis.marginFloor || {};
   const commissionRateText = Number(pricingDiagnosis.commissionRate || 0)
     ? `${Math.round(Number(pricingDiagnosis.commissionRate || 0) * 1000) / 10}%`
     : "-";
@@ -6181,7 +6184,7 @@ function renderWorkflowPricingDiagnosis(node = {}) {
       <div class="workflow-pricing-grid">
         <article><span>采购成本</span><strong>${money(pricingDiagnosis.purchaseCost)}</strong><small>含 ${money(pricingDiagnosis.purchaseMarkupRmb)} RMB 缓冲</small></article>
         <article><span>售价</span><strong>${money(pricingDiagnosis.priceCny)}</strong><small>原价 ${money(pricingDiagnosis.oldPriceCny)}</small></article>
-        <article><span>最低价</span><strong>${escapeHtml(pricingDiagnosis.minPriceCny || "-")}</strong><small>低于售价防拒绝</small></article>
+        <article><span>最低价</span><strong>${escapeHtml(pricingDiagnosis.minPriceCny || "-")}</strong><small>最低价来源：${escapeHtml(minPriceSource.label || "低于售价防拒绝")}</small></article>
         <article><span>运费等级</span><strong>${escapeHtml(level.name || "-")}</strong><small>运费 ${money(pricingDiagnosis.logisticsFee)}</small></article>
         <article><span>佣金</span><strong>${money(pricingDiagnosis.commission)}</strong><small>${escapeHtml(commissionRateText)} · ${escapeHtml(commissionSource.label || "手填/默认佣金率")}</small></article>
         <article><span>利润</span><strong>${money(pricingDiagnosis.profit)}</strong><small>目标 ${Math.round(Number(pricingDiagnosis.profitRate || 0) * 100)}%</small></article>
@@ -6189,6 +6192,8 @@ function renderWorkflowPricingDiagnosis(node = {}) {
       <div class="workflow-pricing-foot">
         <span>尺重：${Number(packageInfo.weightG || 0)}g / ${Number(packageInfo.lengthMm || 0)}×${Number(packageInfo.widthMm || 0)}×${Number(packageInfo.heightMm || 0)}mm</span>
         <span>成本基数：${money(pricingDiagnosis.baseCost)}</span>
+        <span>原价策略：${escapeHtml(oldPriceSource.label || "旧规则：售价乘以 2")}</span>
+        <span>利润底线：${marginFloor.floorCny ? `${money(marginFloor.floorCny)} CNY` : "未配置"}</span>
         <span>佣金来源：${escapeHtml(commissionSource.source || "manual_default")} / ${escapeHtml(commissionSource.confidence || "low")}</span>
         <span>迭代：${steps.length} 步</span>
         <span>变体：${variants.length || 0} 个</span>

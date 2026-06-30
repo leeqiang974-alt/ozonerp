@@ -133,6 +133,9 @@ test("frontend renders workflow pricing diagnosis panel", async () => {
   assert.match(js, /采购成本/);
   assert.match(js, /运费等级/);
   assert.match(js, /最低价/);
+  assert.match(js, /最低价来源/);
+  assert.match(js, /原价策略/);
+  assert.match(js, /利润底线/);
   assert.match(js, /PRICING_/);
   assert.match(js, /价格风险/);
   assert.match(js, /accept-pricing-risk/);

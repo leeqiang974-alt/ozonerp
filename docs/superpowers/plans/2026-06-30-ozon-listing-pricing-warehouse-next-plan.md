@@ -234,7 +234,7 @@ npm run lint
 - Docs: `docs/pricing-logic.zh-CN.md`
 - Docs: `docs/SESSION_HANDOFF.zh-CN.md`
 
-- [ ] **Step 1: Add failing tests for strategy output**
+- [x] **Step 1: Add failing tests for strategy output**
 
 Cases:
 
@@ -243,7 +243,7 @@ Cases:
 - when `min_price >= price`, pricing risk is blocked.
 - when floor margin is below threshold, product enters `PRICING_PROFIT_LOW` or a stricter blocked reason.
 
-- [ ] **Step 2: Implement `pricingPolicy` input and diagnostic output**
+- [x] **Step 2: Implement `pricingPolicy` input and diagnostic output**
 
 First policy fields:
 
@@ -258,11 +258,11 @@ First policy fields:
 }
 ```
 
-- [ ] **Step 3: Keep blocked pricing non-bypassable**
+- [x] **Step 3: Keep blocked pricing non-bypassable**
 
 Only manual-review pricing risks can be accepted. Missing package data, no shipping level, invalid min price, and non-converged price remain blocked.
 
-- [ ] **Step 4: Verification**
+- [x] **Step 4: Verification**
 
 ```powershell
 node --test test/pricing-source.test.js test/listing-content-quality.test.js test/workflow-runs.test.js test/frontend-static.test.js

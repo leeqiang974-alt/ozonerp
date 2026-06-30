@@ -4,7 +4,7 @@ import { createCrawlerTask } from "./crawler1688.js";
 import { listOzonLearningItems } from "./ozonLearning.js";
 import { generateListingContentWithLlm } from "./llmListing.js";
 import { callAiTask } from "./aiTaskRouter.js";
-import { calculateOzonPrice } from "./pricing.js";
+import { calculateOzonPrice, derivePricingPolicyFields } from "./pricing.js";
 import { getStore } from "./config.js";
 import { ozonRequest } from "./ozon.js";
 import { nextParentSku } from "./skuSequence.js";
@@ -77,6 +77,7 @@ function pricingDiagnosisFromCalculation({
   oldPriceCny = 0,
   minPriceCny = "",
   variants = [],
+  pricingFields = null,
 } = {}) {
   return {
     sourcePriceCny: roundMoney(sourcePriceCny || 0),
@@ -85,6 +86,12 @@ function pricingDiagnosisFromCalculation({
     priceCny: roundMoney(priceCny || priceCalc.priceCny || priceCalc.nextPriceCny || 0),
     oldPriceCny: roundMoney(oldPriceCny || 0),
     minPriceCny: String(minPriceCny || ""),
+    pricingPolicy: pricingFields?.pricingPolicy || null,
+    oldPriceSource: pricingFields?.oldPriceSource || null,
+    minPriceSource: pricingFields?.minPriceSource || null,
+    marginFloor: pricingFields?.marginFloor || null,
+    pricingBlocked: Boolean(pricingFields?.blocked),
+    pricingBlockedReasonCode: pricingFields?.reasonCode || "",
     currencyCode: "CNY",
     logisticsFee: roundMoney(priceCalc.logisticsFee || 0),
     commission: roundMoney(priceCalc.commission || 0),
@@ -1729,8 +1736,14 @@ export function buildListingPayloadDraftFromJob(job = {}, options = {}) {
   });
   const finalPriceCny = roundMoney(priceCalc.priceCny || priceCalc.nextPriceCny || 0);
   if (!finalPriceCny) throw new Error("价格计算结果为空，无法生成 payload 草稿");
-  const oldPriceCny = roundMoney(finalPriceCny * 2);
-  const minPriceCny = minPriceFromPrice(finalPriceCny);
+  const pricingPolicy = options.pricingPolicy || job.pricingPolicy || null;
+  const pricingFields = derivePricingPolicyFields({
+    priceCny: finalPriceCny,
+    baseCost: priceCalc.baseCost || 0,
+    policy: pricingPolicy,
+  });
+  const oldPriceCny = pricingFields.oldPriceCny;
+  const minPriceCny = pricingFields.minPriceCny;
   const pricingDiagnosis = pricingDiagnosisFromCalculation({
     sourcePriceCny: bestMatchPrice,
     purchaseCost,
@@ -1739,6 +1752,7 @@ export function buildListingPayloadDraftFromJob(job = {}, options = {}) {
     priceCny: finalPriceCny,
     oldPriceCny,
     minPriceCny,
+    pricingFields,
   });
   const modelName = modelNameForListing(job, parentSku);
   const attrsMeta = attrsMetaForCategory(options, categoryMatch);
@@ -1797,6 +1811,7 @@ export function buildListingPayloadDraftFromJob(job = {}, options = {}) {
     ? variantsForListing.map(function(variant, index) {
       const variantPackage = packageSizeWeight({ sizeWeight: job.candidateData?.sizeWeight || {}, skuVariants: [variant] });
       let variantPrice = finalPriceCny;
+      let variantPricingFields = pricingFields;
       try {
         const variantPurchase = Math.max(Number(variant.price || bestMatchPrice || 0) + PURCHASE_COST_MARKUP_RMB, 1);
         const variantCalc = calculateOzonPrice({
@@ -1809,13 +1824,22 @@ export function buildListingPayloadDraftFromJob(job = {}, options = {}) {
           ...commissionInput,
         });
         variantPrice = roundMoney(variantCalc.priceCny || variantCalc.nextPriceCny || finalPriceCny);
+        variantPricingFields = derivePricingPolicyFields({
+          priceCny: variantPrice,
+          baseCost: variantCalc.baseCost || 0,
+          policy: pricingPolicy,
+        });
         pricingDiagnosis.variants.push({
           offerId: variantOfferId(parentSku, variant, index),
           sourcePriceCny: roundMoney(Number(variant.price || bestMatchPrice || 0)),
           purchaseCost: roundMoney(variantPurchase),
           priceCny: variantPrice,
-          oldPriceCny: roundMoney(variantPrice * 2),
-          minPriceCny: minPriceFromPrice(variantPrice),
+          oldPriceCny: variantPricingFields.oldPriceCny,
+          minPriceCny: variantPricingFields.minPriceCny,
+          oldPriceSource: variantPricingFields.oldPriceSource,
+          minPriceSource: variantPricingFields.minPriceSource,
+          marginFloor: variantPricingFields.marginFloor,
+          baseCost: roundMoney(variantCalc.baseCost || 0),
           logisticsFee: roundMoney(variantCalc.logisticsFee || 0),
           commission: roundMoney(variantCalc.commission || 0),
           commissionRate: Number(variantCalc.commissionRate ?? commissionInput.commissionRate),
@@ -1836,8 +1860,8 @@ export function buildListingPayloadDraftFromJob(job = {}, options = {}) {
         name: variantTitleForListing(title, variant, index),
         images: itemImages,
         price: String(variantPrice),
-        old_price: String(roundMoney(variantPrice * 2)),
-        min_price: minPriceFromPrice(variantPrice),
+        old_price: String(variantPricingFields.oldPriceCny),
+        min_price: variantPricingFields.minPriceCny,
         weight: variantPackage.ok ? variantPackage.weight : item.weight,
         depth: variantPackage.ok ? variantPackage.depth : item.depth,
         width: variantPackage.ok ? variantPackage.width : item.width,
@@ -3210,8 +3234,14 @@ export async function completeListing(jobId, storeId) {
     }
     var finalPriceCny = roundMoney(priceCalc.priceCny || priceCalc.nextPriceCny || 0);
     if (!finalPriceCny) { await failJob(jobId, "价格计算结果为空"); return { ok: false, error: "价格计算结果为空" }; }
-    var oldPriceCny = roundMoney(finalPriceCny * 2);
-    var minPriceCny = minPriceFromPrice(finalPriceCny);
+    var pricingPolicy = job.pricingPolicy || null;
+    var pricingFields = derivePricingPolicyFields({
+      priceCny: finalPriceCny,
+      baseCost: priceCalc.baseCost || 0,
+      policy: pricingPolicy,
+    });
+    var oldPriceCny = pricingFields.oldPriceCny;
+    var minPriceCny = pricingFields.minPriceCny;
     var pricingDiagnosis = pricingDiagnosisFromCalculation({
       sourcePriceCny: bestMatchPrice,
       purchaseCost,
@@ -3220,6 +3250,7 @@ export async function completeListing(jobId, storeId) {
       priceCny: finalPriceCny,
       oldPriceCny,
       minPriceCny,
+      pricingFields,
     });
     if (workflowRun) {
       var pricingNode = workflowNodeFromAutoListingStage("matching", {
@@ -3276,6 +3307,7 @@ export async function completeListing(jobId, storeId) {
       ? variantsForListing.map(function(variant, index) {
         var variantPackage = packageSizeWeight({ sizeWeight: job.candidateData?.sizeWeight || {}, skuVariants: [variant] });
         var vPrice = finalPriceCny;
+        var variantPricingFields = pricingFields;
         try {
           var variantPurchase = Math.max(Number(variant.price || bestMatchPrice || 0) + PURCHASE_COST_MARKUP_RMB, 1);
           var variantCalc = calculateOzonPrice({
@@ -3288,13 +3320,22 @@ export async function completeListing(jobId, storeId) {
             ...commissionInput,
           });
           vPrice = roundMoney(variantCalc.priceCny || variantCalc.nextPriceCny || finalPriceCny);
+          variantPricingFields = derivePricingPolicyFields({
+            priceCny: vPrice,
+            baseCost: variantCalc.baseCost || 0,
+            policy: pricingPolicy,
+          });
           pricingDiagnosis.variants.push({
             offerId: variantOfferId(parentSku, variant, index),
             sourcePriceCny: roundMoney(Number(variant.price || bestMatchPrice || 0)),
             purchaseCost: roundMoney(variantPurchase),
             priceCny: vPrice,
-            oldPriceCny: roundMoney(vPrice * 2),
-            minPriceCny: minPriceFromPrice(vPrice),
+            oldPriceCny: variantPricingFields.oldPriceCny,
+            minPriceCny: variantPricingFields.minPriceCny,
+            oldPriceSource: variantPricingFields.oldPriceSource,
+            minPriceSource: variantPricingFields.minPriceSource,
+            marginFloor: variantPricingFields.marginFloor,
+            baseCost: roundMoney(variantCalc.baseCost || 0),
             logisticsFee: roundMoney(variantCalc.logisticsFee || 0),
             commission: roundMoney(variantCalc.commission || 0),
             commissionRate: Number(variantCalc.commissionRate ?? commissionInput.commissionRate),
@@ -3315,8 +3356,8 @@ export async function completeListing(jobId, storeId) {
           name: variantTitleForListing(title, variant, index),
           images: itemImages,
           price: String(vPrice),
-          old_price: String(roundMoney(vPrice * 2)),
-          min_price: minPriceFromPrice(vPrice),
+          old_price: String(variantPricingFields.oldPriceCny),
+          min_price: variantPricingFields.minPriceCny,
           weight: variantPackage.ok ? variantPackage.weight : item.weight,
           depth: variantPackage.ok ? variantPackage.depth : item.depth,
           width: variantPackage.ok ? variantPackage.width : item.width,

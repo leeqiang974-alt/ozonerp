@@ -403,6 +403,7 @@ npm run lint
 - After text attribute task queue entry, Listing Center can surface the first safe missing plain-text attribute and reuse `apply-attribute-text-repair`; verified `node --test test/frontend-static.test.js` (74/74 pass).
 - After variant aspect task queue suggestion, Listing Center now surfaces affected SKU, reason, copyable repair guidance, and a current-run link to the variant workbench for `duplicate_aspect` / `missing_aspect`; verified `node --test test/frontend-static.test.js` (74/74 pass).
 - After variant workbench field locator, each row can highlight its `offer_id` in the existing payload editor without writing or submitting; verified `node --test test/frontend-static.test.js` (74/74 pass).
+- After aspect-level locator, the payload locator carries both `offer_id` and the first aspect attribute id, and searches for the aspect id inside that SKU slice before falling back to the SKU anchor; verified `node --test test/frontend-static.test.js` (75/75 pass).
 
 ## Recommended Order
 

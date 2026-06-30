@@ -6360,7 +6360,12 @@ function variantWorkbenchImageText(status = "") {
 }
 
 function variantWorkbenchPayloadPath(row = {}) {
-  return String(row.offerId || "");
+  const aspect = variantWorkbenchPrimaryAspect(row);
+  return String(aspect?.id || row.offerId || "");
+}
+
+function variantWorkbenchPrimaryAspect(row = {}) {
+  return (Array.isArray(row.aspects) ? row.aspects : []).find((aspect) => aspect?.id || aspect?.name) || null;
 }
 
 function renderVariantConfigurationWorkbench(run = {}, node = {}) {
@@ -6390,7 +6395,9 @@ function renderVariantConfigurationWorkbench(run = {}, node = {}) {
             </tr>
           </thead>
           <tbody>
-            ${rows.slice(0, 50).map((row) => `
+            ${rows.slice(0, 50).map((row) => {
+              const primaryAspect = variantWorkbenchPrimaryAspect(row);
+              return `
               <tr class="variant-workbench-row variant-workbench-row-${escapeHtml(row.rowStatus || "valid")}">
                 <td><code>${escapeHtml(row.offerId || "-")}</code></td>
                 <td>${escapeHtml(row.modelName || "未读取")}</td>
@@ -6412,12 +6419,14 @@ function renderVariantConfigurationWorkbench(run = {}, node = {}) {
                     class="ghost workflow-payload-locator"
                     data-payload-path="${escapeHtml(variantWorkbenchPayloadPath(row))}"
                     data-payload-label="${escapeHtml(`${row.offerId || "SKU"} / 变体属性`)}"
+                    data-payload-offer-id="${escapeHtml(row.offerId || "")}"
+                    data-payload-attribute-id="${escapeHtml(primaryAspect?.id || "")}"
                     title="仅定位，不修改数据"
                   >定位该 SKU 属性</button>
                   <small>仅定位，不修改数据</small>` : ""}
                 </td>
               </tr>
-            `).join("")}
+            `; }).join("")}
           </tbody>
         </table>
       </div>
@@ -6719,15 +6728,40 @@ async function validateWorkflowPayloadDraft(runId) {
 function focusWorkflowPayloadIssue(button) {
   const path = button?.dataset?.payloadPath || "";
   const label = button?.dataset?.payloadLabel || path || "payload";
+  const offerId = button?.dataset?.payloadOfferId || "";
+  const attributeId = button?.dataset?.payloadAttributeId || "";
   const editor = $("#workflowPayloadEditor");
   if (!editor) return;
   highlightWorkflowPayloadEditor(editor);
   editor.focus();
   const value = editor.value || "";
-  const index = path && value.includes(path) ? value.indexOf(path) : 0;
-  editor.setSelectionRange(index, Math.min(value.length, index + Math.max(path.length, 1)));
+  const index = workflowPayloadLocateIndex(value, path, offerId, attributeId);
+  const locatedAttribute = attributeId && value.slice(index, index + String(attributeId).length) === String(attributeId);
+  const selectionText = locatedAttribute ? String(attributeId) : path;
+  editor.setSelectionRange(index, Math.min(value.length, index + Math.max(selectionText.length, 1)));
   editor.scrollIntoView({ behavior: "smooth", block: "center" });
   toast(`已定位字段：${label}`);
+}
+
+function workflowPayloadLocateIndex(value = "", path = "", offerId = "", attributeId = "") {
+  const text = String(value || "");
+  const fallback = path && text.includes(path) ? text.indexOf(path) : 0;
+  if (!offerId || !attributeId) return fallback;
+  const offerText = String(offerId);
+  const attributeText = String(attributeId);
+  const offerIndex = text.indexOf(offerText);
+  if (offerIndex < 0) return fallback;
+  const nextOfferIndex = text.indexOf("\"offer_id\"", offerIndex + offerText.length);
+  const segmentEnd = nextOfferIndex > offerIndex ? nextOfferIndex : text.length;
+  const segment = text.slice(offerIndex, segmentEnd);
+  const attributeMatch = new RegExp(`"id"\\s*:\\s*"?${escapeWorkflowPayloadRegex(attributeText)}"?`).exec(segment);
+  if (!attributeMatch) return fallback;
+  const innerIndex = attributeMatch[0].lastIndexOf(attributeText);
+  return offerIndex + attributeMatch.index + Math.max(innerIndex, 0);
+}
+
+function escapeWorkflowPayloadRegex(value = "") {
+  return String(value).replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 }
 
 function highlightWorkflowPayloadEditor(editor) {

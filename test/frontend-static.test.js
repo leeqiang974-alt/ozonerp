@@ -264,10 +264,36 @@ test("frontend renders read-only variant configuration workbench", async () => {
   assert.match(js, /重新预检/);
   assert.match(js, /定位该 SKU 属性/);
   assert.match(js, /variantWorkbenchPayloadPath/);
+  assert.match(js, /variantWorkbenchPrimaryAspect/);
+  assert.match(js, /workflowPayloadLocateIndex/);
   assert.match(js, /data-payload-path/);
+  assert.match(js, /data-payload-offer-id/);
+  assert.match(js, /data-payload-attribute-id/);
   assert.match(js, /仅定位，不修改数据/);
   assert.match(css, /workflow-variant-workbench/);
   assert.match(css, /variant-workbench-row/);
+});
+
+test("workflow payload locator targets aspect id inside the same SKU slice", async () => {
+  const js = await readFile(new URL("../public/app.js", import.meta.url), "utf8");
+  const locatorSource = js.match(/function workflowPayloadLocateIndex[\s\S]+?\n}\n\nfunction highlightWorkflowPayloadEditor/)?.[0]
+    .replace(/\nfunction highlightWorkflowPayloadEditor$/, "");
+  const escapeSource = js.match(/function escapeWorkflowPayloadRegex[\s\S]+?\n}\n\nfunction highlightWorkflowPayloadEditor/)?.[0]
+    .replace(/\nfunction highlightWorkflowPayloadEditor$/, "");
+  assert.ok(locatorSource);
+  assert.ok(escapeSource);
+  const workflowPayloadLocateIndex = new Function(`${escapeSource}\n${locatorSource}\nreturn workflowPayloadLocateIndex;`)();
+  const payload = JSON.stringify({
+    items: [
+      { offer_id: "SKU-A", attributes: [{ id: 111, values: [{ value: "red" }] }] },
+      { offer_id: "SKU-B", attributes: [{ id: 222, values: [{ value: "blue" }] }] },
+    ],
+  }, null, 2);
+
+  assert.equal(payload.slice(workflowPayloadLocateIndex(payload, "SKU-B", "SKU-B", "222"), workflowPayloadLocateIndex(payload, "SKU-B", "SKU-B", "222") + 3), "222");
+  assert.equal(payload.slice(workflowPayloadLocateIndex(payload, "SKU-B", "SKU-B", "111"), workflowPayloadLocateIndex(payload, "SKU-B", "SKU-B", "111") + 5), "SKU-B");
+  const specialPayload = '{"items":[{"offer_id":"SKU-C","attributes":[{"id":"88.1"}]}]}';
+  assert.equal(specialPayload.slice(workflowPayloadLocateIndex(specialPayload, "SKU-C", "SKU-C", "88.1"), workflowPayloadLocateIndex(specialPayload, "SKU-C", "SKU-C", "88.1") + 4), "88.1");
 });
 
 test("frontend exposes human repair entrypoints from listing attribute matrix cells", async () => {

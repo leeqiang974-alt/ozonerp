@@ -262,6 +262,10 @@ test("frontend renders read-only variant configuration workbench", async () => {
   assert.match(js, /重复组合/);
   assert.match(js, /只读工作簿/);
   assert.match(js, /重新预检/);
+  assert.match(js, /定位该 SKU 属性/);
+  assert.match(js, /variantWorkbenchPayloadPath/);
+  assert.match(js, /data-payload-path/);
+  assert.match(js, /仅定位，不修改数据/);
   assert.match(css, /workflow-variant-workbench/);
   assert.match(css, /variant-workbench-row/);
 });

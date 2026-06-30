@@ -6359,6 +6359,10 @@ function variantWorkbenchImageText(status = "") {
   return map[status] || "待检查";
 }
 
+function variantWorkbenchPayloadPath(row = {}) {
+  return String(row.offerId || "");
+}
+
 function renderVariantConfigurationWorkbench(run = {}, node = {}) {
   const workbench = run.payloadDraftValidation?.variantConfiguration || node?.output?.variantConfiguration || null;
   const rows = Array.isArray(workbench?.rows) ? workbench.rows : [];
@@ -6401,7 +6405,17 @@ function renderVariantConfigurationWorkbench(run = {}, node = {}) {
                   <strong>${escapeHtml(variantWorkbenchStatusText(row.rowStatus))}</strong>
                   ${(row.reasons || []).some((reason) => reason.code === "DUPLICATE_ASPECT") ? `<small>重复组合</small>` : ""}
                 </td>
-                <td>${escapeHtml(row.safeNextAction || "重新预检后继续。")}</td>
+                <td>
+                  <span>${escapeHtml(row.safeNextAction || "重新预检后继续。")}</span>
+                  ${variantWorkbenchPayloadPath(row) ? `<button
+                    type="button"
+                    class="ghost workflow-payload-locator"
+                    data-payload-path="${escapeHtml(variantWorkbenchPayloadPath(row))}"
+                    data-payload-label="${escapeHtml(`${row.offerId || "SKU"} / 变体属性`)}"
+                    title="仅定位，不修改数据"
+                  >定位该 SKU 属性</button>
+                  <small>仅定位，不修改数据</small>` : ""}
+                </td>
               </tr>
             `).join("")}
           </tbody>

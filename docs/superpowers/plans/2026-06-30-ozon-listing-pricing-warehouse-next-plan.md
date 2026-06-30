@@ -402,6 +402,7 @@ npm run lint
 - After required attribute safe repair V1, confirmed missing dictionary attributes can be written to local draft only when the value is a current-matrix candidate, the workflow is `waiting_human`, and the operator confirms; queue action reuses `apply-attribute-dictionary-repair`. Verified `node --test test/workflow-runs.test.js` (62/62 pass) and `node --test test/frontend-static.test.js` (74/74 pass).
 - After text attribute task queue entry, Listing Center can surface the first safe missing plain-text attribute and reuse `apply-attribute-text-repair`; verified `node --test test/frontend-static.test.js` (74/74 pass).
 - After variant aspect task queue suggestion, Listing Center now surfaces affected SKU, reason, copyable repair guidance, and a current-run link to the variant workbench for `duplicate_aspect` / `missing_aspect`; verified `node --test test/frontend-static.test.js` (74/74 pass).
+- After variant workbench field locator, each row can highlight its `offer_id` in the existing payload editor without writing or submitting; verified `node --test test/frontend-static.test.js` (74/74 pass).
 
 ## Recommended Order
 

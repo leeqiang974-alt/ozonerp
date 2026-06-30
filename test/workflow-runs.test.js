@@ -403,6 +403,42 @@ test("buildListingAttributeMatrix uses metadata dictionary values and flags miss
   assert.equal(matrix.summary.missingVariantAspectMetadata, true);
 });
 
+test("buildListingAttributeMatrix exposes safe human repair guidance for blocked cells", () => {
+  const payload = { items: [
+    {
+      offer_id: "SKU-NEEDS-FIX",
+      description_category_id: 17028673,
+      type_id: 95183,
+      attributes: [
+        { id: 85, values: [{ dictionary_value_id: 999999, value: "Wrong brand" }] },
+      ],
+    },
+  ] };
+  const matrix = buildListingAttributeMatrix({
+    payload,
+    attrsMeta: [
+      { id: 85, name: "Бренд", is_required: true, dictionary_id: 971082 },
+      { id: 9048, name: "Название модели (для объединения в одну карточку)", is_required: true },
+    ],
+    dictionaryValuesByAttributeId: {
+      85: [{ id: 971082, value: "Нет бренда" }],
+    },
+  });
+
+  const brandCell = matrix.rows.find((row) => row.attributeId === 85).cells[0];
+  const modelCell = matrix.rows.find((row) => row.attributeId === 9048).cells[0];
+
+  assert.equal(brandCell.status, "invalid_dictionary");
+  assert.equal(brandCell.repairGuidance.humanRequired, true);
+  assert.match(brandCell.repairGuidance.payloadPath, /SKU-NEEDS-FIX/);
+  assert.match(brandCell.repairGuidance.message, /字典值/);
+  assert.equal(brandCell.repairGuidance.dictionaryCandidates[0].dictionary_value_id, 971082);
+  assert.match(brandCell.repairGuidance.nextStep, /重新预检/);
+  assert.equal(modelCell.status, "missing");
+  assert.match(modelCell.repairGuidance.message, /补充/);
+  assert.match(modelCell.repairGuidance.copyText, /9048/);
+});
+
 test("buildPreflightGateNode blocks multi variant payloads without aspect metadata", () => {
   const node = buildPreflightGateNode({
     payload: { items: [

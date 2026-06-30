@@ -5776,6 +5776,30 @@ function listingAttributeMatrixKindText(kind = "") {
   return labels[kind] || kind || "属性";
 }
 
+function renderListingAttributeCellRepair(cell = {}, row = {}) {
+  const guidance = cell.repairGuidance || null;
+  if (!guidance) return "";
+  const candidates = Array.isArray(guidance.dictionaryCandidates) ? guidance.dictionaryCandidates : [];
+  return `
+    <div class="attribute-matrix-repair">
+      <strong>人工修复入口</strong>
+      <small>${escapeHtml(guidance.message || "请人工修复该属性后重新预检。")}</small>
+      ${candidates.length ? `
+        <div class="attribute-matrix-candidates">
+          ${candidates.map((candidate) => `
+            <span>#${escapeHtml(candidate.dictionary_value_id || "")} · ${escapeHtml(candidate.value || "")}</span>
+          `).join("")}
+        </div>
+      ` : ""}
+      <div>
+        <button class="ghost" type="button" data-payload-path="${escapeHtml(guidance.payloadPath || "")}" data-payload-label="${escapeHtml(guidance.payloadLabel || row.name || "属性矩阵卡点")}">定位</button>
+        <button class="ghost workflow-payload-copy" type="button" data-workflow-action="copy-repair-template" data-repair-copy="${escapeHtml(guidance.copyText || "人工修复后重新预检；不会自动提交 Ozon。")}">复制建议</button>
+      </div>
+      <small>${escapeHtml(guidance.nextStep || "人工修复后重新预检；不会自动提交 Ozon。")}</small>
+    </div>
+  `;
+}
+
 function renderListingAttributeMatrix(run = {}, node = {}) {
   const matrix = run.payloadDraftValidation?.attributeMatrix || node?.output?.attributeMatrix || null;
   const rows = Array.isArray(matrix?.rows) ? matrix.rows : [];
@@ -5818,6 +5842,7 @@ function renderListingAttributeMatrix(run = {}, node = {}) {
                       ${escapeHtml(listingAttributeMatrixStatusText(cell.status))}
                     </span>
                     <small>${escapeHtml(cell.value || "-")}</small>
+                    ${renderListingAttributeCellRepair(cell, row)}
                   </td>
                 `).join("")}
               </tr>

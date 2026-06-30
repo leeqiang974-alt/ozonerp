@@ -346,6 +346,80 @@ function dictionaryValueIdSet(values = []) {
   return new Set((values || []).map(dictionaryValueId).filter(Boolean));
 }
 
+function matrixDictionaryCandidates(values = []) {
+  return (values || [])
+    .map((value) => ({
+      dictionary_value_id: dictionaryValueId(value),
+      value: String(value?.value || value?.name || value?.label || "").trim(),
+      source: value?.source || "ozon_dictionary_values",
+    }))
+    .filter((value) => value.dictionary_value_id)
+    .filter((value, index, valuesList) => (
+      valuesList.findIndex((item) => item.dictionary_value_id === value.dictionary_value_id) === index
+    ))
+    .slice(0, 5);
+}
+
+function matrixOfferPayloadPath(offerId = "") {
+  const normalized = String(offerId || "").trim();
+  return normalized ? `"offer_id": "${normalized}"` : "\"items\"";
+}
+
+function matrixCellRepairGuidance(input = {}) {
+  const status = String(input.status || "");
+  if (!["missing", "invalid_dictionary", "duplicate_variant", "missing_variant_aspect_metadata"].includes(status)) return null;
+  const row = input.row || {};
+  const offerId = String(input.offerId || "").trim();
+  const attributeLabel = `${row.name || `属性 ${row.attributeId || ""}`} #${row.attributeId || ""}`.trim();
+  const payloadPath = matrixOfferPayloadPath(offerId);
+  const dictionaryCandidates = matrixDictionaryCandidates(input.legalValues || []);
+  const base = {
+    humanRequired: true,
+    offerId,
+    attributeId: Number(row.attributeId || 0),
+    attributeName: row.name || "",
+    payloadPath,
+    payloadLabel: `${offerId || "当前 SKU"} / ${attributeLabel}`,
+    nextStep: "人工修复 Payload 草稿后，必须重新预检；不会自动提交 Ozon。",
+    dictionaryCandidates,
+  };
+  if (status === "invalid_dictionary") {
+    const candidateText = dictionaryCandidates.length
+      ? dictionaryCandidates.map((candidate) => `#${candidate.dictionary_value_id} ${candidate.value || ""}`.trim()).join(" / ")
+      : "需要重新拉取或人工选择 Ozon 合法字典值";
+    const message = `当前 ${attributeLabel} 字典值不在当前 Ozon 类目合法值内，请人工选择合法字典值。`;
+    return {
+      ...base,
+      message,
+      copyText: `问题：${message}\nSKU：${offerId || "-"}\n候选：${candidateText}\n下一步：${base.nextStep}`,
+    };
+  }
+  if (status === "missing") {
+    const message = `当前 ${attributeLabel} 缺失，请人工补充后重新校验。`;
+    return {
+      ...base,
+      message,
+      copyText: `问题：${message}\nSKU：${offerId || "-"}\n建议：在 attributes 中补充 id ${row.attributeId || "-"} 的值。\n下一步：${base.nextStep}`,
+    };
+  }
+  if (status === "duplicate_variant") {
+    const message = `当前 ${attributeLabel} 与其他 SKU 的变体特征重复，请人工调整颜色/规格等可变特性。`;
+    return {
+      ...base,
+      message,
+      copyText: `问题：${message}\nSKU：${offerId || "-"}\n下一步：${base.nextStep}`,
+    };
+  }
+  const message = "当前类目没有可用于区分多 SKU 的 Ozon aspect 元数据，请重新获取类目属性或人工确认类目。";
+  return {
+    ...base,
+    message,
+    payloadPath: "\"description_category_id\"",
+    payloadLabel: "Ozon 类目属性元数据",
+    copyText: `问题：${message}\nSKU：${offerId || "-"}\n下一步：${base.nextStep}`,
+  };
+}
+
 function matrixAttributeKind(meta = {}) {
   const required = meta?.is_required === true;
   const aspect = meta?.is_aspect === true;
@@ -401,11 +475,19 @@ export function buildListingAttributeMatrix(input = {}) {
       if (status === "ok" && row.aspect && duplicateAspectOffers.has(offerId)) {
         status = "duplicate_variant";
       }
+      const repairGuidance = matrixCellRepairGuidance({
+        status,
+        row,
+        offerId,
+        attribute,
+        legalValues,
+      });
       return {
         offerId,
         status,
         value: hasValue || "",
         dictionaryValueIds: valueIds,
+        repairGuidance: repairGuidance || undefined,
       };
     });
     return { ...row, cells, meta: undefined };
@@ -425,6 +507,11 @@ export function buildListingAttributeMatrix(input = {}) {
         status: "missing_variant_aspect_metadata",
         value: "当前类目没有可用于区分变体的 aspect 属性元数据",
         dictionaryValueIds: [],
+        repairGuidance: matrixCellRepairGuidance({
+          status: "missing_variant_aspect_metadata",
+          row: { attributeId: 0, name: "Ozon 可变特性元数据" },
+          offerId,
+        }),
       })),
     });
   }

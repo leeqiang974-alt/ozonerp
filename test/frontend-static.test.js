@@ -186,6 +186,21 @@ test("frontend renders a read-only listing attribute matrix", async () => {
   assert.match(css, /attribute-matrix-cell/);
 });
 
+test("frontend exposes human repair entrypoints from listing attribute matrix cells", async () => {
+  const [js, css] = await Promise.all([
+    readFile(new URL("../public/app.js", import.meta.url), "utf8"),
+    readFile(new URL("../public/styles.css", import.meta.url), "utf8"),
+  ]);
+
+  assert.match(js, /renderListingAttributeCellRepair/);
+  assert.match(js, /repairGuidance/);
+  assert.match(js, /人工修复入口/);
+  assert.match(js, /data-payload-path/);
+  assert.match(js, /copy-repair-template/);
+  assert.match(js, /不会自动提交 Ozon/);
+  assert.match(css, /attribute-matrix-repair/);
+});
+
 test("frontend exposes payload issue field locator", async () => {
   const js = await readFile(new URL("../public/app.js", import.meta.url), "utf8");
 

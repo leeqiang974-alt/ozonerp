@@ -327,7 +327,59 @@ function dictionaryCandidatesForMeta({
       } : null;
     })
     .filter(Boolean)
+    .concat(synonymDictionaryCandidatesForMeta({ meta, categoryMatch, attributeValuesById, categoryCache, productText }))
+    .filter((candidate, index, list) => (
+      candidate.dictionaryValueId
+      && list.findIndex((item) => item.dictionaryValueId === candidate.dictionaryValueId) === index
+    ))
     .slice(0, 5);
+}
+
+function synonymDictionaryCandidatesForMeta({
+  meta = {},
+  categoryMatch = {},
+  attributeValuesById = {},
+  categoryCache = {},
+  productText = "",
+} = {}) {
+  const classified = classifyAttributeFillStrategy(meta);
+  if (classified.strategy !== "dictionary_lookup_from_product_text") return [];
+  const text = normalizeText(productText);
+  if (!/материал|材质|材料/.test(normalizeText(`${meta.name || ""} ${meta.description || ""}`))) return [];
+  const materialRules = [
+    {
+      sourcePattern: /пластик|plastic|pp|abs|пп|塑料|聚丙烯|pp材质|abs材质/,
+      valuePattern: /пластик|полипропилен|polypropylene|plastic|abs|пп|pp|塑料|聚丙烯/i,
+      source: "material_synonym",
+      confidence: 0.72,
+    },
+    {
+      sourcePattern: /металл|metal|steel|iron|alloy|不锈钢|金属|铁|合金/,
+      valuePattern: /металл|сталь|нержав|желез|metal|steel|iron|alloy|金属|不锈钢|铁|合金/i,
+      source: "material_synonym",
+      confidence: 0.72,
+    },
+    {
+      sourcePattern: /силикон|silicone|硅胶/,
+      valuePattern: /силикон|silicone|硅胶/i,
+      source: "material_synonym",
+      confidence: 0.72,
+    },
+  ];
+  const values = dictionaryValuesForPlan({ meta, categoryMatch, attributeValuesById, categoryCache });
+  return materialRules
+    .filter((rule) => rule.sourcePattern.test(text))
+    .flatMap((rule) => values.map((entry) => {
+      const value = String(entry?.value || entry?.name || "").replace(/\s+/g, " ").trim();
+      if (!value || !rule.valuePattern.test(value)) return null;
+      return {
+        dictionaryValueId: dictionaryValueId(entry),
+        value,
+        confidence: rule.confidence,
+        source: rule.source,
+      };
+    }))
+    .filter(Boolean);
 }
 
 function dictionaryValuesForPlan({

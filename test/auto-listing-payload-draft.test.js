@@ -297,6 +297,45 @@ test("buildRequiredAttributeFillPlan keeps dictionary candidates in current cate
   assert.equal(manufacturerPlan.strategy, "compliance_sensitive");
 });
 
+test("buildRequiredAttributeFillPlan suggests dictionary candidates from material synonyms only", () => {
+  const plan = buildRequiredAttributeFillPlan({
+    categoryMatch: { description_category_id: 17028673, type_id: 95183 },
+    attrsMeta: [
+      { id: 777, name: "Материал", is_required: true, dictionary_id: 100 },
+    ],
+    attributeValuesById: {
+      777: [
+        { id: 11, value: "пластик" },
+        { id: 12, value: "металл" },
+      ],
+    },
+    productText: "1688 参数：材质 PP 塑料，适合厨房收纳",
+  });
+
+  const materialPlan = plan.find((row) => row.attributeId === 777);
+  assert.equal(materialPlan.action, "suggest_dictionary");
+  assert.equal(materialPlan.dictionaryValueId, undefined);
+  assert.deepEqual(materialPlan.dictionaryCandidates, [{
+    dictionaryValueId: 11,
+    value: "пластик",
+    confidence: 0.72,
+    source: "material_synonym",
+  }]);
+
+  const colorPlan = buildRequiredAttributeFillPlan({
+    categoryMatch: { description_category_id: 17028673, type_id: 95183 },
+    attrsMeta: [
+      { id: 10097, name: "Цвет", is_required: true, dictionary_id: 101 },
+    ],
+    attributeValuesById: {
+      10097: [{ id: 91, value: "пластик" }],
+    },
+    productText: "1688 参数：材质 PP 塑料",
+  })[0];
+  assert.equal(colorPlan.action, "suggest_dictionary");
+  assert.deepEqual(colorPlan.dictionaryCandidates, []);
+});
+
 test("buildListingPayloadDraftFromJob applies explainable pricing policy fields", () => {
   const draft = buildListingPayloadDraftFromJob({
     pendingParentSku: "SKUlq01007",

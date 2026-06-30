@@ -1184,6 +1184,24 @@ function listingFillTaskVariantTextRepairCandidate(run = currentListingWorkflowR
   return null;
 }
 
+function listingVariantCoverageTaskText(summary = {}) {
+  const rowCount = Number(summary.rowCount || 0);
+  const aspectCovered = Number(summary.aspectCoveredRowCount || 0);
+  const missingAspect = Number(summary.missingAspectRowCount || 0);
+  const duplicateAspect = Number(summary.duplicateAspectRowCount || 0);
+  const uniqueImages = Number(summary.uniqueSkuImageRowCount || 0);
+  const missingImages = Number(summary.missingSkuImageRowCount || 0);
+  const nonUniqueImages = Number(summary.nonUniqueSkuImageRowCount || 0);
+  return [
+    `属性覆盖 ${aspectCovered}/${rowCount}`,
+    `缺失 ${missingAspect}`,
+    `重复 ${duplicateAspect}`,
+    `SKU 图区分 ${uniqueImages}/${rowCount}`,
+    `缺图 ${missingImages}`,
+    `未区分 ${nonUniqueImages}`,
+  ].join("，");
+}
+
 function listingVariantAspectContext(row = {}) {
   const aspects = Array.isArray(row.aspects) ? row.aspects : [];
   const primaryAspect = aspects.find((aspect) => aspect?.id || aspect?.name) || {};
@@ -1293,8 +1311,8 @@ function listingFillTaskQueueItems(run = currentListingWorkflowRun()) {
       tone: blockedCount ? "danger" : imageWarningCount ? "warning" : "success",
       label: "变体/SKU 图",
       title: `${variantRows.length} 个 SKU 变体`,
-      body: `${blockedCount} 个变体组合阻塞，${imageWarningCount} 个 SKU 图提醒。`,
-      meta: "数据来自 variantConfiguration；修复后必须重新预检。",
+      body: listingVariantCoverageTaskText(summary),
+      meta: summary.safeNextAction || "数据来自 variantConfiguration；修复后必须重新预检。",
       target: blockedCount ? "preflight-submit" : "content-images",
       variantTextRepairCandidate: variantTextRepairCandidate && blockedCount ? variantTextRepairCandidate : null,
       variantAspectSuggestion,

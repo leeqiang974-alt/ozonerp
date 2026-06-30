@@ -228,6 +228,7 @@ test("listing center exposes a read-only fill task queue from existing diagnosti
   assert.match(js, /listingFillTaskRepairCandidate/);
   assert.match(js, /listingFillTaskTextRepairCandidate/);
   assert.match(js, /listingFillTaskVariantTextRepairCandidate/);
+  assert.match(js, /listingVariantCoverageTaskText/);
   assert.match(js, /listingFillTaskVariantAspectSuggestion/);
   assert.match(js, /listingVariantAspectContext/);
   assert.match(js, /waitingHuman/);
@@ -243,6 +244,8 @@ test("listing center exposes a read-only fill task queue from existing diagnosti
   assert.match(js, /确认写入草稿并预检/);
   assert.match(js, /填写文本属性并预检/);
   assert.match(js, /填写变体文本并预检/);
+  assert.match(js, /属性覆盖/);
+  assert.match(js, /SKU 图区分/);
   assert.match(js, /变体属性修复建议/);
   assert.match(js, /data-listing-variant-suggestion-copy/);
   assert.match(js, /查看变体工作簿/);

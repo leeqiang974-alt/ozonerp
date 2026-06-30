@@ -8,6 +8,30 @@
 
 本轮 Codex 桌面环境以 `C:\Users\Administrator\Documents\ozonerp` 为实际项目根；继续开发前仍需先确认 `git status` 和最近提交，避免误入旧复制目录。
 
+## 2026-06-30 Ozon ERP 专属经验学习与差距评估
+
+### 已完成
+
+- 新增 `docs/ozon-erp-benchmark.zh-CN.md`，把 Ozon 官方规则、Seller Edu、同类 Ozon 工具/集成经验与当前系统做了对照评估。
+- 明确纠偏：Ozon ERP 不能只按通用 ERP 模块推进；上架主线必须围绕 `description_category_id/type_id`、当前类目属性字典、变体可变特性、内容评分、媒体素材和审核回执。
+- 结论：当前系统方向总体正确，已经不是纯泛 ERP；但还缺内容评分模型、类目/type 决策解释、类目规则模板、媒体结构化质量闸和审核/状态回读闭环。
+
+### Claude Code 搭配
+
+- 已使用 `scripts/claude-code-nvidia.ps1` 做两轮分析。
+- Claude 有效建议：内容评分、媒体结构、样板商品/批量参数、字典合法值校验都是 Ozon 专属关键能力。
+- 已纠偏 Claude 的两点误判：
+  - 当前并非没有 `description_category_id/type_id` 映射，缺的是解释、候选对比和人工切换。
+  - 当前品牌/原产国没有硬编码字典 ID，而是从当前类目字典值匹配。
+
+### 后续建议
+
+- 下一步优先开发 `Ozon 内容评分预估面板`：
+  - 媒体：主图、SKU 图、详情图、视频、rich-content、图片文字风险。
+  - 特征：必填属性覆盖率、字典合法率、可变特性唯一性。
+  - 描述：俄文标题、描述长度、rich-content JSON、hashtags。
+  - 输出阻塞项、建议项和安全下一步，不提交 Ozon、不生成图片、不绕过预检。
+
 ## 2026-06-30 高置信必填属性补齐：品牌与原产国
 
 ### 已完成

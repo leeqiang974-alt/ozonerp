@@ -594,6 +594,25 @@ test("product center exposes an ERP product asset ledger", async () => {
   assert.match(css, /product-ledger-section/);
 });
 
+test("listing center exposes second-level workflow tabs", async () => {
+  const [html, js, css] = await Promise.all([
+    readFile(new URL("../public/index.html", import.meta.url), "utf8"),
+    readFile(new URL("../public/app.js", import.meta.url), "utf8"),
+    readFile(new URL("../public/styles.css", import.meta.url), "utf8"),
+  ]);
+
+  assert.match(html, /listingSecondaryTabs/);
+  assert.match(html, /listingStagePanels/);
+  for (const label of ["当前商品", "采集解析", "匹配选品", "定价利润", "内容图片", "预检提交", "审核回执", "失败修复"]) {
+    assert.match(html, new RegExp(label));
+  }
+  assert.match(js, /LISTING_CENTER_STAGES/);
+  assert.match(js, /renderListingStagePanels/);
+  assert.match(js, /setListingStage/);
+  assert.match(css, /listing-secondary-tabs/);
+  assert.match(css, /listing-stage-panel/);
+});
+
 test("frontend exposes a seller operating model instead of hidden developer navigation", async () => {
   const [html, js, css] = await Promise.all([
     readFile(new URL("../public/index.html", import.meta.url), "utf8"),

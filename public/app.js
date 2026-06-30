@@ -723,6 +723,89 @@ const ERP_AUTOMATION_GUARDRAILS = [
   },
 ];
 
+const LISTING_CENTER_STAGES = [
+  {
+    key: "current-product",
+    label: "当前商品",
+    owner: "上架中心",
+    status: "先确定当前处理对象",
+    body: "只展示一个当前商品的状态、卡点和下一步，避免历史流水抢占主界面。",
+    checks: ["是否已采集 1688 商品", "是否有当前 workflow", "是否有 payload 草稿"],
+    action: "看当前商品",
+    view: "listing",
+  },
+  {
+    key: "collect-parse",
+    label: "采集解析",
+    owner: "选品采购",
+    status: "从 1688 商品事实开始",
+    body: "采集标题、图片、SKU、尺重、颜色和规格；解析失败先回采集箱修数据。",
+    checks: ["人机验证是否暂停", "SKU 是否可区分", "尺重是否完整"],
+    action: "打开采集",
+    view: "sourcing",
+  },
+  {
+    key: "match-sourcing",
+    label: "匹配选品",
+    owner: "选品采购",
+    status: "判断是否值得上架",
+    body: "把 1688 候选和 Ozon 参照、利润机会、同品风险放在同一判断层。",
+    checks: ["是否同品", "是否重复", "是否有替代货源"],
+    action: "看选品",
+    view: "research",
+  },
+  {
+    key: "pricing-profit",
+    label: "定价利润",
+    owner: "财务利润",
+    status: "成本、运费、佣金先算清",
+    body: "售价、原价、最低价和利润率必须在提交前形成可解释口径。",
+    checks: ["采购成本", "物流等级", "最低价/利润风险"],
+    action: "算价格",
+    view: "listing",
+  },
+  {
+    key: "content-images",
+    label: "内容图片",
+    owner: "上架中心",
+    status: "文案和图片服务于当前商品",
+    body: "俄文标题、描述、属性、轮播图、参考指导和生图任务都归到当前商品。",
+    checks: ["标题是否自然", "图片是否干净", "属性是否覆盖必填"],
+    action: "编辑内容",
+    view: "listing",
+  },
+  {
+    key: "preflight-submit",
+    label: "预检提交",
+    owner: "安全闸",
+    status: "预检通过才允许人工确认",
+    body: "payload 必须先校验；真实提交 Ozon 仍然需要人工确认，不能自动越过。",
+    checks: ["payload 校验", "重复 offer", "人工确认"],
+    action: "打开预检",
+    view: "workflow-console",
+  },
+  {
+    key: "review-feedback",
+    label: "审核回执",
+    owner: "商品中心",
+    status: "提交后看 Ozon 回执",
+    body: "task_id、product_id、审核状态、警告和错误原因进入审核回执区。",
+    checks: ["task_id", "审核失败原因", "商品状态回写"],
+    action: "看回执",
+    view: "workflow-console",
+  },
+  {
+    key: "failure-repair",
+    label: "失败修复",
+    owner: "工作流诊断",
+    status: "失败必须归因再重试",
+    body: "字段缺失、变体合并、图片违规、价格阻塞和换货源都从这里分流。",
+    checks: ["错误码", "字段定位", "修复后重试"],
+    action: "修复失败",
+    view: "workflow-console",
+  },
+];
+
 const $ = (selector) => document.querySelector(selector);
 const on = (selector, event, handler) => {
   const el = $(selector);
@@ -1000,6 +1083,69 @@ function renderListingPipelineWorkbench() {
   `;
 }
 
+function listingStageStatus(stage) {
+  const currentRun = currentListingWorkflowRun();
+  if (!currentRun) return stage.status;
+  const nodeKeysByStage = {
+    "collect-parse": ["crawler_1688", "candidate_parse", "collect_1688"],
+    "match-sourcing": ["ozon_learning", "keyword_expand", "match_profit"],
+    "pricing-profit": ["match_profit", "pricing"],
+    "content-images": ["content_generate", "generate_listing"],
+    "preflight-submit": ["preflight_check", "ozon_submit"],
+    "review-feedback": ["review_reconcile", "stock_sync"],
+    "failure-repair": ["preflight_check", "review_reconcile", "manual"],
+  };
+  if (stage.key === "current-product") return `当前 workflow：${currentRun.status || "unknown"}`;
+  const patterns = nodeKeysByStage[stage.key] || [];
+  const nodes = Array.isArray(currentRun.nodes) ? currentRun.nodes : [];
+  const matched = nodes.filter((node) => patterns.some((pattern) => String(node.key || "").includes(pattern)));
+  const failed = matched.filter((node) => node.status === "failed").length;
+  const waiting = matched.filter((node) => node.status === "waiting_human").length;
+  const completed = matched.filter((node) => node.status === "completed" || node.status === "done").length;
+  if (failed) return `${failed} 个失败`;
+  if (waiting) return `${waiting} 个待人工`;
+  if (completed) return `${completed} 个已完成`;
+  return stage.status;
+}
+
+function renderListingStagePanels() {
+  const tabs = $("#listingSecondaryTabs");
+  const panels = $("#listingStagePanels");
+  if (!tabs || !panels) return;
+  const active = state.listingStage || "current-product";
+  tabs.querySelectorAll("[data-listing-stage]").forEach((button) => {
+    button.classList.toggle("active", button.dataset.listingStage === active);
+  });
+  panels.innerHTML = LISTING_CENTER_STAGES.map((stage, index) => {
+    const selected = stage.key === active;
+    return `
+      <article class="listing-stage-panel ${selected ? "active" : ""}" data-listing-stage-panel="${escapeHtml(stage.key)}">
+        <div class="listing-stage-index">${String(index + 1).padStart(2, "0")}</div>
+        <div class="listing-stage-body">
+          <div class="listing-stage-head">
+            <strong>${escapeHtml(stage.label)}</strong>
+            <span>${escapeHtml(stage.owner)}</span>
+          </div>
+          <p>${escapeHtml(stage.body)}</p>
+          <div class="listing-stage-checks">
+            ${stage.checks.map((item) => `<em>${escapeHtml(item)}</em>`).join("")}
+          </div>
+          <footer>
+            <small>${escapeHtml(listingStageStatus(stage))}</small>
+            <button type="button" data-listing-stage-view="${escapeHtml(stage.view)}">${escapeHtml(stage.action)}</button>
+          </footer>
+        </div>
+      </article>
+    `;
+  }).join("");
+}
+
+function setListingStage(stageKey) {
+  if (!LISTING_CENTER_STAGES.some((stage) => stage.key === stageKey)) return;
+  state.listingStage = stageKey;
+  renderListingStagePanels();
+}
+
 function renderListingAutomationGuardrails() {
   const grid = $("#listingAutomationGuardrailGrid");
   if (!grid) return;
@@ -1118,6 +1264,7 @@ function renderSellerManagementScope() {
 function renderErpModuleOwnership() {
   renderSellerOperatingModel();
   renderErpArchitectureMap();
+  renderListingStagePanels();
   renderListingPipelineWorkbench();
   renderListingAutomationGuardrails();
   renderSingleListingOutcomePanel();
@@ -7211,7 +7358,7 @@ function renderTabTaskCards() {
 function applyProgressiveDisclosure() {
   document.querySelectorAll(".view").forEach((view) => {
     if (view.dataset.progressiveDisclosureReady === "1") return;
-    const visibleBase = new Set(["page-head", "view-ownership-bar", "tab-task-card"]);
+    const visibleBase = new Set(["page-head", "view-ownership-bar", "tab-task-card", "tab-primary-panel"]);
     const contentSections = Array.from(view.children).filter((child) => {
       if (!(child instanceof HTMLElement)) return false;
       if (child.matches("header.page-head")) return false;
@@ -7820,8 +7967,19 @@ async function init() {
   });
   document.addEventListener("click", (event) => {
     const taskTarget = event.target.closest(".tab-task-card [data-task-card-view]");
-    if (!taskTarget) return;
-    activateErpView(taskTarget.dataset.taskCardView);
+    if (taskTarget) {
+      activateErpView(taskTarget.dataset.taskCardView);
+      return;
+    }
+    const listingStageTarget = event.target.closest("[data-listing-stage]");
+    if (listingStageTarget) {
+      setListingStage(listingStageTarget.dataset.listingStage);
+      return;
+    }
+    const listingStageViewTarget = event.target.closest("[data-listing-stage-view]");
+    if (listingStageViewTarget) {
+      activateErpView(listingStageViewTarget.dataset.listingStageView);
+    }
   });
     on("#refreshDashboard", "click", async () => {
       await testApi();

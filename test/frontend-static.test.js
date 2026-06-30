@@ -166,8 +166,18 @@ test("frontend renders listing quality field repair panel", async () => {
   assert.match(js, /ozon_dictionary_cache/);
   assert.match(js, /LISTING_QUALITY_DICTIONARY_VALUE_INVALID/);
   assert.match(js, /LISTING_QUALITY_PRICING_BLOCKED/);
+  assert.match(js, /scoreBreakdown/);
+  assert.match(js, /listingQualityIsStale/);
+  assert.match(js, /qualityStale/);
+  assert.match(js, /评分分项/);
+  assert.match(js, /分数不替代预检/);
+  assert.match(js, /修改后需重新预检/);
+  assert.match(js, /重新预检会生成新分数/);
+  assert.match(js, /图片与媒体/);
+  assert.match(js, /分类属性与变体/);
   assert.match(css, /workflow-listing-quality/);
   assert.match(css, /workflow-listing-quality-issue/);
+  assert.match(css, /workflow-listing-quality-breakdown/);
   assert.match(css, /workflow-listing-quality-candidates/);
 });
 

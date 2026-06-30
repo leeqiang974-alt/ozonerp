@@ -5619,8 +5619,26 @@ function workflowPayloadIssueLocator(issue = {}, index = 0, payload = {}) {
   `;
 }
 
+function listingQualityIsStale(run = {}) {
+  if (!run.payloadDraft) return false;
+  const validation = run.payloadDraftValidation;
+  if (!validation) return true;
+  return typeof validation === "object"
+    && !Array.isArray(validation)
+    && Object.keys(validation).length === 0;
+}
+
 function collectListingQualityDiagnosis(run = {}, node = {}) {
   const validation = run.payloadDraftValidation || {};
+  const qualityStale = listingQualityIsStale(run);
+  if (qualityStale) {
+    return {
+      listingQuality: null,
+      qualityIssues: [],
+      listingQualityWarnings: [],
+      qualityStale: true,
+    };
+  }
   const preflight = (run.nodes || []).find((item) => item.key === "preflight_check") || {};
   const preflightOutput = node?.key === "preflight_check" ? (node.output || {}) : (preflight.output || {});
   const listingQuality = run.payloadDraftValidation?.listingQuality || preflightOutput.listingQuality || null;
@@ -5641,6 +5659,7 @@ function collectListingQualityDiagnosis(run = {}, node = {}) {
     listingQuality,
     qualityIssues,
     listingQualityWarnings: Array.isArray(listingQualityWarnings) ? listingQualityWarnings : [],
+    qualityStale: false,
   };
 }
 
@@ -5682,8 +5701,59 @@ function renderListingQualityDictionaryCandidates(issue = {}) {
   `;
 }
 
+function renderListingQualityScoreBreakdown(listingQuality = {}) {
+  const scoreBreakdown = listingQuality?.scoreBreakdown || {};
+  const labels = {
+    media: "图片与媒体",
+    attributes: "分类属性与变体",
+    description: "标题描述与富内容",
+    package: "尺重与物流基础",
+  };
+  const rows = Object.entries(labels)
+    .map(([key, fallbackLabel]) => {
+      const item = scoreBreakdown[key] || null;
+      if (!item) return null;
+      return {
+        key,
+        label: item.label || fallbackLabel,
+        score: Number.isFinite(Number(item.score)) ? Number(item.score) : 0,
+        status: item.status || "warning",
+        reasonZh: item.reasonZh || "建议人工复核该分项。",
+      };
+    })
+    .filter(Boolean);
+  if (!rows.length) return "";
+  return `
+    <div class="workflow-listing-quality-breakdown">
+      <strong>评分分项</strong>
+      <div>
+        ${rows.map((row) => `
+          <article class="workflow-listing-quality-breakdown-item workflow-listing-quality-breakdown-${escapeHtml(row.status)}">
+            <span>${escapeHtml(row.label)}</span>
+            <strong>${escapeHtml(row.score)}分</strong>
+            <small>${escapeHtml(row.reasonZh)}</small>
+          </article>
+        `).join("")}
+      </div>
+    </div>
+  `;
+}
+
 function renderListingQualityPanel(run = {}, node = {}) {
-  const { listingQuality, qualityIssues, listingQualityWarnings } = collectListingQualityDiagnosis(run, node);
+  const { listingQuality, qualityIssues, listingQualityWarnings, qualityStale } = collectListingQualityDiagnosis(run, node);
+  if (qualityStale) {
+    return `
+      <section class="workflow-listing-quality workflow-listing-quality-warning">
+        <div class="workflow-listing-quality-head">
+          <div>
+            <strong>Listing 质量诊断</strong>
+            <p class="hint">只读诊断：当前草稿已修改，旧分数已过期；修改后需重新预检，重新预检会生成新分数与阻塞原因。</p>
+          </div>
+          <span>需重新预检</span>
+        </div>
+      </section>
+    `;
+  }
   if (!listingQuality && !qualityIssues.length && !listingQualityWarnings.length) {
     return `
       <section class="workflow-listing-quality workflow-listing-quality-empty">
@@ -5714,10 +5784,11 @@ function renderListingQualityPanel(run = {}, node = {}) {
       <div class="workflow-listing-quality-head">
         <div>
           <strong>Listing 质量诊断</strong>
-          <p class="hint">只读诊断：以下信息仅供定位，请在 Payload 草稿或上架草稿修字段后重新预检。</p>
+          <p class="hint">只读诊断：分数不替代预检；请在 Payload 草稿或上架草稿修字段后重新预检。</p>
         </div>
         <span>${escapeHtml(listingQualityStatusText(status))}${Number.isFinite(Number(listingQuality?.score)) ? ` · ${Number(listingQuality.score)}分` : ""}</span>
       </div>
+      ${renderListingQualityScoreBreakdown(listingQuality || {})}
       ${issues.length ? `
         <div class="workflow-listing-quality-grid">
           ${issues.map((issue, index) => {

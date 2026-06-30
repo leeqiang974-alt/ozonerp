@@ -8,6 +8,45 @@
 
 本轮 Codex 桌面环境以 `C:\Users\Administrator\Documents\ozonerp` 为实际项目根；继续开发前仍需先确认 `git status` 和最近提交，避免误入旧复制目录。
 
+## 2026-06-30 Ozon 内容评分与媒体质量闸口
+
+### 已完成
+
+- `diagnoseListingQuality()` 新增本地 Ozon 内容评分分项：
+  - 图片与媒体：产品图 3-4 张提示分值风险，多 SKU 图片组合重复提示缺 SKU 区分图。
+  - 分类属性与变体：沿用必填属性、字典合法值、变体可变特性阻塞。
+  - 标题描述与富内容：描述过短、rich content/视觉详情缺失会进入商品分值提醒。
+  - 尺重与物流基础：缺少完整尺重会进入商品分值提醒，并引导回尺重/价格预检。
+- `buildPreflightGateNode()` 现在把 `contentSummary` 传入 listing quality 诊断，让预检总闸能展示内容评分分项。
+- 工作流 Listing 质量诊断面板新增“评分分项”卡片，展示图片与媒体、分类属性与变体、标题描述与富内容、尺重与物流基础四项分数和原因。
+- 若本地 Payload 草稿保存后尚未重新校验，面板会显示“旧分数已过期 / 修改后需重新预检”，避免继续展示旧预检分数。
+
+### 安全边界
+
+- 内容评分全量本地计算，不调用 Ozon 写接口，不提交商品。
+- 评分只解释商品分值/内容风险，不替代 Payload validation、preflight 或人工确认。
+- 不触发 GPT/Image 生成，不绕过 GPT/Image 成本确认。
+- 不改变 workflow lock、`waiting_human`、pricing blocked 或提交确认逻辑。
+
+### Claude Code 搭配
+
+- 开发前已使用 `scripts/claude-ozon-review-nvidia.ps1` 做 Task 1 实现简报。
+- Claude 重点提醒：评分只能作为 preflight 前置解释，不能替代 preflight；不能引入图片处理/生图成本；不能侵入营销活动或商品运营页。
+- 提交前复审指出需防止“草稿改动后继续显示旧分数”；已补充 stale UI 防护和静态测试。
+
+### 已验证
+
+- TDD 红灯：
+  - `node --test test/listing-quality.test.js` 先因 `scoreBreakdown` 缺失失败。
+  - `node --test test/workflow-runs.test.js` 先因 `contentSummary` 未接入预检诊断失败。
+  - `node --test test/frontend-static.test.js` 先因前端未渲染评分分项失败。
+- 目标验证：`node --test test/listing-quality.test.js test/workflow-runs.test.js test/frontend-static.test.js`，125/125 通过。
+
+### 下一步
+
+- 继续开发“必填属性规则引擎 V2”：把 `model_name_from_parent_sku`、包装尺重字段、高置信自动补齐、中置信字典候选和合规敏感阻塞做成可解释填充计划。
+- 后续再进入“变体配置工作台”，集中解决 SKU 图、颜色/尺寸 aspect、重复组合和模型名一致性。
+
 ## 2026-06-30 Ozon ERP 专属经验学习与差距评估
 
 ### 已完成

@@ -739,6 +739,7 @@ export function buildPreflightGateNode(input = {}) {
   const listingQuality = input.listingQuality || diagnoseListingQuality({
     payload: input.payload || {},
     attrsMeta: input.attrsMeta || [],
+    contentSummary: input.contentSummary || {},
     pricing: input.pricing || null,
     workflowRun: input.workflowRun || null,
     dictionaryValueCache: input.dictionaryValueCache || {},

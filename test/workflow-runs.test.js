@@ -315,6 +315,48 @@ test("buildPreflightGateNode blocks duplicate Ozon aspect combinations", () => {
   assert.ok(node.output.issues.some((issue) => issue.code === "DUPLICATE_VARIANT_ASPECTS"));
 });
 
+test("buildPreflightGateNode carries listing content score breakdown from content summary", () => {
+  const node = buildPreflightGateNode({
+    payload: {
+      items: [{
+        offer_id: "SKU-score",
+        name: "Игрушка для кошек",
+        description_category_id: 17028673,
+        type_id: 95183,
+        price: "1200",
+        images: ["https://example.com/1.jpg", "https://example.com/2.jpg", "https://example.com/3.jpg"],
+        attributes: [
+          { id: 85, values: [{ dictionary_value_id: 971082, value: "Нет бренда" }] },
+          { id: 9048, values: [{ value: "Cat toy" }] },
+        ],
+      }],
+    },
+    attrsMeta: [
+      { id: 85, name: "Бренд", is_required: true, dictionary_id: 971082 },
+      { id: 9048, name: "Название модели (для объединения в одну карточку)", is_required: true },
+    ],
+    dictionaryValuesByAttributeId: {
+      85: [{ id: 971082, value: "Нет бренда" }],
+    },
+    category: { description_category_id: 17028673, type_id: 95183, path: "Игрушки" },
+    variantCount: 1,
+    contentSummary: {
+      candidateImageCount: 3,
+      skuVariantCount: 1,
+      descriptionLength: 36,
+      richContentReady: false,
+      sizeWeightReady: false,
+      contentIssues: [],
+    },
+  });
+
+  assert.equal(node.output.listingQuality.scoreBreakdown.media.status, "warning");
+  assert.equal(node.output.listingQuality.scoreBreakdown.description.status, "warning");
+  assert.equal(node.output.listingQuality.scoreBreakdown.package.status, "warning");
+  assert.ok(node.output.listingQualityWarnings.some((warning) => warning.code === "DESCRIPTION_TOO_SHORT"));
+  assert.ok(node.output.listingQualityWarnings.some((warning) => warning.code === "PACKAGE_SIZE_WEIGHT_MISSING"));
+});
+
 test("buildListingAttributeMatrix summarizes required dictionary and variant attributes by SKU", () => {
   const payload = { items: [
     {

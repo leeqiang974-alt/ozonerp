@@ -98,6 +98,95 @@ function displayEnteredDictionaryValue(value = {}) {
   return [id ? `#${id}` : "", text].filter(Boolean).join(" ");
 }
 
+function clampScore(value) {
+  const number = Number(value || 0);
+  if (!Number.isFinite(number)) return 0;
+  return Math.max(0, Math.min(100, Math.round(number)));
+}
+
+function scoreStatus(score, blocked = false) {
+  if (blocked) return "blocked";
+  return score >= 90 ? "ready" : "warning";
+}
+
+function descriptionLengthForItem(item = {}) {
+  return String(
+    item.description
+    || item.description_ru
+    || item.descriptionRu
+    || item.marketing_description
+    || "",
+  ).trim().length;
+}
+
+function richContentReadyForItem(item = {}) {
+  if (item.rich_content_json || item.richContentJson || item.rich_content || item.richContent) return true;
+  const complex = item.complex_attributes || item.complexAttributes || [];
+  return Array.isArray(complex) && complex.length > 0;
+}
+
+function imageSignature(images = []) {
+  return (Array.isArray(images) ? images : [])
+    .filter(Boolean)
+    .map((url) => String(url || "").trim().toLowerCase())
+    .filter(Boolean)
+    .join("|");
+}
+
+function hasPackageData(item = {}) {
+  const weight = Number(item.weight || item.weight_g || item.weightG || item.package_weight || item.packageWeight || 0);
+  const width = Number(item.width || item.width_mm || item.widthMm || item.package_width || item.packageWidth || 0);
+  const height = Number(item.height || item.height_mm || item.heightMm || item.package_height || item.packageHeight || 0);
+  const depth = Number(item.depth || item.depth_mm || item.depthMm || item.length || item.length_mm || item.lengthMm || item.package_length || item.packageLength || 0);
+  return weight > 0 && width > 0 && height > 0 && depth > 0;
+}
+
+function pushUnique(list, item) {
+  const key = [
+    item.code || "",
+    item.offerId || "",
+    item.attributeId || "",
+    item.message || "",
+  ].join("|");
+  if (!list.some((entry) => [
+    entry.code || "",
+    entry.offerId || "",
+    entry.attributeId || "",
+    entry.message || "",
+  ].join("|") === key)) {
+    list.push(item);
+  }
+}
+
+function buildScoreBreakdown({ mediaScore, attributeScore, descriptionScore, packageScore }) {
+  return {
+    media: {
+      label: "图片与媒体",
+      score: clampScore(mediaScore),
+      status: scoreStatus(mediaScore),
+      reasonZh: mediaScore >= 90 ? "图片数量和 SKU 图覆盖较完整。" : "图片数量、SKU 图或详情图仍会影响商品分值。",
+    },
+    attributes: {
+      label: "分类属性与变体",
+      score: clampScore(attributeScore.score),
+      status: scoreStatus(attributeScore.score, attributeScore.blocked),
+      reasonZh: attributeScore.blocked ? "存在必填属性、字典值或变体组合阻塞项。" : "必填属性和变体组合未发现阻塞项。",
+    },
+    description: {
+      label: "标题描述与富内容",
+      score: clampScore(descriptionScore),
+      status: scoreStatus(descriptionScore),
+      reasonZh: descriptionScore >= 90 ? "描述和富内容基础完整。" : "描述长度或 rich content 仍可优化。",
+    },
+    package: {
+      label: "尺重与物流基础",
+      score: clampScore(packageScore),
+      status: scoreStatus(packageScore),
+      reasonZh: packageScore >= 90 ? "尺重信息可用于后续定价和物流判断。" : "尺重缺失会影响价格、物流等级和商品分值。",
+    },
+  };
+}
+
 function candidateConfidence(enteredValues = [], candidate = {}) {
   const candidateText = normalizeDictionaryText(dictionaryValueText(candidate));
   if (!candidateText) return 0.4;
@@ -208,10 +297,15 @@ function variantAspectIssues(items = [], attrsMeta = []) {
 export function diagnoseListingQuality(input = {}) {
   const payload = input.payload || {};
   const attrsMeta = Array.isArray(input.attrsMeta) ? input.attrsMeta : [];
+  const contentSummary = input.contentSummary || {};
   const items = payloadItems(payload);
   const blockedReasons = [];
   const warnings = [];
   const nextActions = [];
+  let mediaScore = 100;
+  let descriptionScore = 100;
+  let packageScore = 100;
+  let hasDetailImageWarning = false;
 
   for (const item of items) {
     const offerId = String(item?.offer_id || "").trim();
@@ -231,6 +325,8 @@ export function diagnoseListingQuality(input = {}) {
       });
       nextActions.push("补充详情图、场景图或 SKU 图以提高商品分值。");
     }
+
+    if (images.length >= 3 && images.length < 5) hasDetailImageWarning = true;
 
     for (const meta of attrsMeta) {
       const id = Number(meta?.id || 0);
@@ -272,6 +368,56 @@ export function diagnoseListingQuality(input = {}) {
     }
   }
 
+  if (hasDetailImageWarning) mediaScore -= 15;
+
+  if (items.length > 1) {
+    const signatures = items.map((item) => imageSignature(item?.images || [])).filter(Boolean);
+    if (signatures.length && new Set(signatures).size < signatures.length) {
+      mediaScore -= 15;
+      pushUnique(warnings, {
+        code: "SKU_IMAGES_NOT_UNIQUE",
+        message: "多 SKU 使用了相同图片组合，建议为每个变体准备可区分的 SKU 图。",
+      });
+      nextActions.push("为每个变体补充可区分的 SKU 图，修复后重新预检。");
+    }
+  }
+
+  const descriptionLength = Number(contentSummary.descriptionLength || 0)
+    || Math.max(0, ...items.map(descriptionLengthForItem));
+  if (items.length && descriptionLength > 0 && descriptionLength < 80) {
+    descriptionScore -= 20;
+    pushUnique(warnings, {
+      code: "DESCRIPTION_TOO_SHORT",
+      message: "商品描述偏短，可能影响 Ozon 商品分值和转化。",
+    });
+    nextActions.push("补充俄文描述、卖点、使用场景和规格信息后重新预检。");
+  }
+  const richContentKnown = Object.prototype.hasOwnProperty.call(contentSummary, "richContentReady")
+    || Object.prototype.hasOwnProperty.call(contentSummary, "visualCardReady")
+    || items.some((item) => richContentReadyForItem(item));
+  const richContentReady = Boolean(contentSummary.richContentReady || contentSummary.visualCardReady)
+    || items.some((item) => richContentReadyForItem(item));
+  if (items.length && richContentKnown && !richContentReady) {
+    descriptionScore -= 15;
+    pushUnique(warnings, {
+      code: "RICH_CONTENT_MISSING",
+      message: "未检测到 rich content/视觉详情内容，建议补充以提高商品分值。",
+    });
+    nextActions.push("补充详情图或 rich content 后重新预检。");
+  }
+
+  const packageKnown = Object.prototype.hasOwnProperty.call(contentSummary, "sizeWeightReady")
+    || items.some((item) => hasPackageData(item));
+  const packageReady = contentSummary.sizeWeightReady === true || items.some((item) => hasPackageData(item));
+  if (items.length && packageKnown && !packageReady) {
+    packageScore -= 20;
+    pushUnique(warnings, {
+      code: "PACKAGE_SIZE_WEIGHT_MISSING",
+      message: "尺重信息不完整，会影响价格、物流等级和 Ozon 商品分值。",
+    });
+    nextActions.push("补齐重量和长宽高尺重，重新生成价格并预检。");
+  }
+
   for (const issue of variantAspectIssues(items, attrsMeta)) {
     blockedReasons.push(issue);
     nextActions.push("修正每个 SKU 的 Ozon 可变特性，确保同一模型下组合唯一。");
@@ -287,10 +433,27 @@ export function diagnoseListingQuality(input = {}) {
   }
 
   const uniqueNextActions = [...new Set(nextActions.filter(Boolean))];
-  const score = Math.max(0, 100 - blockedReasons.length * 18 - warnings.length * 5);
+  const attributeScore = {
+    score: Math.max(0, 100 - blockedReasons.filter((reason) => String(reason.code || "") !== "PRICING_BLOCKED").length * 18),
+    blocked: blockedReasons.some((reason) => String(reason.code || "") !== "PRICING_BLOCKED"),
+  };
+  const scoreBreakdown = buildScoreBreakdown({
+    mediaScore,
+    attributeScore,
+    descriptionScore,
+    packageScore,
+  });
+  const score = clampScore(
+    (scoreBreakdown.media.score
+      + scoreBreakdown.attributes.score
+      + scoreBreakdown.description.score
+      + scoreBreakdown.package.score) / 4
+      - blockedReasons.filter((reason) => String(reason.code || "") === "PRICING_BLOCKED").length * 12,
+  );
   return {
     status: blockedReasons.length ? "blocked" : (warnings.length ? "warning" : "ready"),
     score,
+    scoreBreakdown,
     blockedReasons,
     warnings,
     nextActions: uniqueNextActions.length ? uniqueNextActions : ["继续保持 Payload 预检和人工确认提交。"],

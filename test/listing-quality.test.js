@@ -111,3 +111,63 @@ test("diagnoseListingQuality keeps warning-only detail image advice non-blocking
   assert.equal(diagnosis.blockedReasons.length, 0);
   assert.equal(diagnosis.warnings.some((warning) => warning.code === "DETAIL_IMAGES_TOO_FEW"), true);
 });
+
+test("diagnoseListingQuality explains Ozon content score by media, attributes, description, and package", () => {
+  const diagnosis = diagnoseListingQuality({
+    payload: {
+      items: [
+        {
+          offer_id: "SKU-red",
+          name: "Игрушка для кошек красная",
+          description_category_id: 17028673,
+          type_id: 95183,
+          price: "1200",
+          images: ["https://example.com/1.jpg", "https://example.com/2.jpg", "https://example.com/3.jpg"],
+          attributes: [
+            { id: 85, values: [{ dictionary_value_id: 971082, value: "Нет бренда" }] },
+            { id: 9048, values: [{ value: "Cat toy" }] },
+            { id: 10097, values: [{ value: "красный" }] },
+          ],
+        },
+        {
+          offer_id: "SKU-blue",
+          name: "Игрушка для кошек синяя",
+          description_category_id: 17028673,
+          type_id: 95183,
+          price: "1200",
+          images: ["https://example.com/1.jpg", "https://example.com/2.jpg", "https://example.com/3.jpg"],
+          attributes: [
+            { id: 85, values: [{ dictionary_value_id: 971082, value: "Нет бренда" }] },
+            { id: 9048, values: [{ value: "Cat toy" }] },
+            { id: 10097, values: [{ value: "синий" }] },
+          ],
+        },
+      ],
+    },
+    attrsMeta: [
+      { id: 85, name: "Бренд", is_required: true, dictionary_id: 971082 },
+      { id: 9048, name: "Название модели (для объединения в одну карточку)", is_required: true },
+      { id: 10097, name: "Название цвета", is_aspect: true },
+    ],
+    contentSummary: {
+      descriptionLength: 42,
+      richContentReady: false,
+      skuVariantCount: 2,
+      sizeWeightReady: false,
+    },
+  });
+
+  assert.equal(diagnosis.status, "warning");
+  assert.ok(diagnosis.score < 100);
+  assert.equal(diagnosis.scoreBreakdown.media.status, "warning");
+  assert.equal(diagnosis.scoreBreakdown.media.score, 70);
+  assert.equal(diagnosis.scoreBreakdown.attributes.status, "ready");
+  assert.equal(diagnosis.scoreBreakdown.description.status, "warning");
+  assert.equal(diagnosis.scoreBreakdown.package.status, "warning");
+  assert.ok(diagnosis.warnings.some((warning) => warning.code === "SKU_IMAGES_NOT_UNIQUE"));
+  assert.ok(diagnosis.warnings.some((warning) => warning.code === "DESCRIPTION_TOO_SHORT"));
+  assert.ok(diagnosis.warnings.some((warning) => warning.code === "RICH_CONTENT_MISSING"));
+  assert.ok(diagnosis.warnings.some((warning) => warning.code === "PACKAGE_SIZE_WEIGHT_MISSING"));
+  assert.ok(diagnosis.nextActions.some((action) => /SKU 图/.test(action)));
+  assert.ok(diagnosis.nextActions.some((action) => /尺重/.test(action)));
+});

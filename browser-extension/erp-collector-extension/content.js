@@ -186,7 +186,7 @@ function collectPddPage(options = {}) {
     description: cleanText(document.querySelector("meta[name='description']")?.content || ""),
     html: document.documentElement.outerHTML,
     images: pickPddImages(),
-    detailImages: [],
+    detailImages: pickPddDetailImages(),
     video: options.includeVideo === false ? null : pickPddVideo(),
     attributes: pickPddAttributes(),
     skuVariants: pickPddSkuVariants(),
@@ -933,12 +933,18 @@ function pickPddPrice() {
 }
 
 function pickPddImages() {
+  const embedded = pddEmbeddedImagesByKeys(["goodsGallery", "goods_gallery", "gallery", "imageGallery", "topGallery"]);
+  if (embedded.length) return embedded.slice(0, 80);
   const images = [...document.images]
     .map((image) => image.currentSrc || image.src || image.getAttribute("data-src") || "")
     .map(normalizeImage)
     .filter((src) => /pddpic\.com|pinduoduo\.com|yangkeduo\.com/i.test(src))
     .filter((src) => !/avatar|logo|icon|sprite|coupon|promotion|brand|ddpay|oms_img_ng|funimg/i.test(src));
   return dedupe(images).slice(0, 80);
+}
+
+function pickPddDetailImages() {
+  return pddEmbeddedImagesByKeys(["detailGallery", "detail_gallery", "detailImages", "detail_images", "descImages"]).slice(0, 120);
 }
 
 function pickPddVideo() {
@@ -958,6 +964,73 @@ function pddEmbeddedValue(keys) {
       const match = html.match(pattern);
       const value = match ? decodeJsonishString(match[1]) : "";
       if (cleanText(value)) return value;
+    }
+  }
+  return "";
+}
+
+function pddEmbeddedImagesByKeys(keys) {
+  const html = document.documentElement?.innerHTML || "";
+  const images = [];
+  for (const key of keys) {
+    const patterns = [
+      new RegExp(`["']${escapeRegExp(key)}["']\\s*:\\s*\\[([\\s\\S]{0,8000}?)\\]`, "i"),
+      new RegExp(`\\b${escapeRegExp(key)}\\b\\s*:\\s*\\[([\\s\\S]{0,8000}?)\\]`, "i"),
+    ];
+    for (const pattern of patterns) {
+      const match = html.match(pattern);
+      const body = match ? match[1] : "";
+      if (!body) continue;
+      images.push(...(body.match(/https?:\\?\/\\?\/[^"'\\\s<>]+?\.(?:jpg|jpeg|png|webp)(?:[^"'\\\s<>]*)?/gi) || []));
+    }
+  }
+  return dedupe(images.map(decodeJsonishString).map(normalizeImage).filter(isLikelyPddProductImage));
+}
+
+function pddEmbeddedSkuVariants() {
+  const html = document.documentElement?.innerHTML || "";
+  const price = pickPddPrice();
+  const variants = [];
+  for (const body of pddEmbeddedArrayBodies(html, ["sku", "skus", "skuList", "sku_list", "skuVariants", "sku_variants"])) {
+    for (const objectText of body.match(/\{[\s\S]*?\}/g) || []) {
+      const spec = pddEmbeddedStringFromText(objectText, ["spec", "specText", "skuName", "sku_name", "name", "label"]);
+      const skuId = pddEmbeddedStringFromText(objectText, ["skuId", "sku_id", "id"]);
+      const itemPrice = cleanPrice(pddEmbeddedStringFromText(objectText, ["price", "salePrice", "sale_price", "groupPrice", "group_price"])) || price;
+      const image = normalizeImage(pddEmbeddedStringFromText(objectText, ["thumbUrl", "thumb_url", "imageUrl", "image_url", "skuImageUrl", "sku_image_url"]));
+      if (spec || skuId || itemPrice || image) {
+        variants.push({ skuId, spec: spec || "默认规格", price: itemPrice, stock: "", image: isLikelyPddProductImage(image) ? image : "" });
+      }
+    }
+  }
+  return variants.filter((item) => isLikelyPddVariantSpec(item.spec) || item.image).slice(0, 120);
+}
+
+function pddEmbeddedArrayBodies(html, keys) {
+  const bodies = [];
+  for (const key of keys) {
+    const patterns = [
+      new RegExp(`["']${escapeRegExp(key)}["']\\s*:\\s*\\[([\\s\\S]{0,12000}?)\\]`, "i"),
+      new RegExp(`\\b${escapeRegExp(key)}\\b\\s*:\\s*\\[([\\s\\S]{0,12000}?)\\]`, "i"),
+    ];
+    for (const pattern of patterns) {
+      const match = html.match(pattern);
+      if (match?.[1]) bodies.push(match[1]);
+    }
+  }
+  return bodies;
+}
+
+function pddEmbeddedStringFromText(text, keys) {
+  for (const key of keys) {
+    const patterns = [
+      new RegExp(`["']${escapeRegExp(key)}["']\\s*:\\s*["']((?:\\\\.|[^"'\\\\]){1,500})["']`, "i"),
+      new RegExp(`\\b${escapeRegExp(key)}\\b\\s*:\\s*["']((?:\\\\.|[^"'\\\\]){1,500})["']`, "i"),
+      new RegExp(`["']${escapeRegExp(key)}["']\\s*:\\s*(\\d+(?:\\.\\d+)?)`, "i"),
+      new RegExp(`\\b${escapeRegExp(key)}\\b\\s*:\\s*(\\d+(?:\\.\\d+)?)`, "i"),
+    ];
+    for (const pattern of patterns) {
+      const match = text.match(pattern);
+      if (match?.[1]) return decodeJsonishString(match[1]);
     }
   }
   return "";
@@ -993,6 +1066,8 @@ function pickPddAttributes() {
 
 function pickPddSkuVariants() {
   const price = pickPddPrice();
+  const embedded = pddEmbeddedSkuVariants();
+  if (embedded.length) return embedded;
   const images = pickPddImages();
   const chips = [...document.querySelectorAll("button, [role='button'], [class*='sku'], [class*='spec']")]
     .map((node) => cleanText(node.innerText || node.textContent || ""))
@@ -1009,6 +1084,10 @@ function pickPddSkuVariants() {
     stock: "",
     image: images[index % Math.max(images.length, 1)] || "",
   }));
+}
+
+function isLikelyPddProductImage(src) {
+  return /pddpic\.com|pinduoduo\.com|yangkeduo\.com/i.test(src) && !/avatar|logo|icon|sprite|coupon|promotion|brand|ddpay|oms_img_ng|funimg|garner-api|pdd_ims|img_check/i.test(src);
 }
 
 function isLikelyPddVariantSpec(text) {

@@ -119,3 +119,36 @@ test("PDD parser reads title and gallery from embedded page data", () => {
   assert.deepEqual(parsed.images, ["https://img.pddpic.com/mms-material-img/2023-09-13/main-a.jpeg"]);
   assert.equal(parsed.skuVariants[0].price, 10.8);
 });
+
+test("PDD parser separates main, SKU, and detail images from embedded data", () => {
+  const parsed = parsePddProduct({
+    url: "https://mobile.yangkeduo.com/goods.html?goods_id=455510888249",
+    html: `<script>
+      window.rawData = {
+        goodsName: "静音挂钟机芯 DIY 配件",
+        goodsGallery: [
+          "https:\\/\\/img.pddpic.com\\/mms-material-img\\/2023-03-13\\/main-1.jpeg",
+          "https:\\/\\/img.pddpic.com\\/mms-material-img\\/2023-03-13\\/main-2.jpeg"
+        ],
+        sku: [
+          { skuId: "gold", spec: "6168S机芯-金色-普通款", price: "5.98", thumbUrl: "https:\\/\\/img.pddpic.com\\/mms-material-img\\/2023-03-13\\/sku-gold.jpeg" },
+          { skuId: "white", spec: "6168S机芯-白色-普通款", price: "6.98", thumbUrl: "https:\\/\\/img.pddpic.com\\/mms-material-img\\/2023-03-13\\/sku-white.jpeg" }
+        ],
+        detailGallery: [
+          "https:\\/\\/img.pddpic.com\\/mms-material-img\\/2023-03-13\\/detail-size.jpeg",
+          "https:\\/\\/promotion.pddpic.com\\/activity-noise.png"
+        ]
+      };
+    </script>`,
+  });
+
+  assert.deepEqual(parsed.images, [
+    "https://img.pddpic.com/mms-material-img/2023-03-13/main-1.jpeg",
+    "https://img.pddpic.com/mms-material-img/2023-03-13/main-2.jpeg",
+  ]);
+  assert.deepEqual(parsed.skuVariants.map((item) => [item.skuId, item.spec, item.image]), [
+    ["gold", "6168S机芯-金色-普通款", "https://img.pddpic.com/mms-material-img/2023-03-13/sku-gold.jpeg"],
+    ["white", "6168S机芯-白色-普通款", "https://img.pddpic.com/mms-material-img/2023-03-13/sku-white.jpeg"],
+  ]);
+  assert.deepEqual(parsed.detailImages, ["https://img.pddpic.com/mms-material-img/2023-03-13/detail-size.jpeg"]);
+});

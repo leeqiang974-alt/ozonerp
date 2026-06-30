@@ -44,3 +44,14 @@ test("ERP collector extension reads PDD embedded title fields", async () => {
   assert.match(content, /shareTitle/);
   assert.match(content, /decodeJsonishString/);
 });
+
+test("ERP collector extension separates PDD main, SKU, and detail images", async () => {
+  const content = await readFile(new URL("../browser-extension/erp-collector-extension/content.js", import.meta.url), "utf8");
+
+  assert.match(content, /detailImages: pickPddDetailImages\(\)/);
+  assert.match(content, /function pickPddDetailImages/);
+  assert.match(content, /function pddEmbeddedImagesByKeys/);
+  assert.match(content, /detailGallery/);
+  assert.match(content, /thumbUrl/);
+  assert.match(content, /skuImageUrl/);
+});

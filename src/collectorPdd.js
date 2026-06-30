@@ -13,7 +13,11 @@ export function parsePddProduct({ url = "", html = "", hints = {} } = {}) {
   ).replace(/\s*[-_].*拼多多.*$/i, "");
   const images = pickImages(cleanHtml, hints, embedded);
   const attributes = normalizeAttributes(hints.attributes);
-  const skuVariants = normalizeVariants(hints.skuVariants, hints.price || embedded.price, images);
+  const skuVariants = normalizeVariants(
+    Array.isArray(hints.skuVariants) && hints.skuVariants.length ? hints.skuVariants : embedded.skuVariants,
+    hints.price || embedded.price,
+    images
+  );
   const sizeWeight = normalizePackageInfo(hints.packageInfo || hints.sizeWeight || {});
   const goodsId = pddGoodsId(url || hints.url || "");
 
@@ -31,7 +35,7 @@ export function parsePddProduct({ url = "", html = "", hints = {} } = {}) {
       html: "",
     },
     video: normalizeVideo(hints.video),
-    detailImages: (hints.detailImages || []).map(normalizeImage).filter(Boolean),
+    detailImages: dedupe([...(hints.detailImages || []), ...(embedded.detailImages || [])].map(normalizeImage).filter(Boolean)),
     attributes,
     sizeWeight,
     ozonDraft: toOzonDraft({ title, images, attributes, skuVariants, sizeWeight }),
@@ -65,7 +69,9 @@ function pickImages(html, hints, embedded = {}) {
   const set = new Set();
   for (const raw of hints.images || []) addImage(set, raw);
   for (const raw of embedded.images || []) addImage(set, raw);
-  for (const raw of html.match(IMAGE_RE) || []) addImage(set, raw);
+  if (!set.size) {
+    for (const raw of html.match(IMAGE_RE) || []) addImage(set, raw);
+  }
   return [...set].filter(isLikelyPddImage).slice(0, 80);
 }
 
@@ -220,7 +226,9 @@ function extractEmbeddedPddData(html = "") {
   return {
     title,
     price,
-    images: embeddedImages(html),
+    images: embeddedImagesByKeys(html, ["goodsGallery", "goods_gallery", "gallery", "imageGallery", "topGallery"]),
+    detailImages: embeddedImagesByKeys(html, ["detailGallery", "detail_gallery", "detailImages", "detail_images", "descImages"]),
+    skuVariants: embeddedSkuVariants(html),
   };
 }
 
@@ -239,8 +247,49 @@ function firstEmbeddedString(html, keys) {
   return "";
 }
 
-function embeddedImages(html = "") {
-  return (html.match(IMAGE_RE) || []).map(decodeJsonishString);
+function embeddedImagesByKeys(html = "", keys = []) {
+  const images = [];
+  for (const key of keys) {
+    const patterns = [
+      new RegExp(`["']${escapeRegExp(key)}["']\\s*:\\s*\\[([\\s\\S]{0,8000}?)\\]`, "i"),
+      new RegExp(`\\b${escapeRegExp(key)}\\b\\s*:\\s*\\[([\\s\\S]{0,8000}?)\\]`, "i"),
+    ];
+    for (const pattern of patterns) {
+      const body = match(html, pattern);
+      if (body) images.push(...(body.match(IMAGE_RE) || []).map(decodeJsonishString));
+    }
+  }
+  return dedupe(images.map(normalizeImage).filter(isLikelyPddImage));
+}
+
+function embeddedSkuVariants(html = "") {
+  const variants = [];
+  const arrays = embeddedArrayBodies(html, ["sku", "skus", "skuList", "sku_list", "skuVariants", "sku_variants"]);
+  for (const body of arrays) {
+    for (const objectText of body.match(/\{[\s\S]*?\}/g) || []) {
+      const spec = firstEmbeddedString(objectText, ["spec", "specText", "skuName", "sku_name", "name", "label"]);
+      const skuId = firstEmbeddedString(objectText, ["skuId", "sku_id", "id"]);
+      const price = firstEmbeddedString(objectText, ["price", "salePrice", "sale_price", "groupPrice", "group_price"]);
+      const image = firstEmbeddedString(objectText, ["thumbUrl", "thumb_url", "imageUrl", "image_url", "skuImageUrl", "sku_image_url"]);
+      if (spec || skuId || price || image) variants.push({ skuId, spec, price, image });
+    }
+  }
+  return variants;
+}
+
+function embeddedArrayBodies(html = "", keys = []) {
+  const bodies = [];
+  for (const key of keys) {
+    const patterns = [
+      new RegExp(`["']${escapeRegExp(key)}["']\\s*:\\s*\\[([\\s\\S]{0,12000}?)\\]`, "i"),
+      new RegExp(`\\b${escapeRegExp(key)}\\b\\s*:\\s*\\[([\\s\\S]{0,12000}?)\\]`, "i"),
+    ];
+    for (const pattern of patterns) {
+      const body = match(html, pattern);
+      if (body) bodies.push(body);
+    }
+  }
+  return bodies;
 }
 
 function decodeJsonishString(value = "") {
@@ -281,6 +330,10 @@ function dedupeBy(items, keyFn) {
     if (key && !map.has(key)) map.set(key, item);
   }
   return [...map.values()];
+}
+
+function dedupe(items) {
+  return [...new Set(items)];
 }
 
 function escapeRegExp(value) {

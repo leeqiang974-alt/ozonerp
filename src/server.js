@@ -4,6 +4,7 @@ import { defaultFbsDateRange, ozonGetRequest, ozonRequest } from "./ozon.js";
 import { getStore, loadStores, publicStore } from "./config.js";
 import { calculateOzonPrice, RMB_SHIPPING_LEVELS } from "./pricing.js";
 import { fetch1688Html, parse1688Product } from "./collector1688.js";
+import { parsePddProduct } from "./collectorPdd.js";
 import {
   addCollectionItem,
   deleteCollectionItem,
@@ -281,6 +282,34 @@ app.post("/api/1688/capture", asyncRoute(async (req, res) => {
     id: item.id,
     receivedAt: latest1688Capture.receivedAt,
     title: parsed.title,
+    duplicate: Boolean(item.duplicate),
+    duplicateMessage: item.duplicateMessage || "",
+  });
+}));
+
+app.post("/api/pdd/capture", asyncRoute(async (req, res) => {
+  const body = parseBody(req.body);
+  const url = String(body.url || "").trim();
+  const html = String(body.html || "").trim();
+  const parsed = parsePddProduct({ url, html, hints: body });
+  if (body.includeVideo === false) parsed.video = null;
+  const item = await addCollectionItem({
+    parsed,
+    storeId: String(body.storeId || ""),
+    includeVideo: body.includeVideo !== false,
+  });
+  latest1688Capture = {
+    id: item.id,
+    receivedAt: item.receivedAt,
+    parsed,
+  };
+  res.json({
+    ok: true,
+    source: "pdd",
+    id: item.id,
+    receivedAt: latest1688Capture.receivedAt,
+    title: parsed.title,
+    goodsId: parsed.goodsId,
     duplicate: Boolean(item.duplicate),
     duplicateMessage: item.duplicateMessage || "",
   });

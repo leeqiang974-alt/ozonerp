@@ -23,13 +23,22 @@ async function writeBox(items) {
 function offerKeyFromUrl(url = "") {
   const value = String(url || "");
   const patterns = [
+    { prefix: "pdd-goods", pattern: /[?&]goods_id=(\d+)/i },
+    { prefix: "pdd-goods", pattern: /[?&]goodsId=(\d+)/i },
+    { prefix: "pdd-goods", pattern: /\/goods(?:\.html)?\/?(\d{5,})/i },
+    { prefix: "pdd-goods", pattern: /\/goods_detail\/(\d{5,})/i },
     /\/offer\/(\d+)\.html/i,
     /[?&]offerId=(\d+)/i,
     /[?&]offer_id=(\d+)/i,
   ];
   for (const pattern of patterns) {
-    const match = value.match(pattern);
-    if (match) return match[1];
+    if (pattern instanceof RegExp) {
+      const match = value.match(pattern);
+      if (match) return match[1];
+      continue;
+    }
+    const match = value.match(pattern.pattern);
+    if (match) return `${pattern.prefix}:${match[1]}`;
   }
   return value.trim().toLowerCase().replace(/[?#].*$/, "");
 }
@@ -49,10 +58,11 @@ export async function addCollectionItem({ parsed, storeId = "", includeVideo = t
   const key = offerKeyFromUrl(parsed?.url || "");
   const duplicate = key ? items.find((item) => collectionKey(item) === key) : null;
   if (duplicate) {
+    const sourceLabel = parsed?.source === "pdd" ? "拼多多" : "1688";
     return {
       ...duplicate,
       duplicate: true,
-      duplicateMessage: "这个 1688 商品已经采集过，已返回原记录。",
+      duplicateMessage: `这个 ${sourceLabel} 商品已经采集过，已返回原记录。`,
     };
   }
   const item = {

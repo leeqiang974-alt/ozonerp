@@ -5,6 +5,9 @@ if (is1688Page()) {
   injectPageReader();
   mountFloatingCollector();
 }
+if (isPddPage()) {
+  mountPddFloatingCollector();
+}
 if (isOzonSellerPage()) {
   mountOzonSellerEditMonitor();
 }
@@ -17,6 +20,10 @@ window.addEventListener("message", (event) => {
 
 function is1688Page() {
   return /(^|\.)1688\.com$/i.test(location.hostname);
+}
+
+function isPddPage() {
+  return /(^|\.)pinduoduo\.com$/i.test(location.hostname) || /(^|\.)yangkeduo\.com$/i.test(location.hostname);
 }
 
 function isOzonPage() {
@@ -169,6 +176,100 @@ async function collectPage(options = {}) {
     includeVideo: options.includeVideo !== false,
     sentAt: new Date().toISOString(),
   };
+}
+
+function collectPddPage(options = {}) {
+  const payload = {
+    url: location.href,
+    title: pickPddTitle(),
+    price: pickPddPrice(),
+    description: cleanText(document.querySelector("meta[name='description']")?.content || ""),
+    html: document.documentElement.outerHTML,
+    images: pickPddImages(),
+    detailImages: [],
+    video: options.includeVideo === false ? null : pickPddVideo(),
+    attributes: pickPddAttributes(),
+    skuVariants: pickPddSkuVariants(),
+    packageInfo: {},
+    storeId: options.storeId || "",
+    includeVideo: options.includeVideo !== false,
+    sentAt: new Date().toISOString(),
+  };
+  return payload;
+}
+
+function mountPddFloatingCollector() {
+  if (document.getElementById("ozon-erp-pdd-floating")) return;
+  const panel = document.createElement("div");
+  panel.id = "ozon-erp-pdd-floating";
+  panel.innerHTML = `
+    <div class="ozon-erp-pdd-head">
+      <span class="ozon-erp-pdd-mark">PDD</span>
+      <div>
+        <strong>Ozon ERP</strong>
+        <small>拼多多商品采集</small>
+      </div>
+      <a href="http://localhost:5178/" target="_blank">ERP</a>
+    </div>
+    <button type="button" id="ozon-erp-pdd-collect">采集到 ERP</button>
+    <div id="ozon-erp-pdd-title">读取页面中...</div>
+    <div id="ozon-erp-pdd-status"></div>
+  `;
+  Object.assign(panel.style, {
+    position: "fixed",
+    right: "18px",
+    bottom: "88px",
+    zIndex: "2147483647",
+    width: "320px",
+    display: "grid",
+    gap: "10px",
+    padding: "12px",
+    border: "1px solid rgba(15,23,42,.12)",
+    borderRadius: "8px",
+    background: "rgba(255,255,255,.96)",
+    boxShadow: "0 18px 42px rgba(15,23,42,.16)",
+    color: "#1f2937",
+    fontSize: "13px",
+  });
+  const style = document.createElement("style");
+  style.textContent = `
+    #ozon-erp-pdd-floating *{box-sizing:border-box}
+    #ozon-erp-pdd-floating .ozon-erp-pdd-head{display:grid;grid-template-columns:auto 1fr auto;align-items:center;gap:9px}
+    #ozon-erp-pdd-floating .ozon-erp-pdd-mark{display:grid;place-items:center;width:34px;height:34px;border-radius:8px;background:#dc2626;color:#fff;font-size:11px;font-weight:800;letter-spacing:0}
+    #ozon-erp-pdd-floating strong{display:block;color:#111827;font-size:14px;line-height:18px}
+    #ozon-erp-pdd-floating small{display:block;color:#6b7280;font-size:11px;line-height:15px}
+    #ozon-erp-pdd-floating a{display:grid;place-items:center;min-width:36px;height:28px;border:1px solid rgba(15,23,42,.12);border-radius:7px;color:#374151;text-decoration:none;font-size:12px;font-weight:800;background:#fff}
+    #ozon-erp-pdd-floating #ozon-erp-pdd-collect{width:100%;height:38px;border:0;border-radius:7px;background:#dc2626;color:#fff;font-size:14px;font-weight:800;cursor:pointer;box-shadow:0 8px 18px rgba(220,38,38,.22)}
+    #ozon-erp-pdd-floating #ozon-erp-pdd-collect:disabled{opacity:.68;cursor:wait;box-shadow:none}
+    #ozon-erp-pdd-floating #ozon-erp-pdd-title{white-space:nowrap;overflow:hidden;text-overflow:ellipsis;color:#111827;font-weight:700}
+    #ozon-erp-pdd-floating #ozon-erp-pdd-status{min-height:16px;color:#64748b;font-size:12px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+  `;
+  document.documentElement.appendChild(style);
+  document.documentElement.appendChild(panel);
+  panel.querySelector("#ozon-erp-pdd-title").textContent = pickPddTitle() || "当前拼多多商品";
+  panel.querySelector("#ozon-erp-pdd-collect").addEventListener("click", async () => {
+    const button = panel.querySelector("#ozon-erp-pdd-collect");
+    const status = panel.querySelector("#ozon-erp-pdd-status");
+    button.disabled = true;
+    status.textContent = "采集中...";
+    status.style.color = "#64748b";
+    try {
+      if (pageNeedsPddHumanCheck()) {
+        throw new Error("拼多多页面需要登录或人工验证，处理完成后再采集。");
+      }
+      const result = await erpApiRequest("/api/pdd/capture", {
+        method: "POST",
+        body: collectPddPage({ includeVideo: true }),
+      });
+      status.textContent = result.duplicate ? `已采集过 ${result.id || ""}` : `已入箱 ${result.id || ""}`;
+      status.style.color = result.duplicate ? "#b54708" : "#667085";
+    } catch (error) {
+      status.textContent = error.message || "失败";
+      status.style.color = "#b42318";
+    } finally {
+      button.disabled = false;
+    }
+  });
 }
 
 function mountFloatingCollector() {
@@ -808,6 +909,75 @@ function pageNeedsHumanCheck() {
   return /验证码|人机|滑块|访问频繁|安全验证|登录|please slide|verify/.test(text);
 }
 
+function pageNeedsPddHumanCheck() {
+  const text = `${document.title} ${document.body?.innerText || ""}`.toLowerCase();
+  return /验证码|人机|滑块|访问频繁|安全验证|请登录|登录后|verify|captcha|risk|robot/.test(text);
+}
+
+function pickPddTitle() {
+  const candidates = [
+    document.querySelector("h1")?.innerText,
+    document.querySelector("[class*='goodsName'], [class*='goods-name'], [data-testid*='title']")?.innerText,
+    document.querySelector("meta[property='og:title']")?.content,
+    document.title,
+  ];
+  return candidates.map(cleanText).find((text) => text.length > 5 && !/拼多多|登录|验证码|安全验证/.test(text)) || "";
+}
+
+function pickPddPrice() {
+  const scoped = cleanText(document.querySelector("[class*='price'], [data-testid*='price']")?.innerText || "");
+  const bodyText = cleanText(document.body?.innerText || "");
+  return cleanPrice(scoped || bodyText.match(/¥\s*\d+(?:\.\d+)?|\d+(?:\.\d+)?\s*元/)?.[0] || "");
+}
+
+function pickPddImages() {
+  const images = [...document.images]
+    .map((image) => image.currentSrc || image.src || image.getAttribute("data-src") || "")
+    .map(normalizeImage)
+    .filter((src) => /pddpic\.com|pinduoduo\.com|yangkeduo\.com/i.test(src))
+    .filter((src) => !/avatar|logo|icon|sprite/i.test(src));
+  return dedupe(images).slice(0, 80);
+}
+
+function pickPddVideo() {
+  const url = document.querySelector("video")?.currentSrc || document.querySelector("video")?.src || "";
+  return url ? { url, coverUrl: "", title: "", videoId: "" } : null;
+}
+
+function pickPddAttributes() {
+  const attrs = [];
+  const rows = [...document.querySelectorAll("dl, table, [class*='spec'], [class*='param'], [class*='attribute']")];
+  for (const box of rows) {
+    for (const line of cleanText(box.innerText || "").split(/\n+/)) {
+      const parts = line.split(/\s{2,}|:|：/).map(cleanText).filter(Boolean);
+      if (parts.length >= 2 && parts[0].length < 80 && parts[1].length < 240) {
+        attrs.push({ name: parts[0], value: parts.slice(1).join(" ") });
+      }
+    }
+  }
+  return dedupeBy(attrs, (item) => `${item.name}:${item.value}`).slice(0, 80);
+}
+
+function pickPddSkuVariants() {
+  const price = pickPddPrice();
+  const images = pickPddImages();
+  const chips = [...document.querySelectorAll("button, [role='button'], [class*='sku'], [class*='spec']")]
+    .map((node) => cleanText(node.innerText || node.textContent || ""))
+    .filter((text) => text.length > 0 && text.length < 60 && !/购买|客服|收藏|分享|店铺|评价|登录/.test(text))
+    .slice(0, 60);
+  const unique = dedupe(chips);
+  if (!unique.length) {
+    return price ? [{ skuId: "", spec: "默认规格", price, stock: "", image: images[0] || "" }] : [];
+  }
+  return unique.map((name, index) => ({
+    skuId: "",
+    spec: name,
+    price,
+    stock: "",
+    image: images[index % Math.max(images.length, 1)] || "",
+  }));
+}
+
 function pageNeedsOzonHumanCheck() {
   const text = `${document.title} ${document.body?.innerText || ""}`.toLowerCase();
   return /captcha|robot|access denied|доступ ограничен|подтвердите|проверка|войдите/.test(text);
@@ -1008,6 +1178,17 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
         sendResponse({ ok: true, payload, needsHuman: pageNeedsHumanCheck() });
       } catch (error) {
         sendResponse({ ok: false, error: error.message, needsHuman: pageNeedsHumanCheck() });
+      }
+    })();
+    return true;
+  }
+  if (message?.type === "COLLECT_PDD_PRODUCT") {
+    (async () => {
+      try {
+        if (!isPddPage()) throw new Error("当前不是拼多多商品页。");
+        sendResponse({ ok: true, payload: collectPddPage({ includeVideo: message.includeVideo !== false }), needsHuman: pageNeedsPddHumanCheck() });
+      } catch (error) {
+        sendResponse({ ok: false, error: error.message, needsHuman: pageNeedsPddHumanCheck() });
       }
     })();
     return true;

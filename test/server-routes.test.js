@@ -35,6 +35,14 @@ test("server exposes payload draft submit safety route", async () => {
   assert.match(source, /confirmSubmit/);
 });
 
+test("server exposes confirmed local payload attribute repair route", async () => {
+  const source = await readFile(new URL("../src/server.js", import.meta.url), "utf8");
+
+  assert.match(source, /\/api\/workflows\/:id\/payload-draft\/attribute-repair/);
+  assert.match(source, /applyPayloadDraftAttributeRepair/);
+  assert.match(source, /confirmLocalDraftRepair/);
+});
+
 test("server exposes stale workflow reconciliation route", async () => {
   const source = await readFile(new URL("../src/server.js", import.meta.url), "utf8");
 

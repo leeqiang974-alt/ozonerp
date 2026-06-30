@@ -5780,6 +5780,7 @@ function renderListingAttributeCellRepair(cell = {}, row = {}) {
   const guidance = cell.repairGuidance || null;
   if (!guidance) return "";
   const candidates = Array.isArray(guidance.dictionaryCandidates) ? guidance.dictionaryCandidates : [];
+  const canApplyLocalDraftRepair = guidance.canApplyLocalDraftRepair === true;
   return `
     <div class="attribute-matrix-repair">
       <strong>人工修复入口</strong>
@@ -5787,7 +5788,18 @@ function renderListingAttributeCellRepair(cell = {}, row = {}) {
       ${candidates.length ? `
         <div class="attribute-matrix-candidates">
           ${candidates.map((candidate) => `
-            <span>#${escapeHtml(candidate.dictionary_value_id || "")} · ${escapeHtml(candidate.value || "")}</span>
+            <span>
+              #${escapeHtml(candidate.dictionary_value_id || "")} · ${escapeHtml(candidate.value || "")}
+              ${canApplyLocalDraftRepair ? `<button
+                class="ghost"
+                type="button"
+                data-workflow-action="apply-attribute-dictionary-repair"
+                data-repair-offer-id="${escapeHtml(guidance.offerId || cell.offerId || "")}"
+                data-repair-attribute-id="${escapeHtml(guidance.attributeId || row.attributeId || "")}"
+                data-repair-dictionary-value-id="${escapeHtml(candidate.dictionary_value_id || "")}"
+                data-repair-value="${escapeHtml(candidate.value || "")}"
+              >应用到草稿并预检</button>` : ""}
+            </span>
           `).join("")}
         </div>
       ` : ""}
@@ -6259,6 +6271,25 @@ async function handleWorkflowAction(action, button) {
     highlightWorkflowPayloadEditor(editor);
     await saveWorkflowPayloadDraft(run.id, editor.value);
     toast(`已生成 ${repairDraft.payload.items?.length || 0} 个 SKU 的整组修复草稿，不会自动提交 Ozon`);
+    return;
+  }
+  if (action === "apply-attribute-dictionary-repair") {
+    const ok = window.confirm("确认把该 Ozon 合法字典值写回本地 Payload 草稿？系统会立即重新预检，但不会提交 Ozon。");
+    if (!ok) return;
+    const result = await api(`/api/workflows/${encodeURIComponent(run.id)}/payload-draft/attribute-repair`, {
+      method: "POST",
+      body: JSON.stringify({
+        confirmLocalDraftRepair: true,
+        repairType: "dictionary_value",
+        offerId: button?.dataset?.repairOfferId || "",
+        attributeId: Number(button?.dataset?.repairAttributeId || 0),
+        dictionaryValueId: Number(button?.dataset?.repairDictionaryValueId || 0),
+        value: button?.dataset?.repairValue || "",
+        note: "页面人工选择：属性矩阵字典值修复",
+      }),
+    });
+    toast(result.ok ? "本地草稿已写回并通过预检，不会提交 Ozon" : "本地草稿已写回，但预检仍有问题", result.ok ? "ok" : "error");
+    await loadWorkflowRuns();
     return;
   }
   if (action === "submit-payload-draft") {

@@ -201,6 +201,16 @@ test("frontend exposes human repair entrypoints from listing attribute matrix ce
   assert.match(css, /attribute-matrix-repair/);
 });
 
+test("frontend can apply a confirmed attribute dictionary repair to local draft only", async () => {
+  const js = await readFile(new URL("../public/app.js", import.meta.url), "utf8");
+
+  assert.match(js, /apply-attribute-dictionary-repair/);
+  assert.match(js, /confirmLocalDraftRepair/);
+  assert.match(js, /payload-draft\/attribute-repair/);
+  assert.match(js, /应用到草稿并预检/);
+  assert.match(js, /不会提交 Ozon/);
+});
+
 test("frontend exposes payload issue field locator", async () => {
   const js = await readFile(new URL("../public/app.js", import.meta.url), "utf8");
 

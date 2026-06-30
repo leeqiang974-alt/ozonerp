@@ -5,6 +5,7 @@ import path from "node:path";
 import {
   acceptWorkflowPricingRisk,
   appendWorkflowEvent,
+  applyPayloadDraftAttributeRepair,
   buildListingAttributeMatrix,
   buildVariantGroupingDiagnosis,
   buildVariantGroupingRepairDraft,
@@ -437,6 +438,140 @@ test("buildListingAttributeMatrix exposes safe human repair guidance for blocked
   assert.equal(modelCell.status, "missing");
   assert.match(modelCell.repairGuidance.message, /补充/);
   assert.match(modelCell.repairGuidance.copyText, /9048/);
+});
+
+test("applyPayloadDraftAttributeRepair writes a confirmed dictionary repair and forces revalidation", async () => {
+  reset();
+  fs.writeFileSync(tmpCategoryCacheFile, JSON.stringify({
+    attributeValues: {
+      "17028673:95183:85:ZH_HANS": {
+        values: [{ id: 971082, value: "Нет бренда" }],
+      },
+    },
+  }, null, 2));
+  const run = await createWorkflowRun({
+    title: "字典修复",
+    status: "waiting_human",
+    currentNode: "preflight_check",
+    locks: { waitingHuman: true, submitLocked: true },
+  });
+  await savePayloadDraft(run.id, {
+    items: [{
+      offer_id: "SKU-DICT-REPAIR",
+      name: "Cat feeder",
+      description_category_id: 17028673,
+      type_id: 95183,
+      price: "1200",
+      images: ["1", "2", "3"],
+      attributes: [
+        { id: 85, values: [{ dictionary_value_id: 999999, value: "Wrong brand" }] },
+        { id: 9048, values: [{ value: "Cat feeder" }] },
+      ],
+    }],
+  }, {
+    attrsMeta: [
+      { id: 85, name: "Бренд", is_required: true, dictionary_id: 971082 },
+      { id: 9048, name: "Название модели (для объединения в одну карточку)", is_required: true },
+    ],
+  });
+
+  await assert.rejects(
+    () => applyPayloadDraftAttributeRepair(run.id, {
+      offerId: "SKU-DICT-REPAIR",
+      attributeId: 85,
+      dictionaryValueId: 971082,
+      value: "Нет бренда",
+    }),
+    /需要人工确认/,
+  );
+
+  const result = await applyPayloadDraftAttributeRepair(run.id, {
+    confirmLocalDraftRepair: true,
+    offerId: "SKU-DICT-REPAIR",
+    attributeId: 85,
+    dictionaryValueId: 971082,
+    value: "Нет бренда",
+    note: "人工选择无品牌字典值",
+  });
+
+  const updated = await getWorkflowRun(run.id);
+  const brand = updated.payloadDraft.items[0].attributes.find((attribute) => attribute.id === 85);
+  assert.equal(result.submittedToOzon, false);
+  assert.equal(brand.values[0].dictionary_value_id, 971082);
+  assert.equal(brand.values[0].value, "Нет бренда");
+  assert.equal(updated.locks.waitingHuman, true);
+  assert.equal(updated.locks.submitLocked, true);
+  assert.equal(updated.payloadDraftValidation.ok, true);
+  assert.equal(updated.events.at(-1).type, "payload_attribute_repair_applied");
+});
+
+test("applyPayloadDraftAttributeRepair rejects non-candidate ids and missing attributes", async () => {
+  reset();
+  fs.writeFileSync(tmpCategoryCacheFile, JSON.stringify({
+    attributeValues: {
+      "17028673:95183:85:ZH_HANS": {
+        values: [{ id: 971082, value: "Нет бренда" }],
+      },
+    },
+  }, null, 2));
+  const missingRun = await createWorkflowRun({ title: "不能自动补缺失属性" });
+  await savePayloadDraft(missingRun.id, {
+    items: [{
+      offer_id: "SKU-MISSING-BRAND",
+      name: "Cat feeder",
+      description_category_id: 17028673,
+      type_id: 95183,
+      price: "1200",
+      images: ["1", "2", "3"],
+      attributes: [{ id: 9048, values: [{ value: "Cat feeder" }] }],
+    }],
+  }, {
+    attrsMeta: [
+      { id: 85, name: "Бренд", is_required: true, dictionary_id: 971082 },
+      { id: 9048, name: "Название модели (для объединения в одну карточку)", is_required: true },
+    ],
+  });
+  await assert.rejects(
+    () => applyPayloadDraftAttributeRepair(missingRun.id, {
+      confirmLocalDraftRepair: true,
+      offerId: "SKU-MISSING-BRAND",
+      attributeId: 85,
+      dictionaryValueId: 971082,
+      value: "Нет бренда",
+    }),
+    /只能修复已有的非法字典值/,
+  );
+
+  const invalidRun = await createWorkflowRun({ title: "不能信任前端候选" });
+  await savePayloadDraft(invalidRun.id, {
+    items: [{
+      offer_id: "SKU-BAD-CANDIDATE",
+      name: "Cat feeder",
+      description_category_id: 17028673,
+      type_id: 95183,
+      price: "1200",
+      images: ["1", "2", "3"],
+      attributes: [
+        { id: 85, values: [{ dictionary_value_id: 999999, value: "Wrong brand" }] },
+        { id: 9048, values: [{ value: "Cat feeder" }] },
+      ],
+    }],
+  }, {
+    attrsMeta: [
+      { id: 85, name: "Бренд", is_required: true, dictionary_id: 971082 },
+      { id: 9048, name: "Название модели (для объединения в одну карточку)", is_required: true },
+    ],
+  });
+  await assert.rejects(
+    () => applyPayloadDraftAttributeRepair(invalidRun.id, {
+      confirmLocalDraftRepair: true,
+      offerId: "SKU-BAD-CANDIDATE",
+      attributeId: 85,
+      dictionaryValueId: 123456,
+      value: "Injected",
+    }),
+    /不在当前属性矩阵候选值/,
+  );
 });
 
 test("buildPreflightGateNode blocks multi variant payloads without aspect metadata", () => {

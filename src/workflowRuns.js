@@ -381,7 +381,7 @@ function matrixCellRepairGuidance(input = {}) {
     payloadPath,
     payloadLabel: `${offerId || "当前 SKU"} / ${attributeLabel}`,
     nextStep: "人工修复 Payload 草稿后，必须重新预检；不会自动提交 Ozon。",
-    dictionaryCandidates,
+    dictionaryCandidates: [],
   };
   if (status === "invalid_dictionary") {
     const candidateText = dictionaryCandidates.length
@@ -391,6 +391,8 @@ function matrixCellRepairGuidance(input = {}) {
     return {
       ...base,
       message,
+      canApplyLocalDraftRepair: dictionaryCandidates.length > 0,
+      dictionaryCandidates,
       copyText: `问题：${message}\nSKU：${offerId || "-"}\n候选：${candidateText}\n下一步：${base.nextStep}`,
     };
   }
@@ -1063,6 +1065,103 @@ export async function savePayloadDraft(runId, payloadDraft, options = {}) {
     payloadDraftValidation: null,
     locks: { ...(run.locks || {}), submitLocked: true },
   }));
+}
+
+function clonePayload(payload = {}) {
+  return JSON.parse(JSON.stringify(payload || {}));
+}
+
+function applyAttributeDictionaryValue(payload = {}, input = {}) {
+  const offerId = String(input.offerId || "").trim();
+  const attributeId = Number(input.attributeId || 0);
+  const dictionaryValueId = Number(input.dictionaryValueId || input.dictionary_value_id || 0);
+  if (!attributeId) throw new Error("属性 ID 不能为空");
+  if (!dictionaryValueId) throw new Error("字典值 ID 不能为空");
+  const draft = clonePayload(payload);
+  const items = payloadItems(draft);
+  if (!items.length) throw new Error("Payload 草稿没有 items");
+  const item = offerId
+    ? items.find((entry) => String(entry?.offer_id || "") === offerId)
+    : (items.length === 1 ? items[0] : null);
+  if (!item) throw new Error("找不到要修复的 SKU: " + (offerId || "未指定"));
+  if (!Array.isArray(item.attributes)) throw new Error("只能修复已有的非法字典值，缺失属性请人工补充。");
+  const attribute = item.attributes.find((entry) => Number(entry?.id || 0) === attributeId);
+  if (!attribute) {
+    throw new Error("只能修复已有的非法字典值，缺失属性请人工补充。");
+  }
+  attribute.id = attributeId;
+  attribute.values = [{
+    dictionary_value_id: dictionaryValueId,
+    value: String(input.value || "").trim(),
+  }];
+  return draft;
+}
+
+export async function applyPayloadDraftAttributeRepair(runId, input = {}) {
+  if (input.confirmLocalDraftRepair !== true) {
+    throw new Error("需要人工确认后才能写回本地 Payload 草稿。");
+  }
+  const run = await getWorkflowRun(runId);
+  if (!run) throw new Error("工作流不存在: " + runId);
+  const repairType = String(input.repairType || "dictionary_value").trim();
+  if (repairType !== "dictionary_value") {
+    throw new Error("当前只支持字典值候选写回，其他属性仍需人工编辑。");
+  }
+  const categoryCache = await loadCategoryCache();
+  const attributeMatrix = buildListingAttributeMatrix({
+    payload: run.payloadDraft || {},
+    attrsMeta: run.payloadDraftAttrsMeta || [],
+    dictionaryValueCache: categoryCache.attributeValues || {},
+  });
+  const offerId = String(input.offerId || "").trim();
+  const attributeId = Number(input.attributeId || 0);
+  const dictionaryValueId = Number(input.dictionaryValueId || input.dictionary_value_id || 0);
+  const row = (attributeMatrix.rows || []).find((entry) => Number(entry.attributeId || 0) === attributeId);
+  const cell = (row?.cells || []).find((entry) => String(entry.offerId || "") === offerId);
+  if (!row || !cell || cell.status !== "invalid_dictionary") {
+    throw new Error("只能修复已有的非法字典值，缺失属性请人工补充。");
+  }
+  const candidate = (cell.repairGuidance?.dictionaryCandidates || [])
+    .find((entry) => Number(entry.dictionary_value_id || 0) === dictionaryValueId);
+  if (!candidate) {
+    throw new Error("字典值不在当前属性矩阵候选值内，请重新预检后再选择。");
+  }
+  const payloadDraft = applyAttributeDictionaryValue(run.payloadDraft || {}, {
+    ...input,
+    value: candidate.value || input.value || "",
+  });
+  await savePayloadDraft(runId, payloadDraft, { attrsMeta: run.payloadDraftAttrsMeta || [] });
+  const validation = await validatePayloadDraft(runId);
+  const updated = await updateRun(runId, (current) => ({
+    ...current,
+    locks: {
+      ...(current.locks || {}),
+      submitLocked: true,
+    },
+    events: [
+      ...(current.events || []),
+      {
+        time: nowIso(),
+        node: current.currentNode || "preflight_check",
+        type: "payload_attribute_repair_applied",
+        message: "人工确认后写回本地 Payload 草稿，并已重新预检；未提交 Ozon。",
+        data: {
+          offerId: String(input.offerId || ""),
+          attributeId: Number(input.attributeId || 0),
+          dictionaryValueId,
+          note: String(input.note || ""),
+          submittedToOzon: false,
+        },
+      },
+    ],
+  }));
+  return {
+    ok: Boolean(validation?.ok),
+    submittedToOzon: false,
+    validation,
+    run: updated,
+    payloadDraft: updated.payloadDraft,
+  };
 }
 
 export async function validatePayloadDraft(runId) {

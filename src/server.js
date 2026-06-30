@@ -100,6 +100,7 @@ import { continueWorkflowNode, runControlledWorkflowChain } from "./workflowNode
 import {
   acceptWorkflowPricingRisk,
   appendWorkflowEvent,
+  applyPayloadDraftAttributeRepair,
   createWorkflowRun,
   getWorkflowRun,
   listWorkflowRuns,
@@ -634,6 +635,14 @@ app.put("/api/workflows/:id/payload-draft", asyncRoute(async (req, res) => {
 
 app.post("/api/workflows/:id/payload-draft/validate", asyncRoute(async (req, res) => {
   res.json(await validatePayloadDraft(req.params.id));
+}));
+
+app.post("/api/workflows/:id/payload-draft/attribute-repair", asyncRoute(async (req, res) => {
+  const body = parseBody(req.body);
+  res.json(await applyPayloadDraftAttributeRepair(req.params.id, {
+    ...body,
+    confirmLocalDraftRepair: body.confirmLocalDraftRepair === true,
+  }));
 }));
 
 app.post("/api/workflows/:id/payload-draft/submit", asyncRoute(async (req, res) => {

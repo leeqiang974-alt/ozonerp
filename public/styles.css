@@ -3159,9 +3159,16 @@ tr:hover td {
   background: #ffedd5;
   border-radius: 999px;
   color: #9a3412;
+  display: inline-flex;
+  gap: 4px;
+  align-items: center;
   font-size: 11px;
   font-weight: 700;
   padding: 4px 6px;
+}
+.attribute-matrix-candidates button {
+  font-size: 11px;
+  padding: 3px 6px;
 }
 .workflow-payload-issue-summary {
   border-bottom: 1px dashed #fcd34d;

@@ -332,6 +332,46 @@ function safeVariantNextAction(status = "", reasons = []) {
   return "变体配置暂未发现阻塞，继续查看预检总闸和人工确认。";
 }
 
+function variantRepairSuggestions(row = {}, reasons = [], skuImage = {}) {
+  const suggestions = [];
+  const primaryAspect = (Array.isArray(row.aspects) ? row.aspects : []).find((aspect) => aspect?.id || aspect?.name) || null;
+  const aspectLabel = String(primaryAspect?.name || (primaryAspect?.id ? `属性 ${primaryAspect.id}` : "Ozon 可变特性"));
+  const reasonCodes = new Set((reasons || []).map((reason) => String(reason?.code || "")));
+  if (reasonCodes.has("MISSING_ASPECT")) {
+    suggestions.push({
+      code: "MISSING_ASPECT",
+      title: "补齐可变特性",
+      action: `为该 SKU 补齐 ${aspectLabel}，确保同父 SKU 的颜色、尺码或容量可区分。`,
+      nextStep: "修改本地 Payload 草稿后重新预检；不会自动提交 Ozon。",
+    });
+  }
+  if (reasonCodes.has("DUPLICATE_ASPECT")) {
+    suggestions.push({
+      code: "DUPLICATE_ASPECT",
+      title: "区分变体组合",
+      action: `把该 SKU 的 ${aspectLabel} 改成唯一组合，不能与同父 SKU 完全相同。`,
+      nextStep: "整组 SKU 都唯一后重新预检；不会自动提交 Ozon。",
+    });
+  }
+  if (skuImage?.status === "missing" || reasonCodes.has("SKU_IMAGE_MISSING")) {
+    suggestions.push({
+      code: "SKU_IMAGE_MISSING",
+      title: "补齐 SKU 图",
+      action: "为该 SKU 补齐可区分的 SKU 图，第一张图会用于变体识别和商品分值判断。",
+      nextStep: "补图后重新预检；不会触发 GPT/Image 成本。",
+    });
+  }
+  if (skuImage?.status === "not_unique" || reasonCodes.has("SKU_IMAGE_NOT_UNIQUE")) {
+    suggestions.push({
+      code: "SKU_IMAGE_NOT_UNIQUE",
+      title: "区分 SKU 图",
+      action: "为该 SKU 准备与其他变体可区分的首图，避免多 SKU 使用相同图片组合。",
+      nextStep: "换图后重新预检；不会触发 GPT/Image 成本。",
+    });
+  }
+  return suggestions;
+}
+
 function variantCoverageSummary(rows = [], grouping = {}) {
   const rowCount = rows.length;
   const blockedRowCount = rows.filter((row) => ["duplicate_aspect", "missing_aspect", "pricing_blocked"].includes(row.rowStatus)).length;
@@ -343,6 +383,7 @@ function variantCoverageSummary(rows = [], grouping = {}) {
   const uniqueSkuImageRowCount = rows.filter((row) => row.skuImage?.status === "unique").length;
   const missingSkuImageRowCount = rows.filter((row) => row.skuImage?.status === "missing").length;
   const nonUniqueSkuImageRowCount = rows.filter((row) => row.skuImage?.status === "not_unique").length;
+  const repairSuggestionCount = rows.reduce((sum, row) => sum + (Array.isArray(row.repairSuggestions) ? row.repairSuggestions.length : 0), 0);
   const readinessStatus = blockedRowCount ? "blocked" : imageWarningRowCount ? "warning" : "ready";
   let safeNextAction = "变体属性和 SKU 图覆盖已达标，可以继续预检总闸和人工确认。";
   if (pricingBlockedRowCount) {
@@ -364,6 +405,7 @@ function variantCoverageSummary(rows = [], grouping = {}) {
     uniqueSkuImageRowCount,
     missingSkuImageRowCount,
     nonUniqueSkuImageRowCount,
+    repairSuggestionCount,
     readinessStatus,
     safeNextAction,
   };
@@ -728,6 +770,7 @@ export function buildVariantConfigurationSummary(input = {}) {
       skuImage.message = "SKU 图未区分。";
       reasons.push({ code: "SKU_IMAGE_NOT_UNIQUE", message: "多个 SKU 使用相同首图，建议补区分图。" });
     }
+    const repairSuggestions = variantRepairSuggestions(row, reasons, skuImage);
     return {
       offerId,
       modelName: row.modelValue || "",
@@ -737,6 +780,7 @@ export function buildVariantConfigurationSummary(input = {}) {
       skuImage,
       rowStatus,
       reasons,
+      repairSuggestions,
       safeNextAction: safeVariantNextAction(rowStatus, reasons),
     };
   });

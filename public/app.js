@@ -6476,6 +6476,20 @@ function variantCoverageStatusText(readinessStatus = "") {
   return labels[readinessStatus] || "待预检";
 }
 
+function renderVariantRepairSuggestions(row = {}) {
+  const suggestions = Array.isArray(row.repairSuggestions) ? row.repairSuggestions : [];
+  if (!suggestions.length) return "";
+  return `
+    <div class="variant-repair-suggestions">
+      <strong>只读修复建议</strong>
+      ${suggestions.map((suggestion) => `
+        <span>${escapeHtml(suggestion.title || suggestion.code || "修复建议")}：${escapeHtml(suggestion.action || "")}</span>
+        <small>${escapeHtml(suggestion.nextStep || "修复后重新预检；不会自动提交 Ozon。")}</small>
+      `).join("")}
+    </div>
+  `;
+}
+
 function renderVariantConfigurationWorkbench(run = {}, node = {}) {
   const workbench = run.payloadDraftValidation?.variantConfiguration || node?.output?.variantConfiguration || null;
   const rows = Array.isArray(workbench?.rows) ? workbench.rows : [];
@@ -6528,6 +6542,7 @@ function renderVariantConfigurationWorkbench(run = {}, node = {}) {
                 </td>
                 <td>
                   <span>${escapeHtml(row.safeNextAction || "重新预检后继续。")}</span>
+                  ${renderVariantRepairSuggestions(row)}
                   ${variantWorkbenchPayloadPath(row) ? `<button
                     type="button"
                     class="ghost workflow-payload-locator"

@@ -3599,6 +3599,27 @@ tr:hover td {
   background: #fef3c7;
   color: #92400e;
 }
+.variant-repair-suggestions {
+  background: #f8fafc;
+  border: 1px solid #e2e8f0;
+  border-radius: 6px;
+  display: grid;
+  gap: 4px;
+  margin-top: 8px;
+  padding: 8px;
+}
+.variant-repair-suggestions strong {
+  color: #0f172a;
+  font-size: 12px;
+}
+.variant-repair-suggestions span,
+.variant-repair-suggestions small {
+  display: block;
+  line-height: 1.45;
+}
+.variant-repair-suggestions small {
+  color: #64748b;
+}
 .workflow-attribute-matrix {
   background: #f8fafc;
   border: 1px solid #dbeafe;

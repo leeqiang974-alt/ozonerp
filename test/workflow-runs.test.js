@@ -452,7 +452,43 @@ test("buildVariantConfigurationSummary explains duplicate aspects and SKU image 
   assert.equal(summary.rows[0].rowStatus, "duplicate_aspect");
   assert.equal(summary.rows[0].skuImage.status, "not_unique");
   assert.ok(summary.rows[0].reasons.some((reason) => reason.code === "DUPLICATE_ASPECT"));
+  assert.ok(summary.rows[0].repairSuggestions.some((suggestion) => suggestion.code === "DUPLICATE_ASPECT" && /唯一/.test(suggestion.action)));
+  assert.ok(summary.rows[0].repairSuggestions.some((suggestion) => suggestion.code === "SKU_IMAGE_NOT_UNIQUE" && /区分/.test(suggestion.action)));
+  assert.equal(summary.summary.repairSuggestionCount, 4);
   assert.ok(summary.rows[0].safeNextAction.includes("修正"));
+});
+
+test("buildVariantConfigurationSummary suggests missing aspect and sku image repairs", () => {
+  const summary = buildVariantConfigurationSummary({
+    payload: { items: [
+      {
+        offer_id: "SKU-MISSING",
+        images: [],
+        attributes: [
+          { id: 9048, values: [{ value: "Органайзер" }] },
+        ],
+      },
+      {
+        offer_id: "SKU-VALID",
+        images: ["https://example.com/blue.jpg"],
+        attributes: [
+          { id: 9048, values: [{ value: "Органайзер" }] },
+          { id: 10097, values: [{ value: "синий" }] },
+        ],
+      },
+    ] },
+    attrsMeta: [
+      { id: 9048, name: "Название модели (для объединения в одну карточку)", is_required: true },
+      { id: 10097, name: "Название цвета", is_aspect: true },
+    ],
+  });
+
+  const missing = summary.rows.find((row) => row.offerId === "SKU-MISSING");
+  assert.equal(missing.rowStatus, "missing_aspect");
+  assert.equal(missing.skuImage.status, "missing");
+  assert.ok(missing.repairSuggestions.some((suggestion) => suggestion.code === "MISSING_ASPECT" && /补齐/.test(suggestion.action)));
+  assert.ok(missing.repairSuggestions.some((suggestion) => suggestion.code === "SKU_IMAGE_MISSING" && /SKU 图/.test(suggestion.action)));
+  assert.equal(summary.summary.repairSuggestionCount, 2);
 });
 
 test("buildVariantConfigurationSummary accepts same model name when aspects differ", () => {
@@ -488,6 +524,7 @@ test("buildVariantConfigurationSummary accepts same model name when aspects diff
   assert.equal(summary.summary.uniqueSkuImageRowCount, 2);
   assert.equal(summary.summary.readinessStatus, "ready");
   assert.match(summary.summary.safeNextAction, /可以继续预检/);
+  assert.equal(summary.summary.repairSuggestionCount, 0);
   assert.deepEqual(summary.rows.map((row) => row.rowStatus), ["valid", "valid"]);
   assert.deepEqual(summary.rows.map((row) => row.modelName), ["Органайзер", "Органайзер"]);
 });

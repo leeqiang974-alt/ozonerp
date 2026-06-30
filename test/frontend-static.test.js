@@ -297,6 +297,14 @@ test("frontend renders read-only variant configuration workbench", async () => {
   assert.match(js, /variantConfiguration/);
   assert.match(js, /变体配置工作簿/);
   assert.match(js, /变体覆盖摘要/);
+  assert.match(js, /repairSuggestions/);
+  assert.match(js, /只读修复建议/);
+  assert.match(js, /renderVariantRepairSuggestions/);
+  const repairRendererSource = js.match(/function renderVariantRepairSuggestions[\s\S]+?\n}\n\nfunction renderVariantConfigurationWorkbench/)?.[0] || "";
+  assert.ok(repairRendererSource);
+  assert.doesNotMatch(repairRendererSource, /<button/);
+  assert.doesNotMatch(repairRendererSource, /data-workflow-action/);
+  assert.doesNotMatch(repairRendererSource, /fetch\(/);
   assert.match(js, /aspectCoveredRowCount/);
   assert.match(js, /duplicateAspectRowCount/);
   assert.match(js, /missingAspectRowCount/);

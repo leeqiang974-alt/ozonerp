@@ -27,7 +27,7 @@ export function classifyAttributeFillStrategy(attribute = {}) {
   if (/материал|材质|材料/.test(text)) {
     return strategy(dictionaryId ? "dictionary_lookup_from_product_text" : "text_from_product_attributes", "从 1688 属性、Ozon 学习样本、标题/描述提取材质。", "medium");
   }
-  if (/(^|\s)пол($|\s)|gender|性别|适用性别|назначение|применение|для кого|для чего|тип|вид|категор|用途|适用对象|适用人群|类型|种类/.test(text) && dictionaryId) {
+  if (/(^|\s)пол($|\s)|gender|性别|适用性别|назначение|применение|для кого|для чего|тип|вид|категор|объем|объ[её]м|volume|容量|体积|колич|комплект|штук|шт|pieces?|pcs?|用途|适用对象|适用人群|类型|种类|数量|件数/.test(text) && dictionaryId) {
     return strategy("dictionary_lookup_from_product_text", "用标题、类目路径、1688 参数和 Ozon 学习样本匹配合法字典值。", "medium");
   }
   if (dictionaryId) {
@@ -331,6 +331,8 @@ function dictionaryCandidatesForMeta({
     .concat(typeSynonymDictionaryCandidatesForMeta({ meta, categoryMatch, attributeValuesById, categoryCache, productText }))
     .concat(purposeSynonymDictionaryCandidatesForMeta({ meta, categoryMatch, attributeValuesById, categoryCache, productText }))
     .concat(genderSynonymDictionaryCandidatesForMeta({ meta, categoryMatch, attributeValuesById, categoryCache, productText }))
+    .concat(capacitySynonymDictionaryCandidatesForMeta({ meta, categoryMatch, attributeValuesById, categoryCache, productText }))
+    .concat(countSynonymDictionaryCandidatesForMeta({ meta, categoryMatch, attributeValuesById, categoryCache, productText }))
     .filter((candidate, index, list) => (
       candidate.dictionaryValueId
       && list.findIndex((item) => item.dictionaryValueId === candidate.dictionaryValueId) === index
@@ -383,6 +385,82 @@ function synonymDictionaryCandidatesForMeta({
       };
     }))
     .filter(Boolean);
+}
+
+function numericDictionaryCandidates({
+  meta = {},
+  categoryMatch = {},
+  attributeValuesById = {},
+  categoryCache = {},
+  numbers = [],
+  valuePattern,
+  source = "",
+  confidence = 0.68,
+} = {}) {
+  if (!numbers.length) return [];
+  const values = dictionaryValuesForPlan({ meta, categoryMatch, attributeValuesById, categoryCache });
+  return values.map((entry) => {
+    const value = String(entry?.value || entry?.name || "").replace(/\s+/g, " ").trim();
+    const normalizedValue = normalizeText(value);
+    if (!value || !valuePattern.test(normalizedValue)) return null;
+    const matched = numbers.some((number) => new RegExp(`(^|\\D)${number.replace(".", "[.,]")}(\\D|$)`).test(normalizedValue));
+    if (!matched) return null;
+    return {
+      dictionaryValueId: dictionaryValueId(entry),
+      value,
+      confidence,
+      source,
+    };
+  }).filter(Boolean);
+}
+
+function capacitySynonymDictionaryCandidatesForMeta({
+  meta = {},
+  categoryMatch = {},
+  attributeValuesById = {},
+  categoryCache = {},
+  productText = "",
+} = {}) {
+  const classified = classifyAttributeFillStrategy(meta);
+  if (classified.strategy !== "dictionary_lookup_from_product_text") return [];
+  if (!/объем|объ[её]м|volume|容量|体积|毫升|литр|мл/.test(normalizeText(`${meta.name || ""} ${meta.description || ""}`))) return [];
+  const text = normalizeText(productText);
+  const numbers = [...text.matchAll(/(\d+(?:[.,]\d+)?)\s*(?:мл|ml|毫升|литр|литра|литров|л|l)\b/g)]
+    .map((match) => match[1].replace(",", "."));
+  return numericDictionaryCandidates({
+    meta,
+    categoryMatch,
+    attributeValuesById,
+    categoryCache,
+    numbers,
+    valuePattern: /мл|ml|毫升|литр|литра|литров|(^|\s)л(\s|$)|(^|\s)l(\s|$)/,
+    source: "capacity_synonym",
+    confidence: 0.68,
+  });
+}
+
+function countSynonymDictionaryCandidatesForMeta({
+  meta = {},
+  categoryMatch = {},
+  attributeValuesById = {},
+  categoryCache = {},
+  productText = "",
+} = {}) {
+  const classified = classifyAttributeFillStrategy(meta);
+  if (classified.strategy !== "dictionary_lookup_from_product_text") return [];
+  if (!/колич|комплект|штук|шт|pieces?|pcs?|数量|件数|件|个|只|套/.test(normalizeText(`${meta.name || ""} ${meta.description || ""}`))) return [];
+  const text = normalizeText(productText);
+  const numbers = [...text.matchAll(/(\d+)\s*(?:шт|штук|pcs?|pieces?|件|个|只|套)/g)].map((match) => match[1]);
+  return numericDictionaryCandidates({
+    meta,
+    categoryMatch,
+    attributeValuesById,
+    categoryCache,
+    numbers,
+    valuePattern: /шт|штук|pcs?|pieces?|件|个|只|套/,
+    source: "count_synonym",
+    confidence: 0.68,
+  });
 }
 
 function typeSynonymDictionaryCandidatesForMeta({

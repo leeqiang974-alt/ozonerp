@@ -492,6 +492,66 @@ test("buildRequiredAttributeFillPlan suggests gender dictionary candidates from 
   assert.deepEqual(purposePlan.dictionaryCandidates, []);
 });
 
+test("buildRequiredAttributeFillPlan suggests capacity and count dictionary candidates only", () => {
+  const capacityPlan = buildRequiredAttributeFillPlan({
+    categoryMatch: { description_category_id: 17028673, type_id: 95183 },
+    attrsMeta: [
+      { id: 9011, name: "Объем", is_required: true, dictionary_id: 106 },
+    ],
+    attributeValuesById: {
+      9011: [
+        { id: 101, value: "500 мл" },
+        { id: 102, value: "1 л" },
+      ],
+    },
+    productText: "1688 参数：容量 500ml，透明水杯",
+  })[0];
+
+  assert.equal(capacityPlan.action, "suggest_dictionary");
+  assert.equal(capacityPlan.dictionaryValueId, undefined);
+  assert.deepEqual(capacityPlan.dictionaryCandidates, [{
+    dictionaryValueId: 101,
+    value: "500 мл",
+    confidence: 0.68,
+    source: "capacity_synonym",
+  }]);
+
+  const countPlan = buildRequiredAttributeFillPlan({
+    categoryMatch: { description_category_id: 17028673, type_id: 95183 },
+    attrsMeta: [
+      { id: 9012, name: "Количество предметов", is_required: true, dictionary_id: 107 },
+    ],
+    attributeValuesById: {
+      9012: [
+        { id: 111, value: "5 шт" },
+        { id: 112, value: "10 шт" },
+      ],
+    },
+    productText: "1688 标题：10件套厨房收纳夹 10pcs",
+  })[0];
+
+  assert.equal(countPlan.action, "suggest_dictionary");
+  assert.equal(countPlan.dictionaryValueId, undefined);
+  assert.deepEqual(countPlan.dictionaryCandidates, [{
+    dictionaryValueId: 112,
+    value: "10 шт",
+    confidence: 0.68,
+    source: "count_synonym",
+  }]);
+
+  const materialPlan = buildRequiredAttributeFillPlan({
+    categoryMatch: { description_category_id: 17028673, type_id: 95183 },
+    attrsMeta: [
+      { id: 777, name: "Материал", is_required: true, dictionary_id: 100 },
+    ],
+    attributeValuesById: {
+      777: [{ id: 121, value: "500 мл" }],
+    },
+    productText: "1688 参数：容量 500ml",
+  })[0];
+  assert.deepEqual(materialPlan.dictionaryCandidates, []);
+});
+
 test("buildListingPayloadDraftFromJob applies explainable pricing policy fields", () => {
   const draft = buildListingPayloadDraftFromJob({
     pendingParentSku: "SKUlq01007",

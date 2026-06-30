@@ -1136,6 +1136,30 @@ function listingFillTaskRepairCandidate(run = currentListingWorkflowRun()) {
   return null;
 }
 
+function listingFillTaskTextRepairCandidate(run = currentListingWorkflowRun()) {
+  if (!run) return null;
+  const waitingHuman = run.status === "waiting_human" || run.locks?.waitingHuman === true;
+  if (!waitingHuman) return null;
+  const preflightNode = (run.nodes || []).find((node) => node.key === "preflight_check") || {};
+  const matrix = run.payloadDraftValidation?.attributeMatrix || preflightNode.output?.attributeMatrix || null;
+  const rows = Array.isArray(matrix?.rows) ? matrix.rows : [];
+  for (const row of rows) {
+    for (const cell of row.cells || []) {
+      const guidance = cell.repairGuidance || {};
+      if (guidance.canApplyTextDraftRepair === true) {
+        return {
+          runId: run.id || "",
+          nodeKey: preflightNode.key || "preflight_check",
+          offerId: guidance.offerId || cell.offerId || "",
+          attributeId: guidance.attributeId || row.attributeId || "",
+          attributeName: guidance.attributeName || row.name || "",
+        };
+      }
+    }
+  }
+  return null;
+}
+
 function listingFillTaskQueueItems(run = currentListingWorkflowRun()) {
   if (!run) {
     return [{
@@ -1154,6 +1178,7 @@ function listingFillTaskQueueItems(run = currentListingWorkflowRun()) {
   const variantConfiguration = validation.variantConfiguration || preflightOutput.variantConfiguration || null;
   const listingQuality = validation.listingQuality || preflightOutput.listingQuality || null;
   const repairCandidate = listingFillTaskRepairCandidate(run);
+  const textRepairCandidate = listingFillTaskTextRepairCandidate(run);
   const items = [];
   if (Array.isArray(requiredAttributeFillPlan) && requiredAttributeFillPlan.length) {
     const autoCount = requiredAttributeFillPlan.filter((row) => row.action === "auto_fill").length;
@@ -1167,6 +1192,7 @@ function listingFillTaskQueueItems(run = currentListingWorkflowRun()) {
       meta: "数据来自 requiredAttributeFillPlan，只读汇总，不自动写入或提交。",
       target: "content-images",
       repairCandidate: repairCandidate && confirmCount ? repairCandidate : null,
+      textRepairCandidate: textRepairCandidate && manualCount ? textRepairCandidate : null,
     });
   }
   const variantRows = Array.isArray(variantConfiguration?.rows) ? variantConfiguration.rows : [];
@@ -1238,6 +1264,15 @@ function renderListingFillTaskQueue(run = currentListingWorkflowRun()) {
               data-repair-value="${escapeHtml(item.repairCandidate.value)}"
               title="${escapeHtml(item.repairCandidate.attributeName || "字典属性")}"
             >确认写入草稿并预检</button>` : ""}
+            ${item.textRepairCandidate ? `<button
+              type="button"
+              data-workflow-action="apply-attribute-text-repair"
+              data-workflow-run-id="${escapeHtml(item.textRepairCandidate.runId)}"
+              data-workflow-node-key="${escapeHtml(item.textRepairCandidate.nodeKey)}"
+              data-repair-offer-id="${escapeHtml(item.textRepairCandidate.offerId)}"
+              data-repair-attribute-id="${escapeHtml(item.textRepairCandidate.attributeId)}"
+              title="${escapeHtml(item.textRepairCandidate.attributeName || "文本属性")}"
+            >填写文本属性并预检</button>` : ""}
             <button type="button" data-listing-task-view="${escapeHtml(item.target)}">定位处理区</button>
           </article>
         `).join("")}

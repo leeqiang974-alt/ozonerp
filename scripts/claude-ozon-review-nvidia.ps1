@@ -25,6 +25,62 @@ function Test-PortListening {
   return [bool](Get-NetTCPConnection -LocalPort $PortToCheck -State Listen -ErrorAction SilentlyContinue)
 }
 
+function Test-InvalidReviewOutput {
+  param([object[]]$ReviewOutput)
+
+  $text = ($ReviewOutput | Out-String).Trim()
+  if ($text -eq "") {
+    return $true
+  }
+
+  $invalidPatterns = @(
+    "(?is)<\s*(function_calls|tool_call|tool_calls|invoke|antml:function_calls)\b",
+    "(?is)</\s*(function_calls|tool_call|tool_calls|invoke|antml:function_calls)\s*>",
+    "(?is)^\s*\{\s*`"(tool|tool_call|tool_calls|function_call)`"\s*:",
+    "(?is)`"tool_calls`"\s*:\s*\[",
+    "(?is)`"function_call`"\s*:\s*\{"
+  )
+
+  foreach ($pattern in $invalidPatterns) {
+    if ($text -match $pattern) {
+      return $true
+    }
+  }
+
+  return $false
+}
+
+function Invoke-ClaudeNvidiaReview {
+  param(
+    [string]$PromptForReview,
+    [int]$ReviewTimeoutSeconds
+  )
+
+  $job = Start-Job -ScriptBlock {
+    param($ModelForJob, $PromptForJob)
+    $claudeOutput = & claude -p --model $ModelForJob --tools "" --disable-slash-commands --permission-mode plan --max-budget-usd 1.00 $PromptForJob 2>&1
+    [pscustomobject]@{
+      ExitCode = $LASTEXITCODE
+      Output = @($claudeOutput)
+    }
+  } -ArgumentList $Model, $PromptForReview
+
+  if (-not (Wait-Job $job -Timeout $ReviewTimeoutSeconds)) {
+    Stop-Job $job -ErrorAction SilentlyContinue
+    Remove-Job $job -Force -ErrorAction SilentlyContinue
+    throw "Claude NVIDIA review timed out after $ReviewTimeoutSeconds seconds using model $Model. Check NVIDIA model health or pass -Model with a responsive LiteLLM alias."
+  }
+
+  $jobResult = Receive-Job $job
+  Remove-Job $job -Force -ErrorAction SilentlyContinue
+  if ($jobResult.ExitCode -ne 0) {
+    $errorText = ($jobResult.Output | Out-String).Trim()
+    throw "Claude NVIDIA review failed with exit code $($jobResult.ExitCode): $errorText"
+  }
+
+  return $jobResult.Output
+}
+
 if (-not (Test-PortListening -PortToCheck $Port)) {
   Write-Output "Starting local NVIDIA LiteLLM gateway on 127.0.0.1:$Port ..."
   Start-Process `
@@ -101,24 +157,25 @@ Requested change:
 $Task
 "@
 
-$job = Start-Job -ScriptBlock {
-  param($ModelForJob, $PromptForJob)
-  & claude -p --model $ModelForJob --tools "" --disable-slash-commands --permission-mode plan --max-budget-usd 1.00 $PromptForJob 2>&1
-} -ArgumentList $Model, $prompt
-
-if (-not (Wait-Job $job -Timeout $TimeoutSeconds)) {
-  Stop-Job $job -ErrorAction SilentlyContinue
-  Remove-Job $job -Force -ErrorAction SilentlyContinue
-  throw "Claude NVIDIA review timed out after $TimeoutSeconds seconds using model $Model. Check NVIDIA model health or pass -Model with a responsive LiteLLM alias."
-}
-
-$result = Receive-Job $job
-Remove-Job $job -Force -ErrorAction SilentlyContinue
-if ($LASTEXITCODE -ne 0 -and -not $result) {
-  throw "Claude NVIDIA review failed with exit code $LASTEXITCODE."
-}
+$result = Invoke-ClaudeNvidiaReview -PromptForReview $prompt -ReviewTimeoutSeconds $TimeoutSeconds
 if (-not $result) {
   throw "Claude NVIDIA review returned no output using model $Model."
+}
+
+if (Test-InvalidReviewOutput -ReviewOutput $result) {
+  Write-Output "Retrying Claude NVIDIA review with a stricter plain-text prompt because the first response was invalid."
+  $strictPrompt = @"
+Return plain Chinese text only.
+Do not use tools, XML tags, JSON tool calls, markdown code fences, or requests to inspect files.
+Start with one of: Critical, Important, OK.
+
+$prompt
+"@
+  $result = Invoke-ClaudeNvidiaReview -PromptForReview $strictPrompt -ReviewTimeoutSeconds $TimeoutSeconds
+}
+
+if (Test-InvalidReviewOutput -ReviewOutput $result) {
+  throw "Claude NVIDIA review returned invalid tool-call-like output using model $Model. Treat this review as failed and retry with another model alias or after model health recovers."
 }
 
 if ($OutputPath -ne "") {

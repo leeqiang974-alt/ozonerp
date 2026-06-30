@@ -226,13 +226,16 @@ test("listing center exposes a read-only fill task queue from existing diagnosti
   assert.match(js, /renderListingFillTaskQueue/);
   assert.match(js, /listingFillTaskQueueItems/);
   assert.match(js, /listingFillTaskRepairCandidate/);
+  assert.match(js, /listingFillTaskTextRepairCandidate/);
   assert.match(js, /waitingHuman/);
   assert.match(js, /requiredAttributeFillPlan/);
   assert.match(js, /variantConfiguration/);
   assert.match(js, /listingQuality/);
   assert.match(js, /data-listing-task-view/);
   assert.match(js, /data-workflow-action="apply-attribute-dictionary-repair"/);
+  assert.match(js, /data-workflow-action="apply-attribute-text-repair"/);
   assert.match(js, /确认写入草稿并预检/);
+  assert.match(js, /填写文本属性并预检/);
   assert.match(css, /listing-fill-task-queue/);
   assert.match(css, /listing-fill-task-card/);
 });

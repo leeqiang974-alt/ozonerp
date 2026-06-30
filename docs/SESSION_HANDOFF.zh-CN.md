@@ -23,11 +23,15 @@
   - 自动启动本地 NVIDIA LiteLLM gateway。
   - `-TimeoutSeconds`，默认 120 秒。
   - 空输出/超时显式报错，不再静默失败。
+  - 无效工具调用式输出检测：如果模型返回 XML/JSON tool-call 痕迹，会自动用更严格的纯文本提示重试一次；仍无效则明确失败，不把坏复审当作可用审核。
+  - 子进程 exit code 检测：`claude` 非 0 退出时直接报错并带出错误摘要，避免把认证/模型/gateway 错误文本误当成复审意见。
 - 新增 `test/claude-nvidia-scripts.test.js`，静态锁定默认模型、gateway 启动和配置别名。
 
 ### 已验证
 
 - `node --test test/claude-nvidia-scripts.test.js`，1/1 通过。
+- 本轮追加验证 `node --test test/claude-nvidia-scripts.test.js`，1/1 通过。
+- 本轮追加 smoke：`scripts/claude-ozon-review-nvidia.ps1` 返回 `OK`。
 - `scripts/claude-ozon-review-nvidia.ps1` smoke 已自动启动 gateway 并返回：`OK，我是 NVIDIA review wrapper。`
 - `scripts/claude-code-nvidia.ps1` smoke 已返回：`OK，Claude Code NVIDIA 默认模型可用。`
 - `npm test`，297/297 通过。
@@ -162,9 +166,17 @@
   - `node --test test/workflow-runs.test.js`，62/62 通过。
   - `node --test test/frontend-static.test.js`，74/74 通过。
 
+### 后续补充
+
+- 上架中心任务队列已继续接入普通文本属性安全入口：
+  - 从属性矩阵里挑出第一个 `canApplyTextDraftRepair` 的缺失普通文本属性。
+  - 只有当前 workflow 处于等待人工时才展示“填写文本属性并预检”按钮。
+  - 点击后复用现有 `apply-attribute-text-repair` prompt、`/payload-draft/attribute-repair` API 和重新预检流程。
+  - 后端同样要求 `waiting_human` / `locks.waitingHuman=true`、`confirmLocalDraftRepair=true`，且只能修复非字典、非变体的缺失普通文本属性。
+
 ### 下一步
 
-- 继续做“普通文本属性安全入口”：让任务队列对 `manual_required` 且非字典/非变体属性显示人工填写入口，仍走确认、写本地草稿、重新预检。
+- 继续做“变体 aspect 安全修复建议”：先不直接写入，先把重复/缺失 aspect 的可复制修复建议和对应 SKU 定位放到任务队列，避免多 SKU 变体配置继续转圈。
 
 ## 2026-06-30 仓库匹配规则引擎 V1
 

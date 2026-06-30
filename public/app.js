@@ -1122,6 +1122,7 @@ function renderErpModuleOwnership() {
   renderListingAutomationGuardrails();
   renderSingleListingOutcomePanel();
   renderSellerManagementScope();
+  renderSecondaryDomainPanels();
   const navigator = $("#erpWorkflowNavigator");
   if (navigator) {
     const phaseCounts = cockpitWorkflowPhases();
@@ -1292,6 +1293,163 @@ function renderStoreOperatingOverview() {
       </section>
     `;
   }
+}
+
+function domainPanelSnapshot() {
+  const orders = state.orderRows || [];
+  const products = state.productRows || [];
+  const promotions = state.promotionRows || [];
+  const workflows = state.workflowRuns || [];
+  const summary = state.workflowSummary || {};
+  const revenue = orders.reduce((total, order) => {
+    const productTotal = (order.products || []).reduce((sum, product) => sum + Number(product.price || product.offer_price || 0), 0);
+    return total + productTotal;
+  }, 0);
+  const awaitingOrders = orders.filter((order) => ["awaiting_packaging", "awaiting_deliver"].includes(order.status)).length;
+  const disputeOrders = orders.filter((order) => order.status === "dispute" || String(order.substatus || "").includes("dispute")).length;
+  const cancelledOrders = orders.filter((order) => order.status === "cancelled").length;
+  const riskyProducts = products.filter((item) => ["error", "needFix"].includes(item.status_group) || item.status === "error");
+  const lowStockProducts = products.filter((item) => Number(item.stocks?.present || item.stock || 0) <= 0);
+  const activePromotions = promotions.filter((item) => !/inactive|closed|finished/i.test(String(item.status || "")));
+  const waitingHuman = Number(summary.waitingHuman || workflows.filter((run) => run.status === "waiting_human").length);
+  const highRisk = Number(summary.highRisk || workflows.filter((run) => run.summary?.riskLevel === "high").length);
+  const blocked = Number(summary.blocking || workflows.filter((run) => run.status === "blocked" || run.summary?.blockingNodeName).length);
+  return {
+    orders,
+    products,
+    promotions,
+    workflows,
+    revenue,
+    awaitingOrders,
+    disputeOrders,
+    cancelledOrders,
+    riskyProducts,
+    lowStockProducts,
+    activePromotions,
+    waitingHuman,
+    highRisk,
+    blocked,
+  };
+}
+
+function domainMetricCard(label, value, note, view) {
+  return `
+    <article class="domain-metric-card">
+      <span>${escapeHtml(label)}</span>
+      <strong>${escapeHtml(String(value))}</strong>
+      <small>${escapeHtml(note)}</small>
+      ${view ? `<button type="button" data-cockpit-view="${escapeHtml(view)}">进入</button>` : ""}
+    </article>
+  `;
+}
+
+function domainRiskItem(title, body, view, tone = "info") {
+  return `
+    <button type="button" class="domain-risk-item ${escapeHtml(tone)}" data-cockpit-view="${escapeHtml(view)}">
+      <strong>${escapeHtml(title)}</strong>
+      <span>${escapeHtml(body)}</span>
+    </button>
+  `;
+}
+
+function renderFinanceProfitPanel() {
+  const grid = $("#financeProfitGrid");
+  const list = $("#financeRiskList");
+  if (!grid && !list) return;
+  const snapshot = domainPanelSnapshot();
+  if (grid) {
+    grid.innerHTML = [
+      domainMetricCard("已加载销售额", snapshot.revenue ? snapshot.revenue.toFixed(0) : "-", "来自当前订单缓存估算", "orders"),
+      domainMetricCard("价格/利润风险", snapshot.highRisk + snapshot.blocked, "来自 workflow 定价和预检风险", "workflow-console"),
+      domainMetricCard("活动中商品域", snapshot.activePromotions.length, "活动价风险进入营销活动", "promotions"),
+      domainMetricCard("待核算订单", snapshot.orders.length, "后续接入佣金、物流费和结算", "reports"),
+    ].join("");
+  }
+  if (list) {
+    const items = [
+      snapshot.highRisk ? domainRiskItem("高风险定价", `${snapshot.highRisk} 条流程需要复核利润或最低价。`, "workflow-console", "warning") : "",
+      snapshot.activePromotions.length ? domainRiskItem("活动价格影响利润", `${snapshot.activePromotions.length} 个活动可能影响毛利。`, "promotions", "info") : "",
+      domainRiskItem("利润口径", "采购成本、物流费、佣金、杂费、活动折扣统一在财务利润页汇总。", "finance", "info"),
+    ].filter(Boolean);
+    list.innerHTML = items.join("");
+  }
+}
+
+function renderServiceRiskPanel() {
+  const grid = $("#serviceRiskGrid");
+  const list = $("#serviceQueueList");
+  if (!grid && !list) return;
+  const snapshot = domainPanelSnapshot();
+  if (grid) {
+    grid.innerHTML = [
+      domainMetricCard("争议订单", snapshot.disputeOrders, "来自订单履约状态", "orders"),
+      domainMetricCard("取消订单", snapshot.cancelledOrders, "需后续归因到售后/库存/物流", "orders"),
+      domainMetricCard("商品异常", snapshot.riskyProducts.length, "审核失败和资料风险可能转售后", "products"),
+      domainMetricCard("待人工流程", snapshot.waitingHuman, "人工确认后再继续自动化", "workflow-console"),
+    ].join("");
+  }
+  if (list) {
+    const items = [
+      snapshot.disputeOrders ? domainRiskItem("优先处理争议", `${snapshot.disputeOrders} 个争议订单需要售后介入。`, "orders", "danger") : "",
+      snapshot.cancelledOrders ? domainRiskItem("取消订单复盘", `${snapshot.cancelledOrders} 个取消订单需要归因。`, "orders", "warning") : "",
+      snapshot.riskyProducts.length ? domainRiskItem("商品资料风险", `${snapshot.riskyProducts.length} 个商品异常可能影响售后。`, "products", "warning") : "",
+      domainRiskItem("售后数据接口", "后续接入评价、退货、纠纷和客服消息后，这里成为售后主队列。", "service", "info"),
+    ].filter(Boolean);
+    list.innerHTML = items.join("");
+  }
+}
+
+function renderReportsPanel() {
+  const grid = $("#reportsMetricGrid");
+  const list = $("#reportsTrendList");
+  if (!grid && !list) return;
+  const snapshot = domainPanelSnapshot();
+  if (grid) {
+    grid.innerHTML = [
+      domainMetricCard("订单样本", snapshot.orders.length, "当前已加载订单", "orders"),
+      domainMetricCard("商品样本", snapshot.products.length, "当前已加载商品", "products"),
+      domainMetricCard("上架流程", snapshot.workflows.length, "workflow 成功率和卡点来源", "workflow-console"),
+      domainMetricCard("营销活动", snapshot.promotions.length, "活动表现和候选商品来源", "promotions"),
+    ].join("");
+  }
+  if (list) {
+    list.innerHTML = [
+      domainRiskItem("销售趋势", "按日/周/月汇总销售额、订单数、取消和争议。", "orders", "info"),
+      domainRiskItem("商品表现", "在售、审核失败、缺库存、缺价和异常商品进入商品报表。", "products", "info"),
+      domainRiskItem("上架成功率", "按采集、属性、定价、预检、提交、审核回馈统计漏斗。", "workflow-console", "info"),
+      domainRiskItem("选品效果", "1688 候选、Ozon 样本、匹配利润和换货源次数汇总。", "sourcing", "info"),
+    ].join("");
+  }
+}
+
+function renderSystemConfigPanel() {
+  const grid = $("#systemStatusGrid");
+  const list = $("#systemAutomationList");
+  if (!grid && !list) return;
+  const snapshot = domainPanelSnapshot();
+  const workerOnline = Boolean(state.crawlerWorkerStatus?.online || state.crawlerWorkerStatus?.connected || state.crawlerWorkerStatus?.active);
+  if (grid) {
+    grid.innerHTML = [
+      domainMetricCard("店铺 API", $("#healthStatus")?.textContent || "未测试", `${state.stores.length} 个店铺`, "dashboard"),
+      domainMetricCard("1688 采集器", workerOnline ? "在线" : "待连接", "浏览器插件与人机状态", "sourcing"),
+      domainMetricCard("自动化锁", snapshot.waitingHuman, "waiting_human 流程必须人工处理", "workflow-console"),
+      domainMetricCard("运行流程", snapshot.workflows.length, "工作流日志和高级诊断", "workflow-console"),
+    ].join("");
+  }
+  if (list) {
+    list.innerHTML = [
+      domainRiskItem("Ozon 提交安全", "提交商品必须通过 preflight，并带 confirmSubmit 人工确认。", "workflow-console", "warning"),
+      domainRiskItem("自动化模式", "默认 observe_only；高风险动作不自动提交外部平台。", "system", "info"),
+      domainRiskItem("字典与插件", "Ozon 类目属性字典、1688 插件、运行日志统一在系统配置维护。", "system", "info"),
+    ].join("");
+  }
+}
+
+function renderSecondaryDomainPanels() {
+  renderFinanceProfitPanel();
+  renderServiceRiskPanel();
+  renderReportsPanel();
+  renderSystemConfigPanel();
 }
 
 function renderCockpitDashboard() {

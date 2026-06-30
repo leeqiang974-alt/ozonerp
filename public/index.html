@@ -1594,55 +1594,59 @@
 ]</textarea>
       </section>
 
-      <section id="finance" class="view erp-placeholder-view">
+      <section id="finance" class="view erp-domain-view">
         <header class="page-head">
           <div>
             <h1>财务利润</h1>
             <p>汇总销售额、采购成本、物流费、佣金、毛利、最低价和价格风险。</p>
           </div>
         </header>
-        <section class="panel placeholder-domain-panel">
-          <h2>利润核算看板</h2>
-          <p class="hint">第一阶段先承接价格、成本、利润风险和活动折扣摘要；真实结算、广告费、退款成本后续接入。</p>
+        <section class="panel domain-operating-panel">
+          <div class="section-headline"><div><h2>利润核算看板</h2><p class="hint">先用现有订单、定价规则、活动和 workflow 风险做经营估算。</p></div></div>
+          <div id="financeProfitGrid" class="domain-operating-grid"></div>
+          <div id="financeRiskList" class="domain-risk-list"></div>
         </section>
       </section>
 
-      <section id="service" class="view erp-placeholder-view">
+      <section id="service" class="view erp-domain-view">
         <header class="page-head">
           <div>
             <h1>客户售后</h1>
             <p>承接评价、退货、纠纷、客服问题和差评风险，不混入商品上架字段。</p>
           </div>
         </header>
-        <section class="panel placeholder-domain-panel">
-          <h2>售后风险队列</h2>
-          <p class="hint">第一阶段保留业务域入口，后续接入 Ozon 退货、评价和纠纷数据。</p>
+        <section class="panel domain-operating-panel">
+          <div class="section-headline"><div><h2>售后风险队列</h2><p class="hint">先从争议订单、取消订单、商品异常和审核失败推断售后风险。</p></div></div>
+          <div id="serviceRiskGrid" class="domain-operating-grid"></div>
+          <div id="serviceQueueList" class="domain-risk-list"></div>
         </section>
       </section>
 
-      <section id="reports" class="view erp-placeholder-view">
+      <section id="reports" class="view erp-domain-view">
         <header class="page-head">
           <div>
             <h1>数据报表</h1>
             <p>跨模块看销售趋势、商品表现、库存周转、选品效果、上架成功率和异常趋势。</p>
           </div>
         </header>
-        <section class="panel placeholder-domain-panel">
-          <h2>经营分析入口</h2>
-          <p class="hint">第一阶段先把报表作为独立业务域，不再把跨模块分析塞进 Dashboard 主叙事。</p>
+        <section class="panel domain-operating-panel">
+          <div class="section-headline"><div><h2>经营分析入口</h2><p class="hint">把跨模块指标收束在报表页，Dashboard 只保留经营摘要。</p></div></div>
+          <div id="reportsMetricGrid" class="domain-operating-grid"></div>
+          <div id="reportsTrendList" class="domain-risk-list"></div>
         </section>
       </section>
 
-      <section id="system" class="view erp-placeholder-view">
+      <section id="system" class="view erp-domain-view">
         <header class="page-head">
           <div>
             <h1>系统配置</h1>
             <p>管理店铺 API、Ozon 字典、1688 插件、自动化规则、运行日志和高级诊断。</p>
           </div>
         </header>
-        <section class="panel placeholder-domain-panel">
-          <h2>API 与自动化配置</h2>
-          <p class="hint">普通经营操作不放在这里；这里只放连接、规则、日志和开发诊断。</p>
+        <section class="panel domain-operating-panel">
+          <div class="section-headline"><div><h2>API 与自动化配置</h2><p class="hint">普通经营操作不放在这里；这里只放连接、规则、日志和开发诊断。</p></div></div>
+          <div id="systemStatusGrid" class="domain-operating-grid"></div>
+          <div id="systemAutomationList" class="domain-risk-list"></div>
         </section>
       </section>
       </section>

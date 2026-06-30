@@ -546,6 +546,31 @@ test("listing center exposes automation guardrails for safe workflow routing", a
   assert.match(css, /automation-guardrail-card/);
 });
 
+test("secondary ERP domains render real operating panels instead of placeholders", async () => {
+  const [html, js, css] = await Promise.all([
+    readFile(new URL("../public/index.html", import.meta.url), "utf8"),
+    readFile(new URL("../public/app.js", import.meta.url), "utf8"),
+    readFile(new URL("../public/styles.css", import.meta.url), "utf8"),
+  ]);
+
+  assert.doesNotMatch(html, /placeholder-domain-panel/);
+  assert.match(html, /financeProfitGrid/);
+  assert.match(html, /financeRiskList/);
+  assert.match(html, /serviceRiskGrid/);
+  assert.match(html, /serviceQueueList/);
+  assert.match(html, /reportsMetricGrid/);
+  assert.match(html, /reportsTrendList/);
+  assert.match(html, /systemStatusGrid/);
+  assert.match(html, /systemAutomationList/);
+  assert.match(js, /renderFinanceProfitPanel/);
+  assert.match(js, /renderServiceRiskPanel/);
+  assert.match(js, /renderReportsPanel/);
+  assert.match(js, /renderSystemConfigPanel/);
+  assert.match(js, /domainPanelSnapshot/);
+  assert.match(css, /domain-operating-grid/);
+  assert.match(css, /domain-risk-list/);
+});
+
 test("frontend exposes a seller operating model instead of hidden developer navigation", async () => {
   const [html, js, css] = await Promise.all([
     readFile(new URL("../public/index.html", import.meta.url), "utf8"),

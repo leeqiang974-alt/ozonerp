@@ -342,10 +342,73 @@
 .today-reminder-item.warning { background: rgba(255,237,213,.74); border-color: rgba(251,146,60,.28); }
 .today-reminder-item.danger { background: rgba(254,226,226,.7); border-color: rgba(248,113,113,.26); }
 .today-reminder-item.info { background: rgba(219,234,254,.72); border-color: rgba(96,165,250,.28); }
-.placeholder-domain-panel {
-  max-width: 920px;
-  min-height: 180px;
+.domain-operating-panel {
+  display: grid;
+  gap: 14px;
 }
+.domain-operating-grid {
+  display: grid;
+  grid-template-columns: repeat(4,minmax(0,1fr));
+  gap: 12px;
+}
+.domain-metric-card {
+  min-height: 132px;
+  padding: 16px;
+  border: 1px solid rgba(37,99,235,.16);
+  border-radius: 12px;
+  background: linear-gradient(145deg,#fff,#f8fbff);
+  box-shadow: 0 10px 24px rgba(15,23,42,.05);
+  display: grid;
+  gap: 6px;
+  align-content: start;
+}
+.domain-metric-card span {
+  color: var(--business-muted);
+  font-weight: 800;
+}
+.domain-metric-card strong {
+  color: var(--business-text);
+  font-size: 28px;
+  font-variant-numeric: tabular-nums;
+}
+.domain-metric-card small {
+  color: var(--business-muted);
+  line-height: 1.45;
+}
+.domain-metric-card button {
+  justify-self: start;
+  margin-top: 4px;
+  color: var(--business-primary);
+  background: rgba(37,99,235,.08);
+  border-radius: 999px;
+  font-weight: 800;
+}
+.domain-risk-list {
+  display: grid;
+  grid-template-columns: repeat(2,minmax(0,1fr));
+  gap: 10px;
+}
+.domain-risk-item {
+  width: 100%;
+  min-height: 84px;
+  display: grid;
+  gap: 6px;
+  padding: 12px 14px;
+  border: 1px solid rgba(148,163,184,.24);
+  border-radius: 12px;
+  background: #fff;
+  text-align: left;
+}
+.domain-risk-item strong {
+  color: var(--business-text);
+}
+.domain-risk-item span {
+  color: var(--business-muted);
+  line-height: 1.45;
+}
+.domain-risk-item.warning { border-color: rgba(251,146,60,.3); background: rgba(255,251,235,.88); }
+.domain-risk-item.danger { border-color: rgba(248,113,113,.3); background: rgba(254,242,242,.88); }
+.domain-risk-item.info { border-color: rgba(96,165,250,.24); background: rgba(239,246,255,.8); }
 .cockpit-focus-list { display: grid; gap: 8px; }
 .cockpit-focus-item { width: 100%; display: grid; grid-template-columns: minmax(180px,1.4fr) auto minmax(120px,.8fr) auto; gap: 10px; align-items: center; padding: 11px 12px; border: 1px solid #1d3450; border-radius: 11px; background: #0d1d30; color: var(--erp-text); text-align: left; }
 .cockpit-focus-item span strong,.cockpit-focus-item span small { display: block; }
@@ -3405,11 +3468,13 @@ code,
   }
 
   .store-overview-layout,
-  .store-business-health-grid {
+  .store-business-health-grid,
+  .domain-risk-list {
     grid-template-columns: 1fr;
   }
 
-  .store-metric-grid {
+  .store-metric-grid,
+  .domain-operating-grid {
     grid-template-columns: repeat(2, minmax(0, 1fr));
   }
 
@@ -3488,7 +3553,8 @@ code,
 @media (max-width: 620px) {
   .cockpit-kpis,
   .cockpit-flow,
-  .store-metric-grid {
+  .store-metric-grid,
+  .domain-operating-grid {
     grid-template-columns: 1fr;
   }
 

@@ -435,6 +435,18 @@ function matrixCellRepairGuidance(input = {}) {
   }
   if (status === "missing") {
     const message = `当前 ${attributeLabel} 缺失，请人工补充后重新校验。`;
+    if (row.dictionary) {
+      const candidateText = dictionaryCandidates.length
+        ? dictionaryCandidates.map((candidate) => `#${candidate.dictionary_value_id} ${candidate.value || ""}`.trim()).join(" / ")
+        : "当前类目没有可直接确认的合法字典候选";
+      return {
+        ...base,
+        message,
+        canApplyLocalDraftRepair: dictionaryCandidates.length > 0,
+        dictionaryCandidates,
+        copyText: `问题：${message}\nSKU：${offerId || "-"}\n候选：${candidateText}\n下一步：${base.nextStep}`,
+      };
+    }
     return {
       ...base,
       message,
@@ -1272,10 +1284,11 @@ function applyAttributeDictionaryValue(payload = {}, input = {}) {
     ? items.find((entry) => String(entry?.offer_id || "") === offerId)
     : (items.length === 1 ? items[0] : null);
   if (!item) throw new Error("找不到要修复的 SKU: " + (offerId || "未指定"));
-  if (!Array.isArray(item.attributes)) throw new Error("只能修复已有的非法字典值，缺失属性请人工补充。");
-  const attribute = item.attributes.find((entry) => Number(entry?.id || 0) === attributeId);
+  if (!Array.isArray(item.attributes)) item.attributes = [];
+  let attribute = item.attributes.find((entry) => Number(entry?.id || 0) === attributeId);
   if (!attribute) {
-    throw new Error("只能修复已有的非法字典值，缺失属性请人工补充。");
+    attribute = { id: attributeId, values: [] };
+    item.attributes.push(attribute);
   }
   attribute.id = attributeId;
   attribute.values = [{
@@ -1315,6 +1328,9 @@ export async function applyPayloadDraftAttributeRepair(runId, input = {}) {
   }
   const run = await getWorkflowRun(runId);
   if (!run) throw new Error("工作流不存在: " + runId);
+  if (run.status !== "waiting_human" && run.locks?.waitingHuman !== true) {
+    throw new Error("需要工作流处于等待人工状态，才能写回本地 Payload 草稿。");
+  }
   const repairType = String(input.repairType || "dictionary_value").trim();
   if (!["dictionary_value", "text_value"].includes(repairType)) throw new Error("不支持的属性修复类型。");
   const categoryCache = await loadCategoryCache();
@@ -1331,8 +1347,9 @@ export async function applyPayloadDraftAttributeRepair(runId, input = {}) {
   let payloadDraft = null;
   let repairData = {};
   if (repairType === "dictionary_value") {
-    if (!row || !cell || cell.status !== "invalid_dictionary") {
-      throw new Error("只能修复已有的非法字典值，缺失属性请人工补充。");
+    const canRepairDictionaryCell = cell?.status === "invalid_dictionary" || (cell?.status === "missing" && row?.dictionary);
+    if (!row || !cell || !canRepairDictionaryCell) {
+      throw new Error("只能修复当前矩阵中非法或缺失的字典值。");
     }
     const candidate = (cell.repairGuidance?.dictionaryCandidates || [])
       .find((entry) => Number(entry.dictionary_value_id || 0) === dictionaryValueId);

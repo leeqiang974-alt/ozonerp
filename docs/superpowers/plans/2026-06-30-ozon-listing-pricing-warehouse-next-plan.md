@@ -399,6 +399,7 @@ npm run lint
 - After workflow console display, verified `node --test test/frontend-static.test.js test/workflow-runs.test.js` (133/133 pass), `npm test` (298/298 pass), `npm run lint` (pass), and `git diff --check` (pass).
 - After Dashboard/Product Center reuse, verified `node --test test/frontend-static.test.js` (73/73 pass).
 - After listing fill task queue V1, Listing Center now shows a read-only task queue from `requiredAttributeFillPlan`, `variantConfiguration`, and `listingQuality`; verified `node --test test/frontend-static.test.js` (74/74 pass).
+- After required attribute safe repair V1, confirmed missing dictionary attributes can be written to local draft only when the value is a current-matrix candidate, the workflow is `waiting_human`, and the operator confirms; queue action reuses `apply-attribute-dictionary-repair`. Verified `node --test test/workflow-runs.test.js` (62/62 pass) and `node --test test/frontend-static.test.js` (74/74 pass).
 
 ## Recommended Order
 

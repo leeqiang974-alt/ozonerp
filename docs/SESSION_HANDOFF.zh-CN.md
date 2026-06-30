@@ -125,7 +125,46 @@
 
 ### 下一步
 
-- 继续把任务队列从“只读导航”推进到“安全修复入口”：允许人工确认的字典候选可一键写入本地草稿并重新预检，但仍不提交 Ozon。
+- 继续把安全修复入口从“缺失字典值”扩展到更多低风险、人工确认后可本地修复的字段，例如普通文本属性、可解释型号名和可复制的变体 aspect 修复建议。
+
+## 2026-06-30 必填属性安全修复入口 V1
+
+### 已完成
+
+- 后端 `applyPayloadDraftAttributeRepair()` 扩展字典修复边界：
+  - 仍支持修复“已有但非法”的字典值。
+  - 新增支持修复“缺失的字典属性”，但必须满足：
+    - 属性矩阵判定该单元格为 `missing` 且该属性是当前类目的字典属性。
+    - 候选字典值来自当前类目缓存/属性矩阵候选。
+    - 前端传入 `confirmLocalDraftRepair: true`，即人工确认。
+    - workflow 必须处于 `waiting_human` 或 `locks.waitingHuman=true`，避免运行中流程被静默改草稿。
+  - 非候选字典 ID 仍拒绝，不能信任前端注入。
+- 上架中心“只读填报任务队列”新增安全确认入口：
+  - 从属性矩阵里挑出第一个 `canApplyLocalDraftRepair` 的候选。
+  - 只有当前 workflow 处于等待人工时才展示候选写回按钮。
+  - 点击后复用现有 `apply-attribute-dictionary-repair` 动作、确认弹窗和 `/payload-draft/attribute-repair` API。
+  - 写回后立即重新预检，仍保持 `submitLocked`，不提交 Ozon。
+
+### 安全边界
+
+- 只写本地 Payload 草稿，不调用 `/v3/product/import`。
+- 不绕过 preflight、payload validation、workflow lock、`waiting_human`、pricing blocked 或人工确认。
+- 非 `waiting_human` 的 workflow 不能通过属性修复 API 写回本地草稿。
+- 缺失字典属性只接受当前属性矩阵里的合法候选，不接受任意字典 ID。
+- 任务队列按钮只是现有修复动作的入口，不新增独立写接口。
+
+### 已验证
+
+- TDD 红灯：
+  - `node --test test/workflow-runs.test.js` 先因缺失字典属性仍被拒绝失败。
+  - `node --test test/frontend-static.test.js` 先因缺少 `listingFillTaskRepairCandidate` 失败。
+- 已通过：
+  - `node --test test/workflow-runs.test.js`，62/62 通过。
+  - `node --test test/frontend-static.test.js`，74/74 通过。
+
+### 下一步
+
+- 继续做“普通文本属性安全入口”：让任务队列对 `manual_required` 且非字典/非变体属性显示人工填写入口，仍走确认、写本地草稿、重新预检。
 
 ## 2026-06-30 仓库匹配规则引擎 V1
 

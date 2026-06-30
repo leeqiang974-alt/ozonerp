@@ -712,7 +712,47 @@ test("applyPayloadDraftAttributeRepair writes a confirmed dictionary repair and 
   assert.equal(updated.events.at(-1).type, "payload_attribute_repair_applied");
 });
 
-test("applyPayloadDraftAttributeRepair rejects non-candidate ids and missing attributes", async () => {
+test("applyPayloadDraftAttributeRepair requires waiting human before local repair", async () => {
+  reset();
+  const run = await createWorkflowRun({
+    title: "未等待人工不能修复",
+    status: "running",
+    currentNode: "preflight_check",
+    locks: { submitLocked: true },
+  });
+  await savePayloadDraft(run.id, {
+    items: [{
+      offer_id: "SKU-RUNNING-REPAIR",
+      name: "Cat feeder",
+      description_category_id: 17028673,
+      type_id: 95183,
+      price: "1200",
+      images: ["1", "2", "3"],
+      attributes: [
+        { id: 85, values: [{ dictionary_value_id: 999999, value: "Wrong brand" }] },
+        { id: 9048, values: [{ value: "Cat feeder" }] },
+      ],
+    }],
+  }, {
+    attrsMeta: [
+      { id: 85, name: "Бренд", is_required: true, dictionary_id: 971082 },
+      { id: 9048, name: "Название модели (для объединения в одну карточку)", is_required: true },
+    ],
+  });
+
+  await assert.rejects(
+    () => applyPayloadDraftAttributeRepair(run.id, {
+      confirmLocalDraftRepair: true,
+      offerId: "SKU-RUNNING-REPAIR",
+      attributeId: 85,
+      dictionaryValueId: 971082,
+      value: "Нет бренда",
+    }),
+    /等待人工/,
+  );
+});
+
+test("applyPayloadDraftAttributeRepair writes missing dictionary candidates and rejects non-candidate ids", async () => {
   reset();
   fs.writeFileSync(tmpCategoryCacheFile, JSON.stringify({
     attributeValues: {
@@ -721,7 +761,12 @@ test("applyPayloadDraftAttributeRepair rejects non-candidate ids and missing att
       },
     },
   }, null, 2));
-  const missingRun = await createWorkflowRun({ title: "不能自动补缺失属性" });
+  const missingRun = await createWorkflowRun({
+    title: "人工确认缺失字典属性",
+    status: "waiting_human",
+    currentNode: "preflight_check",
+    locks: { waitingHuman: true, submitLocked: true },
+  });
   await savePayloadDraft(missingRun.id, {
     items: [{
       offer_id: "SKU-MISSING-BRAND",
@@ -738,18 +783,27 @@ test("applyPayloadDraftAttributeRepair rejects non-candidate ids and missing att
       { id: 9048, name: "Название модели (для объединения в одну карточку)", is_required: true },
     ],
   });
-  await assert.rejects(
-    () => applyPayloadDraftAttributeRepair(missingRun.id, {
-      confirmLocalDraftRepair: true,
-      offerId: "SKU-MISSING-BRAND",
-      attributeId: 85,
-      dictionaryValueId: 971082,
-      value: "Нет бренда",
-    }),
-    /只能修复已有的非法字典值/,
-  );
+  const missingResult = await applyPayloadDraftAttributeRepair(missingRun.id, {
+    confirmLocalDraftRepair: true,
+    offerId: "SKU-MISSING-BRAND",
+    attributeId: 85,
+    dictionaryValueId: 971082,
+    value: "Нет бренда",
+    note: "人工确认缺失品牌字典值",
+  });
+  const missingUpdated = await getWorkflowRun(missingRun.id);
+  const repairedBrand = missingUpdated.payloadDraft.items[0].attributes.find((attribute) => attribute.id === 85);
+  assert.equal(missingResult.submittedToOzon, false);
+  assert.equal(repairedBrand.values[0].dictionary_value_id, 971082);
+  assert.equal(repairedBrand.values[0].value, "Нет бренда");
+  assert.equal(missingUpdated.locks.submitLocked, true);
 
-  const invalidRun = await createWorkflowRun({ title: "不能信任前端候选" });
+  const invalidRun = await createWorkflowRun({
+    title: "不能信任前端候选",
+    status: "waiting_human",
+    currentNode: "preflight_check",
+    locks: { waitingHuman: true, submitLocked: true },
+  });
   await savePayloadDraft(invalidRun.id, {
     items: [{
       offer_id: "SKU-BAD-CANDIDATE",

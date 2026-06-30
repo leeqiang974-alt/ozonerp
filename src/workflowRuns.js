@@ -1,6 +1,7 @@
 import fs from "node:fs/promises";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
+import { diagnoseListingQuality } from "./listingQuality.js";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const DATA_DIR = path.resolve(__dirname, "..", "data");
@@ -433,9 +434,47 @@ export function validateSubmitPayload(payload = {}, { attrsMeta = [] } = {}) {
   return { ok: issues.length === 0, issues };
 }
 
+function listingQualityIssues(listingQuality = null) {
+  if (!listingQuality || typeof listingQuality !== "object") return [];
+  return (listingQuality.blockedReasons || []).map((reason) => ({
+    code: `LISTING_QUALITY_${String(reason.code || "BLOCKED").toUpperCase()}`,
+    message: reason.message || "上架质量诊断存在阻塞项。",
+    source: "listing_quality",
+    offerId: reason.offerId || "",
+    attributeId: reason.attributeId || 0,
+    qualityCode: reason.code || "",
+  }));
+}
+
+function buildPayloadDraftValidation(payload = {}, options = {}) {
+  const payloadValidation = validateSubmitPayload(payload, { attrsMeta: options.attrsMeta || [] });
+  const listingQuality = diagnoseListingQuality({
+    payload,
+    attrsMeta: options.attrsMeta || [],
+    pricing: options.pricing || null,
+    workflowRun: options.workflowRun || null,
+  });
+  const qualityIssues = listingQualityIssues(listingQuality);
+  const issues = [...(payloadValidation.issues || []), ...qualityIssues];
+  return {
+    ...payloadValidation,
+    ok: issues.length === 0,
+    issues,
+    listingQuality,
+    listingQualityWarnings: Array.isArray(listingQuality.warnings) ? listingQuality.warnings : [],
+  };
+}
+
 export function buildPreflightGateNode(input = {}) {
   const payloadValidation = validateSubmitPayload(input.payload || {}, { attrsMeta: input.attrsMeta || [] });
   const issues = [...(payloadValidation.issues || [])];
+  const listingQuality = input.listingQuality || diagnoseListingQuality({
+    payload: input.payload || {},
+    attrsMeta: input.attrsMeta || [],
+    pricing: input.pricing || null,
+    workflowRun: input.workflowRun || null,
+  });
+  issues.push(...listingQualityIssues(listingQuality));
   const duplicate = input.duplicate || null;
   if (duplicate?.duplicateJobId || duplicate?.duplicateSku) {
     issues.push({
@@ -472,6 +511,8 @@ export function buildPreflightGateNode(input = {}) {
       issueCount: issues.length,
       issues,
       payload: payloadValidation,
+      listingQuality,
+      listingQualityWarnings: Array.isArray(listingQuality.warnings) ? listingQuality.warnings : [],
       summary: {
         itemCount: payloadItems(input.payload || {}).length,
         variantCount: Number(input.variantCount || 0),
@@ -749,7 +790,10 @@ export async function savePayloadDraft(runId, payloadDraft, options = {}) {
 
 export async function validatePayloadDraft(runId) {
   const run = await updateRun(runId, (current) => {
-    const validation = validateSubmitPayload(current.payloadDraft || {}, { attrsMeta: current.payloadDraftAttrsMeta || [] });
+    const validation = buildPayloadDraftValidation(current.payloadDraft || {}, {
+      attrsMeta: current.payloadDraftAttrsMeta || [],
+      workflowRun: current,
+    });
     return {
       ...current,
       payloadDraftValidation: validation,
@@ -774,10 +818,16 @@ export async function submitPayloadDraftToOzon(runId, input = {}, deps = {}) {
   if (run.locks?.paused || run.status === "paused") {
     return { ok: false, status: "paused", message: "工作流已暂停，不能提交 Ozon。" };
   }
+  if (run.locks?.waitingHuman || run.status === "waiting_human") {
+    return { ok: false, status: "waiting_human", message: "工作流正在等待人工处理，不能提交 Ozon。" };
+  }
   const payloadDraft = run.payloadDraft || {};
   const items = payloadItems(payloadDraft);
   if (!items.length) {
-    const validation = validateSubmitPayload(payloadDraft);
+    const validation = buildPayloadDraftValidation(payloadDraft, {
+      attrsMeta: run.payloadDraftAttrsMeta || [],
+      workflowRun: run,
+    });
     await upsertWorkflowNode(runId, {
       key: "preflight_check",
       name: "提交前总闸",
@@ -791,9 +841,16 @@ export async function submitPayloadDraftToOzon(runId, input = {}, deps = {}) {
     return { ok: false, status: "blocked", validation };
   }
 
-  const validation = validateSubmitPayload(payloadDraft, { attrsMeta: run.payloadDraftAttrsMeta || [] });
+  const validation = buildPayloadDraftValidation(payloadDraft, {
+    attrsMeta: run.payloadDraftAttrsMeta || [],
+    workflowRun: run,
+  });
   if (!validation.ok) {
-    await upsertWorkflowNode(runId, buildPreflightGateNode({ payload: payloadDraft, attrsMeta: run.payloadDraftAttrsMeta || [] }));
+    await upsertWorkflowNode(runId, buildPreflightGateNode({
+      payload: payloadDraft,
+      attrsMeta: run.payloadDraftAttrsMeta || [],
+      listingQuality: validation.listingQuality,
+    }));
     await updateRun(runId, (current) => ({
       ...current,
       payloadDraftValidation: validation,
@@ -802,7 +859,11 @@ export async function submitPayloadDraftToOzon(runId, input = {}, deps = {}) {
     return { ok: false, status: "blocked", validation };
   }
 
-  await upsertWorkflowNode(runId, buildPreflightGateNode({ payload: payloadDraft, attrsMeta: run.payloadDraftAttrsMeta || [] }));
+  await upsertWorkflowNode(runId, buildPreflightGateNode({
+    payload: payloadDraft,
+    attrsMeta: run.payloadDraftAttrsMeta || [],
+    listingQuality: validation.listingQuality,
+  }));
   await updateRun(runId, (current) => ({
     ...current,
     payloadDraftValidation: validation,

@@ -368,6 +368,38 @@ test("payload draft validation preserves Ozon aspect metadata across saves", asy
   assert.ok(validationAfterPlainSave.issues.some((issue) => issue.code === "DUPLICATE_VARIANT_ASPECTS"));
 });
 
+test("payload draft validation blocks listing quality dictionary issues", async () => {
+  reset();
+  const run = await createWorkflowRun({ title: "字典属性质量预检" });
+  const payload = {
+    items: [{
+      offer_id: "SKU-quality-dict",
+      name: "Кормушка для кошек",
+      description_category_id: 17028673,
+      type_id: 95183,
+      price: "1200",
+      images: ["https://example.com/a.jpg", "https://example.com/b.jpg", "https://example.com/c.jpg"],
+      attributes: [
+        { id: 85, values: [{ value: "Нет бренда" }] },
+        { id: 9048, values: [{ value: "SKU-quality-dict" }] },
+      ],
+    }],
+  };
+  const attrsMeta = [
+    { id: 85, name: "Бренд", is_required: true, dictionary_id: 971082 },
+    { id: 9048, name: "Название модели (для объединения в одну карточку)", is_required: true },
+  ];
+
+  await savePayloadDraft(run.id, payload, { attrsMeta });
+  const validation = await validatePayloadDraft(run.id);
+
+  assert.equal(validation.ok, false);
+  assert.equal(validation.listingQuality.status, "blocked");
+  assert.equal(validation.issues.some((issue) => issue.code === "LISTING_QUALITY_DICTIONARY_VALUE_INVALID"), true);
+  const updated = await getWorkflowRun(run.id);
+  assert.equal(updated.locks.submitLocked, true);
+});
+
 test("payload draft submit blocks invalid drafts before Ozon import", async () => {
   reset();
   const run = await createWorkflowRun({ title: "无效草稿提交", entity: { storeId: "3815760-4" } });
@@ -395,6 +427,122 @@ test("payload draft submit blocks invalid drafts before Ozon import", async () =
   assert.equal(updated.status, "waiting_human");
   assert.equal(updated.locks.submitLocked, true);
   assert.equal(updated.nodes.find((node) => node.key === "preflight_check")?.status, "failed");
+});
+
+test("payload draft submit blocks listing quality diagnosis before Ozon import", async () => {
+  reset();
+  const run = await createWorkflowRun({ title: "质量阻塞提交", entity: { storeId: "3815760-4" } });
+  await savePayloadDraft(run.id, {
+    items: [{
+      offer_id: "SKU-quality-submit",
+      name: "Кормушка для кошек",
+      description_category_id: 17028673,
+      type_id: 95183,
+      price: "1200",
+      images: ["https://example.com/a.jpg", "https://example.com/b.jpg", "https://example.com/c.jpg"],
+      attributes: [
+        { id: 85, values: [{ value: "Нет бренда" }] },
+        { id: 9048, values: [{ value: "SKU-quality-submit" }] },
+      ],
+    }],
+  }, {
+    attrsMeta: [
+      { id: 85, name: "Бренд", is_required: true, dictionary_id: 971082 },
+      { id: 9048, name: "Название модели (для объединения в одну карточку)", is_required: true },
+    ],
+  });
+  const calls = [];
+
+  const result = await submitPayloadDraftToOzon(run.id, { confirmSubmit: true }, {
+    getStore: (storeId) => ({ id: storeId }),
+    ozonRequest: async (...args) => {
+      calls.push(args);
+      return { result: { task_id: 1 } };
+    },
+  });
+
+  assert.equal(result.ok, false);
+  assert.equal(result.status, "blocked");
+  assert.equal(calls.length, 0);
+  assert.equal(result.validation.listingQuality.status, "blocked");
+  const updated = await getWorkflowRun(run.id);
+  const node = updated.nodes.find((item) => item.key === "preflight_check");
+  assert.equal(node?.status, "failed");
+  assert.equal(node?.output.listingQuality.status, "blocked");
+  assert.equal(node?.output.issues.some((issue) => issue.code === "LISTING_QUALITY_DICTIONARY_VALUE_INVALID"), true);
+});
+
+test("payload draft submit respects waiting human workflow lock before Ozon import", async () => {
+  reset();
+  const run = await createWorkflowRun({
+    title: "等待人工锁提交",
+    status: "waiting_human",
+    entity: { storeId: "3815760-4" },
+    locks: { waitingHuman: true },
+  });
+  await savePayloadDraft(run.id, {
+    offer_id: "SKU-waiting-human",
+    name: "Товар для дома",
+    description_category_id: 17028673,
+    type_id: 95183,
+    price: "100",
+    images: ["https://example.com/a.jpg", "https://example.com/b.jpg", "https://example.com/c.jpg"],
+    attributes: [
+      { id: 85, values: [{ value: "Нет бренда" }] },
+      { id: 9048, values: [{ value: "SKU-waiting-human" }] },
+    ],
+  });
+  const calls = [];
+
+  const result = await submitPayloadDraftToOzon(run.id, { confirmSubmit: true }, {
+    getStore: (storeId) => ({ id: storeId }),
+    ozonRequest: async (...args) => {
+      calls.push(args);
+      return { result: { task_id: 1 } };
+    },
+  });
+
+  assert.equal(result.ok, false);
+  assert.equal(result.status, "waiting_human");
+  assert.equal(calls.length, 0);
+});
+
+test("payload draft submit blocks pricing risk diagnosis before Ozon import", async () => {
+  reset();
+  const run = await createWorkflowRun({ title: "价格风险提交", entity: { storeId: "3815760-4" } });
+  await upsertWorkflowNode(run.id, {
+    key: "match_profit",
+    status: "failed",
+    branch: "blocked",
+    diagnosis: { reasonCode: "PRICING_PACKAGE_MISSING", messageZh: "缺少完整尺重。" },
+    reason: "定价阻塞：缺少完整尺重。",
+  });
+  await savePayloadDraft(run.id, {
+    offer_id: "SKU-pricing-blocked",
+    name: "Товар для дома",
+    description_category_id: 17028673,
+    type_id: 95183,
+    price: "100",
+    images: ["https://example.com/a.jpg", "https://example.com/b.jpg", "https://example.com/c.jpg"],
+    attributes: [
+      { id: 85, values: [{ value: "Нет бренда" }] },
+      { id: 9048, values: [{ value: "SKU-pricing-blocked" }] },
+    ],
+  });
+  const calls = [];
+
+  const result = await submitPayloadDraftToOzon(run.id, { confirmSubmit: true }, {
+    getStore: (storeId) => ({ id: storeId }),
+    ozonRequest: async (...args) => {
+      calls.push(args);
+      return { result: { task_id: 1 } };
+    },
+  });
+
+  assert.equal(result.ok, false);
+  assert.equal(result.status, "blocked");
+  assert.equal(calls.length, 0);
+  assert.equal(result.validation.issues.some((issue) => issue.code === "LISTING_QUALITY_PRICING_BLOCKED"), true);
 });
 
 test("payload draft submit requires explicit human confirmation", async () => {

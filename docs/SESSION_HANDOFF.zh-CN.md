@@ -1,12 +1,57 @@
 # Ozon ERP 会话接管与恢复记录
 
-更新时间：2026-06-29
+更新时间：2026-06-30
 
 ## 项目根目录
 
-`C:\Users\Administrator\Documents\Codex\2026-05-27\c-users-administrator-documents-codex-2026\ozon-project-copy`
+`C:\Users\Administrator\Documents\ozonerp`
 
-当前 `C:\Users\Administrator\Documents\Codex\2026-05-29\ozonerp` 不是实际项目根。
+本轮 Codex 桌面环境以 `C:\Users\Administrator\Documents\ozonerp` 为实际项目根；继续开发前仍需先确认 `git status` 和最近提交，避免误入旧复制目录。
+
+## 2026-06-30 上架质量诊断接入预检总闸
+
+### 已完成
+
+- 新增 `src/listingQuality.js`，把 Ozon 上架质量诊断从 UI 提示沉到后端本地预检：
+  - 必填字典属性存在文本值但缺少当前类目合法 `dictionary_value_id` 时阻塞。
+  - 变体 `is_aspect=true` 属性缺失或组合重复时阻塞。
+  - 产品图少于 3 张时阻塞；3-4 张时只作为商品分值警告。
+  - 已存在 `PRICING_*` 阻塞节点或直接 pricing blocked 时阻塞。
+- `validatePayloadDraft()` 现在返回合并后的 `payloadDraftValidation`：
+  - 保留原有 payload 结构校验。
+  - 增加 `listingQuality`、`listingQualityWarnings` 和 `LISTING_QUALITY_*` issues。
+  - 阻塞时继续保持 `submitLocked=true`。
+- `submitPayloadDraftToOzon()` 在本地质量诊断阻塞时直接返回 `blocked`：
+  - 更新 `preflight_check` 节点。
+  - 进入 `waiting_human`。
+  - 不调用 `/v3/product/import`。
+  - 不改变 `confirmSubmit` 人工二次确认安全门。
+- `buildPreflightGateNode()` 现在把上架质量诊断纳入提交前总闸输出，供工作流控制台展示具体字段、原因和下一步。
+
+### Claude Code 搭配
+
+- 开发前已执行 Claude Code NVIDIA fallback 审查：`logs/claude-listing-quality-preflight-pre-review.md`。
+- 审查结论要求：新增诊断必须位于 `confirmSubmit` 之前，阻塞时不得调用 Ozon 写接口，pricing blocked 不能被强制提交绕过。
+- 开发后已执行两轮 Claude Code NVIDIA fallback diff 审查：
+  - `logs/claude-listing-quality-preflight-post-review.md`
+  - `logs/claude-listing-quality-preflight-final-review.md`
+- 第一轮后审指出需显式补齐 `waiting_human` 提交锁与 pricing blocked 集成测试；已补充并验证。
+
+### 已验证
+
+- 已按 focused test 先看到失败，再实现：
+  - `test/listing-quality.test.js`
+  - `test/workflow-runs.test.js`
+- 目标验证：`node --test test/listing-quality.test.js test/workflow-runs.test.js`，45/45 通过。
+- 前端契约：`node --test test/frontend-static.test.js`，62/62 通过。
+- 全量测试：`npm test`，254/254 通过。
+- Lint：`npm run lint`，41 files 通过。
+
+### 下一步
+
+- 把 `listingQuality` 的阻塞/警告结果在“上架中心/预检提交”页面做成字段级修复面板：当前商品是谁、哪个属性缺字典值、哪个 SKU 图或变体 aspect 卡住、下一步点什么。
+- 继续接 Ozon Seller API 的分类属性/字典缓存，让属性填写从“发现缺失”升级为“高置信自动填、低置信人工确认”。
+- 开发后必须继续执行 Claude Code diff 审查，通过后才能提交。
 
 ## 启动与验证
 

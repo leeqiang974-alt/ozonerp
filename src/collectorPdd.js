@@ -82,12 +82,13 @@ function normalizeAttributes(items) {
 
 function normalizeVariants(items, fallbackPrice, images) {
   const variants = Array.isArray(items) ? items : [];
+  const inferredPrice = firstNumber(fallbackPrice, ...variants.map((item) => item.price || item.salePrice || item.groupPrice || item.spec || item.specText || item.name || item.label));
   const normalized = variants
     .filter((item) => isLikelyPddVariantSpec(item.spec || item.specText || item.name || item.label || ""))
     .map((item, index) => ({
       skuId: cleanupText(item.skuId || item.sku_id || item.id || ""),
       spec: cleanupText(item.spec || item.specText || item.name || item.label || ""),
-      price: firstNumber(item.price || item.salePrice || item.groupPrice || fallbackPrice),
+      price: firstNumber(item.price || item.salePrice || item.groupPrice || inferredPrice),
       stock: firstNumber(item.stock || item.quantity || item.stockQuantity),
       image: normalizeImage(item.image || item.imageUrl || images[index] || ""),
       weightG: firstNumber(item.weightG),
@@ -97,7 +98,7 @@ function normalizeVariants(items, fallbackPrice, images) {
     }))
     .filter((item) => item.skuId || item.spec || item.price || item.image);
   if (normalized.length) return dedupeBy(normalized, (item) => `${item.skuId}:${item.spec}:${item.price}:${item.image}`).slice(0, 300);
-  const price = firstNumber(fallbackPrice);
+  const price = firstNumber(fallbackPrice, inferredPrice);
   return price ? [{
     skuId: "",
     spec: "默认规格",
@@ -176,11 +177,13 @@ function isLikelyPddVariantSpec(value) {
   const text = cleanupText(value);
   if (!text) return true;
   if (text.length > 40) return false;
-  if (/大促价|券后|满\d+减|件\d+\.?\d*折|^\d+(?:\.\d+)?折|买了又买|拼单|即将结束|立刻拼|这些人已拼|我拼过的店/.test(text)) return false;
+  if (/^¥?\s*\d+(?:\.\d+)?$/.test(text)) return false;
+  if (/大促价|券后|满\d+减|件\d+\.?\d*折|^\d+(?:\.\d+)?折|买了又买|拼单|即将结束|立刻拼|这些人已拼|我拼过的店|人已拼/.test(text)) return false;
+  if (/畅销榜|榜第\d+名/.test(text)) return false;
   if (/查看|确定|顶部|首页|帮助|反馈|进店|价格说明|历史浏览|更多|开始采集|找货源|确认采集|采集本页|采集到\s*ERP|跳过/.test(text)) return false;
   if (/退货|运费|包邮|无理由/.test(text)) return false;
-  if (/质量|外观|实用|包装|做工|态度|回头客|效果|评价|物美价廉|可爱|精致|异味|手感|模具很好|大小合适|已抢\d+件/.test(text)) return false;
-  if (/^(颜色|色号|款式|规格|尺寸|型号|大小)$/.test(text)) return false;
+  if (/质量|外观|实用|包装|做工|态度|回头客|效果|评价|物美价廉|可爱|精致|异味|手感|模具很好|大小合适|尺码合适|美观|走的挺准|使用方便|已抢\d+件/.test(text)) return false;
+  if (/^(颜色|色号|款式|规格|尺寸|型号|大小|容量)$/.test(text)) return false;
   if (/^\d+$/.test(text)) return false;
   return true;
 }

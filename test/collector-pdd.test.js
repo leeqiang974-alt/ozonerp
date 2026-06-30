@@ -66,14 +66,22 @@ test("PDD parser filters page chrome from variants and product images", () => {
       skuVariants: [
         { spec: "大促价¥ 6.81", price: "6.81" },
         { spec: "7.8折¥ 10.8", price: "10.8" },
+        { spec: "¥ 5.98", price: "" },
+        { spec: "3225人已拼， 参与可立即拼成", price: "" },
+        { spec: "金色家居钟饰/闹钟畅销榜第9名", price: "" },
         { spec: "小黄 买了又买 拼单即将结束 23:23:59.7 立刻拼", price: "6.81" },
         { spec: "质量很好(257)", price: "6.81" },
+        { spec: "尺码合适(748)", price: "" },
+        { spec: "美观(548)", price: "" },
+        { spec: "走的挺准(362)", price: "" },
+        { spec: "使用方便(341)", price: "" },
         { spec: "模具很好(218)", price: "10.8" },
         { spec: "大小合适(196)", price: "10.8" },
         { spec: "退货包运费 | 不满意包退货运费，退换货运费无忧", price: "6.81" },
         { spec: "这些人已拼，参与可立即拼成", price: "6.81" },
         { spec: "物美价廉(378)", price: "6.81" },
         { spec: "尺寸", price: "10.8" },
+        { spec: "容量", price: "" },
         { spec: "圆形烟灰缸", price: "6.81" },
         { spec: "正方形烟灰缸", price: "6.81" },
         { spec: "开始采集", price: "6.81" },
@@ -87,6 +95,7 @@ test("PDD parser filters page chrome from variants and product images", () => {
 
   assert.deepEqual(parsed.images, ["https://img.pddpic.com/mms-material-img/2023-10-31/product-a.jpeg"]);
   assert.deepEqual(parsed.skuVariants.map((item) => item.spec), ["圆形烟灰缸", "正方形烟灰缸"]);
+  assert.equal(parsed.skuVariants[0].price, 6.81);
 });
 
 test("PDD parser reads title and gallery from embedded page data", () => {

@@ -1160,6 +1160,30 @@ function listingFillTaskTextRepairCandidate(run = currentListingWorkflowRun()) {
   return null;
 }
 
+function listingFillTaskVariantTextRepairCandidate(run = currentListingWorkflowRun()) {
+  if (!run) return null;
+  const waitingHuman = run.status === "waiting_human" || run.locks?.waitingHuman === true;
+  if (!waitingHuman) return null;
+  const preflightNode = (run.nodes || []).find((node) => node.key === "preflight_check") || {};
+  const matrix = run.payloadDraftValidation?.attributeMatrix || preflightNode.output?.attributeMatrix || null;
+  const rows = Array.isArray(matrix?.rows) ? matrix.rows : [];
+  for (const row of rows) {
+    for (const cell of row.cells || []) {
+      const guidance = cell.repairGuidance || {};
+      if (guidance.canApplyVariantTextDraftRepair === true) {
+        return {
+          runId: run.id || "",
+          nodeKey: preflightNode.key || "preflight_check",
+          offerId: guidance.offerId || cell.offerId || "",
+          attributeId: guidance.attributeId || row.attributeId || "",
+          attributeName: guidance.attributeName || row.name || "",
+        };
+      }
+    }
+  }
+  return null;
+}
+
 function listingVariantAspectContext(row = {}) {
   const aspects = Array.isArray(row.aspects) ? row.aspects : [];
   const primaryAspect = aspects.find((aspect) => aspect?.id || aspect?.name) || {};
@@ -1242,6 +1266,7 @@ function listingFillTaskQueueItems(run = currentListingWorkflowRun()) {
   const listingQuality = validation.listingQuality || preflightOutput.listingQuality || null;
   const repairCandidate = listingFillTaskRepairCandidate(run);
   const textRepairCandidate = listingFillTaskTextRepairCandidate(run);
+  const variantTextRepairCandidate = listingFillTaskVariantTextRepairCandidate(run);
   const variantAspectSuggestion = listingFillTaskVariantAspectSuggestion(variantConfiguration);
   const items = [];
   if (Array.isArray(requiredAttributeFillPlan) && requiredAttributeFillPlan.length) {
@@ -1271,6 +1296,7 @@ function listingFillTaskQueueItems(run = currentListingWorkflowRun()) {
       body: `${blockedCount} 个变体组合阻塞，${imageWarningCount} 个 SKU 图提醒。`,
       meta: "数据来自 variantConfiguration；修复后必须重新预检。",
       target: blockedCount ? "preflight-submit" : "content-images",
+      variantTextRepairCandidate: variantTextRepairCandidate && blockedCount ? variantTextRepairCandidate : null,
       variantAspectSuggestion,
     });
   }
@@ -1338,6 +1364,15 @@ function renderListingFillTaskQueue(run = currentListingWorkflowRun()) {
               data-repair-attribute-id="${escapeHtml(item.textRepairCandidate.attributeId)}"
               title="${escapeHtml(item.textRepairCandidate.attributeName || "文本属性")}"
             >填写文本属性并预检</button>` : ""}
+            ${item.variantTextRepairCandidate ? `<button
+              type="button"
+              data-workflow-action="apply-variant-text-repair"
+              data-workflow-run-id="${escapeHtml(item.variantTextRepairCandidate.runId)}"
+              data-workflow-node-key="${escapeHtml(item.variantTextRepairCandidate.nodeKey)}"
+              data-repair-offer-id="${escapeHtml(item.variantTextRepairCandidate.offerId)}"
+              data-repair-attribute-id="${escapeHtml(item.variantTextRepairCandidate.attributeId)}"
+              title="${escapeHtml(item.variantTextRepairCandidate.attributeName || "变体文本属性")}"
+            >填写变体文本并预检</button>` : ""}
             ${item.variantAspectSuggestion ? `
               <div class="listing-variant-suggestion">
                 <strong>变体属性修复建议</strong>
@@ -6211,6 +6246,7 @@ function renderListingAttributeCellRepair(cell = {}, row = {}) {
   const candidates = Array.isArray(guidance.dictionaryCandidates) ? guidance.dictionaryCandidates : [];
   const canApplyLocalDraftRepair = guidance.canApplyLocalDraftRepair === true;
   const canApplyTextDraftRepair = guidance.canApplyTextDraftRepair === true;
+  const canApplyVariantTextDraftRepair = guidance.canApplyVariantTextDraftRepair === true;
   return `
     <div class="attribute-matrix-repair">
       <strong>人工修复入口</strong>
@@ -6241,6 +6277,13 @@ function renderListingAttributeCellRepair(cell = {}, row = {}) {
           data-repair-offer-id="${escapeHtml(guidance.offerId || cell.offerId || "")}"
           data-repair-attribute-id="${escapeHtml(guidance.attributeId || row.attributeId || "")}"
         >填写文本属性</button>` : ""}
+        ${canApplyVariantTextDraftRepair ? `<button
+          class="ghost"
+          type="button"
+          data-workflow-action="apply-variant-text-repair"
+          data-repair-offer-id="${escapeHtml(guidance.offerId || cell.offerId || "")}"
+          data-repair-attribute-id="${escapeHtml(guidance.attributeId || row.attributeId || "")}"
+        >填写变体文本</button>` : ""}
         <button class="ghost" type="button" data-payload-path="${escapeHtml(guidance.payloadPath || "")}" data-payload-label="${escapeHtml(guidance.payloadLabel || row.name || "属性矩阵卡点")}">定位</button>
         <button class="ghost workflow-payload-copy" type="button" data-workflow-action="copy-repair-template" data-repair-copy="${escapeHtml(guidance.copyText || "人工修复后重新预检；不会自动提交 Ozon。")}">复制建议</button>
       </div>
@@ -6947,6 +6990,26 @@ async function handleWorkflowAction(action, button) {
       }),
     });
     toast(result.ok ? "本地文本属性已写回并通过预检，不会提交 Ozon" : "本地文本属性已写回，但预检仍有问题", result.ok ? "ok" : "error");
+    await loadWorkflowRuns();
+    return;
+  }
+  if (action === "apply-variant-text-repair") {
+    const value = window.prompt("请输入要写回本地 Payload 草稿的变体文本值。系统会重新预检，但不会提交 Ozon。", "");
+    if (value === null) return;
+    const trimmed = String(value || "").trim();
+    if (!trimmed) throw new Error("变体文本值不能为空");
+    const result = await api(`/api/workflows/${encodeURIComponent(run.id)}/payload-draft/attribute-repair`, {
+      method: "POST",
+      body: JSON.stringify({
+        confirmLocalDraftRepair: true,
+        repairType: "variant_text_value",
+        offerId: button?.dataset?.repairOfferId || "",
+        attributeId: Number(button?.dataset?.repairAttributeId || 0),
+        value: trimmed,
+        note: "页面人工输入：变体文本属性修复",
+      }),
+    });
+    toast(result.ok ? "本地变体文本已写回并通过预检，不会提交 Ozon" : "本地变体文本已写回，但预检仍有问题", result.ok ? "ok" : "error");
     await loadWorkflowRuns();
     return;
   }

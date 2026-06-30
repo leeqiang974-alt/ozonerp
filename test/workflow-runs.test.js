@@ -627,6 +627,7 @@ test("buildListingAttributeMatrix exposes safe human repair guidance for blocked
     attrsMeta: [
       { id: 85, name: "Бренд", is_required: true, dictionary_id: 971082 },
       { id: 9048, name: "Название модели (для объединения в одну карточку)", is_required: true },
+      { id: 10097, name: "Название цвета", is_aspect: true },
     ],
     dictionaryValuesByAttributeId: {
       85: [{ id: 971082, value: "Нет бренда" }],
@@ -635,6 +636,7 @@ test("buildListingAttributeMatrix exposes safe human repair guidance for blocked
 
   const brandCell = matrix.rows.find((row) => row.attributeId === 85).cells[0];
   const modelCell = matrix.rows.find((row) => row.attributeId === 9048).cells[0];
+  const colorCell = matrix.rows.find((row) => row.attributeId === 10097).cells[0];
 
   assert.equal(brandCell.status, "invalid_dictionary");
   assert.equal(brandCell.repairGuidance.humanRequired, true);
@@ -645,6 +647,11 @@ test("buildListingAttributeMatrix exposes safe human repair guidance for blocked
   assert.equal(modelCell.status, "missing");
   assert.match(modelCell.repairGuidance.message, /补充/);
   assert.match(modelCell.repairGuidance.copyText, /9048/);
+  assert.equal(modelCell.repairGuidance.canApplyTextDraftRepair, true);
+  assert.equal(modelCell.repairGuidance.canApplyVariantTextDraftRepair, false);
+  assert.equal(colorCell.status, "missing");
+  assert.equal(colorCell.repairGuidance.canApplyTextDraftRepair, false);
+  assert.equal(colorCell.repairGuidance.canApplyVariantTextDraftRepair, true);
 });
 
 test("applyPayloadDraftAttributeRepair writes a confirmed dictionary repair and forces revalidation", async () => {
@@ -891,6 +898,147 @@ test("applyPayloadDraftAttributeRepair writes confirmed missing text attributes 
   assert.equal(updated.locks.submitLocked, true);
   assert.equal(updated.payloadDraftValidation.ok, true);
   assert.equal(updated.events.at(-1).type, "payload_attribute_repair_applied");
+});
+
+test("applyPayloadDraftAttributeRepair writes confirmed missing non-dictionary variant text only", async () => {
+  reset();
+  const run = await createWorkflowRun({
+    title: "变体文本属性修复",
+    status: "waiting_human",
+    currentNode: "preflight_check",
+    locks: { waitingHuman: true, submitLocked: true },
+  });
+  await savePayloadDraft(run.id, {
+    items: [{
+      offer_id: "SKU-VARIANT-TEXT-REPAIR",
+      name: "Cat feeder",
+      description_category_id: 17028673,
+      type_id: 95183,
+      price: "1200",
+      images: ["1", "2", "3"],
+      attributes: [
+        { id: 85, values: [{ dictionary_value_id: 971082, value: "Нет бренда" }] },
+        { id: 9048, values: [{ value: "Cat feeder" }] },
+      ],
+    }],
+  }, {
+    attrsMeta: [
+      { id: 85, name: "Бренд", is_required: true, dictionary_id: 971082 },
+      { id: 9048, name: "Название модели (для объединения в одну карточку)", is_required: true },
+      { id: 10097, name: "Название цвета", is_aspect: true },
+    ],
+  });
+
+  const result = await applyPayloadDraftAttributeRepair(run.id, {
+    confirmLocalDraftRepair: true,
+    repairType: "variant_text_value",
+    offerId: "SKU-VARIANT-TEXT-REPAIR",
+    attributeId: 10097,
+    value: "белый",
+    note: "人工补齐变体颜色文本",
+  });
+
+  const updated = await getWorkflowRun(run.id);
+  const color = updated.payloadDraft.items[0].attributes.find((attribute) => attribute.id === 10097);
+  assert.equal(result.submittedToOzon, false);
+  assert.equal(color.values[0].value, "белый");
+  assert.equal(updated.locks.waitingHuman, true);
+  assert.equal(updated.locks.submitLocked, true);
+  assert.equal(updated.events.at(-1).data.repairType, "variant_text_value");
+  assert.equal(updated.events.at(-1).data.submittedToOzon, false);
+});
+
+test("applyPayloadDraftAttributeRepair rejects dictionary and duplicate variant aspect repairs", async () => {
+  reset();
+  const dictionaryRun = await createWorkflowRun({
+    title: "字典变体不能文本修复",
+    status: "waiting_human",
+    currentNode: "preflight_check",
+    locks: { waitingHuman: true, submitLocked: true },
+  });
+  await savePayloadDraft(dictionaryRun.id, {
+    items: [{
+      offer_id: "SKU-DICT-ASPECT",
+      name: "Cat feeder",
+      description_category_id: 17028673,
+      type_id: 95183,
+      price: "1200",
+      images: ["1", "2", "3"],
+      attributes: [
+        { id: 85, values: [{ dictionary_value_id: 971082, value: "Нет бренда" }] },
+        { id: 9048, values: [{ value: "Cat feeder" }] },
+      ],
+    }],
+  }, {
+    attrsMeta: [
+      { id: 85, name: "Бренд", is_required: true, dictionary_id: 971082 },
+      { id: 9048, name: "Название модели (для объединения в одну карточку)", is_required: true },
+      { id: 10096, name: "Цвет товара", is_aspect: true, dictionary_id: 10096 },
+    ],
+  });
+  await assert.rejects(
+    () => applyPayloadDraftAttributeRepair(dictionaryRun.id, {
+      confirmLocalDraftRepair: true,
+      repairType: "variant_text_value",
+      offerId: "SKU-DICT-ASPECT",
+      attributeId: 10096,
+      value: "белый",
+    }),
+    /非字典变体文本属性/,
+  );
+
+  const duplicateRun = await createWorkflowRun({
+    title: "重复变体不能自动修复",
+    status: "waiting_human",
+    currentNode: "preflight_check",
+    locks: { waitingHuman: true, submitLocked: true },
+  });
+  await savePayloadDraft(duplicateRun.id, {
+    items: [
+      {
+        offer_id: "SKU-DUP-1",
+        name: "Cat feeder",
+        description_category_id: 17028673,
+        type_id: 95183,
+        price: "1200",
+        images: ["1", "2", "3"],
+        attributes: [
+          { id: 85, values: [{ dictionary_value_id: 971082, value: "Нет бренда" }] },
+          { id: 9048, values: [{ value: "Cat feeder" }] },
+          { id: 10097, values: [{ value: "белый" }] },
+        ],
+      },
+      {
+        offer_id: "SKU-DUP-2",
+        name: "Cat feeder",
+        description_category_id: 17028673,
+        type_id: 95183,
+        price: "1200",
+        images: ["1", "2", "3"],
+        attributes: [
+          { id: 85, values: [{ dictionary_value_id: 971082, value: "Нет бренда" }] },
+          { id: 9048, values: [{ value: "Cat feeder" }] },
+          { id: 10097, values: [{ value: "белый" }] },
+        ],
+      },
+    ],
+  }, {
+    attrsMeta: [
+      { id: 85, name: "Бренд", is_required: true, dictionary_id: 971082 },
+      { id: 9048, name: "Название модели (для объединения в одну карточку)", is_required: true },
+      { id: 10097, name: "Название цвета", is_aspect: true },
+    ],
+  });
+  await assert.rejects(
+    () => applyPayloadDraftAttributeRepair(duplicateRun.id, {
+      confirmLocalDraftRepair: true,
+      repairType: "variant_text_value",
+      offerId: "SKU-DUP-2",
+      attributeId: 10097,
+      value: "синий",
+    }),
+    /缺失的非字典变体文本属性/,
+  );
 });
 
 test("buildPreflightGateNode blocks multi variant payloads without aspect metadata", () => {

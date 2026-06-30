@@ -198,6 +198,12 @@
   - 变体/SKU 图任务卡会列出受影响 SKU、首个 aspect 名称/属性 ID、为什么卡住、下一步。
   - 数据仍来自 `variantConfiguration.rows`，只读展示；复制建议和查看工作簿不写 Payload、不提交 Ozon。
   - 修正后仍必须回到预检/Workflow Console 重新校验。
+- 上架草稿侧的变体修复入口 V2 已接入非字典 aspect 文本属性：
+  - `applyPayloadDraftAttributeRepair()` 新增 `repairType: "variant_text_value"`。
+  - 仅允许 `waiting_human` / `locks.waitingHuman=true` 且 `confirmLocalDraftRepair=true` 的 workflow 写回本地 Payload 草稿。
+  - 仅允许属性矩阵中 `status=missing`、`is_aspect=true`、非字典属性的单元格；字典 aspect 和重复 aspect 仍拒绝自动修复。
+  - 写回后立即重新预检，仍保持 `submitLocked`，不会调用 Ozon 提交接口。
+  - 上架中心“变体/SKU 图”任务卡和属性矩阵单元格新增“填写变体文本并预检 / 填写变体文本”按钮；用户输入后只写本地草稿并刷新 workflow 诊断。
 - 必填属性规则引擎 V2 继续修正原产国/制造商边界：
   - `Страна-изготовитель` / 原产国 / 生产国 / 制造国 走 `fixed_country_china`，只使用当前类目字典中的 Китай/中国。
   - 单独的 `Производитель` / 制造商不再被误识别为原产国；仍进入合规敏感人工阻塞。
@@ -223,7 +229,7 @@
 
 ### 下一步
 
-- 继续做“必填属性规则引擎 V2”：可继续沉淀容量、件数等高频中置信字典候选，但仍只生成候选，不自动写入；再回到“上架草稿侧的变体修复入口 V2”。
+- 继续做“必填属性规则引擎 V2”：可继续沉淀容量、件数等高频中置信字典候选，但仍只生成候选，不自动写入；同时把变体修复从“单个非字典文本值”推进到“整组变体覆盖检查与 SKU 图分值联动”。
 
 ## 2026-06-30 仓库匹配规则引擎 V1
 

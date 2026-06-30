@@ -451,6 +451,7 @@ function matrixCellRepairGuidance(input = {}) {
       ...base,
       message,
       canApplyTextDraftRepair: Boolean(row.attributeId && !row.dictionary && !row.aspect),
+      canApplyVariantTextDraftRepair: Boolean(row.attributeId && !row.dictionary && row.aspect),
       copyText: `问题：${message}\nSKU：${offerId || "-"}\n建议：在 attributes 中补充 id ${row.attributeId || "-"} 的值。\n下一步：${base.nextStep}`,
     };
   }
@@ -1332,7 +1333,7 @@ export async function applyPayloadDraftAttributeRepair(runId, input = {}) {
     throw new Error("需要工作流处于等待人工状态，才能写回本地 Payload 草稿。");
   }
   const repairType = String(input.repairType || "dictionary_value").trim();
-  if (!["dictionary_value", "text_value"].includes(repairType)) throw new Error("不支持的属性修复类型。");
+  if (!["dictionary_value", "text_value", "variant_text_value"].includes(repairType)) throw new Error("不支持的属性修复类型。");
   const categoryCache = await loadCategoryCache();
   const attributeMatrix = buildListingAttributeMatrix({
     payload: run.payloadDraft || {},
@@ -1361,9 +1362,15 @@ export async function applyPayloadDraftAttributeRepair(runId, input = {}) {
       value: candidate.value || input.value || "",
     });
     repairData = { dictionaryValueId };
-  } else {
+  } else if (repairType === "text_value") {
     if (!row || !cell || cell.status !== "missing" || row.dictionary || row.aspect) {
       throw new Error("只能修复缺失的普通文本属性，字典和变体属性请人工处理。");
+    }
+    payloadDraft = applyAttributeTextValue(run.payloadDraft || {}, input);
+    repairData = { value: String(input.value || "").trim() };
+  } else {
+    if (!row || !cell || cell.status !== "missing" || !row.aspect || row.dictionary) {
+      throw new Error("只能修复缺失的非字典变体文本属性。");
     }
     payloadDraft = applyAttributeTextValue(run.payloadDraft || {}, input);
     repairData = { value: String(input.value || "").trim() };

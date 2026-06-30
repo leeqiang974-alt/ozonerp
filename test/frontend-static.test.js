@@ -227,6 +227,7 @@ test("listing center exposes a read-only fill task queue from existing diagnosti
   assert.match(js, /listingFillTaskQueueItems/);
   assert.match(js, /listingFillTaskRepairCandidate/);
   assert.match(js, /listingFillTaskTextRepairCandidate/);
+  assert.match(js, /listingFillTaskVariantTextRepairCandidate/);
   assert.match(js, /listingFillTaskVariantAspectSuggestion/);
   assert.match(js, /listingVariantAspectContext/);
   assert.match(js, /waitingHuman/);
@@ -238,8 +239,10 @@ test("listing center exposes a read-only fill task queue from existing diagnosti
   assert.match(js, /data-listing-task-node-key/);
   assert.match(js, /data-workflow-action="apply-attribute-dictionary-repair"/);
   assert.match(js, /data-workflow-action="apply-attribute-text-repair"/);
+  assert.match(js, /data-workflow-action="apply-variant-text-repair"/);
   assert.match(js, /确认写入草稿并预检/);
   assert.match(js, /填写文本属性并预检/);
+  assert.match(js, /填写变体文本并预检/);
   assert.match(js, /变体属性修复建议/);
   assert.match(js, /data-listing-variant-suggestion-copy/);
   assert.match(js, /查看变体工作簿/);
@@ -361,6 +364,17 @@ test("frontend can prompt for a confirmed missing text attribute repair", async 
   assert.match(js, /canApplyTextDraftRepair/);
   assert.match(js, /repairType: "text_value"/);
   assert.match(js, /填写文本属性/);
+  assert.match(js, /不会提交 Ozon/);
+});
+
+test("frontend can prompt for a confirmed missing variant text aspect repair", async () => {
+  const js = await readFile(new URL("../public/app.js", import.meta.url), "utf8");
+
+  assert.match(js, /apply-variant-text-repair/);
+  assert.match(js, /canApplyVariantTextDraftRepair/);
+  assert.match(js, /repairType: "variant_text_value"/);
+  assert.match(js, /listingFillTaskVariantTextRepairCandidate/);
+  assert.match(js, /填写变体文本/);
   assert.match(js, /不会提交 Ozon/);
 });
 

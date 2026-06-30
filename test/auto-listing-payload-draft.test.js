@@ -552,6 +552,89 @@ test("buildRequiredAttributeFillPlan suggests capacity and count dictionary cand
   assert.deepEqual(materialPlan.dictionaryCandidates, []);
 });
 
+test("buildRequiredAttributeFillPlan suggests size package and scenario dictionary candidates only", () => {
+  const sizePlan = buildRequiredAttributeFillPlan({
+    categoryMatch: { description_category_id: 17028673, type_id: 95183 },
+    attrsMeta: [
+      { id: 9013, name: "Размер", is_required: true, dictionary_id: 108 },
+    ],
+    attributeValuesById: {
+      9013: [
+        { id: 131, value: "10 см" },
+        { id: 132, value: "20 см" },
+      ],
+    },
+    productText: "1688 参数：尺寸 10cm，小号收纳盒",
+  })[0];
+
+  assert.equal(sizePlan.action, "suggest_dictionary");
+  assert.equal(sizePlan.dictionaryValueId, undefined);
+  assert.deepEqual(sizePlan.dictionaryCandidates, [{
+    dictionaryValueId: 131,
+    value: "10 см",
+    confidence: 0.68,
+    source: "size_synonym",
+  }]);
+
+  const packagePlan = buildRequiredAttributeFillPlan({
+    categoryMatch: { description_category_id: 17028673, type_id: 95183 },
+    attrsMeta: [
+      { id: 9014, name: "Количество в упаковке", is_required: true, dictionary_id: 109 },
+    ],
+    attributeValuesById: {
+      9014: [
+        { id: 141, value: "3 шт" },
+        { id: 142, value: "5 шт" },
+      ],
+    },
+    productText: "1688 标题：3-pack 一包3个旅行收纳瓶",
+  })[0];
+
+  assert.equal(packagePlan.action, "suggest_dictionary");
+  assert.equal(packagePlan.dictionaryValueId, undefined);
+  assert.deepEqual(packagePlan.dictionaryCandidates, [{
+    dictionaryValueId: 141,
+    value: "3 шт",
+    confidence: 0.68,
+    source: "package_count_synonym",
+  }]);
+
+  const scenarioPlan = buildRequiredAttributeFillPlan({
+    categoryMatch: { description_category_id: 17028673, type_id: 95183 },
+    attrsMeta: [
+      { id: 9015, name: "Сценарий использования", is_required: true, dictionary_id: 110 },
+    ],
+    attributeValuesById: {
+      9015: [
+        { id: 151, value: "для путешествий" },
+        { id: 152, value: "для офиса" },
+      ],
+    },
+    productText: "1688 标题：旅行收纳包 travel organizer",
+  })[0];
+
+  assert.equal(scenarioPlan.action, "suggest_dictionary");
+  assert.equal(scenarioPlan.dictionaryValueId, undefined);
+  assert.deepEqual(scenarioPlan.dictionaryCandidates, [{
+    dictionaryValueId: 151,
+    value: "для путешествий",
+    confidence: 0.7,
+    source: "scenario_synonym",
+  }]);
+
+  const materialPlan = buildRequiredAttributeFillPlan({
+    categoryMatch: { description_category_id: 17028673, type_id: 95183 },
+    attrsMeta: [
+      { id: 777, name: "Материал", is_required: true, dictionary_id: 100 },
+    ],
+    attributeValuesById: {
+      777: [{ id: 161, value: "для путешествий" }],
+    },
+    productText: "1688 标题：旅行 travel",
+  })[0];
+  assert.deepEqual(materialPlan.dictionaryCandidates, []);
+});
+
 test("buildListingPayloadDraftFromJob applies explainable pricing policy fields", () => {
   const draft = buildListingPayloadDraftFromJob({
     pendingParentSku: "SKUlq01007",

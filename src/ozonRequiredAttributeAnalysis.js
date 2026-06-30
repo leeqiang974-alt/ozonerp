@@ -27,7 +27,7 @@ export function classifyAttributeFillStrategy(attribute = {}) {
   if (/материал|材质|材料/.test(text)) {
     return strategy(dictionaryId ? "dictionary_lookup_from_product_text" : "text_from_product_attributes", "从 1688 属性、Ozon 学习样本、标题/描述提取材质。", "medium");
   }
-  if (/(^|\s)пол($|\s)|gender|性别|适用性别|назначение|применение|для кого|для чего|тип|вид|категор|объем|объ[её]м|volume|容量|体积|колич|комплект|штук|шт|pieces?|pcs?|用途|适用对象|适用人群|类型|种类|数量|件数/.test(text) && dictionaryId) {
+  if (/(^|\s)пол($|\s)|gender|性别|适用性别|назначение|применение|для кого|для чего|сценар|тип|вид|категор|объем|объ[её]м|volume|容量|体积|колич|комплект|набор|упаков|штук|шт|pieces?|pcs?|用途|适用对象|适用人群|适用场景|场景|类型|种类|数量|件数|套装|包装/.test(text) && dictionaryId) {
     return strategy("dictionary_lookup_from_product_text", "用标题、类目路径、1688 参数和 Ozon 学习样本匹配合法字典值。", "medium");
   }
   if (dictionaryId) {
@@ -244,6 +244,24 @@ function fillPlanRow({
           reasonZh: "当前货源缺少完整尺重，不能自动填写包装/重量属性。",
         };
   }
+  if (classified.strategy === "size_from_sku_or_package" && Number(meta.dictionary_id || meta.dictionaryId || 0)) {
+    const candidates = dictionaryCandidatesForMeta({
+      meta,
+      categoryMatch,
+      attributeValuesById,
+      categoryCache,
+      productText,
+    });
+    return {
+      ...base,
+      action: "suggest_dictionary",
+      source: "current_category_dictionary",
+      dictionaryCandidates: candidates,
+      reasonZh: candidates.length
+        ? "根据 SKU/商品文本匹配到当前类目合法尺码候选；需人工确认后才可写入草稿。"
+        : "当前类目没有匹配到可靠尺码候选，不能用包装尺重冒充商品尺码。",
+    };
+  }
   if (classified.strategy === "dictionary_lookup_from_product_text"
     || classified.strategy === "dictionary_lookup_or_manual_rule") {
     const candidates = dictionaryCandidatesForMeta({
@@ -332,7 +350,10 @@ function dictionaryCandidatesForMeta({
     .concat(purposeSynonymDictionaryCandidatesForMeta({ meta, categoryMatch, attributeValuesById, categoryCache, productText }))
     .concat(genderSynonymDictionaryCandidatesForMeta({ meta, categoryMatch, attributeValuesById, categoryCache, productText }))
     .concat(capacitySynonymDictionaryCandidatesForMeta({ meta, categoryMatch, attributeValuesById, categoryCache, productText }))
+    .concat(sizeSynonymDictionaryCandidatesForMeta({ meta, categoryMatch, attributeValuesById, categoryCache, productText }))
+    .concat(packageCountSynonymDictionaryCandidatesForMeta({ meta, categoryMatch, attributeValuesById, categoryCache, productText }))
     .concat(countSynonymDictionaryCandidatesForMeta({ meta, categoryMatch, attributeValuesById, categoryCache, productText }))
+    .concat(scenarioSynonymDictionaryCandidatesForMeta({ meta, categoryMatch, attributeValuesById, categoryCache, productText }))
     .filter((candidate, index, list) => (
       candidate.dictionaryValueId
       && list.findIndex((item) => item.dictionaryValueId === candidate.dictionaryValueId) === index
@@ -463,6 +484,73 @@ function countSynonymDictionaryCandidatesForMeta({
   });
 }
 
+function sizeSynonymDictionaryCandidatesForMeta({
+  meta = {},
+  categoryMatch = {},
+  attributeValuesById = {},
+  categoryCache = {},
+  productText = "",
+} = {}) {
+  const classified = classifyAttributeFillStrategy(meta);
+  if (!["size_from_sku_or_package", "dictionary_lookup_from_product_text"].includes(classified.strategy)) return [];
+  if (!/размер|尺码|尺寸|size/.test(normalizeText(`${meta.name || ""} ${meta.description || ""}`))) return [];
+  const text = normalizeText(productText);
+  const numericNumbers = [...text.matchAll(/(\d+(?:[.,]\d+)?)\s*(?:см|cm|мм|mm)\b/g)]
+    .map((match) => match[1].replace(",", "."));
+  const numericCandidates = numericDictionaryCandidates({
+    meta,
+    categoryMatch,
+    attributeValuesById,
+    categoryCache,
+    numbers: numericNumbers,
+    valuePattern: /см|cm|мм|mm/,
+    source: "size_synonym",
+    confidence: 0.68,
+  });
+  const letterSizes = [...text.matchAll(/(?:размер|size|尺码)\s*(xs|s|m|l|xl|xxl)\b/g)]
+    .map((match) => match[1]);
+  const values = dictionaryValuesForPlan({ meta, categoryMatch, attributeValuesById, categoryCache });
+  const letterCandidates = values.map((entry) => {
+    const value = String(entry?.value || entry?.name || "").replace(/\s+/g, " ").trim();
+    const normalizedValue = normalizeText(value);
+    if (!value || !letterSizes.some((size) => normalizedValue === size)) return null;
+    return {
+      dictionaryValueId: dictionaryValueId(entry),
+      value,
+      confidence: 0.68,
+      source: "size_synonym",
+    };
+  }).filter(Boolean);
+  return numericCandidates.concat(letterCandidates);
+}
+
+function packageCountSynonymDictionaryCandidatesForMeta({
+  meta = {},
+  categoryMatch = {},
+  attributeValuesById = {},
+  categoryCache = {},
+  productText = "",
+} = {}) {
+  const classified = classifyAttributeFillStrategy(meta);
+  if (classified.strategy !== "dictionary_lookup_from_product_text") return [];
+  if (!/упаков|комплект|набор|pack|set|套装|包装|每包|一包/.test(normalizeText(`${meta.name || ""} ${meta.description || ""}`))) return [];
+  const text = normalizeText(productText);
+  const numbers = [
+    ...[...text.matchAll(/(\d+)\s*-?\s*(?:pack|packs|set|sets|комплект|набор|упаковк|件套|套装|套|包)/g)].map((match) => match[1]),
+    ...[...text.matchAll(/(?:pack of|упаковк|комплект|набор|每包|一包|包装)\s*(\d+)/g)].map((match) => match[1]),
+  ];
+  return numericDictionaryCandidates({
+    meta,
+    categoryMatch,
+    attributeValuesById,
+    categoryCache,
+    numbers,
+    valuePattern: /шт|штук|pcs?|pieces?|件|个|只|套|包/,
+    source: "package_count_synonym",
+    confidence: 0.68,
+  });
+}
+
 function typeSynonymDictionaryCandidatesForMeta({
   meta = {},
   categoryMatch = {},
@@ -525,6 +613,59 @@ function purposeSynonymDictionaryCandidatesForMeta({
   ];
   const values = dictionaryValuesForPlan({ meta, categoryMatch, attributeValuesById, categoryCache });
   return purposeRules
+    .filter((rule) => rule.sourcePattern.test(text))
+    .flatMap((rule) => values.map((entry) => {
+      const value = String(entry?.value || entry?.name || "").replace(/\s+/g, " ").trim();
+      if (!value || !rule.valuePattern.test(value)) return null;
+      return {
+        dictionaryValueId: dictionaryValueId(entry),
+        value,
+        confidence: rule.confidence,
+        source: rule.source,
+      };
+    }))
+    .filter(Boolean);
+}
+
+function scenarioSynonymDictionaryCandidatesForMeta({
+  meta = {},
+  categoryMatch = {},
+  attributeValuesById = {},
+  categoryCache = {},
+  productText = "",
+} = {}) {
+  const classified = classifyAttributeFillStrategy(meta);
+  if (classified.strategy !== "dictionary_lookup_from_product_text") return [];
+  if (!/сценар|назначение|применение|для чего|用途|适用场景|场景/.test(normalizeText(`${meta.name || ""} ${meta.description || ""}`))) return [];
+  const text = normalizeText(productText);
+  const scenarioRules = [
+    {
+      sourcePattern: /travel|путеше|туризм|旅行|旅游|出差/,
+      valuePattern: /travel|путеше|туризм|旅行|旅游/i,
+      source: "scenario_synonym",
+      confidence: 0.7,
+    },
+    {
+      sourcePattern: /office|офис|рабоч|办公室|办公/,
+      valuePattern: /office|офис|рабоч|办公室|办公/i,
+      source: "scenario_synonym",
+      confidence: 0.7,
+    },
+    {
+      sourcePattern: /bath|ванн|浴室|卫生间|洗漱/,
+      valuePattern: /bath|ванн|浴室|卫生间|洗漱/i,
+      source: "scenario_synonym",
+      confidence: 0.7,
+    },
+    {
+      sourcePattern: /outdoor|camp|поход|户外|露营/,
+      valuePattern: /outdoor|camp|поход|户外|露营/i,
+      source: "scenario_synonym",
+      confidence: 0.7,
+    },
+  ];
+  const values = dictionaryValuesForPlan({ meta, categoryMatch, attributeValuesById, categoryCache });
+  return scenarioRules
     .filter((rule) => rule.sourcePattern.test(text))
     .flatMap((rule) => values.map((entry) => {
       const value = String(entry?.value || entry?.name || "").replace(/\s+/g, " ").trim();

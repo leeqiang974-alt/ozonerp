@@ -401,6 +401,7 @@ function matrixCellRepairGuidance(input = {}) {
     return {
       ...base,
       message,
+      canApplyTextDraftRepair: Boolean(row.attributeId && !row.dictionary && !row.aspect),
       copyText: `问题：${message}\nSKU：${offerId || "-"}\n建议：在 attributes 中补充 id ${row.attributeId || "-"} 的值。\n下一步：${base.nextStep}`,
     };
   }
@@ -1097,6 +1098,30 @@ function applyAttributeDictionaryValue(payload = {}, input = {}) {
   return draft;
 }
 
+function applyAttributeTextValue(payload = {}, input = {}) {
+  const offerId = String(input.offerId || "").trim();
+  const attributeId = Number(input.attributeId || 0);
+  const value = String(input.value || "").trim();
+  if (!attributeId) throw new Error("属性 ID 不能为空");
+  if (!value) throw new Error("文本属性值不能为空");
+  const draft = clonePayload(payload);
+  const items = payloadItems(draft);
+  if (!items.length) throw new Error("Payload 草稿没有 items");
+  const item = offerId
+    ? items.find((entry) => String(entry?.offer_id || "") === offerId)
+    : (items.length === 1 ? items[0] : null);
+  if (!item) throw new Error("找不到要修复的 SKU: " + (offerId || "未指定"));
+  if (!Array.isArray(item.attributes)) item.attributes = [];
+  let attribute = item.attributes.find((entry) => Number(entry?.id || 0) === attributeId);
+  if (!attribute) {
+    attribute = { id: attributeId, values: [] };
+    item.attributes.push(attribute);
+  }
+  attribute.id = attributeId;
+  attribute.values = [{ value }];
+  return draft;
+}
+
 export async function applyPayloadDraftAttributeRepair(runId, input = {}) {
   if (input.confirmLocalDraftRepair !== true) {
     throw new Error("需要人工确认后才能写回本地 Payload 草稿。");
@@ -1104,9 +1129,7 @@ export async function applyPayloadDraftAttributeRepair(runId, input = {}) {
   const run = await getWorkflowRun(runId);
   if (!run) throw new Error("工作流不存在: " + runId);
   const repairType = String(input.repairType || "dictionary_value").trim();
-  if (repairType !== "dictionary_value") {
-    throw new Error("当前只支持字典值候选写回，其他属性仍需人工编辑。");
-  }
+  if (!["dictionary_value", "text_value"].includes(repairType)) throw new Error("不支持的属性修复类型。");
   const categoryCache = await loadCategoryCache();
   const attributeMatrix = buildListingAttributeMatrix({
     payload: run.payloadDraft || {},
@@ -1118,18 +1141,29 @@ export async function applyPayloadDraftAttributeRepair(runId, input = {}) {
   const dictionaryValueId = Number(input.dictionaryValueId || input.dictionary_value_id || 0);
   const row = (attributeMatrix.rows || []).find((entry) => Number(entry.attributeId || 0) === attributeId);
   const cell = (row?.cells || []).find((entry) => String(entry.offerId || "") === offerId);
-  if (!row || !cell || cell.status !== "invalid_dictionary") {
-    throw new Error("只能修复已有的非法字典值，缺失属性请人工补充。");
+  let payloadDraft = null;
+  let repairData = {};
+  if (repairType === "dictionary_value") {
+    if (!row || !cell || cell.status !== "invalid_dictionary") {
+      throw new Error("只能修复已有的非法字典值，缺失属性请人工补充。");
+    }
+    const candidate = (cell.repairGuidance?.dictionaryCandidates || [])
+      .find((entry) => Number(entry.dictionary_value_id || 0) === dictionaryValueId);
+    if (!candidate) {
+      throw new Error("字典值不在当前属性矩阵候选值内，请重新预检后再选择。");
+    }
+    payloadDraft = applyAttributeDictionaryValue(run.payloadDraft || {}, {
+      ...input,
+      value: candidate.value || input.value || "",
+    });
+    repairData = { dictionaryValueId };
+  } else {
+    if (!row || !cell || cell.status !== "missing" || row.dictionary || row.aspect) {
+      throw new Error("只能修复缺失的普通文本属性，字典和变体属性请人工处理。");
+    }
+    payloadDraft = applyAttributeTextValue(run.payloadDraft || {}, input);
+    repairData = { value: String(input.value || "").trim() };
   }
-  const candidate = (cell.repairGuidance?.dictionaryCandidates || [])
-    .find((entry) => Number(entry.dictionary_value_id || 0) === dictionaryValueId);
-  if (!candidate) {
-    throw new Error("字典值不在当前属性矩阵候选值内，请重新预检后再选择。");
-  }
-  const payloadDraft = applyAttributeDictionaryValue(run.payloadDraft || {}, {
-    ...input,
-    value: candidate.value || input.value || "",
-  });
   await savePayloadDraft(runId, payloadDraft, { attrsMeta: run.payloadDraftAttrsMeta || [] });
   const validation = await validatePayloadDraft(runId);
   const updated = await updateRun(runId, (current) => ({
@@ -1146,9 +1180,10 @@ export async function applyPayloadDraftAttributeRepair(runId, input = {}) {
         type: "payload_attribute_repair_applied",
         message: "人工确认后写回本地 Payload 草稿，并已重新预检；未提交 Ozon。",
         data: {
+          repairType,
           offerId: String(input.offerId || ""),
           attributeId: Number(input.attributeId || 0),
-          dictionaryValueId,
+          ...repairData,
           note: String(input.note || ""),
           submittedToOzon: false,
         },

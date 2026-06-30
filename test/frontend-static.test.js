@@ -211,6 +211,16 @@ test("frontend can apply a confirmed attribute dictionary repair to local draft 
   assert.match(js, /不会提交 Ozon/);
 });
 
+test("frontend can prompt for a confirmed missing text attribute repair", async () => {
+  const js = await readFile(new URL("../public/app.js", import.meta.url), "utf8");
+
+  assert.match(js, /apply-attribute-text-repair/);
+  assert.match(js, /canApplyTextDraftRepair/);
+  assert.match(js, /repairType: "text_value"/);
+  assert.match(js, /填写文本属性/);
+  assert.match(js, /不会提交 Ozon/);
+});
+
 test("frontend exposes payload issue field locator", async () => {
   const js = await readFile(new URL("../public/app.js", import.meta.url), "utf8");
 

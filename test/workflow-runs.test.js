@@ -574,6 +574,64 @@ test("applyPayloadDraftAttributeRepair rejects non-candidate ids and missing att
   );
 });
 
+test("applyPayloadDraftAttributeRepair writes confirmed missing text attributes without unlocking submit", async () => {
+  reset();
+  const run = await createWorkflowRun({
+    title: "文本属性修复",
+    status: "waiting_human",
+    currentNode: "preflight_check",
+    locks: { waitingHuman: true, submitLocked: true },
+  });
+  await savePayloadDraft(run.id, {
+    items: [{
+      offer_id: "SKU-TEXT-REPAIR",
+      name: "Cat feeder",
+      description_category_id: 17028673,
+      type_id: 95183,
+      price: "1200",
+      images: ["1", "2", "3"],
+      attributes: [
+        { id: 85, values: [{ dictionary_value_id: 971082, value: "Нет бренда" }] },
+      ],
+    }],
+  }, {
+    attrsMeta: [
+      { id: 85, name: "Бренд", is_required: true, dictionary_id: 971082 },
+      { id: 9048, name: "Название модели (для объединения в одну карточку)", is_required: true },
+      { id: 10097, name: "Название цвета", is_aspect: true },
+    ],
+  });
+
+  await assert.rejects(
+    () => applyPayloadDraftAttributeRepair(run.id, {
+      confirmLocalDraftRepair: true,
+      repairType: "text_value",
+      offerId: "SKU-TEXT-REPAIR",
+      attributeId: 10097,
+      value: "белый",
+    }),
+    /只能修复缺失的普通文本属性/,
+  );
+
+  const result = await applyPayloadDraftAttributeRepair(run.id, {
+    confirmLocalDraftRepair: true,
+    repairType: "text_value",
+    offerId: "SKU-TEXT-REPAIR",
+    attributeId: 9048,
+    value: "Cat feeder model",
+    note: "人工补齐模型名",
+  });
+
+  const updated = await getWorkflowRun(run.id);
+  const model = updated.payloadDraft.items[0].attributes.find((attribute) => attribute.id === 9048);
+  assert.equal(result.submittedToOzon, false);
+  assert.equal(model.values[0].value, "Cat feeder model");
+  assert.equal(updated.locks.waitingHuman, true);
+  assert.equal(updated.locks.submitLocked, true);
+  assert.equal(updated.payloadDraftValidation.ok, true);
+  assert.equal(updated.events.at(-1).type, "payload_attribute_repair_applied");
+});
+
 test("buildPreflightGateNode blocks multi variant payloads without aspect metadata", () => {
   const node = buildPreflightGateNode({
     payload: { items: [

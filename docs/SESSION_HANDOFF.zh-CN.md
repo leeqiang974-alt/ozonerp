@@ -8,6 +8,43 @@
 
 本轮 Codex 桌面环境以 `C:\Users\Administrator\Documents\ozonerp` 为实际项目根；继续开发前仍需先确认 `git status` 和最近提交，避免误入旧复制目录。
 
+## 2026-06-30 属性矩阵缺失文本属性本地修复
+
+### 已完成
+
+- 上架中心/工作流属性矩阵新增“填写文本属性”人工入口。
+- 后端 `applyPayloadDraftAttributeRepair()` 新增 `repairType: "text_value"`：
+  - 只允许修复属性矩阵中 `status=missing` 的普通文本属性。
+  - 明确排除字典属性和 `is_aspect=true` 变体属性，避免错误自动填变体/字典值。
+  - 只写回本地 `payloadDraft.attributes[].values[{ value }]`，随后立即重新执行 `validatePayloadDraft()`。
+  - 保持 `waitingHuman` 和 `submitLocked=true`，事件记录 `submittedToOzon=false`。
+- 前端只在 `canApplyTextDraftRepair=true` 时显示按钮；点击后由人工输入文本值，并提示“不会提交 Ozon”。
+
+### 安全边界
+
+- 不调用 Ozon 写接口，不绕过 preflight、人工确认、workflow lock 或 `waiting_human`。
+- 不自动修复字典属性、变体 aspect、定价、GPT/Image 或图片生成成本相关逻辑。
+- 字典候选写回仍保持原有合法候选校验，不因文本修复放宽。
+
+### Claude Code 搭配
+
+- 使用 `scripts/claude-code-nvidia.ps1` 进行 NVIDIA Claude Code 审核。
+- 审核结论：Critical / Important / Minor findings 均无；仅提示并发草稿修改属于通用模型问题，不构成本次改动风险。
+
+### 已验证
+
+- `node --test test/workflow-runs.test.js`：53/53 通过。
+- `node --test test/frontend-static.test.js`：67/67 通过。
+- `npm test`：271/271 通过。
+- `npm run lint`：41 files 通过。
+- `git diff --check`：通过。
+
+### 下一步
+
+- 继续把高置信必填属性补齐器接入上架草稿：品牌无品牌、型号名称、原产国、包装尺重等可解释来源字段。
+- 对中置信字典匹配继续保持“候选推荐 + 人工确认写回”，不要自动越过 Ozon 字典合法值校验。
+- 把商品分值相关的图片数量、SKU 图、详情图要求继续沉入预检/修复面板，让卖家看到分数影响和安全下一步。
+
 ## 2026-06-30 上架质量诊断接入预检总闸
 
 ### 已完成

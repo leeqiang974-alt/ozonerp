@@ -5781,6 +5781,7 @@ function renderListingAttributeCellRepair(cell = {}, row = {}) {
   if (!guidance) return "";
   const candidates = Array.isArray(guidance.dictionaryCandidates) ? guidance.dictionaryCandidates : [];
   const canApplyLocalDraftRepair = guidance.canApplyLocalDraftRepair === true;
+  const canApplyTextDraftRepair = guidance.canApplyTextDraftRepair === true;
   return `
     <div class="attribute-matrix-repair">
       <strong>人工修复入口</strong>
@@ -5804,6 +5805,13 @@ function renderListingAttributeCellRepair(cell = {}, row = {}) {
         </div>
       ` : ""}
       <div>
+        ${canApplyTextDraftRepair ? `<button
+          class="ghost"
+          type="button"
+          data-workflow-action="apply-attribute-text-repair"
+          data-repair-offer-id="${escapeHtml(guidance.offerId || cell.offerId || "")}"
+          data-repair-attribute-id="${escapeHtml(guidance.attributeId || row.attributeId || "")}"
+        >填写文本属性</button>` : ""}
         <button class="ghost" type="button" data-payload-path="${escapeHtml(guidance.payloadPath || "")}" data-payload-label="${escapeHtml(guidance.payloadLabel || row.name || "属性矩阵卡点")}">定位</button>
         <button class="ghost workflow-payload-copy" type="button" data-workflow-action="copy-repair-template" data-repair-copy="${escapeHtml(guidance.copyText || "人工修复后重新预检；不会自动提交 Ozon。")}">复制建议</button>
       </div>
@@ -6289,6 +6297,26 @@ async function handleWorkflowAction(action, button) {
       }),
     });
     toast(result.ok ? "本地草稿已写回并通过预检，不会提交 Ozon" : "本地草稿已写回，但预检仍有问题", result.ok ? "ok" : "error");
+    await loadWorkflowRuns();
+    return;
+  }
+  if (action === "apply-attribute-text-repair") {
+    const value = window.prompt("请输入要写回本地 Payload 草稿的文本属性值。系统会重新预检，但不会提交 Ozon。", "");
+    if (value === null) return;
+    const trimmed = String(value || "").trim();
+    if (!trimmed) throw new Error("文本属性值不能为空");
+    const result = await api(`/api/workflows/${encodeURIComponent(run.id)}/payload-draft/attribute-repair`, {
+      method: "POST",
+      body: JSON.stringify({
+        confirmLocalDraftRepair: true,
+        repairType: "text_value",
+        offerId: button?.dataset?.repairOfferId || "",
+        attributeId: Number(button?.dataset?.repairAttributeId || 0),
+        value: trimmed,
+        note: "页面人工输入：属性矩阵文本属性修复",
+      }),
+    });
+    toast(result.ok ? "本地文本属性已写回并通过预检，不会提交 Ozon" : "本地文本属性已写回，但预检仍有问题", result.ok ? "ok" : "error");
     await loadWorkflowRuns();
     return;
   }

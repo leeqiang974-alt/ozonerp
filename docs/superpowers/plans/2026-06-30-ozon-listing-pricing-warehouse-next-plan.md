@@ -392,8 +392,10 @@ npm run lint
 - Added `workflowCurrentProductTask()` and exposed it through `summarizeWorkflowRun().currentProductTask`.
 - Mapped review failures to listing repair, accepted low-score products to content improvement, and stock waiting to warehouse queue.
 - Dashboard single product outcome now consumes `summary.currentProductTask` instead of parsing raw review/payload details.
+- Workflow console run cards and focus bar now show a read-only current product task summary from `summary.currentProductTask`.
 - Verified targeted commands: `node --test test/workflow-runs.test.js` (61/61 pass), `node --test test/workflow-runs.test.js test/frontend-static.test.js` (132/132 pass).
 - After fixing the Claude NVIDIA wrapper, verified `node --test test/claude-nvidia-scripts.test.js test/workflow-runs.test.js test/frontend-static.test.js` (133/133 pass), `npm test` (297/297 pass), `npm run lint` (pass), and `git diff --check` (pass).
+- After workflow console display, verified `node --test test/frontend-static.test.js test/workflow-runs.test.js` (133/133 pass), `npm test` (298/298 pass), `npm run lint` (pass), and `git diff --check` (pass).
 
 ## Recommended Order
 

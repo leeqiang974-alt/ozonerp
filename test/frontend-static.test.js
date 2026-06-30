@@ -929,6 +929,20 @@ test("dashboard single product outcome consumes workflow current product task su
   assert.match(js, /currentProductTask\.view === "listing"/);
 });
 
+test("workflow console run cards expose current product task summary", async () => {
+  const [js, css] = await Promise.all([
+    readFile(new URL("../public/app.js", import.meta.url), "utf8"),
+    readFile(new URL("../public/styles.css", import.meta.url), "utf8"),
+  ]);
+
+  assert.match(js, /renderWorkflowCurrentProductTask/);
+  assert.match(js, /currentProductTask/);
+  assert.match(js, /workflow-current-product-task/);
+  assert.match(js, /当前商品任务/);
+  assert.match(js, /task\.nextAction/);
+  assert.match(css, /workflow-current-product-task/);
+});
+
 test("dashboard exposes seller ERP management scope", async () => {
   const [html, js, css] = await Promise.all([
     readFile(new URL("../public/index.html", import.meta.url), "utf8"),

@@ -2797,6 +2797,44 @@ tr:hover td {
   line-height: 1.35;
   margin-top: 6px;
 }
+.workflow-current-product-task {
+  display: block;
+  margin-top: 10px;
+  padding: 10px;
+  border: 1px solid #bfdbfe;
+  border-radius: 8px;
+  background: #eff6ff;
+  color: #1e3a8a;
+}
+.workflow-current-product-task.compact {
+  padding: 8px;
+}
+.workflow-current-product-task b,
+.workflow-current-product-task em,
+.workflow-current-product-task small,
+.workflow-current-product-task strong {
+  display: block;
+}
+.workflow-current-product-task b {
+  font-size: 11px;
+  color: #2563eb;
+}
+.workflow-current-product-task em {
+  margin-top: 2px;
+  color: #101828;
+  font-style: normal;
+  font-weight: 700;
+}
+.workflow-current-product-task small {
+  margin-top: 4px;
+  color: #475467;
+  line-height: 1.35;
+}
+.workflow-current-product-task strong {
+  margin-top: 6px;
+  color: #1d4ed8;
+  font-size: 12px;
+}
 .workflow-locks {
   display: flex;
   flex-wrap: wrap;

@@ -5043,6 +5043,19 @@ function workflowRunSummaryText(summary = {}) {
   return `当前：${summary.currentNodeName || "-"} · ${summary.completedCount || 0}/${summary.nodeCount || 0} 节点完成`;
 }
 
+function renderWorkflowCurrentProductTask(task = {}, options = {}) {
+  if (!task || !task.stage) return "";
+  const compact = Boolean(options.compact);
+  return `
+    <span class="workflow-current-product-task ${compact ? "compact" : ""}">
+      <b>当前商品任务</b>
+      <em>${escapeHtml(task.productTitle || "当前商品")}</em>
+      <small>${escapeHtml(task.blockedAt || "主流程")} · ${escapeHtml(task.reason || "等待节点输出")}</small>
+      <strong>${escapeHtml(task.nextAction || "查看工作流节点")}</strong>
+    </span>
+  `;
+}
+
 function workflowRunCopySummaryText(run = {}, node = null) {
   const summary = run.summary || {};
   const locks = workflowLockBadges(run.locks || {}).join(" / ");
@@ -5406,6 +5419,7 @@ function renderWorkflowRunList(run) {
           <strong>${escapeHtml(item.title || item.name || item.id)}</strong>
           <span class="workflow-status workflow-status-${escapeHtml(item.status || "idle")}">${workflowStatusLabel(item.status)}</span>
           <span class="workflow-locks">${workflowLockBadges(item.locks || {}).map((label) => `<em>${escapeHtml(label)}</em>`).join("")}</span>
+          ${renderWorkflowCurrentProductTask(item.summary?.currentProductTask || {}, { compact: true })}
           <span class="workflow-run-summary">${escapeHtml(workflowRunSummaryText(item.summary || {}))}</span>
           <span class="workflow-run-summary">风险：${workflowRiskLabel(item.summary?.riskLevel)} ${Number(item.summary?.maxRiskScore || 0)}分${item.summary?.blockingNodeName ? ` · 阻塞：${escapeHtml(item.summary.blockingNodeName)}` : ""}</span>
           <small>${escapeHtml(item.createdAt ? new Date(item.createdAt).toLocaleString("zh-CN") : "时间未知")}</small>
@@ -5463,6 +5477,7 @@ function renderWorkflowFocusBar(run, node) {
     <span>当前焦点</span>
     <strong>${escapeHtml(workflowNodeTitle(node?.key || run.currentNode || summary.currentNodeKey) || "未选节点")}</strong>
     <small>${escapeHtml(workflowStatusLabel(run.status))} · 风险 ${workflowRiskLabel(summary.riskLevel || node?.riskLevel)} ${Number(summary.maxRiskScore || node?.riskScore || 0)}分 · ${escapeHtml(nextAction)}</small>
+    ${renderWorkflowCurrentProductTask(summary.currentProductTask || {})}
     <div class="workflow-focus-step">
       ${(run.nodes || []).slice(0, 9).map((item) => `
         <em class="workflow-status-${escapeHtml(item.status || "pending")}">${escapeHtml(workflowNodeTitle(item.key) || item.key)}</em>

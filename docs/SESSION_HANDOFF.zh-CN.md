@@ -51,6 +51,10 @@
 - Dashboard 单品结果卡优先读取 `latestRun.summary.currentProductTask`：
   - Dashboard 不直接解析 Ozon 原始审核回执、Payload 或库存写入结果。
   - 仍只显示当前商品、卡点、原因、下一步和跳转入口。
+- 工作流控制台 run card 与当前焦点条新增只读“当前商品任务”摘要：
+  - 展示商品、卡点、原因和安全下一步。
+  - 数据只来自 `summary.currentProductTask`。
+  - 不新增提交按钮、不触发重试、不解析 raw payload。
 
 ### 安全边界
 
@@ -65,6 +69,7 @@
 - 开发前调用 `scripts/claude-ozon-review-nvidia.ps1` 请求 Task 6 简报；进程正常结束但无有效文字输出，因此按本地计划和测试先推进。
 - 修复 Claude NVIDIA wrapper 后，完成后复审已能稳定输出；复审提醒继续守住 `summary.currentProductTask`、preflight、`waiting_human`、pricing blocked 和 stock queue 边界。
 - 复审输出里提到的 Vue/独立 JS 文件名并不存在，已按实际代码路径核对后只采纳安全边界提醒。
+- 工作流控制台展示切片复审给出 Critical 级边界提醒，但未指出当前 diff 的具体违规点；已核对实际实现为只读渲染，无新增按钮、API、重试或提交副作用。
 
 ### 已验证
 
@@ -73,8 +78,10 @@
 - 已通过：
   - `node --test test/workflow-runs.test.js`，61/61 通过。
   - `node --test test/workflow-runs.test.js test/frontend-static.test.js`，132/132 通过。
+  - `node --test test/frontend-static.test.js`，72/72 通过。
   - `node --test test/claude-nvidia-scripts.test.js test/workflow-runs.test.js test/frontend-static.test.js`，133/133 通过。
   - `npm test`，297/297 通过。
+  - 最新全量 `npm test`，298/298 通过。
   - `npm run lint`，通过。
   - `git diff --check`，通过。
 

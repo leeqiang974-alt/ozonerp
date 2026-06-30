@@ -1028,6 +1028,25 @@ test("frontend exposes on-demand Ozon reference guidance card", async () => {
   assert.match(css, /ozon-reference-guidance/);
 });
 
+test("warehouse page exposes stock queue warehouse recommendation workbench", async () => {
+  const [html, js, css] = await Promise.all([
+    readFile(new URL("../public/index.html", import.meta.url), "utf8"),
+    readFile(new URL("../public/app.js", import.meta.url), "utf8"),
+    readFile(new URL("../public/styles.css", import.meta.url), "utf8"),
+  ]);
+
+  assert.match(html, /stockQueueList/);
+  assert.match(html, /库存队列与仓库推荐/);
+  assert.match(html, /库存写入仍走队列与商品就绪检查/);
+  assert.match(js, /loadStockQueue/);
+  assert.match(js, /renderStockQueueWorkbench/);
+  assert.match(js, /includeWarehouseRecommendation=1/);
+  assert.match(js, /推荐仓库/);
+  assert.match(js, /排除原因/);
+  assert.match(css, /stock-queue-workbench/);
+  assert.match(css, /stock-warehouse-recommendation/);
+});
+
 test("frontend exposes GPT Image 2 generation controls for reference guidance", async () => {
   const [html, js, css] = await Promise.all([
     readFile(new URL("../public/index.html", import.meta.url), "utf8"),

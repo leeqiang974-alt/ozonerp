@@ -368,7 +368,22 @@
     "warehouse_id": 1020002236235000
   }
 ]</textarea>
-      
+        <section class="stock-queue-workbench">
+          <header>
+            <div>
+              <h2>库存队列与仓库推荐</h2>
+              <p>只展示失败队列、推荐仓库、排除原因和安全下一步；库存写入仍走队列与商品就绪检查。</p>
+            </div>
+            <div class="actions">
+              <button id="loadStockQueue" class="ghost" type="button">读取库存队列</button>
+              <button id="replayStockQueue" class="primary" type="button">回放可重试失败</button>
+            </div>
+          </header>
+          <div id="stockQueueList" class="stock-queue-list">
+            <p class="hint">读取后显示库存队列状态和仓库匹配建议。</p>
+          </div>
+        </section>
+
         </div>
       </section>
       <section id="promotions" class="view">

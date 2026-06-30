@@ -54,8 +54,134 @@ function isUsableWarehouse(w, excluded = new Set()) {
   return w?.is_rf !== false;
 }
 
+function normalizeDeliveryMode(value) {
+  return String(value || "")
+    .trim()
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, "");
+}
+
+function warehouseDeliveryMode(warehouse = {}) {
+  return normalizeDeliveryMode(
+    warehouse.delivery_method_type
+      || warehouse.deliveryMode
+      || warehouse.fulfillment_type
+      || warehouse.type
+      || (warehouse.is_rfbs ? "rfbs" : ""),
+  );
+}
+
+function requestedDeliveryModes(product = {}, store = {}) {
+  return [
+    product.deliveryMode,
+    product.delivery_method_type,
+    product.fulfillmentType,
+    product.shippingType,
+    store.deliveryMode,
+    store.delivery_method_type,
+    store.fulfillmentType,
+    store.shippingType,
+  ].map(normalizeDeliveryMode).filter(Boolean);
+}
+
+function failedWarehouseIds(previousFailures = []) {
+  return new Set((previousFailures || []).flatMap((failure) => {
+    const code = String(failure?.errorCode || failure?.code || "").toUpperCase();
+    const reasonCode = String(failure?.reasonCode || "").toUpperCase();
+    const message = `${failure?.message || ""} ${failure?.lastError || ""}`.toUpperCase();
+    const isWarehouseStatusFailure = code === "WAREHOUSE_WRONG_STATUS"
+      || reasonCode === "STOCK_WAREHOUSE_INVALID"
+      || message.includes("WAREHOUSE_WRONG_STATUS");
+    if (!isWarehouseStatusFailure) return [];
+    const directId = Number(failure?.warehouseId || failure?.warehouse_id || 0);
+    const stockIds = (failure?.stocks || []).map((stock) => Number(stock?.warehouse_id || 0));
+    return [directId, ...stockIds].filter(Boolean);
+  }));
+}
+
+function warehouseLabel(warehouse = {}) {
+  return warehouse.name || warehouse.warehouse_name || warehouse.warehouse_id || warehouse.id || "未命名仓库";
+}
+
+export function rankWarehousesForStock({
+  warehouses = [],
+  excludedIds = [],
+  product = {},
+  store = {},
+  previousFailures = [],
+} = {}) {
+  const explicitExcluded = new Set([...excludedIds].map(Number).filter(Boolean));
+  const failedIds = failedWarehouseIds(previousFailures);
+  const requestedModes = requestedDeliveryModes(product, store);
+  const candidates = [];
+  const excluded = [];
+
+  for (const warehouse of warehouses || []) {
+    const warehouseId = Number(warehouse?.warehouse_id || warehouse?.id || 0);
+    const status = String(warehouse?.status || "").toLowerCase();
+    const mode = warehouseDeliveryMode(warehouse);
+    if (!warehouseId) {
+      excluded.push({ warehouse_id: 0, name: warehouseLabel(warehouse), reason: "缺少仓库 ID" });
+      continue;
+    }
+    if (failedIds.has(warehouseId)) {
+      excluded.push({ warehouse_id: warehouseId, name: warehouseLabel(warehouse), reason: "历史库存写入返回 WAREHOUSE_WRONG_STATUS，本轮不复用" });
+      continue;
+    }
+    if (explicitExcluded.has(warehouseId)) {
+      excluded.push({ warehouse_id: warehouseId, name: warehouseLabel(warehouse), reason: "本轮重试已排除这个仓库" });
+      continue;
+    }
+    if (status && status !== "created") {
+      excluded.push({ warehouse_id: warehouseId, name: warehouseLabel(warehouse), reason: `仓库状态不可用：${warehouse.status}` });
+      continue;
+    }
+    if (warehouse?.is_rf === false) {
+      excluded.push({ warehouse_id: warehouseId, name: warehouseLabel(warehouse), reason: "仓库不可用于当前 Ozon 库存写入" });
+      continue;
+    }
+
+    const modeMatched = Boolean(mode && requestedModes.includes(mode));
+    const reasons = ["状态可用"];
+    let score = 100;
+    if (modeMatched) {
+      score += 30;
+      reasons.push("匹配商品/店铺配送模式");
+    } else if (requestedModes.length) {
+      reasons.push("配送模式未完全匹配，作为备用仓库");
+    } else {
+      reasons.push("未提供商品/店铺配送模式，作为可用仓库");
+    }
+    if (warehouse.is_rfbs) score += 5;
+    candidates.push({
+      warehouse,
+      warehouse_id: warehouseId,
+      name: warehouseLabel(warehouse),
+      status: warehouse.status || "",
+      deliveryMode: mode || "",
+      score,
+      reasons,
+    });
+  }
+
+  candidates.sort((a, b) => b.score - a.score || a.warehouse_id - b.warehouse_id);
+  const winner = candidates[0] || null;
+  return {
+    recommended: winner?.warehouse || null,
+    recommendedReason: winner ? winner.reasons.join("，") : "",
+    action: winner ? "use_recommended" : "manual_required",
+    safeNextAction: winner
+      ? `使用仓库 ${winner.name}(${winner.warehouse_id}) 进入库存队列重试；不会绕过商品就绪检查。`
+      : "读取 Ozon 仓库或人工确认可写仓库后，再从库存队列重试。",
+    candidates,
+    excluded,
+  };
+}
+
 export function pickWarehouse(list, excluded = new Set()) {
-  return (list || []).find((w) => isUsableWarehouse(w, excluded))
+  const ranked = rankWarehousesForStock({ warehouses: list, excludedIds: [...excluded] });
+  return ranked.recommended
+    || (list || []).find((w) => isUsableWarehouse(w, excluded))
     || (list || []).find((w) => Number(w?.warehouse_id || 0) && !excluded.has(Number(w.warehouse_id || 0)) && String(w?.status || "").toLowerCase() !== "disabled");
 }
 
@@ -118,6 +244,28 @@ export async function listStockJobs() {
   return jobs.sort((a, b) => String(b.updatedAt || b.createdAt).localeCompare(String(a.updatedAt || a.createdAt)));
 }
 
+function previousWarehouseFailures(jobs = [], storeId = "") {
+  return (jobs || []).filter((job) => job.storeId === storeId && String(job.reasonCode || "") === "STOCK_WAREHOUSE_INVALID");
+}
+
+export function stockJobWarehouseRecommendation(job = {}, warehouses = [], allJobs = []) {
+  const previousFailures = previousWarehouseFailures(allJobs, job.storeId);
+  const excludedIds = String(job.reasonCode || "") === "STOCK_WAREHOUSE_INVALID"
+    ? (job.stocks || []).map((stock) => Number(stock.warehouse_id || 0)).filter(Boolean)
+    : [];
+  return rankWarehousesForStock({
+    warehouses,
+    excludedIds,
+    product: {
+      deliveryMode: job.deliveryMode || job.delivery_method_type || job.fulfillmentType || job.shippingType,
+    },
+    store: {
+      deliveryMode: job.storeDeliveryMode || job.store_delivery_method_type || job.storeFulfillmentType,
+    },
+    previousFailures,
+  });
+}
+
 export async function resolveWarehouseIdForStore(storeId) {
   const jobs = await readQueue();
   const blockedIds = collectBlockedWarehouseIds(jobs, storeId);
@@ -132,21 +280,30 @@ export async function resolveWarehouseIdForStore(storeId) {
   const store = getStore(storeId);
   const data = await ozonRequest(store, "/v2/warehouse/list", {});
   const list = warehouseListFromResponse(data);
-  const primary = pickWarehouse(list, blockedIds);
+  const recommendation = rankWarehousesForStock({
+    warehouses: list,
+    excludedIds: [...blockedIds],
+    previousFailures: previousWarehouseFailures(jobs, storeId),
+  });
+  const primary = recommendation.recommended;
   if (!primary) throw new Error("未找到可写库存仓库ID：已有仓库被 Ozon 返回 WAREHOUSE_WRONG_STATUS");
   return Number(primary.warehouse_id);
 }
 
-async function fetchPrimaryWarehouseId(storeId, excluded = new Set()) {
+async function fetchPrimaryWarehouseRecommendation(storeId, excluded = new Set()) {
   const jobs = await readQueue();
   const blockedIds = collectBlockedWarehouseIds(jobs, storeId);
   const excludedIds = new Set([...excluded, ...blockedIds]);
   const store = getStore(storeId);
   const data = await ozonRequest(store, "/v2/warehouse/list", {});
   const list = warehouseListFromResponse(data);
-  const primary = pickWarehouse(list, excludedIds);
-  if (!primary) throw new Error("未找到可替换的可用仓库ID");
-  return Number(primary.warehouse_id);
+  const recommendation = rankWarehousesForStock({
+    warehouses: list,
+    excludedIds: [...excludedIds],
+    previousFailures: previousWarehouseFailures(jobs, storeId),
+  });
+  if (!recommendation.recommended) throw new Error("未找到可替换的可用仓库ID");
+  return recommendation;
 }
 
 function stockResultErrors(stockResult) {
@@ -391,9 +548,10 @@ async function processStockJob(id) {
     if (stockErrors.length) {
       const message = stockErrors.map((error) => [error.code, error.message].filter(Boolean).join(": ")).join("；");
       const oldIds = new Set(job.stocks.map((stock) => Number(stock.warehouse_id || 0)).filter(Boolean));
-      const replacementWarehouseId = stockErrors.some((error) => String(error.code || "").toUpperCase() === "WAREHOUSE_WRONG_STATUS")
-        ? await fetchPrimaryWarehouseId(job.storeId, oldIds).catch(() => 0)
-        : 0;
+      const warehouseRecommendation = stockErrors.some((error) => String(error.code || "").toUpperCase() === "WAREHOUSE_WRONG_STATUS")
+        ? await fetchPrimaryWarehouseRecommendation(job.storeId, oldIds).catch(() => null)
+        : null;
+      const replacementWarehouseId = Number(warehouseRecommendation?.recommended?.warehouse_id || 0);
       const classification = classifyStockErrors(stockErrors, { replacementWarehouseId });
       if (attempts < job.maxAttempts && classification.shouldRetry) {
         if (classification.reasonCode === "PRODUCT_PENDING_TAGS") {
@@ -406,6 +564,7 @@ async function processStockJob(id) {
           await retryLater(id, "retry_stock", "仓库状态不可用，已切换仓库后重试: " + replacementWarehouseId, {
             stocks: job.stocks.map((stock) => ({ ...stock, warehouse_id: replacementWarehouseId })),
             reasonCode: classification.reasonCode,
+            warehouseRecommendation,
             result: { importInfo: info, stockResult },
           });
           return;
@@ -414,6 +573,7 @@ async function processStockJob(id) {
         status: "failed",
         lastError: message,
         reasonCode: classification.reasonCode,
+        warehouseRecommendation,
         result: { importInfo: info, stockResult },
       });
       if (failedJob) await updateWorkflowStockNode(failedJob);

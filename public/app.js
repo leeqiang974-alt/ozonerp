@@ -7796,6 +7796,108 @@ async function readStock() {
   }
 }
 
+async function loadStockQueue() {
+  const button = $("#loadStockQueue");
+  setBusy(button, true);
+  try {
+    const data = await api(`/api/ozon/stock-queue?storeId=${encodeURIComponent(selectedStoreId())}&includeWarehouseRecommendation=1`);
+    renderStockQueueWorkbench(data);
+    showResponse(data);
+    toast("库存队列已读取");
+  } catch (error) {
+    toast(error.message, "error");
+  } finally {
+    setBusy(button, false);
+  }
+}
+
+async function replayStockQueueFailures() {
+  const button = $("#replayStockQueue");
+  setBusy(button, true);
+  try {
+    const data = await api("/api/ozon/stock-queue/replay-failed", {
+      method: "POST",
+      body: JSON.stringify({ limit: 10 }),
+    });
+    showResponse(data);
+    await loadStockQueue();
+    toast(`已回放 ${data.replayed || 0} 个可重试库存失败`);
+  } catch (error) {
+    toast(error.message, "error");
+  } finally {
+    setBusy(button, false);
+  }
+}
+
+function renderStockQueueWorkbench(data = {}) {
+  const container = $("#stockQueueList");
+  if (!container) return;
+  const jobs = Array.isArray(data.jobs) ? data.jobs : [];
+  const error = data.warehouseRecommendationError
+    ? `<p class="hint warning">仓库推荐暂不可用：${escapeHtml(data.warehouseRecommendationError)}</p>`
+    : "";
+  container.innerHTML = error + (jobs.length
+    ? jobs.slice(0, 12).map(renderStockQueueJobCard).join("")
+    : `<p class="hint">当前没有库存队列任务。</p>`);
+}
+
+function renderStockQueueJobCard(job = {}) {
+  const recommendation = job.warehouseRecommendation || {};
+  const recommended = recommendation.recommended || {};
+  const excluded = Array.isArray(recommendation.excluded) ? recommendation.excluded.slice(0, 4) : [];
+  const candidates = Array.isArray(recommendation.candidates) ? recommendation.candidates.slice(0, 3) : [];
+  const statusLabel = stockQueueStatusLabel(job.status);
+  const safeNextAction = recommendation.safeNextAction || (job.status === "failed" ? "查看失败原因后决定是否回放，不会直接盲写库存。" : "等待库存队列按商品就绪状态继续。");
+  return `
+    <article class="stock-queue-job ${escapeHtml(job.status || "unknown")}">
+      <header>
+        <div>
+          <span>${escapeHtml(statusLabel)}</span>
+          <strong>Task ${escapeHtml(String(job.taskId || "-"))}</strong>
+        </div>
+        <code>${escapeHtml(job.id || "")}</code>
+      </header>
+      <div class="stock-queue-meta">
+        <span>SKU ${escapeHtml(String((job.stocks || []).length || 0))}</span>
+        <span>尝试 ${escapeHtml(String(job.attempts || 0))}/${escapeHtml(String(job.maxAttempts || 10))}</span>
+        <span>${escapeHtml(job.reasonCode || "等待执行")}</span>
+      </div>
+      ${job.lastError ? `<p class="stock-queue-error">最后失败：${escapeHtml(job.lastError)}</p>` : ""}
+      <section class="stock-warehouse-recommendation">
+        <div>
+          <span>推荐仓库</span>
+          <strong>${recommended.warehouse_id ? `${escapeHtml(recommended.name || recommended.warehouse_name || "未命名仓库")} · ${escapeHtml(String(recommended.warehouse_id))}` : "需要人工确认仓库"}</strong>
+          <p>${escapeHtml(recommendation.recommendedReason || "没有可自动确认的可用仓库。")}</p>
+        </div>
+        <em>${escapeHtml(safeNextAction)}</em>
+      </section>
+      ${candidates.length ? `
+        <div class="stock-queue-chips">
+          ${candidates.map((item) => `<span>候选 ${escapeHtml(item.name || "-")} · ${escapeHtml(String(item.score || 0))}</span>`).join("")}
+        </div>
+      ` : ""}
+      ${excluded.length ? `
+        <details class="stock-queue-excluded">
+          <summary>排除原因 ${excluded.length}</summary>
+          ${excluded.map((item) => `<p>${escapeHtml(item.name || String(item.warehouse_id || "-"))}：${escapeHtml(item.reason || "-")}</p>`).join("")}
+        </details>
+      ` : ""}
+    </article>
+  `;
+}
+
+function stockQueueStatusLabel(status = "") {
+  const map = {
+    pending: "排队",
+    checking_task: "检查商品",
+    waiting_product: "等待商品就绪",
+    retry_stock: "等待重试",
+    success: "成功",
+    failed: "失败",
+  };
+  return map[status] || status || "未知";
+}
+
 async function submitJsonTextarea(button, textarea, path, payloadKey) {
   setBusy(button, true);
   try {
@@ -8633,6 +8735,8 @@ async function init() {
     $("#listingNameCount").textContent = $("#listingName").value.length;
   });
   on("#readStock", "click", readStock);
+  on("#loadStockQueue", "click", loadStockQueue);
+  on("#replayStockQueue", "click", replayStockQueueFailures);
   on("#submitPrices", "click", () =>
     submitJsonTextarea($("#submitPrices"), $("#priceJson"), "/api/ozon/prices", "prices")
   );

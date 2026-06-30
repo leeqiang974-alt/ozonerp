@@ -29,7 +29,7 @@ import {
   startExternalOzonLearningMonitor,
   syncExternalOzonLearning,
 } from "./externalOzonLearning.js";
-import { enqueueStockJob, listStockJobs, restoreStockQueue, replayFailedStockJobs } from "./stockQueue.js";
+import { enqueueStockJob, listStockJobs, restoreStockQueue, replayFailedStockJobs, stockJobWarehouseRecommendation } from "./stockQueue.js";
 import {
   claimCrawlerExtensionJob,
   clearCrawlerSessionCookie,
@@ -1322,8 +1322,30 @@ app.post("/api/ozon/product-import-info", asyncRoute(async (req, res) => {
   res.json(data);
 }));
 
-app.get("/api/ozon/stock-queue", asyncRoute(async (_req, res) => {
-  res.json({ jobs: await listStockJobs() });
+app.get("/api/ozon/stock-queue", asyncRoute(async (req, res) => {
+  const jobs = await listStockJobs();
+  if (String(req.query.includeWarehouseRecommendation || "") !== "1") {
+    res.json({ jobs });
+    return;
+  }
+  let warehouses = [];
+  let warehouseRecommendationError = "";
+  try {
+    const store = getStore(req.query.storeId);
+    const data = await ozonRequest(store, "/v2/warehouse/list", {});
+    warehouses = Array.isArray(data?.warehouses) ? data.warehouses : (Array.isArray(data?.result) ? data.result : []);
+  } catch (error) {
+    warehouseRecommendationError = error.message || "读取 Ozon 仓库失败";
+  }
+  res.json({
+    jobs: jobs.map((job) => ({
+      ...job,
+      warehouseRecommendation: warehouses.length
+        ? stockJobWarehouseRecommendation(job, warehouses, jobs)
+        : job.warehouseRecommendation || null,
+    })),
+    warehouseRecommendationError,
+  });
 }));
 
 app.post("/api/ozon/stock-queue", asyncRoute(async (req, res) => {

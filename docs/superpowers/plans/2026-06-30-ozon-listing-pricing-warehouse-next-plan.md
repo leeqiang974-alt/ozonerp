@@ -289,7 +289,7 @@ npm run lint
 - Test: `test/frontend-static.test.js`
 - Docs: `docs/SESSION_HANDOFF.zh-CN.md`
 
-- [ ] **Step 1: Add failing tests for warehouse ranking**
+- [x] **Step 1: Add failing tests for warehouse ranking**
 
 Cases:
 
@@ -298,7 +298,7 @@ Cases:
 - prefer warehouse matching product/store delivery mode when available.
 - return recommendation reasons, not just an ID.
 
-- [ ] **Step 2: Implement pure ranking function**
+- [x] **Step 2: Implement pure ranking function**
 
 Keep this function deterministic and testable:
 
@@ -312,11 +312,11 @@ rankWarehousesForStock({
 })
 ```
 
-- [ ] **Step 3: Wire stock queue carefully**
+- [x] **Step 3: Wire stock queue carefully**
 
 `resolveWarehouseIdForStore()` can use the ranked first item, but stock writes still happen only after product import/review readiness checks already in the stock queue.
 
-- [ ] **Step 4: UI display**
+- [x] **Step 4: UI display**
 
 Warehouse page and stock node should show:
 
@@ -326,7 +326,7 @@ Warehouse page and stock node should show:
 - last failed reason.
 - retry action that stays in stock queue, not direct blind write.
 
-- [ ] **Step 5: Verification**
+- [x] **Step 5: Verification**
 
 ```powershell
 node --test test/stock-queue.test.js test/server-routes.test.js test/frontend-static.test.js
@@ -339,6 +339,14 @@ npm run lint
 - Failed warehouse IDs are not reused in the same retry cycle.
 - Stock failures remain visible and replayable.
 - No silent stock write failure.
+
+**Completed 2026-06-30:**
+
+- Added `rankWarehousesForStock()` and `stockJobWarehouseRecommendation()` in `src/stockQueue.js`.
+- Stock queue replacement warehouse selection now uses ranked recommendations while preserving existing readiness checks.
+- Warehouse page shows stock queue recommendation, last failure, excluded warehouses, and queue replay action.
+- Verified targeted command: `node --test test/stock-queue.test.js test/server-routes.test.js test/frontend-static.test.js` (91/91 pass).
+- Verified full commands: `npm test` (292/292 pass), `npm run lint` (pass), `git diff --check` (pass).
 
 ## Task 6: Review Feedback And Product Score Loop
 

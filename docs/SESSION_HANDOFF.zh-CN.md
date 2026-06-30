@@ -8,6 +8,51 @@
 
 本轮 Codex 桌面环境以 `C:\Users\Administrator\Documents\ozonerp` 为实际项目根；继续开发前仍需先确认 `git status` 和最近提交，避免误入旧复制目录。
 
+## 2026-06-30 仓库匹配规则引擎 V1
+
+### 已完成
+
+- `src/stockQueue.js` 新增 `rankWarehousesForStock()`：
+  - 输入 `warehouses`、`excludedIds`、`product`、`store`、`previousFailures`。
+  - 优先推荐 `created` 且匹配商品/店铺配送模式的仓库。
+  - 排除本轮重试已排除仓库、历史 `WAREHOUSE_WRONG_STATUS` / `STOCK_WAREHOUSE_INVALID` 仓库、禁用/不可写仓库。
+  - 输出 `recommended`、`recommendedReason`、`safeNextAction`、候选仓库、排除原因，不再只返回一个 ID。
+- `resolveWarehouseIdForStore()` 与仓库状态失败后的替换仓库选择改用排名结果。
+- `stockJobWarehouseRecommendation()` 可按库存队列 job 生成可解释推荐，失败仓库不会在同一轮重试被复用。
+- `/api/ozon/stock-queue?includeWarehouseRecommendation=1` 可在读取队列时尝试附加仓库推荐；仓库接口失败时仍返回队列，并输出 `warehouseRecommendationError`。
+- 库存页新增“库存队列与仓库推荐”只读工作台：
+  - 展示库存队列任务、最后失败、推荐仓库、推荐原因、安全下一步。
+  - 排除原因默认折叠，避免库存页变成诊断墙。
+  - “回放可重试失败”仍调用库存队列回放，不直接盲写库存。
+
+### 安全边界
+
+- 仓库推荐只做本地排序和解释；不绕过库存队列、不直接写 Ozon 库存。
+- `/v2/products/stocks` 写入仍只发生在现有 stock queue worker 内，并继续等待商品 import/review readiness。
+- `WAREHOUSE_WRONG_STATUS` 仓库会进入排除，不把 blocked warehouse 当作安全推荐。
+- 不改变 preflight、payload validation、workflow lock、`waiting_human`、pricing blocked 或人工确认。
+
+### Claude Code 搭配
+
+- 开发前已使用 `scripts/claude-ozon-review-nvidia.ps1` 请求 Task 5 简报；本地未收到有效文字输出，因此按项目安全边界和测试优先流程继续推进。
+- 完成后第一次 Claude NVIDIA 复审超时无输出，已终止审阅进程；第二次短复审有输出但引用不存在的 `recommendWarehouse()`、`/api/warehouse/recommend` 等内容，经 `rg` 核对为误报。
+- 复审中唯一有效风险点是“不要复用错误状态仓库”，已补充测试覆盖 `status: WAREHOUSE_WRONG_STATUS` 被排除。
+
+### 已验证
+
+- TDD 红灯：
+  - `test/stock-queue.test.js` 先因 `rankWarehousesForStock` 未导出失败。
+- 已通过：
+  - `node --test test/stock-queue.test.js`，8/8 通过。
+  - `node --test test/stock-queue.test.js test/server-routes.test.js test/frontend-static.test.js`，91/91 通过。
+  - `npm test`，292/292 通过。
+  - `npm run lint`，通过。
+  - `git diff --check`，通过。
+
+### 下一步
+
+- 继续开发“审核回执与商品分值闭环”：把 Ozon review/status、低分原因、库存等待状态映射成当前商品下一步任务；Dashboard 只接收经营摘要和侧栏提醒，不承载原始 payload 细节。
+
 ## 2026-06-30 定价策略 V1：最低价/原价来源解释
 
 ### 已完成

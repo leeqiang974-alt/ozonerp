@@ -104,3 +104,12 @@ test("server exposes APIMart GPT Image 2 generation routes", async () => {
   assert.match(source, /\/api\/image-generation\/gpt-image-2/);
   assert.match(source, /\/api\/image-generation\/tasks\/:taskId/);
 });
+
+test("server exposes stock queue warehouse recommendation enrichment", async () => {
+  const source = await readFile(new URL("../src/server.js", import.meta.url), "utf8");
+
+  assert.match(source, /\/api\/ozon\/stock-queue/);
+  assert.match(source, /includeWarehouseRecommendation/);
+  assert.match(source, /stockJobWarehouseRecommendation/);
+  assert.match(source, /warehouseRecommendationError/);
+});

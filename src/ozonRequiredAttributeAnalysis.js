@@ -27,7 +27,7 @@ export function classifyAttributeFillStrategy(attribute = {}) {
   if (/материал|材质|材料/.test(text)) {
     return strategy(dictionaryId ? "dictionary_lookup_from_product_text" : "text_from_product_attributes", "从 1688 属性、Ozon 学习样本、标题/描述提取材质。", "medium");
   }
-  if (/назначение|применение|для кого|для чего|тип|вид|категор|用途|适用对象|适用人群|类型|种类/.test(text) && dictionaryId) {
+  if (/(^|\s)пол($|\s)|gender|性别|适用性别|назначение|применение|для кого|для чего|тип|вид|категор|用途|适用对象|适用人群|类型|种类/.test(text) && dictionaryId) {
     return strategy("dictionary_lookup_from_product_text", "用标题、类目路径、1688 参数和 Ozon 学习样本匹配合法字典值。", "medium");
   }
   if (dictionaryId) {
@@ -330,6 +330,7 @@ function dictionaryCandidatesForMeta({
     .concat(synonymDictionaryCandidatesForMeta({ meta, categoryMatch, attributeValuesById, categoryCache, productText }))
     .concat(typeSynonymDictionaryCandidatesForMeta({ meta, categoryMatch, attributeValuesById, categoryCache, productText }))
     .concat(purposeSynonymDictionaryCandidatesForMeta({ meta, categoryMatch, attributeValuesById, categoryCache, productText }))
+    .concat(genderSynonymDictionaryCandidatesForMeta({ meta, categoryMatch, attributeValuesById, categoryCache, productText }))
     .filter((candidate, index, list) => (
       candidate.dictionaryValueId
       && list.findIndex((item) => item.dictionaryValueId === candidate.dictionaryValueId) === index
@@ -446,6 +447,53 @@ function purposeSynonymDictionaryCandidatesForMeta({
   ];
   const values = dictionaryValuesForPlan({ meta, categoryMatch, attributeValuesById, categoryCache });
   return purposeRules
+    .filter((rule) => rule.sourcePattern.test(text))
+    .flatMap((rule) => values.map((entry) => {
+      const value = String(entry?.value || entry?.name || "").replace(/\s+/g, " ").trim();
+      if (!value || !rule.valuePattern.test(value)) return null;
+      return {
+        dictionaryValueId: dictionaryValueId(entry),
+        value,
+        confidence: rule.confidence,
+        source: rule.source,
+      };
+    }))
+    .filter(Boolean);
+}
+
+function genderSynonymDictionaryCandidatesForMeta({
+  meta = {},
+  categoryMatch = {},
+  attributeValuesById = {},
+  categoryCache = {},
+  productText = "",
+} = {}) {
+  const classified = classifyAttributeFillStrategy(meta);
+  if (classified.strategy !== "dictionary_lookup_from_product_text") return [];
+  if (!/(^|\s)пол($|\s)|gender|性别|适用性别/.test(normalizeText(`${meta.name || ""} ${meta.description || ""}`))) return [];
+  const text = normalizeText(productText);
+  const genderRules = [
+    {
+      sourcePattern: /жен|woman|women|female|女士|女性|女式|女/,
+      valuePattern: /жен|woman|women|female|女性|女士|女/i,
+      source: "gender_synonym",
+      confidence: 0.7,
+    },
+    {
+      sourcePattern: /муж|\b(?:man|men|male)\b|男士|男性|男式|男/,
+      valuePattern: /муж|\b(?:man|men|male)\b|男性|男士|男/i,
+      source: "gender_synonym",
+      confidence: 0.7,
+    },
+    {
+      sourcePattern: /дет|child|children|kid|kids|儿童|童|小孩|宝宝/,
+      valuePattern: /дет|child|children|kid|kids|儿童|童/i,
+      source: "gender_synonym",
+      confidence: 0.7,
+    },
+  ];
+  const values = dictionaryValuesForPlan({ meta, categoryMatch, attributeValuesById, categoryCache });
+  return genderRules
     .filter((rule) => rule.sourcePattern.test(text))
     .flatMap((rule) => values.map((entry) => {
       const value = String(entry?.value || entry?.name || "").replace(/\s+/g, " ").trim();

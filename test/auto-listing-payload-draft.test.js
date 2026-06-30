@@ -433,6 +433,65 @@ test("buildRequiredAttributeFillPlan suggests purpose dictionary candidates from
   assert.deepEqual(typePlan.dictionaryCandidates, []);
 });
 
+test("buildRequiredAttributeFillPlan suggests gender dictionary candidates from product synonyms only", () => {
+  const womenPlan = buildRequiredAttributeFillPlan({
+    categoryMatch: { description_category_id: 17028673, type_id: 95183 },
+    attrsMeta: [
+      { id: 8292, name: "Пол", is_required: true, dictionary_id: 104 },
+    ],
+    attributeValuesById: {
+      8292: [
+        { id: 71, value: "женский" },
+        { id: 72, value: "мужской" },
+      ],
+    },
+    productText: "1688 标题：女士收纳包 women travel organizer",
+  })[0];
+
+  assert.equal(womenPlan.action, "suggest_dictionary");
+  assert.equal(womenPlan.dictionaryValueId, undefined);
+  assert.deepEqual(womenPlan.dictionaryCandidates, [{
+    dictionaryValueId: 71,
+    value: "женский",
+    confidence: 0.7,
+    source: "gender_synonym",
+  }]);
+
+  const childrenPlan = buildRequiredAttributeFillPlan({
+    categoryMatch: { description_category_id: 17028673, type_id: 95183 },
+    attrsMeta: [
+      { id: 8293, name: "适用性别", is_required: true, dictionary_id: 105 },
+    ],
+    attributeValuesById: {
+      8293: [
+        { id: 81, value: "для взрослых" },
+        { id: 82, value: "детский" },
+      ],
+    },
+    productText: "1688 标题：儿童洗漱杯 kids bathroom cup",
+  })[0];
+
+  assert.equal(childrenPlan.action, "suggest_dictionary");
+  assert.deepEqual(childrenPlan.dictionaryCandidates, [{
+    dictionaryValueId: 82,
+    value: "детский",
+    confidence: 0.7,
+    source: "gender_synonym",
+  }]);
+
+  const purposePlan = buildRequiredAttributeFillPlan({
+    categoryMatch: { description_category_id: 17028673, type_id: 95183 },
+    attrsMeta: [
+      { id: 4958, name: "Назначение", is_required: true, dictionary_id: 102 },
+    ],
+    attributeValuesById: {
+      4958: [{ id: 91, value: "женский" }],
+    },
+    productText: "1688 标题：女士用品 women",
+  })[0];
+  assert.deepEqual(purposePlan.dictionaryCandidates, []);
+});
+
 test("buildListingPayloadDraftFromJob applies explainable pricing policy fields", () => {
   const draft = buildListingPayloadDraftFromJob({
     pendingParentSku: "SKUlq01007",

@@ -25,13 +25,24 @@
   - 空输出/超时显式报错，不再静默失败。
   - 无效工具调用式输出检测：如果模型返回 XML/JSON tool-call 痕迹，会自动用更严格的纯文本提示重试一次；仍无效则明确失败，不把坏复审当作可用审核。
   - 子进程 exit code 检测：`claude` 非 0 退出时直接报错并带出错误摘要，避免把认证/模型/gateway 错误文本误当成复审意见。
+- 本轮继续加固 Claude NVIDIA 复审输出：
+  - wrapper 会把当前 `git diff` / staged / untracked 文件列表写入提示词，要求只引用真实 changed-file list、项目规则或任务中明确给出的文件，不再让模型随意编造 `src/llm/*` 等不存在路径。
+  - 非 `OK/Important/Critical` 开头且过短的单词输出会被视为无效并自动严格重试。
+  - `Critical` / `Important` 只有单词、没有理由时会被视为无效；风险级别必须带出与 changed-file list 或项目规则相关的具体理由。
+  - 进一步定位到 Claude CLI 兼容层会在 NVIDIA/LiteLLM 场景下丢失或误读上下文；wrapper 已改为直连本地 LiteLLM `/v1/chat/completions`，用 UTF-8 bytes 发送 prompt，确保实际使用 `nvidia-qwen-next`。
+  - 新增 `-PromptOutputPath`，可保存实际发给 NVIDIA 的 prompt；后续若复审异常，可直接核对模型是否收到了 changed-file list。
+  - 对中文返回的 mojibake 做一次 UTF-8 修复，避免 PowerShell/REST 解码异常把可用复审变成乱码。
+  - 如果 changed-file list 非空但模型声称“无变更文件/未提供变更文件”，wrapper 会判为矛盾输出并重试；重试后仍矛盾则失败，不把坏复审当作可用审核。
 - 新增 `test/claude-nvidia-scripts.test.js`，静态锁定默认模型、gateway 启动和配置别名。
+  - 本轮测试继续锁定 changed-file list 上下文、禁止编造路径、拒绝一词式无效输出。
 
 ### 已验证
 
 - `node --test test/claude-nvidia-scripts.test.js`，1/1 通过。
 - 本轮追加验证 `node --test test/claude-nvidia-scripts.test.js`，1/1 通过。
 - 本轮追加 smoke：`scripts/claude-ozon-review-nvidia.ps1` 返回 `OK`。
+- 本轮追加 smoke：wrapper 能识别一词式无效输出并触发严格重试，最终返回带理由的 `OK` 文本。
+- 本轮追加 direct smoke：wrapper 直连 LiteLLM 后能读取真实 changed files，返回带理由的中文 `OK`，不再声称没有变更文件。
 - `scripts/claude-ozon-review-nvidia.ps1` smoke 已自动启动 gateway 并返回：`OK，我是 NVIDIA review wrapper。`
 - `scripts/claude-code-nvidia.ps1` smoke 已返回：`OK，Claude Code NVIDIA 默认模型可用。`
 - `npm test`，297/297 通过。
@@ -199,10 +210,15 @@
   - `Тип` / `Вид` / 用途 / 类型 / 种类 字段在商品文本含 organizer / 收纳盒 / 收纳架 / 整理盒 / 置物架时，可候选当前类目字典里的 `органайзер`。
   - 候选来源标记为 `type_synonym`，置信度 `0.7`，只用于人工确认候选。
   - 非类型字段不触发该规则；例如材质字段里出现 organizer 不会生成类型候选。
+- 必填属性规则引擎 V2 继续补充用途/适用对象窄范围同义词候选：
+  - `Назначение` / `Применение` / `Для кого` / 用途 / 适用对象 字段在商品文本含 厨房/kitchen 时，可候选当前类目字典里的 `для кухни` 等用途值。
+  - 商品文本含 宠物/猫/狗/pet 时，可候选当前类目字典里的 `для животных` 等适用对象值。
+  - 候选来源标记为 `purpose_synonym`，置信度 `0.7`，只进入 `dictionaryCandidates`；仍保持 `action=suggest_dictionary`，不设置行级 `dictionaryValueId`，不自动写 Payload。
+  - 非用途/适用对象字段不触发该规则；例如 `Тип` 字段里出现 厨房 不会生成用途候选。
 
 ### 下一步
 
-- 继续做“必填属性规则引擎 V2”：把用途/适用对象等高频中置信字典候选继续从 exact text match 扩展成同义词/参数匹配，但仍只生成候选，不自动写入；再回到“上架草稿侧的变体修复入口 V2”。
+- 继续做“必填属性规则引擎 V2”：可继续沉淀性别、容量、件数等高频中置信字典候选，但仍只生成候选，不自动写入；再回到“上架草稿侧的变体修复入口 V2”。
 
 ## 2026-06-30 仓库匹配规则引擎 V1
 

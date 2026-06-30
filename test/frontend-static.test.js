@@ -228,6 +228,7 @@ test("listing center exposes a read-only fill task queue from existing diagnosti
   assert.match(js, /listingFillTaskRepairCandidate/);
   assert.match(js, /listingFillTaskTextRepairCandidate/);
   assert.match(js, /listingFillTaskVariantAspectSuggestion/);
+  assert.match(js, /listingVariantAspectContext/);
   assert.match(js, /waitingHuman/);
   assert.match(js, /requiredAttributeFillPlan/);
   assert.match(js, /variantConfiguration/);
@@ -243,9 +244,41 @@ test("listing center exposes a read-only fill task queue from existing diagnosti
   assert.match(js, /data-listing-variant-suggestion-copy/);
   assert.match(js, /查看变体工作簿/);
   assert.match(js, /受影响 SKU/);
+  assert.match(js, /为什么卡住/);
+  assert.match(js, /属性 ID/);
+  assert.match(js, /listing-variant-context-list/);
   assert.match(css, /listing-fill-task-queue/);
   assert.match(css, /listing-fill-task-card/);
   assert.match(css, /listing-variant-suggestion/);
+  assert.match(css, /listing-variant-context-list/);
+});
+
+test("listing variant aspect suggestion carries SKU aspect repair context", async () => {
+  const js = await readFile(new URL("../public/app.js", import.meta.url), "utf8");
+  const contextSource = js.match(/function listingVariantAspectContext[\s\S]+?\n}\n\nfunction listingFillTaskVariantAspectSuggestion/)?.[0]
+    .replace(/\nfunction listingFillTaskVariantAspectSuggestion$/, "");
+  const suggestionSource = js.match(/function listingFillTaskVariantAspectSuggestion[\s\S]+?\n}\n\nfunction listingFillTaskQueueItems/)?.[0]
+    .replace(/\nfunction listingFillTaskQueueItems$/, "");
+  assert.ok(contextSource);
+  assert.ok(suggestionSource);
+  const listingFillTaskVariantAspectSuggestion = new Function(`${contextSource}\n${suggestionSource}\nreturn listingFillTaskVariantAspectSuggestion;`)();
+  const suggestion = listingFillTaskVariantAspectSuggestion({
+    rows: [{
+      offerId: "SKU-RED",
+      rowStatus: "duplicate_aspect",
+      aspects: [{ id: 10097, name: "颜色名称", value: "red" }],
+      reasons: [{ code: "DUPLICATE_ASPECT", message: "颜色与另一 SKU 重复" }],
+      safeNextAction: "改成唯一颜色后重新预检",
+    }],
+  });
+
+  assert.equal(suggestion.variantAspectContexts[0].offerId, "SKU-RED");
+  assert.equal(suggestion.variantAspectContexts[0].aspectName, "颜色名称");
+  assert.equal(suggestion.variantAspectContexts[0].aspectId, 10097);
+  assert.match(suggestion.variantAspectContexts[0].reason, /重复/);
+  assert.match(suggestion.copyText, /SKU-RED/);
+  assert.match(suggestion.copyText, /属性 ID 10097/);
+  assert.match(suggestion.copyText, /重新预检/);
 });
 
 test("frontend renders read-only variant configuration workbench", async () => {

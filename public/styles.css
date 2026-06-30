@@ -349,6 +349,30 @@
 .listing-variant-suggestion small {
   color: #475569;
 }
+.listing-variant-context-list {
+  display: grid;
+  gap: 6px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+.listing-variant-context-list li {
+  display: grid;
+  gap: 2px;
+  padding: 6px;
+  border: 1px solid rgba(148, 163, 184, .22);
+  border-radius: 6px;
+  background: #fff;
+}
+.listing-variant-context-list b {
+  color: #0f172a;
+  font-size: 12px;
+}
+.listing-variant-context-list span {
+  color: #475569;
+  font-size: 12px;
+  line-height: 1.35;
+}
 .listing-variant-suggestion-actions {
   display: flex;
   flex-wrap: wrap;

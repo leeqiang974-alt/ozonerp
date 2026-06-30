@@ -404,6 +404,7 @@ npm run lint
 - After variant aspect task queue suggestion, Listing Center now surfaces affected SKU, reason, copyable repair guidance, and a current-run link to the variant workbench for `duplicate_aspect` / `missing_aspect`; verified `node --test test/frontend-static.test.js` (74/74 pass).
 - After variant workbench field locator, each row can highlight its `offer_id` in the existing payload editor without writing or submitting; verified `node --test test/frontend-static.test.js` (74/74 pass).
 - After aspect-level locator, the payload locator carries both `offer_id` and the first aspect attribute id, and searches for the aspect id inside that SKU slice before falling back to the SKU anchor; verified `node --test test/frontend-static.test.js` (75/75 pass).
+- After Listing Center variant context backflow, the read-only fill task queue now shows affected SKU, aspect name/id, reason, and safe next action from `variantConfiguration.rows`; verified `node --test test/frontend-static.test.js` (76/76 pass).
 
 ## Recommended Order
 

@@ -1160,6 +1160,25 @@ function listingFillTaskTextRepairCandidate(run = currentListingWorkflowRun()) {
   return null;
 }
 
+function listingVariantAspectContext(row = {}) {
+  const aspects = Array.isArray(row.aspects) ? row.aspects : [];
+  const primaryAspect = aspects.find((aspect) => aspect?.id || aspect?.name) || {};
+  const reasons = Array.isArray(row.reasons) ? row.reasons : [];
+  const blockingReason = reasons.find((reason) => ["DUPLICATE_ASPECT", "MISSING_ASPECT"].includes(reason.code)) || reasons[0] || {};
+  const statusText = row.rowStatus === "duplicate_aspect"
+    ? "变体属性重复"
+    : row.rowStatus === "missing_aspect" ? "缺少可变特性" : "变体属性待检查";
+  const aspectName = primaryAspect.name || (primaryAspect.id ? `属性 ${primaryAspect.id}` : "当前类目可变特性");
+  return {
+    offerId: row.offerId || "",
+    aspectName,
+    aspectId: primaryAspect.id || "",
+    statusText,
+    reason: blockingReason.message || row.safeNextAction || statusText,
+    nextAction: row.safeNextAction || "修正该 SKU 的可变特性后重新预检；不会自动提交 Ozon。",
+  };
+}
+
 function listingFillTaskVariantAspectSuggestion(variantConfiguration = null) {
   const rows = Array.isArray(variantConfiguration?.rows) ? variantConfiguration.rows : [];
   const affectedRows = rows.filter((row) => ["duplicate_aspect", "missing_aspect"].includes(row.rowStatus));
@@ -1181,19 +1200,26 @@ function listingFillTaskVariantAspectSuggestion(variantConfiguration = null) {
   const action = duplicateRows.length
     ? "为重复 SKU 填写不同的颜色、尺码或其他 Ozon 可变特性；同父 SKU 可以共用型号名称，但 aspect 组合必须不同。"
     : "先读取当前类目 aspect 属性，再给每个 SKU 补齐颜色、尺码或其他可变特性。";
+  const variantAspectContexts = affectedRows.slice(0, 4).map(listingVariantAspectContext);
+  const contextCopy = variantAspectContexts.map((context) => {
+    const aspect = context.aspectId ? `${context.aspectName} / 属性 ID ${context.aspectId}` : context.aspectName;
+    return `- ${context.offerId || "SKU"}：${aspect}；原因：${context.reason}；下一步：${context.nextAction}`;
+  }).join("\n");
   const copyText = [
     `问题：${issueSummary || firstReason.message || "变体属性异常"}`,
     `受影响 SKU：${offers.join("、") || "-"}`,
     `涉及属性：${aspectLabels.join("、") || "当前类目可变特性"}`,
+    contextCopy ? `SKU 明细：\n${contextCopy}` : "",
     `建议：${action}`,
     "下一步：查看变体配置工作簿，修正后重新预检；不会自动写入、不会提交 Ozon。",
-  ].join("\n");
+  ].filter(Boolean).join("\n");
   return {
     issueSummary: issueSummary || "变体属性异常",
     affectedSkuText: previewOffers.join("、") + (offers.length > previewOffers.length ? ` 等 ${offers.length} 个` : ""),
     detail: firstReason.message || firstIssue.safeNextAction || "检查每个 SKU 的 Ozon 可变特性是否完整且互不重复。",
     action,
     copyText,
+    variantAspectContexts,
   };
 }
 
@@ -1318,6 +1344,18 @@ function renderListingFillTaskQueue(run = currentListingWorkflowRun()) {
                 <span>受影响 SKU：${escapeHtml(item.variantAspectSuggestion.affectedSkuText || "-")}</span>
                 <p>${escapeHtml(item.variantAspectSuggestion.detail || item.variantAspectSuggestion.issueSummary)}</p>
                 <small>${escapeHtml(item.variantAspectSuggestion.action || "修复后重新预检；不会自动提交 Ozon。")}</small>
+                ${Array.isArray(item.variantAspectSuggestion.variantAspectContexts) && item.variantAspectSuggestion.variantAspectContexts.length ? `
+                  <ul class="listing-variant-context-list" aria-label="变体 SKU 修复上下文">
+                    ${item.variantAspectSuggestion.variantAspectContexts.map((context) => `
+                      <li>
+                        <b>SKU：${escapeHtml(context.offerId || "-")}</b>
+                        <span>属性：${escapeHtml(context.aspectName || "当前类目可变特性")}${context.aspectId ? ` / 属性 ID ${escapeHtml(context.aspectId)}` : ""}</span>
+                        <span>为什么卡住：${escapeHtml(context.reason || context.statusText || "变体属性待检查")}</span>
+                        <span>下一步：${escapeHtml(context.nextAction || "修正后重新预检；不会自动提交 Ozon。")}</span>
+                      </li>
+                    `).join("")}
+                  </ul>
+                ` : ""}
                 <div class="listing-variant-suggestion-actions">
                   <button
                     type="button"

@@ -8,6 +8,45 @@
 
 本轮 Codex 桌面环境以 `C:\Users\Administrator\Documents\ozonerp` 为实际项目根；继续开发前仍需先确认 `git status` 和最近提交，避免误入旧复制目录。
 
+## 2026-06-30 高置信必填属性补齐：品牌与原产国
+
+### 已完成
+
+- `buildListingPayloadDraftFromJob()` 新增高置信必填属性补齐：
+  - 品牌字段固定业务语义为 `Нет бренда` / 无品牌。
+  - 原产国字段固定业务语义为 `Китай` / 中国。
+  - 若字段是 Ozon 字典属性，只在当前类目字典值里找到匹配值时写入 `dictionary_value_id`。
+  - 若当前类目没有合法字典值，不硬编码、不猜 ID，保留给预检/属性矩阵阻塞和人工处理。
+  - 非字典字段才写文本值。
+- 草稿生成可从两类来源读取当前类目字段和值：
+  - 调用方传入的 `attrsMeta` + `attributeValuesById`。
+  - 本地 `categoryCache.attributes` + `categoryCache.attributeValues`。
+- 真实 workflow 草稿刷新现在会把本地类目缓存传入草稿生成，并把 `attrsMeta` 保存到 workflow run，便于后续预检和属性矩阵解释字段。
+
+### 安全边界
+
+- 不调用 Ozon 写接口，不提交商品，不绕过 preflight、人工确认、workflow lock 或 `waiting_human`。
+- 不硬编码任何 `dictionary_value_id`；字典值必须来自当前 `description_category_id/type_id/attribute_id` 的缓存。
+- 不触碰定价、库存、GPT/Image 成本确认、变体 aspect 自动修复或 PDD 采集。
+
+### Claude Code 搭配
+
+- 开发前已使用 `scripts/claude-code-nvidia.ps1` 做实现简报审查。
+- Claude 建议核心边界：字典属性不得硬编码 ID；helper 保持同步、无副作用，复用现有 category cache。
+
+### 已验证
+
+- TDD 红灯：`node --test test/auto-listing-payload-draft.test.js` 先因品牌/原产国未补齐、仍误留品牌文本失败。
+- 目标验证：`node --test test/auto-listing-payload-draft.test.js`，5/5 通过。
+- 相关回归：`node --test test/auto-listing-payload-draft.test.js test/listing-content-quality.test.js`，33/33 通过。
+- 工作流/预检回归：`node --test test/workflow-runs.test.js test/listing-quality.test.js`，56/56 通过。
+
+### 下一步
+
+- 继续接 `model_name_from_parent_sku` 的可解释补齐来源显示，让用户知道型号名称来自父 SKU/商品族。
+- 再推进包装尺重字段映射，把 1688 尺重进入 Ozon 相关属性/商品分值提示，但保持缺尺重阻塞。
+- 中置信字典字段如类型、材质、用途仍保持候选推荐 + 人工确认，不自动写入。
+
 ## 2026-06-30 属性矩阵缺失文本属性本地修复
 
 ### 已完成

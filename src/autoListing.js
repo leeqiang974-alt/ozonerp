@@ -9,7 +9,7 @@ import { getStore } from "./config.js";
 import { ozonRequest } from "./ozon.js";
 import { nextParentSku } from "./skuSequence.js";
 import { recordListingExperience } from "./learningMemory.js";
-import { flattenCategories, loadCategoryCache, matchCategory } from "./ozonCategoryCache.js";
+import { attributeValueCacheKey, flattenCategories, loadCategoryCache, matchCategory } from "./ozonCategoryCache.js";
 import { enqueueStockJob, recordFailedStockJob, resolveWarehouseIdForStore } from "./stockQueue.js";
 import { buildVisualCardPrompt } from "./visualCardTemplate.js";
 import { prepareOzonImages } from "./imageOss.js";
@@ -641,6 +641,109 @@ function attr(id, value, complexId = 0) {
 
 function fixedNoBrandAttribute() {
   return attr(85, "Нет бренда");
+}
+
+function isBrandAttributeMeta(meta = {}) {
+  var id = Number(meta?.id || 0);
+  var name = String(meta?.name || "").toLowerCase();
+  return id === 85 || /бренд|brand|品牌/.test(name);
+}
+
+function isOriginCountryAttributeMeta(meta = {}) {
+  var id = Number(meta?.id || 0);
+  var name = String(meta?.name || "").toLowerCase();
+  return id === 4389 || /страна-изготов|страна производства|origin country|country of origin|原产国|生产国|制造国/.test(name);
+}
+
+function dictionaryValueId(entry = {}) {
+  return Number(entry.id || entry.dictionary_value_id || entry.value_id || 0);
+}
+
+function dictionaryValuesForAttribute(meta = {}, options = {}) {
+  var id = Number(meta?.id || 0);
+  if (!id) return [];
+  var direct = options.attributeValuesById || {};
+  if (Array.isArray(direct[id])) return direct[id];
+  if (Array.isArray(direct[String(id)])) return direct[String(id)];
+  if (Array.isArray(meta.dictionary_values)) return meta.dictionary_values;
+  var categoryCache = options.categoryCache || {};
+  var categoryMatch = options.categoryMatch || {};
+  var cache = categoryCache.attributeValues || {};
+  var keys = [
+    attributeValueCacheKey({
+      descriptionCategoryId: categoryMatch.description_category_id,
+      typeId: categoryMatch.type_id,
+      attributeId: id,
+      language: "ZH_HANS",
+    }),
+    attributeValueCacheKey({
+      descriptionCategoryId: categoryMatch.description_category_id,
+      typeId: categoryMatch.type_id,
+      attributeId: id,
+      language: "RU",
+    }),
+  ];
+  for (const key of keys) {
+    if (Array.isArray(cache[key]?.values)) return cache[key].values;
+  }
+  var record = Object.values(cache).find(function(entry) {
+    return Number(entry?.descriptionCategoryId || entry?.description_category_id || 0) === Number(categoryMatch.description_category_id || 0)
+      && Number(entry?.typeId || entry?.type_id || 0) === Number(categoryMatch.type_id || 0)
+      && Number(entry?.attributeId || entry?.attribute_id || 0) === id
+      && Array.isArray(entry?.values);
+  });
+  return Array.isArray(record?.values) ? record.values : [];
+}
+
+function dictAttrForMeta(meta = {}, dictionaryValueIdInput) {
+  var n = Number(dictionaryValueIdInput || 0);
+  if (!n || !Number(meta?.id || 0)) return null;
+  return { id: Number(meta.id), complex_id: attrMetaComplexId(meta), values: [{ dictionary_value_id: n }] };
+}
+
+function dictionaryAttrFromCurrentValues(meta = {}, options = {}, pattern) {
+  var match = dictionaryValuesForAttribute(meta, options)
+    .find(function(entry) { return pattern.test(String(entry?.value || entry?.name || "")); });
+  return match ? dictAttrForMeta(meta, dictionaryValueId(match)) : null;
+}
+
+function fixedNoBrandAttributesForMeta(attrsMeta = [], options = {}) {
+  var metas = (attrsMeta || []).filter(isBrandAttributeMeta);
+  if (!metas.length && !(attrsMeta || []).length) return [fixedNoBrandAttribute()];
+  return metas.map(function(meta) {
+    if (Number(meta?.dictionary_id || 0)) {
+      return dictionaryAttrFromCurrentValues(meta, options, /нет бренда|без бренда|no brand|без торговой марки|无品牌/i);
+    }
+    return attr(meta.id, "Нет бренда", attrMetaComplexId(meta));
+  }).filter(Boolean);
+}
+
+function fixedChinaOriginAttributesForMeta(attrsMeta = [], options = {}) {
+  return (attrsMeta || []).filter(isOriginCountryAttributeMeta).map(function(meta) {
+    if (Number(meta?.dictionary_id || 0)) {
+      return dictionaryAttrFromCurrentValues(meta, options, /китай|кнр|china|中国|中國/i);
+    }
+    return attr(meta.id, "Китай", attrMetaComplexId(meta));
+  }).filter(Boolean);
+}
+
+function highConfidenceRequiredAttributes(attrsMeta = [], options = {}) {
+  // Whitelist only: brand/no-brand and origin/China; dictionary ids must come from the current category values.
+  return dedupeAttrs(
+    fixedNoBrandAttributesForMeta(attrsMeta, options)
+      .concat(fixedChinaOriginAttributesForMeta(attrsMeta, options))
+      .filter(Boolean),
+  );
+}
+
+function categoryAttributeCacheKey(categoryMatch = {}) {
+  return `${Number(categoryMatch.description_category_id || 0)}:${Number(categoryMatch.type_id || 0)}`;
+}
+
+function attrsMetaForCategory(options = {}, categoryMatch = {}) {
+  if (Array.isArray(options.attrsMeta)) return options.attrsMeta;
+  var cached = options.categoryCache?.attributes?.[categoryAttributeCacheKey(categoryMatch)];
+  return Array.isArray(cached) ? cached : [];
 }
 
 export function modelAttributesForMeta(modelName, attrsMeta = []) {
@@ -1637,8 +1740,13 @@ export function buildListingPayloadDraftFromJob(job = {}, options = {}) {
     minPriceCny,
   });
   const modelName = modelNameForListing(job, parentSku);
-  const attrsMeta = Array.isArray(options.attrsMeta) ? options.attrsMeta : [];
-  const baseAttrs = dedupeAttrs([fixedNoBrandAttribute()]
+  const attrsMeta = attrsMetaForCategory(options, categoryMatch);
+  const attributeOptions = {
+    attributeValuesById: options.attributeValuesById || {},
+    categoryCache: options.categoryCache || null,
+    categoryMatch,
+  };
+  const baseAttrs = dedupeAttrs(highConfidenceRequiredAttributes(attrsMeta, attributeOptions)
     .concat(modelAttributesForMeta(modelName, attrsMeta))
     .concat(countryAttributes())
     .concat(buildMarketingAttributes(lc, attrsMeta))
@@ -1759,8 +1867,13 @@ async function saveWorkflowPayloadDraftForListingJob(job = {}) {
   const flatCategories = cache.flat || flattenCategories(cache.tree || []);
   const categoryMatch = matchCategory(productForCategory, flatCategories, 3)[0] || null;
   if (!categoryMatch) throw new Error("未匹配到 Ozon 类目，无法刷新 payload 草稿");
-  const draft = buildListingPayloadDraftFromJob({ ...job, pendingParentSku: parentSku }, { categoryMatch, parentSku });
-  await savePayloadDraft(workflowRun.id, draft);
+  const attrsMeta = attrsMetaForCategory({ categoryCache: cache }, categoryMatch);
+  const draft = buildListingPayloadDraftFromJob({ ...job, pendingParentSku: parentSku }, {
+    categoryMatch,
+    categoryCache: cache,
+    parentSku,
+  });
+  await savePayloadDraft(workflowRun.id, draft, { attrsMeta });
   if (draft.summary?.pricingDiagnosis) {
     const pricingNode = workflowNodeFromAutoListingStage("matching", {
       bestMatch: job.bestMatch || {},

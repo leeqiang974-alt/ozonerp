@@ -15,3 +15,13 @@ test("collection box deduplicates PDD goods ids across desktop and mobile URLs",
   assert.match(source, /goods_id/);
   assert.match(source, /pdd-goods/);
 });
+
+test("server can promote captured PDD products into the matching candidate pool", async () => {
+  const server = await readFile(new URL("../src/server.js", import.meta.url), "utf8");
+  const crawler = await readFile(new URL("../src/crawler1688.js", import.meta.url), "utf8");
+
+  assert.match(server, /\/api\/1688\/captures\/:id\/to-candidate/);
+  assert.match(crawler, /moveCaptureToCrawlerCandidate/);
+  assert.match(crawler, /captureId/);
+  assert.match(crawler, /sourcePlatform/);
+});

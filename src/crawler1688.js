@@ -1,7 +1,7 @@
 ﻿import fs from "node:fs/promises";
 import path from "node:path";
 import iconv from "iconv-lite";
-import { addCollectionItem } from "./collectionBox.js";
+import { addCollectionItem, getCollectionItem, updateCollectionItem } from "./collectionBox.js";
 import { fetch1688Html, parse1688Product } from "./collector1688.js";
 import { calculateOzonPrice, matchRmbShippingLevel } from "./pricing.js";
 import { callAiTask } from "./aiTaskRouter.js";
@@ -700,6 +700,46 @@ export async function moveCrawlerCandidateToCapture(id, storeId = "") {
   };
   await writeJsonList(CANDIDATE_FILE, items);
   return { candidate: items[index], capture: result };
+}
+
+export async function moveCaptureToCrawlerCandidate(id) {
+  const capture = await getCollectionItem(id);
+  if (!capture) return null;
+  const parsed = capture.parsed || {};
+  const url = parsed.url || "";
+  const items = await readJsonList(CANDIDATE_FILE);
+  const existing = url ? items.find((item) => String(item.url || item.parsed?.url || "") === String(url)) : null;
+  if (existing) {
+    await updateCollectionItem(id, {
+      status: "candidate_ready",
+      candidateId: existing.id,
+    });
+    return { capture, candidate: existing, duplicate: true };
+  }
+
+  const candidate = {
+    ...candidateFromParsed(`capture:${id}`, parsed, items.length),
+    id: makeId(parsed.source === "pdd" ? "pddc_" : "cc_"),
+    source: parsed.source || "capture",
+    sourcePlatform: parsed.sourcePlatform || (parsed.source === "pdd" ? "拼多多" : "1688"),
+    captureId: id,
+    storeId: capture.storeId || "",
+    includeVideo: capture.includeVideo !== false,
+    status: parsed.title ? "pending_review" : "needs_review",
+    riskLevel: parsed.title ? (parsed.sizeWeight?.weightG ? "low" : "medium") : "high",
+    reviewIssues: [
+      ...(parsed.title ? [] : ["缺少商品标题"]),
+      ...(parsed.sizeWeight?.weightG && parsed.sizeWeight?.lengthMm && parsed.sizeWeight?.widthMm && parsed.sizeWeight?.heightMm ? [] : ["缺少完整尺重"]),
+      ...(parsed.warnings || []),
+    ],
+  };
+  items.push(candidate);
+  await writeJsonList(CANDIDATE_FILE, items);
+  const updatedCapture = await updateCollectionItem(id, {
+    status: "candidate_ready",
+    candidateId: candidate.id,
+  });
+  return { capture: updatedCapture || capture, candidate, duplicate: false };
 }
 
 export async function setCrawlerSessionCookie(cookie = "") {

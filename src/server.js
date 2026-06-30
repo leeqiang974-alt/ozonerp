@@ -45,6 +45,7 @@ import {
   listCrawlerCandidates,
   listCrawlerTasks,
   matchCandidatesWithOpportunities,
+  moveCaptureToCrawlerCandidate,
   moveCrawlerCandidateToCapture,
   recordCrawlerWorkerHeartbeat,
   setCrawlerSessionCookie,
@@ -351,6 +352,15 @@ app.patch("/api/1688/captures/:id", asyncRoute(async (req, res) => {
 
 app.delete("/api/1688/captures/:id", asyncRoute(async (req, res) => {
   res.json({ ok: await deleteCollectionItem(req.params.id) });
+}));
+
+app.post("/api/1688/captures/:id/to-candidate", asyncRoute(async (req, res) => {
+  const data = await moveCaptureToCrawlerCandidate(req.params.id);
+  if (!data) {
+    res.status(404).json({ error: "没有找到采集箱商品。" });
+    return;
+  }
+  res.json({ ok: true, ...data });
 }));
 
 app.post("/api/1688-crawler/tasks", asyncRoute(async (req, res) => {

@@ -6150,6 +6150,25 @@ function renderListingQualityScoreBreakdown(listingQuality = {}) {
   `;
 }
 
+function renderListingImageQualityRecommendations(listingQuality = {}) {
+  const recommendations = Array.isArray(listingQuality?.imageQualityRecommendations)
+    ? listingQuality.imageQualityRecommendations
+    : [];
+  if (!recommendations.length) return "";
+  return `
+    <div class="workflow-listing-image-recommendations">
+      <strong>图片质量建议</strong>
+      ${recommendations.slice(0, 6).map((item) => `
+        <article class="workflow-listing-image-recommendation workflow-listing-image-recommendation-${escapeHtml(item.severity || "warning")}">
+          <span>${escapeHtml(item.title || item.code || "图片建议")}${item.offerId ? ` · ${escapeHtml(item.offerId)}` : ""}</span>
+          <p>${escapeHtml(item.action || "人工检查图片质量。")}</p>
+          <small>${escapeHtml(item.nextStep || "处理后重新预检；仅提示，不写 Payload。")}</small>
+        </article>
+      `).join("")}
+    </div>
+  `;
+}
+
 function renderListingQualityPanel(run = {}, node = {}) {
   const { listingQuality, qualityIssues, listingQualityWarnings, qualityStale } = collectListingQualityDiagnosis(run, node);
   if (qualityStale) {
@@ -6200,6 +6219,7 @@ function renderListingQualityPanel(run = {}, node = {}) {
         <span>${escapeHtml(listingQualityStatusText(status))}${Number.isFinite(Number(listingQuality?.score)) ? ` · ${Number(listingQuality.score)}分` : ""}</span>
       </div>
       ${renderListingQualityScoreBreakdown(listingQuality || {})}
+      ${renderListingImageQualityRecommendations(listingQuality || {})}
       ${issues.length ? `
         <div class="workflow-listing-quality-grid">
           ${issues.map((issue, index) => {

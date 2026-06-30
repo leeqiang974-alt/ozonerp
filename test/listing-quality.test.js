@@ -112,6 +112,72 @@ test("diagnoseListingQuality keeps warning-only detail image advice non-blocking
   assert.equal(diagnosis.warnings.some((warning) => warning.code === "DETAIL_IMAGES_TOO_FEW"), true);
 });
 
+test("diagnoseListingQuality gives read-only SKU image quality recommendations", () => {
+  const diagnosis = diagnoseListingQuality({
+    payload: {
+      items: [
+        {
+          offer_id: "SKU-red",
+          name: "Игрушка для кошек красная",
+          description_category_id: 17028673,
+          type_id: 95183,
+          price: "1200",
+          images: [],
+          attributes: [
+            { id: 85, values: [{ dictionary_value_id: 971082, value: "Нет бренда" }] },
+            { id: 9048, values: [{ value: "Cat toy" }] },
+            { id: 10097, values: [{ value: "красный" }] },
+          ],
+        },
+        {
+          offer_id: "SKU-blue",
+          name: "Игрушка для кошек синяя",
+          description_category_id: 17028673,
+          type_id: 95183,
+          price: "1200",
+          images: ["https://example.com/common.jpg", "https://example.com/blue-detail.jpg", "https://example.com/blue-size.jpg"],
+          attributes: [
+            { id: 85, values: [{ dictionary_value_id: 971082, value: "Нет бренда" }] },
+            { id: 9048, values: [{ value: "Cat toy" }] },
+            { id: 10097, values: [{ value: "синий" }] },
+          ],
+        },
+        {
+          offer_id: "SKU-green",
+          name: "Игрушка для кошек зеленая",
+          description_category_id: 17028673,
+          type_id: 95183,
+          price: "1200",
+          images: ["https://example.com/common.jpg", "https://example.com/green-detail.jpg", "https://example.com/green-size.jpg"],
+          attributes: [
+            { id: 85, values: [{ dictionary_value_id: 971082, value: "Нет бренда" }] },
+            { id: 9048, values: [{ value: "Cat toy" }] },
+            { id: 10097, values: [{ value: "зеленый" }] },
+          ],
+        },
+      ],
+    },
+    attrsMeta: [
+      { id: 85, name: "Бренд", is_required: true, dictionary_id: 971082 },
+      { id: 9048, name: "Название модели (для объединения в одну карточку)", is_required: true },
+      { id: 10097, name: "Название цвета", is_aspect: true },
+    ],
+  });
+
+  assert.equal(diagnosis.status, "blocked");
+  assert.ok(diagnosis.blockedReasons.some((reason) => reason.code === "PRODUCT_IMAGES_TOO_FEW" && reason.offerId === "SKU-red"));
+  assert.ok(diagnosis.warnings.some((warning) => warning.code === "SKU_FIRST_IMAGE_NOT_UNIQUE"));
+  assert.ok(diagnosis.warnings.some((warning) => warning.code === "DETAIL_IMAGES_TOO_FEW"));
+  assert.deepEqual(diagnosis.imageQualityRecommendations.map((item) => item.code), [
+    "PRODUCT_IMAGES_TOO_FEW",
+    "DETAIL_IMAGES_TOO_FEW",
+    "SKU_FIRST_IMAGE_NOT_UNIQUE",
+  ]);
+  assert.ok(diagnosis.imageQualityRecommendations.every((item) => item.readOnly === true));
+  assert.ok(diagnosis.imageQualityRecommendations.every((item) => /重新预检/.test(item.nextStep)));
+  assert.ok(diagnosis.imageQualityRecommendations.every((item) => !/生成图片|GPT|提交 Ozon/.test(`${item.action} ${item.nextStep}`)));
+});
+
 test("diagnoseListingQuality explains Ozon content score by media, attributes, description, and package", () => {
   const diagnosis = diagnoseListingQuality({
     payload: {

@@ -146,6 +146,23 @@ test("frontend renders workflow pricing diagnosis panel", async () => {
   assert.match(css, /workflow-pricing-risk/);
 });
 
+test("frontend renders read-only image quality recommendations", async () => {
+  const [js, css] = await Promise.all([
+    readFile(new URL("../public/app.js", import.meta.url), "utf8"),
+    readFile(new URL("../public/styles.css", import.meta.url), "utf8"),
+  ]);
+
+  assert.match(js, /imageQualityRecommendations/);
+  assert.match(js, /renderListingImageQualityRecommendations/);
+  assert.match(js, /图片质量建议/);
+  const imageRecommendationSource = js.match(/function renderListingImageQualityRecommendations[\s\S]+?\n}\n\nfunction renderListingQualityPanel/)?.[0] || "";
+  assert.ok(imageRecommendationSource);
+  assert.doesNotMatch(imageRecommendationSource, /<button/);
+  assert.doesNotMatch(imageRecommendationSource, /fetch\(/);
+  assert.doesNotMatch(imageRecommendationSource, /data-workflow-action/);
+  assert.match(css, /workflow-listing-image-recommendations/);
+});
+
 test("frontend renders listing quality field repair panel", async () => {
   const [js, css] = await Promise.all([
     readFile(new URL("../public/app.js", import.meta.url), "utf8"),

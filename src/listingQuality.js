@@ -158,6 +158,20 @@ function pushUnique(list, item) {
   }
 }
 
+function pushImageRecommendation(list, item) {
+  const key = [item.code || "", item.offerId || ""].join("|");
+  if (list.some((entry) => [entry.code || "", entry.offerId || ""].join("|") === key)) return;
+  list.push({
+    readOnly: true,
+    severity: item.severity || "warning",
+    code: item.code || "IMAGE_QUALITY_RECOMMENDATION",
+    title: item.title || "图片质量建议",
+    offerId: item.offerId || "",
+    action: item.action || "人工检查图片质量。",
+    nextStep: item.nextStep || "处理后重新预检；仅提示，不写 Payload。",
+  });
+}
+
 function buildScoreBreakdown({ mediaScore, attributeScore, descriptionScore, packageScore }) {
   return {
     media: {
@@ -302,6 +316,7 @@ export function diagnoseListingQuality(input = {}) {
   const blockedReasons = [];
   const warnings = [];
   const nextActions = [];
+  const imageQualityRecommendations = [];
   let mediaScore = 100;
   let descriptionScore = 100;
   let packageScore = 100;
@@ -310,13 +325,21 @@ export function diagnoseListingQuality(input = {}) {
   for (const item of items) {
     const offerId = String(item?.offer_id || "").trim();
     const images = Array.isArray(item?.images) ? item.images.filter(Boolean) : [];
-    if (images.length > 0 && images.length < 3) {
+    if (images.length < 3) {
       blockedReasons.push({
         code: "PRODUCT_IMAGES_TOO_FEW",
         offerId,
         message: `${offerId || "当前商品"} 产品图少于 3 张，不能安全提交 Ozon。`,
       });
       nextActions.push("补齐至少 3 张产品图和必要 SKU 图。");
+      pushImageRecommendation(imageQualityRecommendations, {
+        severity: "blocked",
+        code: "PRODUCT_IMAGES_TOO_FEW",
+        title: "补齐产品图",
+        offerId,
+        action: "为该 SKU 补齐至少 3 张产品图，首图需要能代表当前变体。",
+        nextStep: "补图后重新预检；仅提示，不写 Payload。",
+      });
     } else if (images.length >= 3 && images.length < 5) {
       warnings.push({
         code: "DETAIL_IMAGES_TOO_FEW",
@@ -324,6 +347,13 @@ export function diagnoseListingQuality(input = {}) {
         message: `${offerId || "当前商品"} 详情/产品图偏少，可能影响 Ozon 商品分值。`,
       });
       nextActions.push("补充详情图、场景图或 SKU 图以提高商品分值。");
+      pushImageRecommendation(imageQualityRecommendations, {
+        severity: "warning",
+        code: "DETAIL_IMAGES_TOO_FEW",
+        title: "补充详情图",
+        action: "补充产品细节、尺寸、材质或使用场景图，避免轮播图只剩基础产品图。",
+        nextStep: "补图后重新预检；仅提示，不写 Payload。",
+      });
     }
 
     if (images.length >= 3 && images.length < 5) hasDetailImageWarning = true;
@@ -372,11 +402,37 @@ export function diagnoseListingQuality(input = {}) {
 
   if (items.length > 1) {
     const signatures = items.map((item) => imageSignature(item?.images || [])).filter(Boolean);
-    if (signatures.length && new Set(signatures).size < signatures.length) {
+    const hasDuplicateImageCombo = signatures.length && new Set(signatures).size < signatures.length;
+    const firstImages = items
+      .map((item) => String((Array.isArray(item?.images) ? item.images : [])[0] || "").trim().toLowerCase())
+      .filter(Boolean);
+    if (!hasDuplicateImageCombo && firstImages.length && new Set(firstImages).size < firstImages.length) {
+      mediaScore -= 15;
+      pushUnique(warnings, {
+        code: "SKU_FIRST_IMAGE_NOT_UNIQUE",
+        message: "多个 SKU 使用相同首图，建议让每个变体首图可区分。",
+      });
+      pushImageRecommendation(imageQualityRecommendations, {
+        severity: "warning",
+        code: "SKU_FIRST_IMAGE_NOT_UNIQUE",
+        title: "区分 SKU 首图",
+        action: "为不同颜色、尺码或套装准备可区分的第一张 SKU 图，避免变体在商品卡中混淆。",
+        nextStep: "换图后重新预检；仅提示，不写 Payload。",
+      });
+      nextActions.push("为每个变体准备可区分的第一张 SKU 图，修复后重新预检。");
+    }
+    if (hasDuplicateImageCombo) {
       mediaScore -= 15;
       pushUnique(warnings, {
         code: "SKU_IMAGES_NOT_UNIQUE",
         message: "多 SKU 使用了相同图片组合，建议为每个变体准备可区分的 SKU 图。",
+      });
+      pushImageRecommendation(imageQualityRecommendations, {
+        severity: "warning",
+        code: "SKU_IMAGES_NOT_UNIQUE",
+        title: "区分 SKU 图组合",
+        action: "为每个变体准备不同的 SKU 图组合，至少首图、颜色或套装差异应可见。",
+        nextStep: "换图后重新预检；仅提示，不写 Payload。",
       });
       nextActions.push("为每个变体补充可区分的 SKU 图，修复后重新预检。");
     }
@@ -456,6 +512,7 @@ export function diagnoseListingQuality(input = {}) {
     scoreBreakdown,
     blockedReasons,
     warnings,
+    imageQualityRecommendations,
     nextActions: uniqueNextActions.length ? uniqueNextActions : ["继续保持 Payload 预检和人工确认提交。"],
   };
 }

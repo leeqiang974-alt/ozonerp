@@ -293,6 +293,14 @@ test("frontend renders read-only variant configuration workbench", async () => {
   assert.match(js, /renderVariantConfigurationWorkbench/);
   assert.match(js, /variantConfiguration/);
   assert.match(js, /变体配置工作簿/);
+  assert.match(js, /变体覆盖摘要/);
+  assert.match(js, /aspectCoveredRowCount/);
+  assert.match(js, /duplicateAspectRowCount/);
+  assert.match(js, /missingAspectRowCount/);
+  assert.match(js, /uniqueSkuImageRowCount/);
+  assert.match(js, /nonUniqueSkuImageRowCount/);
+  assert.match(js, /missingSkuImageRowCount/);
+  assert.match(js, /readinessStatus/);
   assert.match(js, /SKU 图/);
   assert.match(js, /可变特性/);
   assert.match(js, /重复组合/);

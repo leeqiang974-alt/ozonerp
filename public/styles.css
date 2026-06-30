@@ -3523,6 +3523,29 @@ tr:hover td {
   font-weight: 800;
   padding: 4px 10px;
 }
+.workflow-variant-coverage-summary {
+  align-items: flex-start;
+  background: #ffffff;
+  border: 1px solid #e2e8f0;
+  border-radius: 8px;
+  color: #334155;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px 14px;
+  padding: 10px;
+}
+.workflow-variant-coverage-summary strong {
+  color: #0f172a;
+}
+.workflow-variant-coverage-summary span,
+.workflow-variant-coverage-summary small {
+  display: block;
+  line-height: 1.45;
+}
+.workflow-variant-coverage-summary small {
+  color: #64748b;
+  flex-basis: 100%;
+}
 .workflow-variant-workbench-table-wrap {
   overflow-x: auto;
 }

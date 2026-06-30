@@ -6449,6 +6449,15 @@ function variantWorkbenchPrimaryAspect(row = {}) {
   return (Array.isArray(row.aspects) ? row.aspects : []).find((aspect) => aspect?.id || aspect?.name) || null;
 }
 
+function variantCoverageStatusText(readinessStatus = "") {
+  const labels = {
+    ready: "覆盖达标",
+    warning: "图片待优化",
+    blocked: "变体阻塞",
+  };
+  return labels[readinessStatus] || "待预检";
+}
+
 function renderVariantConfigurationWorkbench(run = {}, node = {}) {
   const workbench = run.payloadDraftValidation?.variantConfiguration || node?.output?.variantConfiguration || null;
   const rows = Array.isArray(workbench?.rows) ? workbench.rows : [];
@@ -6462,6 +6471,12 @@ function renderVariantConfigurationWorkbench(run = {}, node = {}) {
           <p class="hint">只读工作簿：逐 SKU 查看型号、可变特性、SKU 图和重复组合；修复后必须重新预检。</p>
         </div>
         <span>${Number(summary.blockedRowCount || 0)} 个阻塞 / ${Number(summary.imageWarningRowCount || 0)} 个图片提醒</span>
+      </div>
+      <div class="workflow-variant-coverage-summary" aria-label="变体覆盖摘要">
+        <strong>变体覆盖摘要：${escapeHtml(variantCoverageStatusText(summary.readinessStatus))}</strong>
+        <span>属性覆盖 ${Number(summary.aspectCoveredRowCount || 0)}/${Number(summary.rowCount || rows.length)}，缺失 ${Number(summary.missingAspectRowCount || 0)}，重复 ${Number(summary.duplicateAspectRowCount || 0)}</span>
+        <span>SKU 图区分 ${Number(summary.uniqueSkuImageRowCount || 0)}/${Number(summary.rowCount || rows.length)}，缺图 ${Number(summary.missingSkuImageRowCount || 0)}，未区分 ${Number(summary.nonUniqueSkuImageRowCount || 0)}</span>
+        <small>${escapeHtml(summary.safeNextAction || "修复后重新预检；不会自动提交 Ozon。")}</small>
       </div>
       <div class="workflow-variant-workbench-table-wrap">
         <table class="workflow-variant-workbench-table">

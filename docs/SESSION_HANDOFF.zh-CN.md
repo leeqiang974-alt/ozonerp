@@ -204,6 +204,10 @@
   - 仅允许属性矩阵中 `status=missing`、`is_aspect=true`、非字典属性的单元格；字典 aspect 和重复 aspect 仍拒绝自动修复。
   - 写回后立即重新预检，仍保持 `submitLocked`，不会调用 Ozon 提交接口。
   - 上架中心“变体/SKU 图”任务卡和属性矩阵单元格新增“填写变体文本并预检 / 填写变体文本”按钮；用户输入后只写本地草稿并刷新 workflow 诊断。
+- 变体配置工作簿新增只读“变体覆盖摘要”：
+  - `variantConfiguration.summary` 现在输出 aspect 覆盖数、缺失 aspect 数、重复 aspect 数、唯一 SKU 图数、缺图数、未区分 SKU 图数、`readinessStatus` 和 `safeNextAction`。
+  - 前端工作簿顶部展示“属性覆盖 / SKU 图区分 / 安全下一步”，帮助用户先看整组是否达标，再看逐 SKU 明细。
+  - 该摘要只读取当前预检结果，不新增按钮、不写 Payload、不提交 Ozon，不触发 GPT/Image 成本。
 - 必填属性规则引擎 V2 继续修正原产国/制造商边界：
   - `Страна-изготовитель` / 原产国 / 生产国 / 制造国 走 `fixed_country_china`，只使用当前类目字典中的 Китай/中国。
   - 单独的 `Производитель` / 制造商不再被误识别为原产国；仍进入合规敏感人工阻塞。

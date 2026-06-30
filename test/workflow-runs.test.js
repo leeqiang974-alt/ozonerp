@@ -441,6 +441,14 @@ test("buildVariantConfigurationSummary explains duplicate aspects and SKU image 
   assert.equal(summary.summary.rowCount, 2);
   assert.equal(summary.summary.blockedRowCount, 2);
   assert.equal(summary.summary.imageWarningRowCount, 2);
+  assert.equal(summary.summary.aspectCoveredRowCount, 2);
+  assert.equal(summary.summary.duplicateAspectRowCount, 2);
+  assert.equal(summary.summary.missingAspectRowCount, 0);
+  assert.equal(summary.summary.uniqueSkuImageRowCount, 0);
+  assert.equal(summary.summary.nonUniqueSkuImageRowCount, 2);
+  assert.equal(summary.summary.missingSkuImageRowCount, 0);
+  assert.equal(summary.summary.readinessStatus, "blocked");
+  assert.match(summary.summary.safeNextAction, /变体属性/);
   assert.equal(summary.rows[0].rowStatus, "duplicate_aspect");
   assert.equal(summary.rows[0].skuImage.status, "not_unique");
   assert.ok(summary.rows[0].reasons.some((reason) => reason.code === "DUPLICATE_ASPECT"));
@@ -476,6 +484,10 @@ test("buildVariantConfigurationSummary accepts same model name when aspects diff
 
   assert.equal(summary.summary.blockedRowCount, 0);
   assert.equal(summary.summary.imageWarningRowCount, 0);
+  assert.equal(summary.summary.aspectCoveredRowCount, 2);
+  assert.equal(summary.summary.uniqueSkuImageRowCount, 2);
+  assert.equal(summary.summary.readinessStatus, "ready");
+  assert.match(summary.summary.safeNextAction, /可以继续预检/);
   assert.deepEqual(summary.rows.map((row) => row.rowStatus), ["valid", "valid"]);
   assert.deepEqual(summary.rows.map((row) => row.modelName), ["Органайзер", "Органайзер"]);
 });

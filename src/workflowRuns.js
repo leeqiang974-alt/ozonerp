@@ -332,6 +332,43 @@ function safeVariantNextAction(status = "", reasons = []) {
   return "变体配置暂未发现阻塞，继续查看预检总闸和人工确认。";
 }
 
+function variantCoverageSummary(rows = [], grouping = {}) {
+  const rowCount = rows.length;
+  const blockedRowCount = rows.filter((row) => ["duplicate_aspect", "missing_aspect", "pricing_blocked"].includes(row.rowStatus)).length;
+  const imageWarningRowCount = rows.filter((row) => ["missing", "not_unique"].includes(row.skuImage?.status)).length;
+  const duplicateAspectRowCount = rows.filter((row) => row.rowStatus === "duplicate_aspect").length;
+  const missingAspectRowCount = rows.filter((row) => row.rowStatus === "missing_aspect").length;
+  const pricingBlockedRowCount = rows.filter((row) => row.rowStatus === "pricing_blocked").length;
+  const aspectCoveredRowCount = rows.filter((row) => Array.isArray(row.aspects) && row.aspects.length > 0).length;
+  const uniqueSkuImageRowCount = rows.filter((row) => row.skuImage?.status === "unique").length;
+  const missingSkuImageRowCount = rows.filter((row) => row.skuImage?.status === "missing").length;
+  const nonUniqueSkuImageRowCount = rows.filter((row) => row.skuImage?.status === "not_unique").length;
+  const readinessStatus = blockedRowCount ? "blocked" : imageWarningRowCount ? "warning" : "ready";
+  let safeNextAction = "变体属性和 SKU 图覆盖已达标，可以继续预检总闸和人工确认。";
+  if (pricingBlockedRowCount) {
+    safeNextAction = "先修正定价阻塞 SKU，再重新预检；不会自动提交 Ozon。";
+  } else if (missingAspectRowCount || duplicateAspectRowCount) {
+    safeNextAction = "先补齐或区分变体属性组合，再重新预检；不会自动提交 Ozon。";
+  } else if (imageWarningRowCount) {
+    safeNextAction = "建议补齐或区分 SKU 图以提升商品卡质量，提交前仍需重新预检。";
+  }
+  return {
+    rowCount,
+    blockedRowCount,
+    imageWarningRowCount,
+    duplicateGroupCount: (grouping.duplicateGroups || []).length,
+    aspectCoveredRowCount,
+    missingAspectRowCount,
+    duplicateAspectRowCount,
+    pricingBlockedRowCount,
+    uniqueSkuImageRowCount,
+    missingSkuImageRowCount,
+    nonUniqueSkuImageRowCount,
+    readinessStatus,
+    safeNextAction,
+  };
+}
+
 function metaName(meta = {}) {
   return String(meta.name || meta.attribute_name || `属性 ${Number(meta.id || 0)}`);
 }
@@ -705,12 +742,7 @@ export function buildVariantConfigurationSummary(input = {}) {
   });
   return {
     rows,
-    summary: {
-      rowCount: rows.length,
-      blockedRowCount: rows.filter((row) => ["duplicate_aspect", "missing_aspect", "pricing_blocked"].includes(row.rowStatus)).length,
-      imageWarningRowCount: rows.filter((row) => ["missing", "not_unique"].includes(row.skuImage?.status)).length,
-      duplicateGroupCount: (grouping.duplicateGroups || []).length,
-    },
+    summary: variantCoverageSummary(rows, grouping),
   };
 }
 

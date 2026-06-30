@@ -214,6 +214,24 @@ test("frontend renders required attribute fill plan groups", async () => {
   assert.match(css, /required-fill-plan-row/);
 });
 
+test("frontend renders read-only variant configuration workbench", async () => {
+  const [js, css] = await Promise.all([
+    readFile(new URL("../public/app.js", import.meta.url), "utf8"),
+    readFile(new URL("../public/styles.css", import.meta.url), "utf8"),
+  ]);
+
+  assert.match(js, /renderVariantConfigurationWorkbench/);
+  assert.match(js, /variantConfiguration/);
+  assert.match(js, /变体配置工作簿/);
+  assert.match(js, /SKU 图/);
+  assert.match(js, /可变特性/);
+  assert.match(js, /重复组合/);
+  assert.match(js, /只读工作簿/);
+  assert.match(js, /重新预检/);
+  assert.match(css, /workflow-variant-workbench/);
+  assert.match(css, /variant-workbench-row/);
+});
+
 test("frontend exposes human repair entrypoints from listing attribute matrix cells", async () => {
   const [js, css] = await Promise.all([
     readFile(new URL("../public/app.js", import.meta.url), "utf8"),

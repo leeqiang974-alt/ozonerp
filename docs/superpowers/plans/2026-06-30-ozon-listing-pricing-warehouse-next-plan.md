@@ -182,7 +182,7 @@ npm run lint
 - Test: `test/frontend-static.test.js`
 - Docs: `docs/SESSION_HANDOFF.zh-CN.md`
 
-- [ ] **Step 1: Add failing tests for variant signature panel data**
+- [x] **Step 1: Add failing tests for variant signature panel data**
 
 Cases:
 
@@ -190,11 +190,11 @@ Cases:
 - missing SKU image produces warning or blocker according to current submission path.
 - same model name across variants is accepted when aspects differ.
 
-- [ ] **Step 2: Implement row-level variant summary**
+- [x] **Step 2: Implement row-level variant summary**
 
 Use existing `buildListingAttributeMatrix()` and variant aspect metadata. Do not create a separate variant truth source.
 
-- [ ] **Step 3: UI display**
+- [x] **Step 3: UI display**
 
 Add a compact matrix for:
 
@@ -205,7 +205,7 @@ Add a compact matrix for:
 - duplicate/not duplicate
 - safe next action
 
-- [ ] **Step 4: Verification**
+- [x] **Step 4: Verification**
 
 ```powershell
 node --test test/workflow-runs.test.js test/frontend-static.test.js

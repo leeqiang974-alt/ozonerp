@@ -3193,6 +3193,89 @@ tr:hover td {
   background: #f1f5f9;
   color: #334155;
 }
+.workflow-variant-workbench {
+  background: #f8fafc;
+  border: 1px solid #dbeafe;
+  border-radius: 8px;
+  display: grid;
+  gap: 10px;
+  padding: 12px;
+}
+.workflow-variant-workbench-head {
+  align-items: flex-start;
+  display: flex;
+  gap: 12px;
+  justify-content: space-between;
+}
+.workflow-variant-workbench-head strong {
+  color: #0f172a;
+}
+.workflow-variant-workbench-head p {
+  margin: 3px 0 0;
+}
+.workflow-variant-workbench-head > span {
+  background: #fff7ed;
+  border: 1px solid #fed7aa;
+  border-radius: 999px;
+  color: #9a3412;
+  flex: 0 0 auto;
+  font-size: 12px;
+  font-weight: 800;
+  padding: 4px 10px;
+}
+.workflow-variant-workbench-table-wrap {
+  overflow-x: auto;
+}
+.workflow-variant-workbench-table {
+  border-collapse: collapse;
+  min-width: 860px;
+  width: 100%;
+}
+.workflow-variant-workbench-table th,
+.workflow-variant-workbench-table td {
+  border: 1px solid #e2e8f0;
+  padding: 8px;
+  text-align: left;
+  vertical-align: top;
+}
+.workflow-variant-workbench-table thead th {
+  background: #eff6ff;
+  color: #1e3a8a;
+  font-size: 12px;
+}
+.variant-workbench-row td {
+  background: #fff;
+}
+.variant-workbench-row-duplicate_aspect td,
+.variant-workbench-row-pricing_blocked td {
+  background: #fef2f2;
+}
+.variant-workbench-row-missing_aspect td,
+.variant-workbench-row-missing_image td {
+  background: #fffbeb;
+}
+.variant-workbench-row td span,
+.variant-workbench-row td small {
+  display: block;
+  margin-top: 3px;
+}
+.variant-workbench-image {
+  border-radius: 999px;
+  display: inline-flex;
+  font-size: 12px;
+  font-weight: 800;
+  padding: 3px 8px;
+  width: fit-content;
+}
+.variant-workbench-image-unique {
+  background: #dcfce7;
+  color: #166534;
+}
+.variant-workbench-image-not_unique,
+.variant-workbench-image-missing {
+  background: #fef3c7;
+  color: #92400e;
+}
 .workflow-attribute-matrix {
   background: #f8fafc;
   border: 1px solid #dbeafe;

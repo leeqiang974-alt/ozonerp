@@ -7,6 +7,7 @@ import {
   appendWorkflowEvent,
   applyPayloadDraftAttributeRepair,
   buildListingAttributeMatrix,
+  buildVariantConfigurationSummary,
   buildVariantGroupingDiagnosis,
   buildVariantGroupingRepairDraft,
   buildPreflightGateNode,
@@ -407,6 +408,117 @@ test("buildPreflightGateNode carries required attribute fill plan without unlock
   assert.equal(plan.find((row) => row.attributeId === 999)?.action, "blocked_sensitive");
   assert.equal(node.status, "failed");
   assert.equal(node.runStatus, "waiting_human");
+});
+
+test("buildVariantConfigurationSummary explains duplicate aspects and SKU image status by row", () => {
+  const attrsMeta = [
+    { id: 9048, name: "Название модели (для объединения в одну карточку)", is_required: true },
+    { id: 10097, name: "Название цвета", is_aspect: true },
+  ];
+  const summary = buildVariantConfigurationSummary({
+    payload: { items: [
+      {
+        offer_id: "SKU-WHITE",
+        images: ["https://example.com/common.jpg", "https://example.com/1.jpg"],
+        attributes: [
+          { id: 9048, values: [{ value: "Органайзер" }] },
+          { id: 10097, values: [{ value: "белый" }] },
+        ],
+      },
+      {
+        offer_id: "SKU-BLUE",
+        images: ["https://example.com/common.jpg", "https://example.com/2.jpg"],
+        attributes: [
+          { id: 9048, values: [{ value: "Органайзер" }] },
+          { id: 10097, values: [{ value: "белый" }] },
+        ],
+      },
+    ] },
+    attrsMeta,
+  });
+
+  assert.equal(summary.summary.rowCount, 2);
+  assert.equal(summary.summary.blockedRowCount, 2);
+  assert.equal(summary.summary.imageWarningRowCount, 2);
+  assert.equal(summary.rows[0].rowStatus, "duplicate_aspect");
+  assert.equal(summary.rows[0].skuImage.status, "not_unique");
+  assert.ok(summary.rows[0].reasons.some((reason) => reason.code === "DUPLICATE_ASPECT"));
+  assert.ok(summary.rows[0].safeNextAction.includes("修正"));
+});
+
+test("buildVariantConfigurationSummary accepts same model name when aspects differ", () => {
+  const attrsMeta = [
+    { id: 9048, name: "Название модели (для объединения в одну карточку)", is_required: true },
+    { id: 10097, name: "Название цвета", is_aspect: true },
+  ];
+  const summary = buildVariantConfigurationSummary({
+    payload: { items: [
+      {
+        offer_id: "SKU-WHITE",
+        images: ["https://example.com/white.jpg"],
+        attributes: [
+          { id: 9048, values: [{ value: "Органайзер" }] },
+          { id: 10097, values: [{ value: "белый" }] },
+        ],
+      },
+      {
+        offer_id: "SKU-BLUE",
+        images: ["https://example.com/blue.jpg"],
+        attributes: [
+          { id: 9048, values: [{ value: "Органайзер" }] },
+          { id: 10097, values: [{ value: "синий" }] },
+        ],
+      },
+    ] },
+    attrsMeta,
+  });
+
+  assert.equal(summary.summary.blockedRowCount, 0);
+  assert.equal(summary.summary.imageWarningRowCount, 0);
+  assert.deepEqual(summary.rows.map((row) => row.rowStatus), ["valid", "valid"]);
+  assert.deepEqual(summary.rows.map((row) => row.modelName), ["Органайзер", "Органайзер"]);
+});
+
+test("buildPreflightGateNode carries variant configuration workbench data", () => {
+  const node = buildPreflightGateNode({
+    payload: { items: [
+      {
+        offer_id: "SKU-ONE",
+        name: "Органайзер",
+        description_category_id: 17028673,
+        type_id: 95183,
+        price: "1200",
+        images: ["https://example.com/white.jpg", "https://example.com/1.jpg", "https://example.com/2.jpg"],
+        attributes: [
+          { id: 85, values: [{ value: "Нет бренда" }] },
+          { id: 9048, values: [{ value: "Органайзер" }] },
+          { id: 10097, values: [{ value: "белый" }] },
+        ],
+      },
+      {
+        offer_id: "SKU-TWO",
+        name: "Органайзер",
+        description_category_id: 17028673,
+        type_id: 95183,
+        price: "1200",
+        images: ["https://example.com/blue.jpg", "https://example.com/1.jpg", "https://example.com/2.jpg"],
+        attributes: [
+          { id: 85, values: [{ value: "Нет бренда" }] },
+          { id: 9048, values: [{ value: "Органайзер" }] },
+          { id: 10097, values: [{ value: "синий" }] },
+        ],
+      },
+    ] },
+    attrsMeta: [
+      { id: 9048, name: "Название модели (для объединения в одну карточку)", is_required: true },
+      { id: 10097, name: "Название цвета", is_aspect: true },
+    ],
+    variantCount: 2,
+    contentSummary: { candidateImageCount: 3, skuVariantCount: 2, sizeWeightReady: true, contentIssues: [] },
+  });
+
+  assert.equal(node.output.variantConfiguration.summary.rowCount, 2);
+  assert.equal(node.output.variantConfiguration.rows[0].rowStatus, "valid");
 });
 
 test("buildListingAttributeMatrix summarizes required dictionary and variant attributes by SKU", () => {

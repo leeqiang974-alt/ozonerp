@@ -8,6 +8,47 @@
 
 本轮 Codex 桌面环境以 `C:\Users\Administrator\Documents\ozonerp` 为实际项目根；继续开发前仍需先确认 `git status` 和最近提交，避免误入旧复制目录。
 
+## 2026-06-30 变体配置工作簿
+
+### 已完成
+
+- 新增 `buildVariantConfigurationSummary()`，在 preflight/workflow 中输出逐 SKU 变体配置摘要：
+  - `offerId`、型号名称、Ozon 可变特性、aspect signature。
+  - SKU 图状态：已区分、未区分、缺失。
+  - 行状态：`valid`、`duplicate_aspect`、`missing_aspect`、`missing_image`、`pricing_blocked`。
+  - 行级原因和安全下一步。
+- `buildPayloadDraftValidation()` 与 `buildPreflightGateNode()` 现在输出 `variantConfiguration`，复用现有 `buildVariantGroupingDiagnosis()`，不创建第二套变体真相源。
+- 工作流 Payload 草稿区新增“变体配置工作簿”只读表格：
+  - 展示 SKU、型号、可变特性、SKU 图、判断、安全下一步。
+  - 多 SKU 使用相同首图会显示图片提醒。
+  - 重复 aspect 组合会显示行级阻塞，并引导修正后重新预检。
+
+### 安全边界
+
+- 工作簿只读展示，不调用 Ozon 写接口，不提交商品。
+- 修复仍走现有 Payload 草稿编辑/本地修复和重新预检。
+- 不改变 preflight、payload validation、workflow lock、`waiting_human`、pricing blocked 或人工二次确认。
+- 型号相同但 aspect 不同被视为合法；重点阻塞重复 aspect 组合。
+
+### Claude Code 搭配
+
+- 开发前已使用 `scripts/claude-ozon-review-nvidia.ps1` 做 Task 3 简报。
+- Claude 重点提醒：工作簿必须以预检/Payload 为事实源；不能提供快速提交；pricing blocked 必须能下沉到行级状态。
+
+### 已验证
+
+- TDD 红灯：
+  - `test/workflow-runs.test.js` 先因 `buildVariantConfigurationSummary` 未导出失败。
+  - `test/frontend-static.test.js` 先因缺少 `renderVariantConfigurationWorkbench` 失败。
+- 已通过：
+  - `node --test test/workflow-runs.test.js`，58/58 通过。
+  - `node --test test/frontend-static.test.js`，69/69 通过。
+
+### 下一步
+
+- 继续开发“定价策略升级”：把 `price`、`min_price`、`old_price` 从简单公式升级为可解释商业策略，并保持 blocked pricing 不可接受跳过。
+- 后续可把变体工作簿的“定位字段”与现有 Payload 字段定位进一步打通，但仍只改本地草稿并重新预检。
+
 ## 2026-06-30 必填属性规则引擎 V2：可解释填充计划
 
 ### 已完成

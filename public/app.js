@@ -6019,6 +6019,79 @@ function renderRequiredAttributeFillPlan(run = {}, node = {}) {
   `;
 }
 
+function variantWorkbenchStatusText(status = "") {
+  const map = {
+    valid: "可继续",
+    duplicate_aspect: "重复组合",
+    missing_aspect: "缺可变特性",
+    missing_image: "缺 SKU 图",
+    pricing_blocked: "价格阻塞",
+  };
+  return map[status] || "待检查";
+}
+
+function variantWorkbenchImageText(status = "") {
+  const map = {
+    unique: "已区分",
+    not_unique: "未区分",
+    missing: "缺失",
+  };
+  return map[status] || "待检查";
+}
+
+function renderVariantConfigurationWorkbench(run = {}, node = {}) {
+  const workbench = run.payloadDraftValidation?.variantConfiguration || node?.output?.variantConfiguration || null;
+  const rows = Array.isArray(workbench?.rows) ? workbench.rows : [];
+  if (rows.length < 2) return "";
+  const summary = workbench.summary || {};
+  return `
+    <section class="workflow-variant-workbench">
+      <div class="workflow-variant-workbench-head">
+        <div>
+          <strong>变体配置工作簿</strong>
+          <p class="hint">只读工作簿：逐 SKU 查看型号、可变特性、SKU 图和重复组合；修复后必须重新预检。</p>
+        </div>
+        <span>${Number(summary.blockedRowCount || 0)} 个阻塞 / ${Number(summary.imageWarningRowCount || 0)} 个图片提醒</span>
+      </div>
+      <div class="workflow-variant-workbench-table-wrap">
+        <table class="workflow-variant-workbench-table">
+          <thead>
+            <tr>
+              <th>SKU</th>
+              <th>型号</th>
+              <th>可变特性</th>
+              <th>SKU 图</th>
+              <th>判断</th>
+              <th>安全下一步</th>
+            </tr>
+          </thead>
+          <tbody>
+            ${rows.slice(0, 50).map((row) => `
+              <tr class="variant-workbench-row variant-workbench-row-${escapeHtml(row.rowStatus || "valid")}">
+                <td><code>${escapeHtml(row.offerId || "-")}</code></td>
+                <td>${escapeHtml(row.modelName || "未读取")}</td>
+                <td>${(row.aspects || []).length
+                  ? (row.aspects || []).map((aspect) => `<span>${escapeHtml(aspect.name || `属性 ${aspect.id || ""}`)}：${escapeHtml(aspect.value || "空")}</span>`).join("")
+                  : "缺少可变特性"}</td>
+                <td>
+                  <span class="variant-workbench-image variant-workbench-image-${escapeHtml(row.skuImage?.status || "missing")}">${escapeHtml(variantWorkbenchImageText(row.skuImage?.status))}</span>
+                  <small>${escapeHtml(row.skuImage?.message || "SKU 图待检查")}</small>
+                </td>
+                <td>
+                  <strong>${escapeHtml(variantWorkbenchStatusText(row.rowStatus))}</strong>
+                  ${(row.reasons || []).some((reason) => reason.code === "DUPLICATE_ASPECT") ? `<small>重复组合</small>` : ""}
+                </td>
+                <td>${escapeHtml(row.safeNextAction || "重新预检后继续。")}</td>
+              </tr>
+            `).join("")}
+          </tbody>
+        </table>
+      </div>
+      ${rows.length > 50 ? `<p class="hint">已显示前 50 个 SKU，其余变体请在 Payload 草稿中继续检查。</p>` : ""}
+    </section>
+  `;
+}
+
 function workflowPayloadIssueSummary(issues = []) {
   const counts = new Map();
   for (const issue of issues) {
@@ -6217,6 +6290,7 @@ function renderWorkflowDetail(run, node) {
       ${workflowPayloadDraftSummary(payloadDraft)}
       ${renderListingQualityPanel(run, node)}
       ${renderRequiredAttributeFillPlan(run, node)}
+      ${renderVariantConfigurationWorkbench(run, node)}
       ${renderListingAttributeMatrix(run, node)}
       ${payloadIssues.length ? `
         <div class="workflow-payload-issues">

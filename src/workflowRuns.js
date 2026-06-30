@@ -296,6 +296,42 @@ function attributeDisplayValue(attribute = {}) {
   )).filter(Boolean).join(", ");
 }
 
+function imageSignature(value = "") {
+  return String(value || "").trim().replace(/\?.*$/, "").toLowerCase();
+}
+
+function pricingRiskByOffer(pricing = {}) {
+  const risks = Array.isArray(pricing.risks) ? pricing.risks : [];
+  const map = new Map();
+  for (const risk of risks) {
+    const code = String(risk?.code || risk?.reasonCode || "");
+    if (!/^PRICING_/.test(code)) continue;
+    const offerId = String(risk.offerId || risk.offer_id || "*");
+    map.set(offerId, {
+      code,
+      message: risk.message || risk.messageZh || "该 SKU 存在定价风险。",
+    });
+  }
+  if (!map.size && /^PRICING_/.test(String(pricing.reasonCode || pricing.code || ""))) {
+    map.set("*", {
+      code: String(pricing.reasonCode || pricing.code),
+      message: pricing.message || pricing.messageZh || "当前商品存在定价阻塞。",
+    });
+  }
+  return map;
+}
+
+function safeVariantNextAction(status = "", reasons = []) {
+  if (status === "pricing_blocked") return "先修正该 SKU 定价风险，再重新预检；不会自动提交 Ozon。";
+  if (status === "duplicate_aspect") return "修正重复的可变特性组合后重新预检；不会自动提交 Ozon。";
+  if (status === "missing_aspect") return "补齐 Ozon 可变特性后重新预检；不会自动提交 Ozon。";
+  if (status === "missing_image") return "补齐 SKU 图后重新预检；不会自动提交 Ozon。";
+  if ((reasons || []).some((reason) => reason.code === "SKU_IMAGE_NOT_UNIQUE")) {
+    return "建议补区分 SKU 图以提高商品卡质量，提交前仍需重新预检。";
+  }
+  return "变体配置暂未发现阻塞，继续查看预检总闸和人工确认。";
+}
+
 function metaName(meta = {}) {
   return String(meta.name || meta.attribute_name || `属性 ${Number(meta.id || 0)}`);
 }
@@ -592,6 +628,79 @@ export function buildVariantGroupingDiagnosis(input = {}) {
   };
 }
 
+export function buildVariantConfigurationSummary(input = {}) {
+  const payload = input.payload || input.submitPayload || {};
+  const items = payloadItems(payload);
+  const attrsMeta = Array.isArray(input.attrsMeta) ? input.attrsMeta : [];
+  const grouping = buildVariantGroupingDiagnosis({ items, attrsMeta });
+  const duplicateOffers = new Set((grouping.duplicateGroups || []).flatMap((group) => group.offerIds || []));
+  const firstImageCounts = new Map();
+  for (const item of items) {
+    const first = imageSignature((item.images || [])[0] || "");
+    if (!first) continue;
+    firstImageCounts.set(first, (firstImageCounts.get(first) || 0) + 1);
+  }
+  const pricingByOffer = pricingRiskByOffer(input.pricing || input.pricingDiagnosis || {});
+  const rows = (grouping.rows || []).map((row, index) => {
+    const item = items[index] || {};
+    const offerId = String(item.offer_id || row.offerId || "");
+    const firstImage = imageSignature((item.images || [])[0] || "");
+    const reasons = [];
+    let rowStatus = "valid";
+    const pricingRisk = pricingByOffer.get(offerId) || pricingByOffer.get("*") || null;
+    if (pricingRisk) {
+      rowStatus = "pricing_blocked";
+      reasons.push({
+        code: "PRICING_BLOCKED",
+        message: pricingRisk.message || "该 SKU 存在定价阻塞，不能继续提交。",
+      });
+    }
+    if (!row.aspects?.length) {
+      rowStatus = rowStatus === "valid" ? "missing_aspect" : rowStatus;
+      reasons.push({ code: "MISSING_ASPECT", message: "缺少 Ozon 可变特性，无法确认变体合并。" });
+    }
+    if (duplicateOffers.has(offerId)) {
+      rowStatus = rowStatus === "pricing_blocked" ? rowStatus : "duplicate_aspect";
+      reasons.push({ code: "DUPLICATE_ASPECT", message: "可变特性组合重复，Ozon 可能无法合并为正确商品卡。" });
+    }
+    const skuImage = {
+      status: "unique",
+      url: (item.images || [])[0] || "",
+      message: "SKU 图已区分。",
+    };
+    if (!skuImage.url) {
+      skuImage.status = "missing";
+      skuImage.message = "缺少 SKU 图。";
+      if (rowStatus === "valid") rowStatus = "missing_image";
+      reasons.push({ code: "SKU_IMAGE_MISSING", message: "缺少 SKU 图，建议补齐后重新预检。" });
+    } else if (items.length > 1 && firstImageCounts.get(firstImage) > 1) {
+      skuImage.status = "not_unique";
+      skuImage.message = "SKU 图未区分。";
+      reasons.push({ code: "SKU_IMAGE_NOT_UNIQUE", message: "多个 SKU 使用相同首图，建议补区分图。" });
+    }
+    return {
+      offerId,
+      modelName: row.modelValue || "",
+      aspects: row.aspects || [],
+      aspectSignature: row.aspectSignature || "",
+      duplicateGroup: row.duplicateGroup || "",
+      skuImage,
+      rowStatus,
+      reasons,
+      safeNextAction: safeVariantNextAction(rowStatus, reasons),
+    };
+  });
+  return {
+    rows,
+    summary: {
+      rowCount: rows.length,
+      blockedRowCount: rows.filter((row) => ["duplicate_aspect", "missing_aspect", "pricing_blocked"].includes(row.rowStatus)).length,
+      imageWarningRowCount: rows.filter((row) => ["missing", "not_unique"].includes(row.skuImage?.status)).length,
+      duplicateGroupCount: (grouping.duplicateGroups || []).length,
+    },
+  };
+}
+
 export function buildVariantGroupingRepairDraft(input = {}) {
   const originalItems = payloadItems(input.originalPayload || {});
   const expectedOffers = [...new Set((input.skuOffers || []).map((offer) => String(offer || "").trim()).filter(Boolean))];
@@ -775,6 +884,11 @@ function buildPayloadDraftValidation(payload = {}, options = {}) {
     dictionaryLanguage: options.dictionaryLanguage || "ZH_HANS",
     dictionaryValuesByAttributeId: options.dictionaryValuesByAttributeId || {},
   });
+  const variantConfiguration = buildVariantConfigurationSummary({
+    payload,
+    attrsMeta: options.attrsMeta || [],
+    pricing: options.pricing || null,
+  });
   const qualityIssues = listingQualityIssues(listingQuality);
   const matrixIssues = listingAttributeMatrixIssues(attributeMatrix);
   const issues = [...(payloadValidation.issues || []), ...qualityIssues, ...matrixIssues];
@@ -787,6 +901,7 @@ function buildPayloadDraftValidation(payload = {}, options = {}) {
     listingQualityWarnings: Array.isArray(listingQuality.warnings) ? listingQuality.warnings : [],
     attributeMatrix,
     requiredAttributeFillPlan,
+    variantConfiguration,
   };
 }
 
@@ -816,6 +931,11 @@ export function buildPreflightGateNode(input = {}) {
     dictionaryValueCache: input.dictionaryValueCache || {},
     dictionaryValuesByAttributeId: input.dictionaryValuesByAttributeId || {},
     contentSummary: input.contentSummary || {},
+  });
+  const variantConfiguration = input.variantConfiguration || buildVariantConfigurationSummary({
+    payload: input.payload || {},
+    attrsMeta: input.attrsMeta || [],
+    pricing: input.pricing || null,
   });
   issues.push(...listingQualityIssues(listingQuality));
   issues.push(...listingAttributeMatrixIssues(attributeMatrix));
@@ -859,6 +979,7 @@ export function buildPreflightGateNode(input = {}) {
       listingQualityWarnings: Array.isArray(listingQuality.warnings) ? listingQuality.warnings : [],
       attributeMatrix,
       requiredAttributeFillPlan,
+      variantConfiguration,
       summary: {
         itemCount: payloadItems(input.payload || {}).length,
         variantCount: Number(input.variantCount || 0),

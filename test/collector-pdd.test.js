@@ -88,3 +88,25 @@ test("PDD parser filters page chrome from variants and product images", () => {
   assert.deepEqual(parsed.images, ["https://img.pddpic.com/mms-material-img/2023-10-31/product-a.jpeg"]);
   assert.deepEqual(parsed.skuVariants.map((item) => item.spec), ["圆形烟灰缸", "正方形烟灰缸"]);
 });
+
+test("PDD parser reads title and gallery from embedded page data", () => {
+  const parsed = parsePddProduct({
+    url: "https://mobile.yangkeduo.com/goods.html?goods_id=525147304298",
+    html: `<html><head><script>
+      window.__INITIAL_STATE__ = {
+        goods: {
+          goodsName: "圆形摆台硅胶模具 环氧树脂水晶滴胶手工材料",
+          goodsGallery: [
+            "https:\\/\\/img.pddpic.com\\/mms-material-img\\/2023-09-13\\/main-a.jpeg",
+            "https:\\/\\/img-1.pddpic.com\\/garner-api-new\\/review-noise.jpeg"
+          ],
+          price: "10.8"
+        }
+      };
+    </script></head><body></body></html>`,
+  });
+
+  assert.equal(parsed.title, "圆形摆台硅胶模具 环氧树脂水晶滴胶手工材料");
+  assert.deepEqual(parsed.images, ["https://img.pddpic.com/mms-material-img/2023-09-13/main-a.jpeg"]);
+  assert.equal(parsed.skuVariants[0].price, 10.8);
+});

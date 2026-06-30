@@ -2,16 +2,18 @@ const IMAGE_RE = /https?:\\?\/\\?\/[^"'\s<>]+?(?:\.jpg|\.jpeg|\.png|\.webp)(?:[^
 
 export function parsePddProduct({ url = "", html = "", hints = {} } = {}) {
   const cleanHtml = String(html || "");
+  const embedded = extractEmbeddedPddData(cleanHtml);
   const title = productTitle(
     hints.title
+    || embedded.title
     || meta(cleanHtml, "og:title")
     || meta(cleanHtml, "title")
     || match(cleanHtml, /<h1[^>]*>([\s\S]*?)<\/h1>/i)
     || match(cleanHtml, /<title[^>]*>([\s\S]*?)<\/title>/i)
   ).replace(/\s*[-_].*拼多多.*$/i, "");
-  const images = pickImages(cleanHtml, hints);
+  const images = pickImages(cleanHtml, hints, embedded);
   const attributes = normalizeAttributes(hints.attributes);
-  const skuVariants = normalizeVariants(hints.skuVariants, hints.price, images);
+  const skuVariants = normalizeVariants(hints.skuVariants, hints.price || embedded.price, images);
   const sizeWeight = normalizePackageInfo(hints.packageInfo || hints.sizeWeight || {});
   const goodsId = pddGoodsId(url || hints.url || "");
 
@@ -59,9 +61,10 @@ function productTitle(value) {
   return title;
 }
 
-function pickImages(html, hints) {
+function pickImages(html, hints, embedded = {}) {
   const set = new Set();
   for (const raw of hints.images || []) addImage(set, raw);
+  for (const raw of embedded.images || []) addImage(set, raw);
   for (const raw of html.match(IMAGE_RE) || []) addImage(set, raw);
   return [...set].filter(isLikelyPddImage).slice(0, 80);
 }
@@ -166,7 +169,7 @@ function normalizeImage(value) {
 
 function isLikelyPddImage(image) {
   return /pddpic\.com|pinduoduo\.com|yangkeduo\.com/i.test(image)
-    && !/avatar|logo|icon|sprite|coupon|promotion|brand|ddpay|oms_img_ng|funimg/i.test(image);
+    && !/avatar|logo|icon|sprite|coupon|promotion|brand|ddpay|oms_img_ng|funimg|garner-api|pdd_ims|img_check/i.test(image);
 }
 
 function isLikelyPddVariantSpec(value) {
@@ -190,6 +193,61 @@ function cleanupText(value) {
     .replace(/&#39;/g, "'")
     .replace(/\s+/g, " ")
     .trim();
+}
+
+function extractEmbeddedPddData(html = "") {
+  const title = firstEmbeddedString(html, [
+    "goodsName",
+    "goods_name",
+    "goodsTitle",
+    "goods_title",
+    "productName",
+    "product_name",
+    "shareTitle",
+    "share_title",
+  ]);
+  const price = firstEmbeddedString(html, [
+    "price",
+    "minPrice",
+    "min_price",
+    "groupPrice",
+    "group_price",
+    "normalPrice",
+  ]);
+  return {
+    title,
+    price,
+    images: embeddedImages(html),
+  };
+}
+
+function firstEmbeddedString(html, keys) {
+  for (const key of keys) {
+    const patterns = [
+      new RegExp(`["']${escapeRegExp(key)}["']\\s*:\\s*["']((?:\\\\.|[^"'\\\\]){1,300})["']`, "i"),
+      new RegExp(`\\b${escapeRegExp(key)}\\b\\s*:\\s*["']((?:\\\\.|[^"'\\\\]){1,300})["']`, "i"),
+      new RegExp(`${escapeRegExp(key)}\\s*=\\s*["']((?:\\\\.|[^"'\\\\]){1,300})["']`, "i"),
+    ];
+    for (const pattern of patterns) {
+      const value = decodeJsonishString(match(html, pattern));
+      if (value) return cleanupText(value);
+    }
+  }
+  return "";
+}
+
+function embeddedImages(html = "") {
+  return (html.match(IMAGE_RE) || []).map(decodeJsonishString);
+}
+
+function decodeJsonishString(value = "") {
+  const text = String(value || "");
+  if (!text) return "";
+  try {
+    return JSON.parse(`"${text.replace(/"/g, '\\"')}"`);
+  } catch {
+    return text.replace(/\\\//g, "/").replace(/\\u([\dA-Fa-f]{4})/g, (_, hex) => String.fromCharCode(parseInt(hex, 16)));
+  }
 }
 
 function stripTags(value) {

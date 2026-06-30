@@ -35,3 +35,12 @@ test("ERP collector extension filters PDD page chrome before capture", async () 
   assert.match(content, /拼单\|即将结束/);
   assert.match(content, /coupon\|promotion\|brand/);
 });
+
+test("ERP collector extension reads PDD embedded title fields", async () => {
+  const content = await readFile(new URL("../browser-extension/erp-collector-extension/content.js", import.meta.url), "utf8");
+
+  assert.match(content, /pddEmbeddedValue/);
+  assert.match(content, /goodsName/);
+  assert.match(content, /shareTitle/);
+  assert.match(content, /decodeJsonishString/);
+});

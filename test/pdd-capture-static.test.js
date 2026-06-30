@@ -25,3 +25,11 @@ test("server can promote captured PDD products into the matching candidate pool"
   assert.match(crawler, /captureId/);
   assert.match(crawler, /sourcePlatform/);
 });
+
+test("collection box refreshes duplicate captures when the new parse is better", async () => {
+  const source = await readFile(new URL("../src/collectionBox.js", import.meta.url), "utf8");
+
+  assert.match(source, /duplicateRefreshed/);
+  assert.match(source, /captureQualityScore/);
+  assert.match(source, /shouldRefreshDuplicate/);
+});

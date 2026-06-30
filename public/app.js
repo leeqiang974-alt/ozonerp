@@ -2593,6 +2593,7 @@ function renderCaptureBox() {
             </td>
             <td class="row-actions">
               <button class="small-blue edit-capture" type="button">编辑</button>
+              <button class="ghost promote-capture-candidate" type="button">转候选池</button>
               <button class="ghost delete-capture" type="button">删除</button>
             </td>
           </tr>
@@ -2663,8 +2664,24 @@ function bindCaptureBoxRows() {
       toast("采集箱店铺已更新");
     });
     row.querySelector(".edit-capture")?.addEventListener("click", () => editCaptureItem(id));
+    row.querySelector(".promote-capture-candidate")?.addEventListener("click", () => promoteCaptureToCandidate(id));
     row.querySelector(".delete-capture")?.addEventListener("click", () => deleteCaptureItem(id));
   });
+}
+
+async function promoteCaptureToCandidate(id) {
+  try {
+    const data = await api(`/api/1688/captures/${id}/to-candidate`, {
+      method: "POST",
+      body: JSON.stringify({}),
+    });
+    await loadCaptureBox();
+    await loadCrawlerCandidates();
+    const candidate = data.candidate || {};
+    toast(data.duplicate ? `候选池已有：${candidate.id || ""}` : `已转入候选池：${candidate.id || ""}`);
+  } catch (error) {
+    toast(error.message || "转入候选池失败", "error");
+  }
 }
 
 function sizeWeightFields() {

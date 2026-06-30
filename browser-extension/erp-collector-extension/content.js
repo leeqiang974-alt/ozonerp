@@ -919,6 +919,7 @@ function pickPddTitle() {
     document.querySelector("h1")?.innerText,
     document.querySelector("[class*='goodsName'], [class*='goods-name'], [data-testid*='title']")?.innerText,
     document.querySelector("meta[property='og:title']")?.content,
+    pddEmbeddedValue(["goodsName", "goods_name", "goodsTitle", "goods_title", "productName", "product_name", "shareTitle", "share_title"]),
     document.title,
   ];
   return candidates.map(cleanText).find((text) => text.length > 5 && !/拼多多|登录|验证码|安全验证/.test(text)) || "";
@@ -926,8 +927,9 @@ function pickPddTitle() {
 
 function pickPddPrice() {
   const scoped = cleanText(document.querySelector("[class*='price'], [data-testid*='price']")?.innerText || "");
+  const embedded = pddEmbeddedValue(["price", "minPrice", "min_price", "groupPrice", "group_price", "normalPrice"]);
   const bodyText = cleanText(document.body?.innerText || "");
-  return cleanPrice(scoped || bodyText.match(/¥\s*\d+(?:\.\d+)?|\d+(?:\.\d+)?\s*元/)?.[0] || "");
+  return cleanPrice(scoped || embedded || bodyText.match(/¥\s*\d+(?:\.\d+)?|\d+(?:\.\d+)?\s*元/)?.[0] || "");
 }
 
 function pickPddImages() {
@@ -942,6 +944,37 @@ function pickPddImages() {
 function pickPddVideo() {
   const url = document.querySelector("video")?.currentSrc || document.querySelector("video")?.src || "";
   return url ? { url, coverUrl: "", title: "", videoId: "" } : null;
+}
+
+function pddEmbeddedValue(keys) {
+  const html = document.documentElement?.innerHTML || "";
+  for (const key of keys) {
+    const patterns = [
+      new RegExp(`["']${escapeRegExp(key)}["']\\s*:\\s*["']((?:\\\\.|[^"'\\\\]){1,300})["']`, "i"),
+      new RegExp(`\\b${escapeRegExp(key)}\\b\\s*:\\s*["']((?:\\\\.|[^"'\\\\]){1,300})["']`, "i"),
+      new RegExp(`${escapeRegExp(key)}\\s*=\\s*["']((?:\\\\.|[^"'\\\\]){1,300})["']`, "i"),
+    ];
+    for (const pattern of patterns) {
+      const match = html.match(pattern);
+      const value = match ? decodeJsonishString(match[1]) : "";
+      if (cleanText(value)) return value;
+    }
+  }
+  return "";
+}
+
+function decodeJsonishString(value = "") {
+  const text = String(value || "");
+  if (!text) return "";
+  try {
+    return JSON.parse(`"${text.replace(/"/g, '\\"')}"`);
+  } catch {
+    return text.replace(/\\\//g, "/").replace(/\\u([\dA-Fa-f]{4})/g, (_, hex) => String.fromCharCode(parseInt(hex, 16)));
+  }
+}
+
+function escapeRegExp(value) {
+  return String(value).replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 }
 
 function pickPddAttributes() {

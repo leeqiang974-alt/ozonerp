@@ -56,9 +56,28 @@ export async function addCollectionItem({ parsed, storeId = "", includeVideo = t
   const now = new Date().toISOString();
   const items = await readBox();
   const key = offerKeyFromUrl(parsed?.url || "");
-  const duplicate = key ? items.find((item) => collectionKey(item) === key) : null;
+  const duplicateIndex = key ? items.findIndex((item) => collectionKey(item) === key) : -1;
+  const duplicate = duplicateIndex >= 0 ? items[duplicateIndex] : null;
   if (duplicate) {
     const sourceLabel = parsed?.source === "pdd" ? "拼多多" : "1688";
+    if (shouldRefreshDuplicate(duplicate.parsed, parsed)) {
+      const refreshed = {
+        ...duplicate,
+        storeId: storeId || duplicate.storeId || "",
+        includeVideo: Boolean(includeVideo),
+        status: duplicate.status === "candidate_ready" ? duplicate.status : "collected",
+        parsed,
+        updatedAt: now,
+      };
+      items[duplicateIndex] = refreshed;
+      await writeBox(items);
+      return {
+        ...refreshed,
+        duplicate: true,
+        duplicateRefreshed: true,
+        duplicateMessage: `这个 ${sourceLabel} 商品已经采集过，已用更完整的新数据刷新原记录。`,
+      };
+    }
     return {
       ...duplicate,
       duplicate: true,
@@ -77,6 +96,28 @@ export async function addCollectionItem({ parsed, storeId = "", includeVideo = t
   items.push(item);
   await writeBox(items);
   return item;
+}
+
+function shouldRefreshDuplicate(oldParsed = {}, newParsed = {}) {
+  return captureQualityScore(newParsed) > captureQualityScore(oldParsed);
+}
+
+function captureQualityScore(parsed = {}) {
+  const title = String(parsed.title || "").trim();
+  const warnings = Array.isArray(parsed.warnings) ? parsed.warnings.length : 0;
+  const skuCount = Array.isArray(parsed.skuVariants) ? parsed.skuVariants.length : 0;
+  const imageCount = Array.isArray(parsed.images) ? parsed.images.length : 0;
+  const size = parsed.sizeWeight || {};
+  const sizeReady = Boolean(size.weightG && size.lengthMm && size.widthMm && size.heightMm);
+  let score = 0;
+  if (title) score += 40;
+  if (sizeReady) score += 20;
+  score += Math.min(15, imageCount);
+  if (skuCount > 0 && skuCount <= 10) score += 15;
+  else if (skuCount > 10 && skuCount <= 30) score += 8;
+  else if (skuCount > 30) score -= 8;
+  score -= warnings * 8;
+  return score;
 }
 
 export async function getCollectionItem(id) {

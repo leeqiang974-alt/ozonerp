@@ -749,6 +749,14 @@ test("frontend exposes an actionable listing pipeline workbench", async () => {
   assert.match(css, /pipeline-stage-actions/);
 });
 
+test("capture box can promote collected products to sourcing candidates", async () => {
+  const js = await readFile(new URL("../public/app.js", import.meta.url), "utf8");
+
+  assert.match(js, /promote-capture-candidate/);
+  assert.match(js, /promoteCaptureToCandidate/);
+  assert.match(js, /\/api\/1688\/captures\/\$\{id\}\/to-candidate/);
+});
+
 test("listing pipeline workbench focuses on the current product, not history totals", async () => {
   const [html, js, css] = await Promise.all([
     readFile(new URL("../public/index.html", import.meta.url), "utf8"),

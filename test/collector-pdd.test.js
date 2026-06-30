@@ -152,3 +152,33 @@ test("PDD parser separates main, SKU, and detail images from embedded data", () 
   ]);
   assert.deepEqual(parsed.detailImages, ["https://img.pddpic.com/mms-material-img/2023-03-13/detail-size.jpeg"]);
 });
+
+test("PDD parser rejects internal numeric SKU ids as variant specs and prices", () => {
+  const parsed = parsePddProduct({
+    url: "https://mobile.yangkeduo.com/goods.html?goods_id=716982623030",
+    hints: {
+      price: 12.8,
+      images: ["https://img.pddpic.com/mms-material-img/2025-03-14/main.jpeg"],
+      skuVariants: [
+        {
+          skuId: "1707622811696",
+          spec: "3502499735,500326",
+          price: 3502499735,
+          image: "https://img.pddpic.com/mms-material-img/2025-03-14/sku.jpeg",
+        },
+      ],
+    },
+  });
+
+  assert.deepEqual(parsed.skuVariants, [{
+    skuId: "",
+    spec: "默认规格",
+    price: 12.8,
+    stock: "",
+    image: "https://img.pddpic.com/mms-material-img/2025-03-14/main.jpeg",
+    weightG: "",
+    lengthMm: "",
+    widthMm: "",
+    heightMm: "",
+  }]);
+});

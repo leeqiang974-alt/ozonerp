@@ -929,7 +929,7 @@ function pickPddPrice() {
   const scoped = cleanText(document.querySelector("[class*='price'], [data-testid*='price']")?.innerText || "");
   const embedded = pddEmbeddedValue(["price", "minPrice", "min_price", "groupPrice", "group_price", "normalPrice"]);
   const bodyText = cleanText(document.body?.innerText || "");
-  return cleanPrice(scoped || embedded || bodyText.match(/¥\s*\d+(?:\.\d+)?|\d+(?:\.\d+)?\s*元/)?.[0] || "");
+  return cleanPddPrice(scoped || embedded || bodyText.match(/¥\s*\d+(?:\.\d+)?|\d+(?:\.\d+)?\s*元/)?.[0] || "");
 }
 
 function pickPddImages() {
@@ -995,9 +995,9 @@ function pddEmbeddedSkuVariants() {
     for (const objectText of body.match(/\{[\s\S]*?\}/g) || []) {
       const spec = pddEmbeddedStringFromText(objectText, ["spec", "specText", "skuName", "sku_name", "name", "label"]);
       const skuId = pddEmbeddedStringFromText(objectText, ["skuId", "sku_id", "id"]);
-      const itemPrice = cleanPrice(pddEmbeddedStringFromText(objectText, ["price", "salePrice", "sale_price", "groupPrice", "group_price"])) || price;
+      const itemPrice = cleanPddPrice(pddEmbeddedStringFromText(objectText, ["price", "salePrice", "sale_price", "groupPrice", "group_price"])) || price;
       const image = normalizeImage(pddEmbeddedStringFromText(objectText, ["thumbUrl", "thumb_url", "imageUrl", "image_url", "skuImageUrl", "sku_image_url"]));
-      if (spec || skuId || itemPrice || image) {
+      if (isLikelyPddVariantSpec(spec) && (spec || skuId || itemPrice || image)) {
         variants.push({ skuId, spec: spec || "默认规格", price: itemPrice, stock: "", image: isLikelyPddProductImage(image) ? image : "" });
       }
     }
@@ -1102,6 +1102,7 @@ function isLikelyPddVariantSpec(text) {
   if (/质量|外观|实用|包装|做工|态度|回头客|效果|评价|物美价廉|可爱|精致|异味|手感|模具很好|大小合适|尺码合适|美观|走的挺准|使用方便|已抢\d+件/.test(value)) return false;
   if (/^(颜色|色号|款式|规格|尺寸|型号|大小|容量)$/.test(value)) return false;
   if (/^\d+$/.test(value)) return false;
+  if (/^[\d\s,，.]+$/.test(value)) return false;
   return true;
 }
 
@@ -1418,6 +1419,11 @@ function cleanPrice(value) {
   const text = String(value || "");
   const match = text.match(/\d+(?:\.\d+)?/);
   return match ? Number(match[0]) : "";
+}
+
+function cleanPddPrice(value) {
+  const price = cleanPrice(value);
+  return price > 0 && price < 100000 ? price : "";
 }
 
 function toNumber(value) {

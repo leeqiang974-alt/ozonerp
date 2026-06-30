@@ -88,13 +88,13 @@ function normalizeAttributes(items) {
 
 function normalizeVariants(items, fallbackPrice, images) {
   const variants = Array.isArray(items) ? items : [];
-  const inferredPrice = firstNumber(fallbackPrice, ...variants.map((item) => item.price || item.salePrice || item.groupPrice || item.spec || item.specText || item.name || item.label));
+  const inferredPrice = firstPddPrice(fallbackPrice, ...variants.map((item) => item.price || item.salePrice || item.groupPrice));
   const normalized = variants
     .filter((item) => isLikelyPddVariantSpec(item.spec || item.specText || item.name || item.label || ""))
     .map((item, index) => ({
       skuId: cleanupText(item.skuId || item.sku_id || item.id || ""),
       spec: cleanupText(item.spec || item.specText || item.name || item.label || ""),
-      price: firstNumber(item.price || item.salePrice || item.groupPrice || inferredPrice),
+      price: firstPddPrice(item.price || item.salePrice || item.groupPrice || inferredPrice),
       stock: firstNumber(item.stock || item.quantity || item.stockQuantity),
       image: normalizeImage(item.image || item.imageUrl || images[index] || ""),
       weightG: firstNumber(item.weightG),
@@ -104,7 +104,7 @@ function normalizeVariants(items, fallbackPrice, images) {
     }))
     .filter((item) => item.skuId || item.spec || item.price || item.image);
   if (normalized.length) return dedupeBy(normalized, (item) => `${item.skuId}:${item.spec}:${item.price}:${item.image}`).slice(0, 300);
-  const price = firstNumber(fallbackPrice, inferredPrice);
+  const price = firstPddPrice(fallbackPrice, inferredPrice);
   return price ? [{
     skuId: "",
     spec: "默认规格",
@@ -191,6 +191,7 @@ function isLikelyPddVariantSpec(value) {
   if (/质量|外观|实用|包装|做工|态度|回头客|效果|评价|物美价廉|可爱|精致|异味|手感|模具很好|大小合适|尺码合适|美观|走的挺准|使用方便|已抢\d+件/.test(text)) return false;
   if (/^(颜色|色号|款式|规格|尺寸|型号|大小|容量)$/.test(text)) return false;
   if (/^\d+$/.test(text)) return false;
+  if (/^[\d\s,，.]+$/.test(text)) return false;
   return true;
 }
 
@@ -319,6 +320,14 @@ function firstNumber(...values) {
   for (const value of values) {
     const number = typeof value === "string" ? Number(value.match(/\d+(?:\.\d+)?/)?.[0]) : Number(value);
     if (Number.isFinite(number) && number > 0) return number;
+  }
+  return "";
+}
+
+function firstPddPrice(...values) {
+  for (const value of values) {
+    const number = typeof value === "string" ? Number(value.match(/\d+(?:\.\d+)?/)?.[0]) : Number(value);
+    if (Number.isFinite(number) && number > 0 && number < 100000) return number;
   }
   return "";
 }

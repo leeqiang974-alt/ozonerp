@@ -929,6 +929,21 @@ test("dashboard single product outcome consumes workflow current product task su
   assert.match(js, /currentProductTask\.view === "listing"/);
 });
 
+test("dashboard reminders and product center reuse current product task summary", async () => {
+  const [js, css] = await Promise.all([
+    readFile(new URL("../public/app.js", import.meta.url), "utf8"),
+    readFile(new URL("../public/styles.css", import.meta.url), "utf8"),
+  ]);
+
+  assert.match(js, /latestCurrentProductTask/);
+  assert.match(js, /renderCurrentProductTaskReminder/);
+  assert.match(js, /today-reminder-current-task/);
+  assert.match(js, /product-current-task-reminder/);
+  assert.match(js, /summary\?\.currentProductTask/);
+  assert.match(css, /today-reminder-current-task/);
+  assert.match(css, /product-current-task-reminder/);
+});
+
 test("workflow console run cards expose current product task summary", async () => {
   const [js, css] = await Promise.all([
     readFile(new URL("../public/app.js", import.meta.url), "utf8"),

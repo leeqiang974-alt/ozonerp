@@ -1234,6 +1234,53 @@ function singleListingOutcomeState() {
   };
 }
 
+function latestCurrentProductTask() {
+  const taskPriority = {
+    blocked: 0,
+    waiting: 1,
+    needs_improvement: 2,
+    running: 3,
+    ready: 4,
+    done: 5,
+  };
+  return [...(state.workflowRuns || [])]
+    .map((run) => ({
+      task: run.summary?.currentProductTask || null,
+      updatedAt: run.updatedAt || run.createdAt || "",
+    }))
+    .filter((item) => item.task?.stage)
+    .sort((left, right) => {
+      const leftPriority = taskPriority[left.task.status] ?? 9;
+      const rightPriority = taskPriority[right.task.status] ?? 9;
+      if (leftPriority !== rightPriority) return leftPriority - rightPriority;
+      return String(right.updatedAt).localeCompare(String(left.updatedAt));
+    })[0]?.task || null;
+}
+
+function renderCurrentProductTaskReminder(task, options = {}) {
+  if (!task?.stage) return "";
+  const placement = options.placement === "products" ? "product-current-task-reminder" : "today-reminder-current-task";
+  const statusLabel = task.status === "blocked"
+    ? "卡住"
+    : task.status === "waiting"
+      ? "等待人工"
+      : task.status === "needs_improvement"
+        ? "可优化"
+        : "推进中";
+  const title = task.productTitle || task.offerId || task.runId || "当前商品";
+  const blockedAt = task.blockedAt || workflowNodeTitle(task.nodeKey || "") || task.stage;
+  const reason = task.reason || "当前商品需要按工作流摘要处理。";
+  const nextAction = task.nextAction || "进入对应业务模块继续处理。";
+  return `
+    <article class="${placement}" aria-label="当前商品任务">
+      <span>当前商品任务 · ${escapeHtml(statusLabel)}</span>
+      <strong>${escapeHtml(title)}</strong>
+      <p>${escapeHtml(blockedAt)}：${escapeHtml(reason)}</p>
+      <small>安全下一步：${escapeHtml(nextAction)}</small>
+    </article>
+  `;
+}
+
 function renderSingleListingOutcomePanel() {
   const body = $("#singleListingOutcomeBody");
   if (!body) return;
@@ -1388,6 +1435,7 @@ function renderStoreOperatingOverview() {
   const promotions = state.promotionRows || [];
   const workflows = state.workflowRuns || [];
   const summary = state.workflowSummary || {};
+  const currentProductTask = latestCurrentProductTask();
   const orderRevenue = orders.reduce((total, order) => {
     const productsTotal = (order.products || []).reduce((sum, product) => sum + Number(product.price || product.offer_price || 0), 0);
     return total + productsTotal;
@@ -1442,6 +1490,7 @@ function renderStoreOperatingOverview() {
         <strong>${reminders.length || 0}</strong>
       </div>
       <div class="today-reminder-list">
+        ${renderCurrentProductTaskReminder(currentProductTask, { placement: "dashboard" })}
         ${reminders.length ? reminders.map((item) => `
           <button type="button" class="today-reminder-item ${escapeHtml(item.tone)}" data-cockpit-view="${escapeHtml(item.view)}">
             <strong>${escapeHtml(item.title)}</strong>
@@ -4582,7 +4631,9 @@ function renderProductAssetLedger() {
   const snapshot = productAssetSnapshot();
   const missingPrice = snapshot.products.length - snapshot.priced.length;
   const missingStock = snapshot.products.length - snapshot.stocked.length;
+  const currentProductTask = latestCurrentProductTask();
   summary.innerHTML = [
+    renderCurrentProductTaskReminder(currentProductTask, { placement: "products" }),
     productAssetCard("商品总数", snapshot.products.length, "当前已加载 Ozon 商品资产", "info"),
     productAssetCard("待处理", snapshot.actionQueue.length, "错误、待修改、缺价或缺库存", snapshot.actionQueue.length ? "warning" : "success"),
     productAssetCard("在售商品", snapshot.selling.length, "正在产生经营结果的商品", "success"),

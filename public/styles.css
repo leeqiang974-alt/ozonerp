@@ -449,6 +449,37 @@
 .today-reminder-item.warning { background: rgba(255,237,213,.74); border-color: rgba(251,146,60,.28); }
 .today-reminder-item.danger { background: rgba(254,226,226,.7); border-color: rgba(248,113,113,.26); }
 .today-reminder-item.info { background: rgba(219,234,254,.72); border-color: rgba(96,165,250,.28); }
+.today-reminder-current-task,
+.product-current-task-reminder {
+  display: grid;
+  gap: 6px;
+  padding: 12px;
+  border: 1px solid rgba(37, 99, 235, .2);
+  border-radius: 10px;
+  background: linear-gradient(180deg, #eff6ff, #fff);
+}
+.today-reminder-current-task span,
+.product-current-task-reminder span {
+  color: var(--business-primary);
+  font-size: 12px;
+  font-weight: 900;
+}
+.today-reminder-current-task strong,
+.product-current-task-reminder strong {
+  color: var(--business-text);
+  line-height: 1.25;
+}
+.today-reminder-current-task p,
+.product-current-task-reminder p {
+  margin: 0;
+  color: var(--business-text);
+  line-height: 1.45;
+}
+.today-reminder-current-task small,
+.product-current-task-reminder small {
+  color: var(--business-muted);
+  line-height: 1.4;
+}
 .domain-operating-panel {
   display: grid;
   gap: 14px;
@@ -1720,7 +1751,7 @@ button:disabled {
 }
 .product-asset-summary {
   display: grid;
-  grid-template-columns: repeat(5, minmax(0, 1fr));
+  grid-template-columns: repeat(auto-fit, minmax(170px, 1fr));
   gap: 12px;
 }
 .product-asset-card {

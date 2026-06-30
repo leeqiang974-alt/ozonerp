@@ -55,6 +55,10 @@
   - 展示商品、卡点、原因和安全下一步。
   - 数据只来自 `summary.currentProductTask`。
   - 不新增提交按钮、不触发重试、不解析 raw payload。
+- Dashboard 今日提醒侧栏与商品中心产品资产台账新增只读“当前商品任务”提醒：
+  - 两处共用 `summary.currentProductTask`，优先显示被阻塞/等待人工/需优化的当前商品。
+  - Dashboard 仍是店铺经营总览，提醒只在侧栏出现，不把原始 workflow 诊断放进首页主区域。
+  - 商品中心只展示当前商品的状态提醒，不新增上架表单、采集入口或 Ozon 提交动作。
 
 ### 安全边界
 
@@ -70,6 +74,7 @@
 - 修复 Claude NVIDIA wrapper 后，完成后复审已能稳定输出；复审提醒继续守住 `summary.currentProductTask`、preflight、`waiting_human`、pricing blocked 和 stock queue 边界。
 - 复审输出里提到的 Vue/独立 JS 文件名并不存在，已按实际代码路径核对后只采纳安全边界提醒。
 - 工作流控制台展示切片复审给出 Critical 级边界提醒，但未指出当前 diff 的具体违规点；已核对实际实现为只读渲染，无新增按钮、API、重试或提交副作用。
+- 后续 Dashboard/商品中心复用切片仍需用 Claude NVIDIA 复审，重点检查是否误解析 raw payload、误加提交/重试按钮、或污染模块边界。
 
 ### 已验证
 
@@ -80,6 +85,7 @@
   - `node --test test/workflow-runs.test.js test/frontend-static.test.js`，132/132 通过。
   - `node --test test/frontend-static.test.js`，72/72 通过。
   - `node --test test/claude-nvidia-scripts.test.js test/workflow-runs.test.js test/frontend-static.test.js`，133/133 通过。
+  - `node --test test/frontend-static.test.js`，73/73 通过。
   - `npm test`，297/297 通过。
   - 最新全量 `npm test`，298/298 通过。
   - `npm run lint`，通过。
@@ -87,7 +93,8 @@
 
 ### 下一步
 
-- 继续把当前商品任务展示到工作流控制台的 run summary/card 中，并可在产品中心/侧边提醒复用同一个 `currentProductTask`，但仍不让 Dashboard 承担原始诊断细节。
+- 继续推进“分类属性与变体填写主动化”主线：把当前类目的必填属性、字典候选、变体 aspect/SKU 图、商品分值影响项做成更明确的填报任务队列。
+- 后续仍默认 Claude NVIDIA 搭配开发：实现后必须复审，Codex 以项目规则、测试和安全边界为最终判断。
 
 ## 2026-06-30 仓库匹配规则引擎 V1
 

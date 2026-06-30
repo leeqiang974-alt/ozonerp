@@ -944,7 +944,22 @@ function pickPddImages() {
 }
 
 function pickPddDetailImages() {
-  return pddEmbeddedImagesByKeys(["detailGallery", "detail_gallery", "detailImages", "detail_images", "descImages"]).slice(0, 120);
+  const embedded = pddEmbeddedImagesByKeys(["detailGallery", "detail_gallery", "detailImages", "detail_images", "descImages"]);
+  if (embedded.length) return embedded.slice(0, 120);
+  const detailSelectors = [
+    "[class*='detail'] img",
+    "[class*='desc'] img",
+    "[class*='content'] img",
+    "[class*='param'] img",
+    "[id*='detail'] img",
+  ];
+  const images = [];
+  for (const selector of detailSelectors) {
+    document.querySelectorAll(selector).forEach((image) => {
+      images.push(image.currentSrc || image.src || image.getAttribute("data-src") || image.getAttribute("data-original") || "");
+    });
+  }
+  return dedupe(images.map(normalizeImage).filter(isLikelyPddProductImage)).slice(0, 120);
 }
 
 function pickPddVideo() {
@@ -993,7 +1008,7 @@ function pddEmbeddedSkuVariants() {
   const variants = [];
   for (const body of pddEmbeddedArrayBodies(html, ["sku", "skus", "skuList", "sku_list", "skuVariants", "sku_variants"])) {
     for (const objectText of body.match(/\{[\s\S]*?\}/g) || []) {
-      const spec = pddEmbeddedStringFromText(objectText, ["spec", "specText", "skuName", "sku_name", "name", "label"]);
+      const spec = cleanPddVariantSpec(pddEmbeddedStringFromText(objectText, ["spec", "specText", "skuName", "sku_name", "name", "label"]));
       const skuId = pddEmbeddedStringFromText(objectText, ["skuId", "sku_id", "id"]);
       const itemPrice = cleanPddPrice(pddEmbeddedStringFromText(objectText, ["price", "salePrice", "sale_price", "groupPrice", "group_price"])) || price;
       const image = normalizeImage(pddEmbeddedStringFromText(objectText, ["thumbUrl", "thumb_url", "imageUrl", "image_url", "skuImageUrl", "sku_image_url"]));
@@ -1070,7 +1085,7 @@ function pickPddSkuVariants() {
   if (embedded.length) return embedded;
   const images = pickPddImages();
   const chips = [...document.querySelectorAll("button, [role='button'], [class*='sku'], [class*='spec']")]
-    .map((node) => cleanText(node.innerText || node.textContent || ""))
+    .map((node) => cleanPddVariantSpec(node.innerText || node.textContent || ""))
     .filter((text) => isLikelyPddVariantSpec(text))
     .slice(0, 60);
   const unique = dedupe(chips);
@@ -1096,14 +1111,21 @@ function isLikelyPddVariantSpec(text) {
   if (/购买|客服|收藏|分享|店铺|评价|登录/.test(value)) return false;
   if (/^¥?\s*\d+(?:\.\d+)?$/.test(value)) return false;
   if (/大促价|券后|满\d+减|件\d+\.?\d*折|^\d+(?:\.\d+)?折|买了又买|拼单|即将结束|立刻拼|这些人已拼|我拼过的店|人已拼/.test(value)) return false;
+  if (/满\d+返|返\d+|优惠|券|活动|促销/.test(value)) return false;
   if (/畅销榜|榜第\d+名/.test(value)) return false;
   if (/查看|确定|顶部|首页|帮助|反馈|进店|价格说明|历史浏览|更多|开始采集|找货源|确认采集|采集本页|采集到\s*ERP|跳过/.test(value)) return false;
   if (/退货|运费|包邮|无理由/.test(value)) return false;
-  if (/质量|外观|实用|包装|做工|态度|回头客|效果|评价|物美价廉|可爱|精致|异味|手感|模具很好|大小合适|尺码合适|美观|走的挺准|使用方便|已抢\d+件/.test(value)) return false;
-  if (/^(颜色|色号|款式|规格|尺寸|型号|大小|容量)$/.test(value)) return false;
+  if (/质量|外观|实用|包装|做工|态度|回头客|效果|评价|物美价廉|可爱|精致|异味|手感|模具很好|大小合适|尺码合适|美观|走的挺准|使用方便|已抢\d+件|物流|材质|好用|耐用|份量/.test(value)) return false;
+  if (/^(颜色|色号|款式|规格|尺寸|型号|大小|容量|属性|参数)$/.test(value)) return false;
+  if (/默认配|螺丝孔距离|孔距是|安装说明|适用范围/.test(value)) return false;
+  if (/[（(]\d+[）)]$/.test(value)) return false;
   if (/^\d+$/.test(value)) return false;
   if (/^[\d\s,，.]+$/.test(value)) return false;
   return true;
+}
+
+function cleanPddVariantSpec(value) {
+  return cleanText(value).replace(/(?:即将售罄|库存紧张|仅剩\d+件|马上抢光|热卖)$/g, "").trim();
 }
 
 function pageNeedsOzonHumanCheck() {

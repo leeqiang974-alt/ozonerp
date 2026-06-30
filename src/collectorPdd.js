@@ -90,10 +90,9 @@ function normalizeVariants(items, fallbackPrice, images) {
   const variants = Array.isArray(items) ? items : [];
   const inferredPrice = firstPddPrice(fallbackPrice, ...variants.map((item) => item.price || item.salePrice || item.groupPrice));
   const normalized = variants
-    .filter((item) => isLikelyPddVariantSpec(item.spec || item.specText || item.name || item.label || ""))
     .map((item, index) => ({
       skuId: cleanupText(item.skuId || item.sku_id || item.id || ""),
-      spec: cleanupText(item.spec || item.specText || item.name || item.label || ""),
+      spec: cleanupPddVariantSpec(item.spec || item.specText || item.name || item.label || ""),
       price: firstPddPrice(item.price || item.salePrice || item.groupPrice || inferredPrice),
       stock: firstNumber(item.stock || item.quantity || item.stockQuantity),
       image: normalizeImage(item.image || item.imageUrl || images[index] || ""),
@@ -102,6 +101,7 @@ function normalizeVariants(items, fallbackPrice, images) {
       widthMm: firstNumber(item.widthMm),
       heightMm: firstNumber(item.heightMm),
     }))
+    .filter((item) => isLikelyPddVariantSpec(item.spec))
     .filter((item) => item.skuId || item.spec || item.price || item.image);
   if (normalized.length) return dedupeBy(normalized, (item) => `${item.skuId}:${item.spec}:${item.price}:${item.image}`).slice(0, 300);
   const price = firstPddPrice(fallbackPrice, inferredPrice);
@@ -185,14 +185,21 @@ function isLikelyPddVariantSpec(value) {
   if (text.length > 40) return false;
   if (/^¥?\s*\d+(?:\.\d+)?$/.test(text)) return false;
   if (/大促价|券后|满\d+减|件\d+\.?\d*折|^\d+(?:\.\d+)?折|买了又买|拼单|即将结束|立刻拼|这些人已拼|我拼过的店|人已拼/.test(text)) return false;
+  if (/满\d+返|返\d+|优惠|券|活动|促销/.test(text)) return false;
   if (/畅销榜|榜第\d+名/.test(text)) return false;
   if (/查看|确定|顶部|首页|帮助|反馈|进店|价格说明|历史浏览|更多|开始采集|找货源|确认采集|采集本页|采集到\s*ERP|跳过/.test(text)) return false;
   if (/退货|运费|包邮|无理由/.test(text)) return false;
-  if (/质量|外观|实用|包装|做工|态度|回头客|效果|评价|物美价廉|可爱|精致|异味|手感|模具很好|大小合适|尺码合适|美观|走的挺准|使用方便|已抢\d+件/.test(text)) return false;
-  if (/^(颜色|色号|款式|规格|尺寸|型号|大小|容量)$/.test(text)) return false;
+  if (/质量|外观|实用|包装|做工|态度|回头客|效果|评价|物美价廉|可爱|精致|异味|手感|模具很好|大小合适|尺码合适|美观|走的挺准|使用方便|已抢\d+件|物流|材质|好用|耐用|份量/.test(text)) return false;
+  if (/^(颜色|色号|款式|规格|尺寸|型号|大小|容量|属性|参数)$/.test(text)) return false;
+  if (/默认配|螺丝孔距离|孔距是|安装说明|适用范围/.test(text)) return false;
+  if (/[（(]\d+[）)]$/.test(text)) return false;
   if (/^\d+$/.test(text)) return false;
   if (/^[\d\s,，.]+$/.test(text)) return false;
   return true;
+}
+
+function cleanupPddVariantSpec(value) {
+  return cleanupText(value).replace(/(?:即将售罄|库存紧张|仅剩\d+件|马上抢光|热卖)$/g, "").trim();
 }
 
 function cleanupText(value) {

@@ -182,3 +182,30 @@ test("PDD parser rejects internal numeric SKU ids as variant specs and prices", 
     heightMm: "",
   }]);
 });
+
+test("PDD parser keeps real specs and rejects review or promo chips", () => {
+  const parsed = parsePddProduct({
+    url: "https://mobile.yangkeduo.com/goods.html?goods_id=732672546761",
+    hints: {
+      price: 20,
+      images: [
+        "https://img.pddpic.com/mms-material-img/2025-04-14/main.jpeg",
+        "https://img.pddpic.com/mms-material-img/2025-04-14/silver.jpeg",
+      ],
+      skuVariants: [
+        { spec: "满20返2", price: 20 },
+        { spec: "物流很快(94)", price: 20 },
+        { spec: "材质耐用(86)", price: 20 },
+        { spec: "属性", price: 20 },
+        { spec: "默认配22毫米螺丝", price: 20 },
+        { spec: "8620-6.4厘米孔距（古银）", price: 20 },
+        { spec: "8620-6.4厘米孔距（仿金）即将售罄", price: 20 },
+      ],
+    },
+  });
+
+  assert.deepEqual(parsed.skuVariants.map((item) => item.spec), [
+    "8620-6.4厘米孔距（古银）",
+    "8620-6.4厘米孔距（仿金）",
+  ]);
+});

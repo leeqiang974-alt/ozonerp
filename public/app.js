@@ -4331,11 +4331,108 @@ function updateProductCounts(counts) {
   });
 }
 
+function productAssetSnapshot() {
+  const products = state.productRows || [];
+  const archived = products.filter((item) => item.archived || ["archived", "delisted"].includes(item.status_group));
+  const selling = products.filter((item) => item.status_group === "selling" && !item.archived);
+  const reviewing = products.filter((item) => ["ready", "moderating", "pending"].includes(item.status_group) && !item.archived);
+  const actionQueue = products.filter((item) => productAssetIssues(item).length > 0 && !item.archived);
+  const priced = products.filter((item) => Number(item.price || 0) > 0);
+  const stocked = products.filter((item) => Number(item.fbs_stock ?? item.stock ?? 0) > 0);
+  return {
+    products,
+    actionQueue,
+    selling,
+    reviewing,
+    archived,
+    priced,
+    stocked,
+  };
+}
+
+function productAssetIssues(item = {}) {
+  const issues = [];
+  const stock = Number(item.fbs_stock ?? item.stock ?? 0);
+  const price = Number(item.price || 0);
+  if (["error", "needFix"].includes(item.status_group) || item.status === "error") issues.push(item.status_group === "needFix" ? "待修改" : "审核/状态错误");
+  if (item.errors?.length) issues.push(`错误 ${item.errors.length}`);
+  if (stock <= 0 && !["archived", "delisted"].includes(item.status_group)) issues.push("缺库存");
+  if (price <= 0 && !["archived", "delisted"].includes(item.status_group)) issues.push("缺价格");
+  if (item.reasons?.length) issues.push("有失败原因");
+  return [...new Set(issues)];
+}
+
+function productAssetCard(label, value, note, tone = "info") {
+  return `
+    <article class="product-asset-card ${escapeHtml(tone)}">
+      <span>${escapeHtml(label)}</span>
+      <strong>${escapeHtml(String(value))}</strong>
+      <small>${escapeHtml(note)}</small>
+    </article>
+  `;
+}
+
+function productLedgerItemHtml(item, mode = "default") {
+  const issues = productAssetIssues(item);
+  const issueText = issues.length ? issues.slice(0, 3).join(" / ") : item.status_label || "状态正常";
+  const price = item.price ? `${formatMoney(item.price)} ${item.currency_code || ""}`.trim() : "未定价";
+  const stock = item.fbs_stock ?? item.stock ?? 0;
+  const tone = issues.length ? "warning" : mode;
+  return `
+    <article class="product-ledger-item ${escapeHtml(tone)}">
+      <div class="product-ledger-title">
+        <strong>${escapeHtml(item.name || item.offer_id || "未命名商品")}</strong>
+        <span>${escapeHtml(item.offer_id || item.sku || item.product_id || "-")}</span>
+      </div>
+      <div class="product-ledger-meta">
+        <span>${escapeHtml(item.status_label || item.status_group || "-")}</span>
+        <span>${escapeHtml(price)}</span>
+        <span>FBS ${escapeHtml(String(stock))}</span>
+      </div>
+      <p>${escapeHtml(issueText)}</p>
+    </article>
+  `;
+}
+
+function productLedgerEmpty(message) {
+  return `<p class="product-ledger-empty">${escapeHtml(message)}</p>`;
+}
+
+function renderProductAssetLedger() {
+  const summary = $("#productAssetSummary");
+  if (!summary) return;
+  const snapshot = productAssetSnapshot();
+  const missingPrice = snapshot.products.length - snapshot.priced.length;
+  const missingStock = snapshot.products.length - snapshot.stocked.length;
+  summary.innerHTML = [
+    productAssetCard("商品总数", snapshot.products.length, "当前已加载 Ozon 商品资产", "info"),
+    productAssetCard("待处理", snapshot.actionQueue.length, "错误、待修改、缺价或缺库存", snapshot.actionQueue.length ? "warning" : "success"),
+    productAssetCard("在售商品", snapshot.selling.length, "正在产生经营结果的商品", "success"),
+    productAssetCard("缺库存/缺价", `${Math.max(0, missingStock)} / ${Math.max(0, missingPrice)}`, "库存和价格是运营优先级", missingStock || missingPrice ? "warning" : "success"),
+    productAssetCard("审核/归档", `${snapshot.reviewing.length} / ${snapshot.archived.length}`, "提交回执和非在售资产分开看", "info"),
+  ].join("");
+
+  const groups = [
+    ["#productAssetActionQueue", snapshot.actionQueue, "当前没有高优先级商品风险。", "warning"],
+    ["#productSellingLedger", snapshot.selling, "当前没有加载到在售商品。", "success"],
+    ["#productReviewLedger", snapshot.reviewing, "当前没有待上架或审核中的商品。", "info"],
+    ["#productArchivedLedger", snapshot.archived, "当前没有下架或归档商品。", "muted"],
+  ];
+  groups.forEach(([selector, rows, emptyText, mode]) => {
+    const box = $(selector);
+    if (!box) return;
+    box.innerHTML = rows.length
+      ? rows.slice(0, 6).map((item) => productLedgerItemHtml(item, mode)).join("")
+      : productLedgerEmpty(emptyText);
+  });
+}
+
 function renderProducts() {
   const rows = state.productStatus === "all"
     ? state.productRows
     : state.productRows.filter((item) => item.status_group === state.productStatus);
 
+  renderProductAssetLedger();
   $("#productsTable").innerHTML = rows.length
     ? rows.map(productRowHtml).join("")
     : "<tr><td colspan=\"9\" class=\"product-empty\">没有匹配的商品。</td></tr>";

@@ -571,6 +571,29 @@ test("secondary ERP domains render real operating panels instead of placeholders
   assert.match(css, /domain-risk-list/);
 });
 
+test("product center exposes an ERP product asset ledger", async () => {
+  const [html, js, css] = await Promise.all([
+    readFile(new URL("../public/index.html", import.meta.url), "utf8"),
+    readFile(new URL("../public/app.js", import.meta.url), "utf8"),
+    readFile(new URL("../public/styles.css", import.meta.url), "utf8"),
+  ]);
+
+  for (const id of [
+    "productAssetSummary",
+    "productAssetActionQueue",
+    "productSellingLedger",
+    "productReviewLedger",
+    "productArchivedLedger",
+  ]) {
+    assert.match(html, new RegExp(id));
+  }
+  assert.match(html, /商品资产台账/);
+  assert.match(js, /productAssetSnapshot/);
+  assert.match(js, /renderProductAssetLedger/);
+  assert.match(css, /product-asset-summary/);
+  assert.match(css, /product-ledger-section/);
+});
+
 test("frontend exposes a seller operating model instead of hidden developer navigation", async () => {
   const [html, js, css] = await Promise.all([
     readFile(new URL("../public/index.html", import.meta.url), "utf8"),

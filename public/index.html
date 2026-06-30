@@ -749,8 +749,8 @@
       <section id="products" class="view">
         <header class="page-head">
           <div>
-            <h1>商品</h1>
-            <p>按状态区分商品，展示图片、货号、SKU、状态、价格和 FBS 仓库库存。</p>
+            <h1>商品资产台账</h1>
+            <p>先看商品资产健康、待修复、在售、审核中和已下架归档，再进入完整明细。</p>
           </div>
           <div class="actions">
             <button id="loadProducts" class="primary">刷新商品</button>
@@ -773,6 +773,28 @@
           </label>
           <button id="applyProductSearch" class="ghost">筛选器</button>
         </div>
+
+        <section class="product-asset-ledger">
+          <div id="productAssetSummary" class="product-asset-summary"></div>
+          <div class="product-ledger-grid">
+            <section class="product-ledger-section priority">
+              <div class="section-headline"><div><h2>待处理商品</h2><p class="hint">错误、待修改、缺库存、缺价格和资料风险优先处理。</p></div></div>
+              <div id="productAssetActionQueue" class="product-ledger-list"></div>
+            </section>
+            <section class="product-ledger-section">
+              <div class="section-headline"><div><h2>在售商品</h2><p class="hint">正常销售商品的价格、库存和状态台账。</p></div></div>
+              <div id="productSellingLedger" class="product-ledger-list"></div>
+            </section>
+            <section class="product-ledger-section">
+              <div class="section-headline"><div><h2>待上架/审核中</h2><p class="hint">准备销售、审核回执和提交后等待确认的商品。</p></div></div>
+              <div id="productReviewLedger" class="product-ledger-list"></div>
+            </section>
+            <section class="product-ledger-section muted">
+              <div class="section-headline"><div><h2>已下架/归档</h2><p class="hint">不再和在售商品混在一起，避免误判经营状态。</p></div></div>
+              <div id="productArchivedLedger" class="product-ledger-list"></div>
+            </section>
+          </div>
+        </section>
 
         <div class="table-wrap product-table-wrap">
           <table class="product-table">

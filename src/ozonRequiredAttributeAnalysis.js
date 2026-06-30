@@ -9,7 +9,7 @@ export function classifyAttributeFillStrategy(attribute = {}) {
   if (id === 9048 || /название модели|модель.*карточ|型号|模型名称/.test(text)) {
     return strategy("model_name_from_parent_sku", "用父 SKU/商品族名称统一生成模型名，用于 Ozon 合并同一卡片。", "high");
   }
-  if (/страна|изготовител|производител|原产国|生产国|制造国/.test(text)) {
+  if (isOriginCountryAttribute(attribute)) {
     return strategy("fixed_country_china", "跨境 1688 货源默认中国；字典值优先匹配 Китай/中国。", "high");
   }
   if (id === 85 || /бренд|brand|品牌/.test(text)) {
@@ -374,8 +374,18 @@ function packageValueForMeta(meta = {}, packageInfo = {}) {
 }
 
 function isComplianceSensitive(attribute = {}) {
+  if (isOriginCountryAttribute(attribute)) return false;
   const text = normalizeText(`${attribute.name || ""} ${attribute.description || ""}`);
   return /срок годности|годност|условия хран|хранени|состав|опасн|hazard|danger|температур|сертификат|сертификац|медицин|лекарств|аккумулятор|батаре|детск|пище|космет|изготовител|производител|保质期|储存|成分|危险|温度|认证|医疗|电池|儿童|食品|化妆|制造商/.test(text);
+}
+
+function isOriginCountryAttribute(attribute = {}) {
+  const id = Number(attribute.id || 0);
+  const text = normalizeText(`${attribute.name || ""} ${attribute.description || ""}`);
+  return id === 4389
+    || /страна[\s-]*(изготов|производ)/.test(text)
+    || /country of origin|origin country/.test(text)
+    || /原产国|生产国|制造国/.test(text);
 }
 
 function normalizeText(value = "") {

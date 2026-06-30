@@ -254,11 +254,14 @@ test("buildRequiredAttributeFillPlan keeps dictionary candidates in current cate
     categoryMatch: { description_category_id: 17028673, type_id: 95183 },
     attrsMeta: [
       { id: 9048, name: "Название модели (для объединения в одну карточку)", is_required: true },
+      { id: 4389, name: "Страна-изготовитель", is_required: true, dictionary_id: 200 },
       { id: 777, name: "Материал", is_required: true, dictionary_id: 100 },
       { id: 888, name: "Вес товара, г", is_required: true },
       { id: 999, name: "Срок годности", is_required: true },
+      { id: 23487, name: "Производитель", is_required: true, dictionary_id: 300 },
     ],
     attributeValuesById: {
+      4389: [{ id: 22, value: "Китай" }],
       777: [
         { id: 11, value: "пластик" },
         { id: 12, value: "металл" },
@@ -268,6 +271,12 @@ test("buildRequiredAttributeFillPlan keeps dictionary candidates in current cate
     productText: "Кухонный органайзер из пластика",
     packageInfo: { weight: 700, depth: 220, width: 160, height: 80 },
   });
+
+  const originPlan = plan.find((row) => row.attributeId === 4389);
+  assert.equal(originPlan.action, "auto_fill");
+  assert.equal(originPlan.strategy, "fixed_country_china");
+  assert.equal(originPlan.dictionaryValueId, 22);
+  assert.equal(originPlan.source, "fixed_country_china");
 
   const dictionaryPlan = plan.find((row) => row.attributeId === 777);
   assert.equal(dictionaryPlan.action, "suggest_dictionary");
@@ -282,6 +291,10 @@ test("buildRequiredAttributeFillPlan keeps dictionary candidates in current cate
   const sensitivePlan = plan.find((row) => row.attributeId === 999);
   assert.equal(sensitivePlan.action, "blocked_sensitive");
   assert.equal(sensitivePlan.confidence, "low");
+
+  const manufacturerPlan = plan.find((row) => row.attributeId === 23487);
+  assert.equal(manufacturerPlan.action, "blocked_sensitive");
+  assert.equal(manufacturerPlan.strategy, "compliance_sensitive");
 });
 
 test("buildListingPayloadDraftFromJob applies explainable pricing policy fields", () => {

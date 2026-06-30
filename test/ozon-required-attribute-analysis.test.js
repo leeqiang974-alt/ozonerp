@@ -24,6 +24,13 @@ test("classifyAttributeFillStrategy maps common required Ozon fields", () => {
     is_required: true,
     dictionary_id: 1935,
   }).strategy, "fixed_country_china");
+  assert.notEqual(classifyAttributeFillStrategy({
+    id: 23487,
+    name: "Производитель",
+    description: "Название производителя товара.",
+    is_required: true,
+    dictionary_id: 1935,
+  }).strategy, "fixed_country_china");
   assert.equal(classifyAttributeFillStrategy({ id: 777, name: "Материал", is_required: true, dictionary_id: 456 }).strategy, "dictionary_lookup_from_product_text");
 });
 

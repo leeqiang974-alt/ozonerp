@@ -360,7 +360,7 @@ npm run lint
 - Test: `test/frontend-static.test.js`
 - Docs: `docs/SESSION_HANDOFF.zh-CN.md`
 
-- [ ] **Step 1: Add tests for review/status-to-task mapping**
+- [x] **Step 1: Add tests for review/status-to-task mapping**
 
 Cases:
 
@@ -369,11 +369,11 @@ Cases:
 - stock write waiting maps to warehouse queue.
 - dashboard only receives summary and next action.
 
-- [ ] **Step 2: Implement feedback mapper**
+- [x] **Step 2: Implement feedback mapper**
 
 Keep mapping in workflow/listing domain. Dashboard reads the mapped summary but does not inspect raw payload fields.
 
-- [ ] **Step 3: Verification**
+- [x] **Step 3: Verification**
 
 ```powershell
 node --test test/workflow-runs.test.js test/frontend-static.test.js
@@ -386,6 +386,14 @@ npm run lint
 - Current product tells the seller: who, blocked where, why, next safe action.
 - Historical failures stay folded into workflow console advanced diagnostics.
 - Dashboard remains sales/operations overview plus side reminders.
+
+**Completed 2026-06-30:**
+
+- Added `workflowCurrentProductTask()` and exposed it through `summarizeWorkflowRun().currentProductTask`.
+- Mapped review failures to listing repair, accepted low-score products to content improvement, and stock waiting to warehouse queue.
+- Dashboard single product outcome now consumes `summary.currentProductTask` instead of parsing raw review/payload details.
+- Verified targeted commands: `node --test test/workflow-runs.test.js` (61/61 pass), `node --test test/workflow-runs.test.js test/frontend-static.test.js` (132/132 pass).
+- After fixing the Claude NVIDIA wrapper, verified `node --test test/claude-nvidia-scripts.test.js test/workflow-runs.test.js test/frontend-static.test.js` (133/133 pass), `npm test` (297/297 pass), `npm run lint` (pass), and `git diff --check` (pass).
 
 ## Recommended Order
 

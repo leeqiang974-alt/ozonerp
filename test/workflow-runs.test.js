@@ -35,6 +35,7 @@ import {
   upsertWorkflowNode,
   validatePayloadDraft,
   validateSubmitPayload,
+  workflowCurrentProductTask,
 } from "../src/workflowRuns.js";
 
 const tmpFile = path.join(process.cwd(), "data", "workflow-runs.test.json");
@@ -1845,6 +1846,92 @@ test("workflowReviewReconcileNode summarizes Ozon import feedback", () => {
   assert.equal(node.output.reasonCode, "ATTRIBUTE_REQUIRED");
   assert.equal(node.diagnosis.reasonCode, "ATTRIBUTE_REQUIRED");
   assert.ok(node.recommendedActions.includes("按诊断修复 Payload"));
+});
+
+test("workflowCurrentProductTask maps review failure to listing repair", () => {
+  const reviewNode = workflowReviewReconcileNode({
+    taskId: 12345,
+    importErrors: [{
+      attribute_id: 9048,
+      attribute_name: "Название модели",
+      message: "Название модели обязательное поле",
+    }],
+    skuOffers: ["SKU-REPAIR"],
+  });
+  const task = workflowCurrentProductTask({
+    title: "Cat feeder",
+    nodes: [reviewNode],
+  });
+
+  assert.equal(task.stage, "listing_repair");
+  assert.equal(task.status, "blocked");
+  assert.equal(task.productTitle, "Cat feeder");
+  assert.equal(task.blockedAt, "审核回执");
+  assert.match(task.reason, /Название модели|属性/);
+  assert.equal(task.view, "workflow-console");
+  assert.equal(task.nodeKey, "review_reconcile");
+  assert.match(task.nextAction, /修复/);
+});
+
+test("summarizeWorkflowRun maps accepted low score products to content improvement", () => {
+  const summary = summarizeWorkflowRun({
+    title: "Low score keychain",
+    nodes: [
+      {
+        key: "review_reconcile",
+        name: "审核回执",
+        status: "success",
+        output: { importedItems: [{ offer_id: "SKU-LIVE", product_id: 88 }] },
+        recommendedActions: ["继续库存写入"],
+      },
+      {
+        key: "preflight_check",
+        name: "提交前校验",
+        status: "success",
+        output: {
+          listingQuality: {
+            contentScore: 58,
+            scoreBreakdown: [
+              { key: "media", name: "图片与媒体", score: 45, status: "warning", reason: "产品图不足，缺少 SKU 区分图。" },
+            ],
+          },
+        },
+      },
+    ],
+  });
+
+  assert.equal(summary.currentProductTask.stage, "content_improvement");
+  assert.equal(summary.currentProductTask.status, "needs_improvement");
+  assert.equal(summary.currentProductTask.blockedAt, "商品分值");
+  assert.match(summary.currentProductTask.reason, /图片与媒体|产品图/);
+  assert.equal(summary.currentProductTask.view, "listing");
+});
+
+test("summarizeWorkflowRun maps stock waiting to warehouse queue task", () => {
+  const summary = summarizeWorkflowRun({
+    title: "Imported item",
+    nodes: [
+      {
+        key: "review_reconcile",
+        name: "审核回执",
+        status: "success",
+        output: { importedItems: [{ offer_id: "SKU-STOCK", product_id: 89 }] },
+      },
+      {
+        key: "stock_sync",
+        name: "库存写入",
+        status: "running",
+        reason: "等待 Ozon 创建商品：SKU-STOCK",
+        output: { stocks: [{ offer_id: "SKU-STOCK", warehouse_id: 302, stock: 10 }] },
+      },
+    ],
+  });
+
+  assert.equal(summary.currentProductTask.stage, "warehouse_queue");
+  assert.equal(summary.currentProductTask.status, "waiting");
+  assert.equal(summary.currentProductTask.blockedAt, "库存写入");
+  assert.match(summary.currentProductTask.nextAction, /库存队列/);
+  assert.equal(summary.currentProductTask.view, "warehouse");
 });
 
 test("workflowReviewReconcileNode blocks stock flow when variant grouping failed", () => {

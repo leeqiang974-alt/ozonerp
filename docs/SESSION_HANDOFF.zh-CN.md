@@ -8,6 +8,80 @@
 
 本轮 Codex 桌面环境以 `C:\Users\Administrator\Documents\ozonerp` 为实际项目根；继续开发前仍需先确认 `git status` 和最近提交，避免误入旧复制目录。
 
+## 2026-06-30 Claude NVIDIA 默认审阅链路修复
+
+### 已完成
+
+- 已定位 Claude NVIDIA 无有效输出根因：
+  - NVIDIA `/v1/models` 与 API key 正常。
+  - `moonshotai/kimi-k2.6` 官方 chat completion 在 30 秒 smoke 中超时。
+  - `qwen/qwen3-next-80b-a3b-instruct` 与 `meta/llama-3.3-70b-instruct` 在同一 NVIDIA endpoint 下可正常返回。
+  - 旧 `scripts/claude-ozon-review-nvidia.ps1` 不会自动启动 LiteLLM，也没有超时诊断，容易表现为“空输出/长时间卡住”。
+- `config/litellm-nvidia.yaml` 新增 `nvidia-qwen-next`，映射 `openai/qwen/qwen3-next-80b-a3b-instruct`。
+- `scripts/claude-code-nvidia.ps1` 默认模型改为 `nvidia-qwen-next`。
+- `scripts/claude-ozon-review-nvidia.ps1` 默认模型改为 `nvidia-qwen-next`，并新增：
+  - 自动启动本地 NVIDIA LiteLLM gateway。
+  - `-TimeoutSeconds`，默认 120 秒。
+  - 空输出/超时显式报错，不再静默失败。
+- 新增 `test/claude-nvidia-scripts.test.js`，静态锁定默认模型、gateway 启动和配置别名。
+
+### 已验证
+
+- `node --test test/claude-nvidia-scripts.test.js`，1/1 通过。
+- `scripts/claude-ozon-review-nvidia.ps1` smoke 已自动启动 gateway 并返回：`OK，我是 NVIDIA review wrapper。`
+- `scripts/claude-code-nvidia.ps1` smoke 已返回：`OK，Claude Code NVIDIA 默认模型可用。`
+- `npm test`，297/297 通过。
+- `npm run lint`，通过。
+
+### 后续规则
+
+- Ozon ERP 默认 Claude Code 搭配继续使用 NVIDIA，但默认别名为 `nvidia-qwen-next`。
+- `nvidia-kimi-k2` 可保留为手动模型别名；如果后续恢复稳定，可显式传 `-Model nvidia-kimi-k2` 测试，但不再作为默认复审模型。
+
+## 2026-06-30 审核回执与当前商品任务闭环 V1
+
+### 已完成
+
+- `src/workflowRuns.js` 新增 `workflowCurrentProductTask()`，在 workflow/listing 域统一把节点状态映射为当前商品下一步任务：
+  - `review_reconcile` 失败或变体合并失败 -> `listing_repair`，引导修复 Payload/变体后重新预检。
+  - 审核成功但内容分值/评分分项偏低 -> `content_improvement`，引导回上架内容和图片优化。
+  - `stock_sync` running/failed/waiting -> `warehouse_queue`，引导进入库存队列和仓库推荐，不盲写库存。
+  - 审核通过且无明显分值问题 -> `live_monitoring`，引导库存/运营检查。
+- `summarizeWorkflowRun()` 现在输出 `summary.currentProductTask`，让首页/工作流列表可消费统一业务任务。
+- Dashboard 单品结果卡优先读取 `latestRun.summary.currentProductTask`：
+  - Dashboard 不直接解析 Ozon 原始审核回执、Payload 或库存写入结果。
+  - 仍只显示当前商品、卡点、原因、下一步和跳转入口。
+
+### 安全边界
+
+- 当前商品任务只是摘要和跳转建议，不调用 Ozon 写接口，不提交商品。
+- 审核失败、变体合并失败、库存等待不会被当作成功。
+- 内容分值优化不会绕过 preflight、payload validation 或人工确认。
+- 库存任务仍进入库存队列/仓库页，不绕过 stock queue、商品就绪检查或 `WAREHOUSE_WRONG_STATUS` 排除。
+- 不改变 workflow lock、`waiting_human`、pricing blocked 或 GPT/Image 成本确认。
+
+### Claude Code 搭配
+
+- 开发前调用 `scripts/claude-ozon-review-nvidia.ps1` 请求 Task 6 简报；进程正常结束但无有效文字输出，因此按本地计划和测试先推进。
+- 修复 Claude NVIDIA wrapper 后，完成后复审已能稳定输出；复审提醒继续守住 `summary.currentProductTask`、preflight、`waiting_human`、pricing blocked 和 stock queue 边界。
+- 复审输出里提到的 Vue/独立 JS 文件名并不存在，已按实际代码路径核对后只采纳安全边界提醒。
+
+### 已验证
+
+- TDD 红灯：
+  - `test/workflow-runs.test.js` 先因 `workflowCurrentProductTask` 未导出失败。
+- 已通过：
+  - `node --test test/workflow-runs.test.js`，61/61 通过。
+  - `node --test test/workflow-runs.test.js test/frontend-static.test.js`，132/132 通过。
+  - `node --test test/claude-nvidia-scripts.test.js test/workflow-runs.test.js test/frontend-static.test.js`，133/133 通过。
+  - `npm test`，297/297 通过。
+  - `npm run lint`，通过。
+  - `git diff --check`，通过。
+
+### 下一步
+
+- 继续把当前商品任务展示到工作流控制台的 run summary/card 中，并可在产品中心/侧边提醒复用同一个 `currentProductTask`，但仍不让 Dashboard 承担原始诊断细节。
+
 ## 2026-06-30 仓库匹配规则引擎 V1
 
 ### 已完成

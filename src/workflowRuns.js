@@ -1879,6 +1879,116 @@ export function recommendWorkflowDecision(nodeKey = "", data = {}) {
   };
 }
 
+function firstImportedOffer(output = {}) {
+  const imported = Array.isArray(output.importedItems) ? output.importedItems : [];
+  const first = imported[0] || {};
+  return String(first.offer_id || first.offerId || output.skuOffers?.[0] || "").trim();
+}
+
+function listingQualityFromNodes(nodes = []) {
+  for (const node of nodes || []) {
+    const quality = node?.output?.listingQuality || node?.listingQuality || null;
+    if (quality) return quality;
+  }
+  return null;
+}
+
+function lowScoreReason(quality = {}) {
+  const breakdown = Array.isArray(quality.scoreBreakdown) ? quality.scoreBreakdown : [];
+  const weak = breakdown.find((item) => String(item.status || "") !== "ok" && Number(item.score || 0) < 70)
+    || breakdown.find((item) => String(item.status || "") !== "ok")
+    || breakdown.find((item) => Number(item.score || 0) < 70)
+    || null;
+  if (!weak) return quality.reason || "商品已通过审核，但内容分值偏低，建议继续优化图片、描述或属性。";
+  return [weak.name || weak.key || "商品分值", weak.reason || weak.message || ""].filter(Boolean).join("：");
+}
+
+export function workflowCurrentProductTask(run = {}) {
+  const nodes = Array.isArray(run.nodes) ? run.nodes : [];
+  const title = run.title || run.name || run.source?.title || run.entity?.candidateTitle || "当前商品";
+  const reviewNode = nodes.find((node) => node.key === "review_reconcile");
+  const stockNode = nodes.find((node) => node.key === "stock_sync");
+  const failedReview = reviewNode && (
+    ["failed", "waiting_human"].includes(String(reviewNode.status || ""))
+    || Number(reviewNode.output?.errorCount || 0) > 0
+    || Number(reviewNode.output?.listingDefectCount || 0) > 0
+  );
+  if (failedReview) {
+    const diagnosis = reviewNode.diagnosis || reviewNode.diagnostic || {};
+    const firstError = reviewNode.output?.firstError || reviewNode.error || {};
+    return {
+      stage: "listing_repair",
+      status: "blocked",
+      productTitle: title,
+      offerId: String(firstError.offer_id || firstError.offerId || reviewNode.output?.skuOffers?.[0] || ""),
+      blockedAt: reviewNode.name || "审核回执",
+      reason: diagnosis.messageZh || firstError.message || firstError.description || reviewNode.reason || "Ozon 审核回执存在阻塞错误，需要修复后再继续。",
+      nextAction: reviewNode.recommendedActions?.[0] || "按诊断修复 Payload 后重新预检",
+      view: "workflow-console",
+      nodeKey: "review_reconcile",
+    };
+  }
+
+  if (stockNode && ["failed", "waiting_human", "running", "retry_stock", "waiting_product"].includes(String(stockNode.status || ""))) {
+    return {
+      stage: "warehouse_queue",
+      status: String(stockNode.status || "") === "failed" ? "blocked" : "waiting",
+      productTitle: title,
+      offerId: String(stockNode.output?.stocks?.[0]?.offer_id || firstImportedOffer(reviewNode?.output || {})),
+      blockedAt: stockNode.name || "库存写入",
+      reason: stockNode.reason || stockNode.error?.raw || "库存写入仍在等待商品就绪或队列重试。",
+      nextAction: stockNode.recommendedActions?.[0] || "进入库存队列查看推荐仓库和重试状态",
+      view: "warehouse",
+      nodeKey: "stock_sync",
+    };
+  }
+
+  const reviewSucceeded = reviewNode && String(reviewNode.status || "") === "success";
+  const quality = listingQualityFromNodes(nodes);
+  const contentScore = Number(quality?.contentScore ?? quality?.score ?? quality?.totalScore ?? 100);
+  const hasScoreWarnings = Array.isArray(quality?.scoreBreakdown)
+    && quality.scoreBreakdown.some((item) => String(item.status || "") !== "ok" || Number(item.score || 100) < 70);
+  if (reviewSucceeded && (contentScore < 70 || hasScoreWarnings)) {
+    return {
+      stage: "content_improvement",
+      status: "needs_improvement",
+      productTitle: title,
+      offerId: firstImportedOffer(reviewNode.output || {}),
+      blockedAt: "商品分值",
+      reason: lowScoreReason(quality),
+      nextAction: "进入上架内容和图片区补强商品分值，修改后重新预检",
+      view: "listing",
+      nodeKey: "preflight_check",
+    };
+  }
+
+  if (reviewSucceeded) {
+    return {
+      stage: "live_monitoring",
+      status: "ready",
+      productTitle: title,
+      offerId: firstImportedOffer(reviewNode.output || {}),
+      blockedAt: "审核通过",
+      reason: "Ozon 审核回执未发现阻塞错误，可以继续库存或运营检查。",
+      nextAction: "进入库存仓库确认库存队列或补库存",
+      view: "warehouse",
+      nodeKey: "review_reconcile",
+    };
+  }
+
+  return {
+    stage: "listing_progress",
+    status: "running",
+    productTitle: title,
+    offerId: "",
+    blockedAt: "",
+    reason: "当前商品仍在上架主流程中，等待下一个节点输出。",
+    nextAction: "进入上架中心继续推进当前草稿",
+    view: "listing",
+    nodeKey: "",
+  };
+}
+
 export function summarizeWorkflowRun(run = {}) {
   const nodes = Array.isArray(run.nodes) ? run.nodes : [];
   const blockingNode = nodes.find((node) => ["failed", "waiting_human", "retrying"].includes(String(node.status || "")))
@@ -1907,6 +2017,7 @@ export function summarizeWorkflowRun(run = {}) {
     riskLevel,
     reason: blockingNode?.reason || highestRisk?.reason || currentNode?.reason || "",
     nextAction: recommendedActions[0] || "查看节点输出",
+    currentProductTask: workflowCurrentProductTask({ ...run, nodes }),
     nodeCount: nodes.length,
     completedCount: nodes.filter((node) => ["success", "completed"].includes(String(node.status || ""))).length,
   };

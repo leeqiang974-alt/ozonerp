@@ -1,5 +1,5 @@
 param(
-  [string]$Model = "nvidia-kimi-k2",
+  [string]$Model = "nvidia-qwen-next",
 
   [int]$Port = 4000,
 

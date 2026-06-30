@@ -1173,6 +1173,7 @@ function singleListingOutcomeState() {
   const latestJob = [...(state.autoListJobs || [])]
     .sort((left, right) => String(right.updatedAt || right.createdAt || "").localeCompare(String(left.updatedAt || left.createdAt || "")))[0];
   const capturedTitle = state.collected1688?.title || state.currentCaptureDraft?.title || latestJob?.sourceTitle || latestRun?.source?.title || "";
+  const currentProductTask = latestRun?.summary?.currentProductTask || null;
   if (!capturedTitle && !latestRun) {
     return {
       status: "未开始",
@@ -1182,6 +1183,19 @@ function singleListingOutcomeState() {
       next: "下一步：打开 1688 采集，先采集一个商品。",
       view: "sourcing",
       action: "去采集 1688",
+    };
+  }
+  if (currentProductTask) {
+    return {
+      status: currentProductTask.status === "blocked" ? "卡住" : currentProductTask.status === "waiting" ? "等待" : currentProductTask.status === "needs_improvement" ? "可优化" : "推进中",
+      title: currentProductTask.productTitle || capturedTitle || latestRun?.id || "当前商品",
+      stuckAt: currentProductTask.blockedAt || workflowNodeTitle(currentProductTask.nodeKey || ""),
+      reason: currentProductTask.reason || "当前商品需要按工作流摘要处理。",
+      next: `下一步：${currentProductTask.nextAction || "查看当前商品任务"}`,
+      view: currentProductTask.view || "workflow-console",
+      action: currentProductTask.view === "warehouse" ? "查看库存队列" : currentProductTask.view === "listing" ? "继续上架优化" : "定位工作流",
+      runId: latestRun?.id || "",
+      nodeKey: currentProductTask.nodeKey || "",
     };
   }
   if (blockingNode) {

@@ -920,6 +920,15 @@ test("dashboard exposes a single product listing outcome panel", async () => {
   assert.match(css, /outcome-step-card/);
 });
 
+test("dashboard single product outcome consumes workflow current product task summary", async () => {
+  const js = await readFile(new URL("../public/app.js", import.meta.url), "utf8");
+
+  assert.match(js, /summary\?\.currentProductTask/);
+  assert.match(js, /currentProductTask\.nextAction/);
+  assert.match(js, /currentProductTask\.view === "warehouse"/);
+  assert.match(js, /currentProductTask\.view === "listing"/);
+});
+
 test("dashboard exposes seller ERP management scope", async () => {
   const [html, js, css] = await Promise.all([
     readFile(new URL("../public/index.html", import.meta.url), "utf8"),

@@ -4,7 +4,13 @@ param(
 
   [string]$BaseUrl = "http://127.0.0.1:4000",
 
-  [string]$Model = "nvidia-kimi-k2",
+  [string]$Model = "nvidia-qwen-next",
+
+  [int]$Port = 4000,
+
+  [string]$ApiKeyFile = "D:\Desktop\api\nividiaapi.txt",
+
+  [int]$TimeoutSeconds = 120,
 
   [string]$OutputPath = ""
 )
@@ -13,6 +19,42 @@ $ErrorActionPreference = "Stop"
 
 $root = Split-Path -Parent $PSScriptRoot
 Set-Location $root
+
+function Test-PortListening {
+  param([int]$PortToCheck)
+  return [bool](Get-NetTCPConnection -LocalPort $PortToCheck -State Listen -ErrorAction SilentlyContinue)
+}
+
+if (-not (Test-PortListening -PortToCheck $Port)) {
+  Write-Output "Starting local NVIDIA LiteLLM gateway on 127.0.0.1:$Port ..."
+  Start-Process `
+    -FilePath "powershell" `
+    -ArgumentList @(
+      "-NoProfile",
+      "-ExecutionPolicy",
+      "Bypass",
+      "-File",
+      ".\scripts\start-nvidia-litellm.ps1",
+      "-ApiKeyFile",
+      $ApiKeyFile,
+      "-Port",
+      "$Port"
+    ) `
+    -WorkingDirectory $root `
+    -WindowStyle Hidden | Out-Null
+
+  $deadline = (Get-Date).AddSeconds(30)
+  while ((Get-Date) -lt $deadline) {
+    if (Test-PortListening -PortToCheck $Port) {
+      break
+    }
+    Start-Sleep -Milliseconds 500
+  }
+
+  if (-not (Test-PortListening -PortToCheck $Port)) {
+    throw "NVIDIA LiteLLM gateway did not start on port $Port."
+  }
+}
 
 $env:ANTHROPIC_BASE_URL = $BaseUrl
 $env:ANTHROPIC_AUTH_TOKEN = if ($env:LITELLM_MASTER_KEY) { $env:LITELLM_MASTER_KEY } else { "ozon-local-litellm" }
@@ -59,7 +101,25 @@ Requested change:
 $Task
 "@
 
-$result = & claude -p --model $Model --tools "" --disable-slash-commands --permission-mode plan --max-budget-usd 1.00 $prompt
+$job = Start-Job -ScriptBlock {
+  param($ModelForJob, $PromptForJob)
+  & claude -p --model $ModelForJob --tools "" --disable-slash-commands --permission-mode plan --max-budget-usd 1.00 $PromptForJob 2>&1
+} -ArgumentList $Model, $prompt
+
+if (-not (Wait-Job $job -Timeout $TimeoutSeconds)) {
+  Stop-Job $job -ErrorAction SilentlyContinue
+  Remove-Job $job -Force -ErrorAction SilentlyContinue
+  throw "Claude NVIDIA review timed out after $TimeoutSeconds seconds using model $Model. Check NVIDIA model health or pass -Model with a responsive LiteLLM alias."
+}
+
+$result = Receive-Job $job
+Remove-Job $job -Force -ErrorAction SilentlyContinue
+if ($LASTEXITCODE -ne 0 -and -not $result) {
+  throw "Claude NVIDIA review failed with exit code $LASTEXITCODE."
+}
+if (-not $result) {
+  throw "Claude NVIDIA review returned no output using model $Model."
+}
 
 if ($OutputPath -ne "") {
   $resolved = if ([System.IO.Path]::IsPathRooted($OutputPath)) {

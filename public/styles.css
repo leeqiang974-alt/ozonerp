@@ -2916,6 +2916,94 @@ tr:hover td {
   font-weight: 700;
   padding: 4px 10px;
 }
+.workflow-listing-quality {
+  background: #f8fafc;
+  border: 1px solid #cbd5e1;
+  border-radius: 12px;
+  display: grid;
+  gap: 10px;
+  padding: 12px;
+}
+.workflow-listing-quality-blocked {
+  background: #fef2f2;
+  border-color: #fecaca;
+}
+.workflow-listing-quality-warning {
+  background: #fffbeb;
+  border-color: #fde68a;
+}
+.workflow-listing-quality-ready {
+  background: #f0fdf4;
+  border-color: #bbf7d0;
+}
+.workflow-listing-quality-head {
+  align-items: flex-start;
+  display: flex;
+  gap: 12px;
+  justify-content: space-between;
+}
+.workflow-listing-quality-head strong {
+  color: #0f172a;
+}
+.workflow-listing-quality-head p {
+  margin: 3px 0 0;
+}
+.workflow-listing-quality-head > span {
+  background: #fff;
+  border: 1px solid #cbd5e1;
+  border-radius: 999px;
+  color: #334155;
+  flex: 0 0 auto;
+  font-size: 12px;
+  font-weight: 800;
+  padding: 4px 10px;
+}
+.workflow-listing-quality-grid {
+  display: grid;
+  gap: 8px;
+}
+.workflow-listing-quality-issue {
+  align-items: center;
+  background: #fff;
+  border: 1px solid #fecaca;
+  border-radius: 10px;
+  color: #991b1b;
+  display: grid;
+  gap: 10px;
+  grid-template-columns: 1fr auto;
+  padding: 10px;
+}
+.workflow-listing-quality-issue div {
+  display: grid;
+  gap: 3px;
+}
+.workflow-listing-quality-issue span,
+.workflow-listing-quality-issue small {
+  color: #b91c1c;
+  font-size: 12px;
+}
+.workflow-listing-quality-issue strong {
+  color: #7f1d1d;
+  line-height: 1.42;
+}
+.workflow-listing-quality-warnings,
+.workflow-listing-quality-actions {
+  background: rgba(255, 255, 255, 0.72);
+  border: 1px solid #e2e8f0;
+  border-radius: 10px;
+  color: #334155;
+  display: grid;
+  gap: 6px;
+  padding: 10px;
+}
+.workflow-listing-quality-warnings span {
+  color: #92400e;
+  font-size: 12px;
+}
+.workflow-listing-quality-actions ul {
+  margin: 0;
+  padding-left: 18px;
+}
 .workflow-payload-issues {
   border: 1px solid #fde68a;
   border-radius: 12px;

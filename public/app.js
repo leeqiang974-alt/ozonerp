@@ -5569,18 +5569,29 @@ function workflowPayloadRepairTemplate(issue = {}, payload = {}) {
   `;
 }
 
-function workflowPayloadIssueLocator(issue = {}, index = 0, payload = {}) {
+function workflowPayloadLocationForIssue(issue = {}) {
+  const attributeId = Number(issue.attributeId || issue.attribute_id || 0);
+  if (attributeId) {
+    return { label: `items[].attributes[${attributeId}]`, path: `"id": ${attributeId}` };
+  }
+  const code = String(issue.code || issue.qualityCode || "").trim();
   const map = {
     EMPTY_PAYLOAD: { label: "payload.items", path: "payload.items" },
     MISSING_OFFER_ID: { label: "items[0].offer_id", path: "items[0].offer_id" },
     DUPLICATE_OFFER_ID: { label: "items[].offer_id", path: "items[].offer_id" },
     MISSING_NAME: { label: "items[0].name", path: "items[0].name" },
     CHINESE_IN_TITLE: { label: "items[0].name", path: "items[0].name" },
-    MISSING_CATEGORY: { label: "items[0].description_category_id / type_id", path: "items[0].description_category_id" },
-    MISSING_PRICE: { label: "items[0].price", path: "items[0].price" },
-    IMAGES_TOO_FEW: { label: "items[0].images", path: "items[0].images" },
-    MISSING_BRAND: { label: "items[0].attributes[85]", path: "items[0].attributes[85]" },
-    MISSING_MODEL_NAME: { label: "items[0].attributes[9048]", path: "items[0].attributes[9048]" },
+    MISSING_CATEGORY: { label: "items[0].description_category_id / type_id", path: "description_category_id" },
+    MISSING_PRICE: { label: "items[0].price", path: "\"price\"" },
+    IMAGES_TOO_FEW: { label: "items[0].images", path: "\"images\"" },
+    MISSING_BRAND: { label: "items[0].attributes[85]", path: "\"id\": 85" },
+    MISSING_MODEL_NAME: { label: "items[0].attributes[9048]", path: "\"id\": 9048" },
+    LISTING_QUALITY_DICTIONARY_VALUE_INVALID: { label: "字典属性 dictionary_value_id", path: "dictionary_value_id" },
+    LISTING_QUALITY_REQUIRED_ATTRIBUTE_MISSING: { label: "Ozon 必填属性", path: "\"attributes\"" },
+    LISTING_QUALITY_PRODUCT_IMAGES_TOO_FEW: { label: "商品图片 images", path: "\"images\"" },
+    LISTING_QUALITY_MISSING_VARIANT_ASPECT: { label: "变体可变特性 attributes", path: "\"attributes\"" },
+    LISTING_QUALITY_DUPLICATE_VARIANT_ASPECTS: { label: "变体可变特性 attributes", path: "\"attributes\"" },
+    LISTING_QUALITY_PRICING_BLOCKED: { label: "定价诊断 pricing", path: "\"price\"" },
     DUPLICATE_LISTING: { label: "duplicate.duplicateSku", path: "duplicate.duplicateSku" },
     CONTENT_ISSUE: { label: "contentSummary.contentIssues", path: "contentSummary.contentIssues" },
     SOURCE_IMAGES_TOO_FEW: { label: "contentSummary.candidateImageCount", path: "contentSummary.candidateImageCount" },
@@ -5588,7 +5599,11 @@ function workflowPayloadIssueLocator(issue = {}, index = 0, payload = {}) {
     CATEGORY_MATCH_MISSING: { label: "category", path: "category" },
     VARIANT_COLLAPSED: { label: "variantCount", path: "variantCount" },
   };
-  const meta = map[String(issue.code || "").trim()] || { label: "payload", path: "payload" };
+  return map[code] || { label: "payload", path: "payload" };
+}
+
+function workflowPayloadIssueLocator(issue = {}, index = 0, payload = {}) {
+  const meta = workflowPayloadLocationForIssue(issue);
   return `
     <article class="workflow-payload-issue" title="${escapeHtml(issue.message || issue.code || "问题")}">
       <div class="workflow-payload-issue-main">
@@ -5601,6 +5616,107 @@ function workflowPayloadIssueLocator(issue = {}, index = 0, payload = {}) {
         <button class="ghost" type="button" data-payload-path="${escapeHtml(meta.path)}" data-payload-label="${escapeHtml(meta.label)}">定位字段</button>
       </div>
     </article>
+  `;
+}
+
+function collectListingQualityDiagnosis(run = {}, node = {}) {
+  const validation = run.payloadDraftValidation || {};
+  const preflight = (run.nodes || []).find((item) => item.key === "preflight_check") || {};
+  const preflightOutput = node?.key === "preflight_check" ? (node.output || {}) : (preflight.output || {});
+  const listingQuality = run.payloadDraftValidation?.listingQuality || preflightOutput.listingQuality || null;
+  const listingQualityWarnings = validation.listingQualityWarnings
+    || preflightOutput.listingQualityWarnings
+    || listingQuality?.warnings
+    || [];
+  const qualityIssues = [
+    ...(Array.isArray(validation.issues) ? validation.issues : []),
+    ...(Array.isArray(preflightOutput.issues) ? preflightOutput.issues : []),
+  ].filter((issue, index, issues) => (
+    String(issue?.code || "").startsWith("LISTING_QUALITY_")
+    && issues.findIndex((item) => String(item?.code || "") === String(issue?.code || "")
+      && String(item?.offerId || "") === String(issue?.offerId || "")
+      && Number(item?.attributeId || 0) === Number(issue?.attributeId || 0)) === index
+  ));
+  return {
+    listingQuality,
+    qualityIssues,
+    listingQualityWarnings: Array.isArray(listingQualityWarnings) ? listingQualityWarnings : [],
+  };
+}
+
+function listingQualityStatusText(status = "") {
+  const labels = {
+    blocked: "阻塞",
+    warning: "有警告",
+    ready: "可继续",
+  };
+  return labels[status] || status || "未校验";
+}
+
+function renderListingQualityPanel(run = {}, node = {}) {
+  const { listingQuality, qualityIssues, listingQualityWarnings } = collectListingQualityDiagnosis(run, node);
+  if (!listingQuality && !qualityIssues.length && !listingQualityWarnings.length) {
+    return `
+      <section class="workflow-listing-quality workflow-listing-quality-empty">
+        <div class="workflow-listing-quality-head">
+          <div>
+            <strong>Listing 质量诊断</strong>
+            <p class="hint">只读诊断。以下信息仅供定位，请在 Payload 草稿或上架草稿修字段后重新预检。</p>
+          </div>
+          <span>未校验</span>
+        </div>
+      </section>
+    `;
+  }
+  const status = String(listingQuality?.status || (qualityIssues.length ? "blocked" : "warning"));
+  const blockedReasons = Array.isArray(listingQuality?.blockedReasons) ? listingQuality.blockedReasons : [];
+  const issues = qualityIssues.length ? qualityIssues : blockedReasons.map((reason) => ({
+    code: `LISTING_QUALITY_${String(reason.code || "BLOCKED").toUpperCase()}`,
+    message: reason.message || "",
+    offerId: reason.offerId || "",
+    attributeId: reason.attributeId || 0,
+  }));
+  const warnings = listingQualityWarnings.length ? listingQualityWarnings : (listingQuality?.warnings || []);
+  const nextActions = Array.isArray(listingQuality?.nextActions) ? listingQuality.nextActions : [];
+  return `
+    <section class="workflow-listing-quality workflow-listing-quality-${escapeHtml(status)}">
+      <div class="workflow-listing-quality-head">
+        <div>
+          <strong>Listing 质量诊断</strong>
+          <p class="hint">只读诊断：以下信息仅供定位，请在 Payload 草稿或上架草稿修字段后重新预检。</p>
+        </div>
+        <span>${escapeHtml(listingQualityStatusText(status))}${Number.isFinite(Number(listingQuality?.score)) ? ` · ${Number(listingQuality.score)}分` : ""}</span>
+      </div>
+      ${issues.length ? `
+        <div class="workflow-listing-quality-grid">
+          ${issues.map((issue, index) => {
+            const meta = workflowPayloadLocationForIssue(issue);
+            return `
+              <article class="workflow-listing-quality-issue">
+                <div>
+                  <span>#${index + 1} ${escapeHtml(issue.code || "LISTING_QUALITY_BLOCKED")}</span>
+                  <strong>${escapeHtml(issue.message || "上架质量诊断存在阻塞项。")}</strong>
+                  <small>offerId：${escapeHtml(issue.offerId || "-")} · attributeId：${escapeHtml(issue.attributeId || "-")}</small>
+                </div>
+                <button class="ghost" type="button" data-payload-path="${escapeHtml(meta.path)}" data-payload-label="${escapeHtml(meta.label)}">定位 Payload 字段</button>
+              </article>
+            `;
+          }).join("")}
+        </div>
+      ` : `<p class="hint">没有阻塞质量问题。</p>`}
+      ${warnings.length ? `
+        <div class="workflow-listing-quality-warnings">
+          <strong>商品分值提醒</strong>
+          ${warnings.map((warning) => `<span>${escapeHtml(warning.code || "WARNING")}：${escapeHtml(warning.message || "建议优化。")}</span>`).join("")}
+        </div>
+      ` : ""}
+      ${nextActions.length ? `
+        <div class="workflow-listing-quality-actions">
+          <strong>下一步（人工处理后重新预检）</strong>
+          <ul>${nextActions.map((action) => `<li>${escapeHtml(action)}</li>`).join("")}</ul>
+        </div>
+      ` : ""}
+    </section>
   `;
 }
 
@@ -5800,6 +5916,7 @@ function renderWorkflowDetail(run, node) {
     <label class="field workflow-field">
       <span>Payload 草稿</span>
       ${workflowPayloadDraftSummary(payloadDraft)}
+      ${renderListingQualityPanel(run, node)}
       ${payloadIssues.length ? `
         <div class="workflow-payload-issues">
           ${workflowPayloadIssueSummary(payloadIssues)}

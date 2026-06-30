@@ -53,6 +53,47 @@
 - 继续接 Ozon Seller API 的分类属性/字典缓存，让属性填写从“发现缺失”升级为“高置信自动填、低置信人工确认”。
 - 开发后必须继续执行 Claude Code diff 审查，通过后才能提交。
 
+## 2026-06-30 Listing 质量字段级只读诊断
+
+### 已完成
+
+- 工作流 Payload 草稿区新增 `Listing 质量诊断` 只读路由卡：
+  - 数据只读来自 `payloadDraftValidation.listingQuality`、`payloadDraftValidation.issues` 和 `preflight_check.output.listingQuality`。
+  - 展示状态、分数、阻塞项、`offerId`、`attributeId`、商品分值 warning 和 `nextActions`。
+  - 每个阻塞项提供“定位 Payload 字段”，复用原有编辑器高亮，不自动改字段；修复后必须重新预检。
+- 新增 `collectListingQualityDiagnosis()`、`renderListingQualityPanel()` 和 `workflowPayloadLocationForIssue()`：
+  - 支持 `LISTING_QUALITY_DICTIONARY_VALUE_INVALID` 定位字典值。
+  - 支持 `LISTING_QUALITY_PRICING_BLOCKED` 定位价格/定价诊断。
+  - 支持变体 aspect 和图片数量问题定位到对应 Payload 区域。
+- 前端静态契约新增测试：`frontend renders listing quality field repair panel`。
+
+### 安全边界
+
+- 本卡片只解释和定位，不新增任何 Ozon 写接口，不提供自动修复按钮。
+- 不绕过 `confirmSubmit`、preflight、workflow lock、`waiting_human`、pricing blocked、GPT/Image 成本确认。
+- 未改 PDD、营销活动、Dashboard、订单或仓储模块。
+
+### Claude Code 搭配
+
+- 开发前审查：`logs/claude-listing-quality-repair-panel-pre-review.md`。
+- 开发后第一轮审查指出：面板必须避免暗示“可直接修复 Listing 字段”。
+- 已收窄为只读诊断路由卡，`nextActions` 只渲染为文字列表，唯一交互是高亮 Payload 字段。
+- 最终复审：`logs/claude-listing-quality-repair-panel-final-review.md`，结论可提交，要求 blocking/warning 视觉区分和全量验证；已完成。
+
+### 已验证
+
+- 已按 TDD 先看到 `node --test test/frontend-static.test.js` 红灯，再实现面板。
+- 目标验证：`node --test test/frontend-static.test.js`，63/63 通过。
+- 质量/工作流回归：`node --test test/listing-quality.test.js test/workflow-runs.test.js`，45/45 通过。
+- 全量测试：`npm test`，255/255 通过。
+- Lint：`npm run lint`，41 files 通过。
+- 本地服务检查：`http://127.0.0.1:5178` 返回 200，`/app.js` 可访问并包含新面板代码。
+
+### 下一步
+
+- 接入 Ozon 字典值候选推荐：对 `DICTIONARY_VALUE_INVALID` 不只定位字段，还展示当前类目合法值候选和置信度。
+- 把高置信字段（品牌无品牌、型号、原产国、颜色/尺寸 aspect）做成“建议填入草稿”，仍需人工保存和预检。
+
 ## 启动与验证
 
 - 启动后台：`powershell -ExecutionPolicy Bypass -File .\scripts\ops.ps1 start`

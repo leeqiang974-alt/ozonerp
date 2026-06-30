@@ -143,6 +143,29 @@ test("frontend renders workflow pricing diagnosis panel", async () => {
   assert.match(css, /workflow-pricing-risk/);
 });
 
+test("frontend renders listing quality field repair panel", async () => {
+  const [js, css] = await Promise.all([
+    readFile(new URL("../public/app.js", import.meta.url), "utf8"),
+    readFile(new URL("../public/styles.css", import.meta.url), "utf8"),
+  ]);
+
+  assert.match(js, /renderListingQualityPanel/);
+  assert.match(js, /collectListingQualityDiagnosis/);
+  assert.match(js, /payloadDraftValidation\?\.listingQuality/);
+  assert.match(js, /preflight_check/);
+  assert.match(js, /Listing 质量诊断/);
+  assert.match(js, /attributeId/);
+  assert.match(js, /offerId/);
+  assert.match(js, /nextActions/);
+  assert.match(js, /listingQualityWarnings/);
+  assert.match(js, /只读诊断/);
+  assert.match(js, /重新预检/);
+  assert.match(js, /LISTING_QUALITY_DICTIONARY_VALUE_INVALID/);
+  assert.match(js, /LISTING_QUALITY_PRICING_BLOCKED/);
+  assert.match(css, /workflow-listing-quality/);
+  assert.match(css, /workflow-listing-quality-issue/);
+});
+
 test("frontend exposes payload issue field locator", async () => {
   const js = await readFile(new URL("../public/app.js", import.meta.url), "utf8");
 

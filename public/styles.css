@@ -3544,6 +3544,41 @@ tr:hover td {
   font-size: 12px;
   padding: 4px 6px;
 }
+.required-attribute-rule-candidate-index {
+  background: #f0fdf4;
+  border: 1px solid #bbf7d0;
+  border-radius: 8px;
+  display: grid;
+  gap: 10px;
+  padding: 10px;
+}
+.required-attribute-rule-candidate-index > div:first-child {
+  align-items: center;
+  display: flex;
+  gap: 10px;
+  justify-content: space-between;
+}
+.required-attribute-rule-candidate-index strong {
+  color: #14532d;
+}
+.required-attribute-rule-candidate-index small,
+.required-attribute-rule-candidate-index p {
+  color: #166534;
+  margin: 0;
+}
+.required-attribute-rule-candidate-list {
+  display: grid;
+  gap: 8px;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+}
+.required-attribute-rule-candidate-list span {
+  background: #fff;
+  border: 1px solid #bbf7d0;
+  border-radius: 8px;
+  display: grid;
+  gap: 3px;
+  padding: 8px;
+}
 .required-fill-plan-group {
   display: grid;
   gap: 8px;

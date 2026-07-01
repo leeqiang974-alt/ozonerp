@@ -13,6 +13,7 @@ import { attributeValueCacheKey, flattenCategories, loadCategoryCache, matchCate
 import {
   buildRequiredAttributeManualBacklog,
   buildRequiredAttributeFillPlan,
+  buildRequiredAttributeRuleCandidateIndex,
   summarizeRequiredAttributeFillPlan,
 } from "./ozonRequiredAttributeAnalysis.js";
 import { enqueueStockJob, recordFailedStockJob, resolveWarehouseIdForStore } from "./stockQueue.js";
@@ -1784,6 +1785,10 @@ export function buildListingPayloadDraftFromJob(job = {}, options = {}) {
   });
   const requiredAttributeFillSummary = summarizeRequiredAttributeFillPlan(requiredAttributeFillPlan);
   const requiredAttributeManualBacklog = buildRequiredAttributeManualBacklog(requiredAttributeFillPlan);
+  const requiredAttributeRuleCandidateIndex = buildRequiredAttributeRuleCandidateIndex({
+    categoryMatch,
+    manualBacklog: requiredAttributeManualBacklog,
+  });
   const baseAttrs = dedupeAttrs(highConfidenceRequiredAttributes(attrsMeta, attributeOptions)
     .concat(modelAttributesForMeta(modelName, attrsMeta))
     .concat(countryAttributes())
@@ -1890,6 +1895,7 @@ export function buildListingPayloadDraftFromJob(job = {}, options = {}) {
       requiredAttributeFillPlan,
       requiredAttributeFillSummary,
       requiredAttributeManualBacklog,
+      requiredAttributeRuleCandidateIndex,
     },
   };
 }

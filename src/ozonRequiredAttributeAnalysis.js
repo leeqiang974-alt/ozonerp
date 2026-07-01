@@ -248,6 +248,38 @@ export function buildRequiredAttributeManualBacklog(plan = []) {
   };
 }
 
+export function buildRequiredAttributeRuleCandidateIndex({
+  categoryMatch = {},
+  manualBacklog = {},
+} = {}) {
+  const categoryKey = `${Number(categoryMatch.description_category_id || categoryMatch.descriptionCategoryId || 0)}:${Number(categoryMatch.type_id || categoryMatch.typeId || 0)}`;
+  const ruleBucket = (Array.isArray(manualBacklog.buckets) ? manualBacklog.buckets : [])
+    .find((bucket) => bucket.key === "rule_candidate") || {};
+  const candidates = (Array.isArray(ruleBucket.items) ? ruleBucket.items : []).map((item) => ({
+    attributeId: Number(item.attributeId || 0),
+    attributeName: item.attributeName || `属性 ${item.attributeId || ""}`,
+    categoryKey,
+    categoryPath: categoryMatch.path || categoryMatch.categoryPath || "",
+    ruleStatus: "candidate",
+    occurrenceCount: 1,
+    source: "required_attribute_manual_backlog",
+    suggestedRuleKey: `${categoryKey}:${Number(item.attributeId || 0)}`,
+    reasonZh: item.reasonZh || "当前类目存在可沉淀的人工属性。",
+    safeNextStep: "先人工填写本次商品；后续收集更多样本后再沉淀类目规则，不自动写 Payload。",
+    readOnly: true,
+  }));
+  return {
+    categoryKey,
+    categoryPath: categoryMatch.path || categoryMatch.categoryPath || "",
+    totalCount: candidates.length,
+    readOnly: true,
+    safeNextAction: candidates.length
+      ? "这些字段只是规则沉淀候选；本次仍需人工填写并重新预检，不会自动生成规则或写入 Payload。"
+      : "当前没有可沉淀规则候选；继续按预检结果处理。",
+    candidates,
+  };
+}
+
 export function categoryAttributeCacheKey(category = {}) {
   return `${Number(category.description_category_id || 0)}:${Number(category.type_id || 0)}`;
 }

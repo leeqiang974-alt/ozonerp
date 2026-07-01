@@ -272,10 +272,15 @@
   - 缺尺重/包装证据等货源关键资料进入“建议换货源”；合规敏感、制造商、保质期等禁止猜测字段进入“必须人工”；普通无规则字段进入“可规则化”。
   - `buildListingPayloadDraftFromJob()`、`buildPayloadDraftValidation()`、`buildPreflightGateNode()` 都输出 `requiredAttributeManualBacklog`。
   - 前端“必填属性填充计划”新增只读“高频人工属性”摘要，不新增按钮、不触发换货源、不写 Payload、不提交 Ozon。
+- 规则沉淀候选索引已接入：
+  - `buildRequiredAttributeRuleCandidateIndex()` 从 `requiredAttributeManualBacklog.rule_candidate` 生成当前类目的只读候选清单。
+  - `buildListingPayloadDraftFromJob()`、`buildPayloadDraftValidation()`、`buildPreflightGateNode()` 都输出 `requiredAttributeRuleCandidateIndex`。
+  - 前端“必填属性填充计划”新增只读“规则沉淀候选”摘要，展示候选属性、类目 key 和候选状态。
+  - 本阶段不持久化规则、不生成自动规则、不写 Payload、不触发预检/提交；只是让后续规则池知道哪些字段值得沉淀。
 
 ### 下一步
 
-- 继续做“必填属性规则引擎 V2”的 backlog 持久化/复用：按当前商品/类目统计 `rule_candidate` 高频字段，形成可沉淀规则池；并继续把变体整组差异建议推进到可复制修复说明和整组草稿定位。
+- 继续做“必填属性规则引擎 V2”的规则候选复用：把 `requiredAttributeRuleCandidateIndex` 的候选与多商品样本/类目历史连接起来，形成可审核的规则池草案；并继续把变体整组差异建议推进到可复制修复说明和整组草稿定位。
 
 ## 2026-06-30 仓库匹配规则引擎 V1
 

@@ -4,6 +4,7 @@ import { buildListingPayloadDraftFromJob } from "../src/autoListing.js";
 import {
   buildRequiredAttributeManualBacklog,
   buildRequiredAttributeFillPlan,
+  buildRequiredAttributeRuleCandidateIndex,
   summarizeRequiredAttributeFillPlan,
 } from "../src/ozonRequiredAttributeAnalysis.js";
 import { validateSubmitPayload } from "../src/workflowRuns.js";
@@ -397,6 +398,33 @@ test("buildRequiredAttributeManualBacklog groups manual rows by safe next decisi
   assert.ok(backlog.buckets.find((bucket) => bucket.key === "rule_candidate").items[0].attributeName.includes("Комментарий"));
   assert.ok(backlog.buckets.find((bucket) => bucket.key === "manual_required").items[0].attributeName.includes("Производитель"));
   assert.ok(backlog.buckets.find((bucket) => bucket.key === "replace_source").items[0].attributeName.includes("Вес"));
+});
+
+test("buildRequiredAttributeRuleCandidateIndex creates read-only category rule candidates", () => {
+  const plan = buildRequiredAttributeFillPlan({
+    categoryMatch: { description_category_id: 17028673, type_id: 95183, path: "Дом / Кухня" },
+    attrsMeta: [
+      { id: 1234, name: "Комментарий к комплектации", is_required: true },
+      { id: 23487, name: "Производитель", is_required: true, dictionary_id: 300 },
+    ],
+  });
+  const manualBacklog = buildRequiredAttributeManualBacklog(plan);
+  const index = buildRequiredAttributeRuleCandidateIndex({
+    categoryMatch: { description_category_id: 17028673, type_id: 95183, path: "Дом / Кухня" },
+    manualBacklog,
+  });
+
+  assert.equal(index.categoryKey, "17028673:95183");
+  assert.equal(index.totalCount, 1);
+  assert.equal(index.readOnly, true);
+  assert.match(index.safeNextAction, /候选/);
+  assert.equal(index.candidates[0].attributeId, 1234);
+  assert.equal(index.candidates[0].attributeName, "Комментарий к комплектации");
+  assert.equal(index.candidates[0].ruleStatus, "candidate");
+  assert.equal(index.candidates[0].occurrenceCount, 1);
+  assert.equal(index.candidates[0].readOnly, true);
+  assert.equal(index.candidates.some((candidate) => candidate.attributeId === 23487), false);
+  assert.deepEqual(Object.keys(index.candidates[0]).filter((key) => /payload|submit|action/i.test(key)), []);
 });
 
 test("buildRequiredAttributeFillPlan suggests dictionary candidates from material synonyms only", () => {

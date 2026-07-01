@@ -295,10 +295,11 @@ low：不自动填，进入人工规则池
    - `rule_candidate`：普通人工字段，可继续沉淀类目规则。
    - `manual_required`：合规敏感/禁止猜测字段，必须人工核实。
    - `replace_source`：货源缺尺重、规格等关键证据，建议补证据或换货源。
+8. `requiredAttributeRuleCandidateIndex` 从 `rule_candidate` 生成当前类目的只读规则沉淀候选，只展示候选属性、类目 key、候选状态和安全下一步；当前阶段不持久化、不自动生成规则、不写 Payload。
 
 ## 后续接入建议
 
-1. 将 `rule_candidate` 高频字段沉淀成类目规则池，并继续保持测试先行。
+1. 将 `requiredAttributeRuleCandidateIndex` 与多商品样本/类目历史连接，形成可审核的类目规则池草案，并继续保持测试先行。
 2. 扩展 `variant_aspect_from_sku` 的可解释计划，显示每个 SKU 的 aspect 来源、字典候选和重复风险。
 3. 为高频 `manual_rule_needed` / `manual-required` 属性补充可复用样本和人工规则说明。
 4. 继续保持 `suggest_dictionary` 候选走人工确认写回本地草稿并重新预检。

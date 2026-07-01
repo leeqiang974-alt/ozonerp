@@ -423,6 +423,11 @@ test("buildPreflightGateNode carries required attribute fill plan without unlock
   assert.equal(node.output.requiredAttributeManualBacklog.manualRequiredCount, 1);
   assert.equal(node.output.requiredAttributeManualBacklog.replaceSourceCount, 0);
   assert.match(node.output.requiredAttributeManualBacklog.safeNextAction, /人工/);
+  assert.equal(node.output.requiredAttributeRuleCandidateIndex.categoryKey, "17028673:95183");
+  assert.equal(node.output.requiredAttributeRuleCandidateIndex.totalCount, 1);
+  assert.equal(node.output.requiredAttributeRuleCandidateIndex.readOnly, true);
+  assert.equal(node.output.requiredAttributeRuleCandidateIndex.candidates[0].attributeId, 1234);
+  assert.equal(node.output.requiredAttributeRuleCandidateIndex.candidates[0].ruleStatus, "candidate");
   assert.equal(node.status, "failed");
   assert.equal(node.runStatus, "waiting_human");
 });

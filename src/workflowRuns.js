@@ -6,6 +6,7 @@ import { loadCategoryCache } from "./ozonCategoryCache.js";
 import {
   buildRequiredAttributeManualBacklog,
   buildRequiredAttributeFillPlan,
+  buildRequiredAttributeRuleCandidateIndex,
   summarizeRequiredAttributeFillPlan,
 } from "./ozonRequiredAttributeAnalysis.js";
 
@@ -1009,6 +1010,10 @@ function buildPayloadDraftValidation(payload = {}, options = {}) {
   const requiredAttributeFillPlan = buildRequiredAttributePlanForPayload(payload, options);
   const requiredAttributeFillSummary = summarizeRequiredAttributeFillPlan(requiredAttributeFillPlan);
   const requiredAttributeManualBacklog = buildRequiredAttributeManualBacklog(requiredAttributeFillPlan);
+  const requiredAttributeRuleCandidateIndex = buildRequiredAttributeRuleCandidateIndex({
+    categoryMatch: options.categoryMatch || categoryMatchFromPayload(payload),
+    manualBacklog: requiredAttributeManualBacklog,
+  });
   return {
     ...payloadValidation,
     ok: issues.length === 0,
@@ -1019,6 +1024,7 @@ function buildPayloadDraftValidation(payload = {}, options = {}) {
     requiredAttributeFillPlan,
     requiredAttributeFillSummary,
     requiredAttributeManualBacklog,
+    requiredAttributeRuleCandidateIndex,
     variantConfiguration,
   };
 }
@@ -1052,6 +1058,10 @@ export function buildPreflightGateNode(input = {}) {
   });
   const requiredAttributeFillSummary = input.requiredAttributeFillSummary || summarizeRequiredAttributeFillPlan(requiredAttributeFillPlan);
   const requiredAttributeManualBacklog = input.requiredAttributeManualBacklog || buildRequiredAttributeManualBacklog(requiredAttributeFillPlan);
+  const requiredAttributeRuleCandidateIndex = input.requiredAttributeRuleCandidateIndex || buildRequiredAttributeRuleCandidateIndex({
+    categoryMatch: input.category || categoryMatchFromPayload(input.payload || {}),
+    manualBacklog: requiredAttributeManualBacklog,
+  });
   const variantConfiguration = input.variantConfiguration || buildVariantConfigurationSummary({
     payload: input.payload || {},
     attrsMeta: input.attrsMeta || [],
@@ -1101,6 +1111,7 @@ export function buildPreflightGateNode(input = {}) {
       requiredAttributeFillPlan,
       requiredAttributeFillSummary,
       requiredAttributeManualBacklog,
+      requiredAttributeRuleCandidateIndex,
       variantConfiguration,
       summary: {
         itemCount: payloadItems(input.payload || {}).length,

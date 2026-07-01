@@ -6494,6 +6494,29 @@ function renderRequiredAttributeManualBacklog(run = {}, node = {}) {
   `;
 }
 
+function renderRequiredAttributeRuleCandidateIndex(run = {}, node = {}) {
+  const index = run.payloadDraftValidation?.requiredAttributeRuleCandidateIndex || node?.output?.requiredAttributeRuleCandidateIndex || null;
+  const candidates = Array.isArray(index?.candidates) ? index.candidates : [];
+  if (!candidates.length) return "";
+  return `
+    <div class="required-attribute-rule-candidate-index">
+      <div>
+        <strong>规则沉淀候选</strong>
+        <small>${escapeHtml(index.categoryKey || "")} · ${Number(index.totalCount || candidates.length)} 项</small>
+      </div>
+      <p>${escapeHtml(index.safeNextAction || "仅作为后续规则沉淀参考；不会自动生成规则或写入 Payload。")}</p>
+      <div class="required-attribute-rule-candidate-list">
+        ${candidates.slice(0, 6).map((candidate) => `
+          <span>
+            <b>${escapeHtml(candidate.attributeName || `属性 ${candidate.attributeId || ""}`)}</b>
+            <small>${escapeHtml(candidate.ruleStatus || "candidate")} · ${escapeHtml(candidate.suggestedRuleKey || "")}</small>
+          </span>
+        `).join("")}
+      </div>
+    </div>
+  `;
+}
+
 function renderRequiredAttributeFillPlan(run = {}, node = {}) {
   const plan = run.payloadDraftValidation?.requiredAttributeFillPlan || node?.output?.requiredAttributeFillPlan || [];
   if (!Array.isArray(plan) || !plan.length) return "";
@@ -6509,6 +6532,7 @@ function renderRequiredAttributeFillPlan(run = {}, node = {}) {
       </div>
       ${renderRequiredAttributeFillSummary(run, node, plan)}
       ${renderRequiredAttributeManualBacklog(run, node)}
+      ${renderRequiredAttributeRuleCandidateIndex(run, node)}
       ${groups.map((group) => `
         <div class="required-fill-plan-group required-fill-plan-group-${escapeHtml(group.key)}">
           <strong>${escapeHtml(group.title)}</strong>

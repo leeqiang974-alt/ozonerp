@@ -3,6 +3,7 @@ import assert from "node:assert/strict";
 import { buildListingPayloadDraftFromJob } from "../src/autoListing.js";
 import {
   buildRequiredAttributeManualBacklog,
+  buildRequiredAttributeApprovalDraftPreview,
   buildRequiredAttributeFillPlan,
   buildRequiredAttributeRuleCandidateHistory,
   buildRequiredAttributeRuleCandidateIndex,
@@ -493,9 +494,57 @@ test("buildRequiredAttributeRuleCandidateHistory aggregates category samples wit
   assert.deepEqual(kitchenRule.sampleRunIds, ["run-current", "run-old-1"]);
   assert.equal(kitchenRule.readOnly, true);
   assert.match(kitchenRule.safeNextStep, /人工审核/);
+  assert.equal(history.approvalDraftQueue, undefined);
+  assert.equal(history.approvalDraftCount, undefined);
   assert.equal(bathRule.occurrenceCount, 1);
   assert.equal(bathRule.ruleStatus, "collect_more_samples");
   assert.deepEqual(Object.keys(kitchenRule).filter((key) => /payload|submit|action/i.test(key)), []);
+});
+
+test("buildRequiredAttributeApprovalDraftPreview derives read-only approval drafts without mutating history", () => {
+  const history = buildRequiredAttributeRuleCandidateHistory([
+    {
+      sourceProductId: "SKU-CURRENT",
+      sourceRunId: "run-current",
+      categoryKey: "17028673:95183",
+      categoryPath: "Дом / Кухня",
+      candidates: [{
+        attributeId: 1234,
+        attributeName: "Комментарий к комплектации",
+        categoryKey: "17028673:95183",
+        occurrenceCount: 1,
+        readOnly: true,
+      }],
+    },
+    {
+      sourceProductId: "SKU-OLD-1",
+      sourceRunId: "run-old-1",
+      categoryKey: "17028673:95183",
+      categoryPath: "Дом / Кухня",
+      candidates: [{
+        attributeId: 1234,
+        attributeName: "Комментарий к комплектации",
+        categoryKey: "17028673:95183",
+        occurrenceCount: 1,
+        readOnly: true,
+      }],
+    },
+  ]);
+  const preview = buildRequiredAttributeApprovalDraftPreview(history);
+
+  assert.equal(preview.readOnly, true);
+  assert.equal(preview.approvalDraftCount, 1);
+  assert.equal(preview.approvalDraftQueue[0].attributeId, 1234);
+  assert.equal(preview.approvalDraftQueue[0].draftStatus, "pending_human_approval");
+  assert.equal(preview.approvalDraftQueue[0].readOnly, true);
+  assert.deepEqual(preview.approvalDraftQueue[0].requiredChecks, ["同类目样本复核", "人工批准", "独立预检回归"]);
+  assert.deepEqual(preview.approvalDraftQueue[0].forbiddenEffects, ["payload_write", "ozon_submit", "rule_auto_enable"]);
+  assert.match(preview.approvalDraftQueue[0].safeNextStep, /批准前/);
+  assert.deepEqual(Object.keys(preview.approvalDraftQueue[0]).filter((key) => /payload|submit|action/i.test(key)), []);
+  assert.deepEqual(preview.approvalDraftQueue[0].sampleProductIds, ["SKU-CURRENT", "SKU-OLD-1"]);
+  assert.notEqual(preview.approvalDraftQueue[0].sampleProductIds, history.reviewQueue[0].sampleProductIds);
+  assert.notEqual(preview.approvalDraftQueue[0].sampleRunIds, history.reviewQueue[0].sampleRunIds);
+  assert.equal(history.approvalDraftQueue, undefined);
 });
 
 test("buildRequiredAttributeRuleCandidateHistory requires distinct samples before review", () => {

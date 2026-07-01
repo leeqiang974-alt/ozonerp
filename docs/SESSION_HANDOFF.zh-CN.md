@@ -292,10 +292,15 @@
   - `collectRequiredAttributeRulePool()` 聚合 `state.workflowRuns[].summary.requiredAttributeRuleCandidateHistory.reviewQueue`，按类目和属性去重后展示。
   - 支持按规则状态和关键词本地筛选；筛选只更新前端 `state.rulePoolFilter`，不调用 API、不写 workflow、不写 Payload。
   - 工作台只做人工审核前的队列观察，不提供通过/忽略/应用按钮；规则沉淀、自动生成规则和 Payload 写入仍必须另走人工批准和测试。
+- 规则审查池新增只读“人工批准草案”预览：
+  - `buildRequiredAttributeRuleCandidateHistory()` 继续只输出可读历史和审查队列，不带审批草案字段，避免进入预检节点输出或持久化记录。
+  - `buildRequiredAttributeApprovalDraftPreview()` 只在 `listWorkflowRuns()` 的 `summary` 读出副本里为 `ready_for_review` 候选派生 `approvalDraftQueue`。
+  - 草案只展示样本数、必查项和禁止效果：不能写 Payload、不能提交 Ozon、不能自动启用规则。
+  - 上架中心规则池行内展示草案预览，无保存/批准/应用按钮；后续如要做真实批准，必须新增独立人工确认、持久化审计和回归预检。
 
 ### 下一步
 
-- 继续做“必填属性规则引擎 V2”的规则候选复用：为“规则审查池”增加人工批准草案模型和测试护栏；批准前仍不能自动生成规则或写入 Payload。并继续把变体整组差异建议推进到可复制修复说明和整组草稿定位。
+- 继续做“必填属性规则引擎 V2”的规则候选复用：为“规则审查池”增加真实人工批准存储/审计前的安全设计，或先把审批草案接入高频类目筛选；批准前仍不能自动生成规则或写入 Payload。并继续把变体整组差异建议推进到可复制修复说明和整组草稿定位。
 
 ## 2026-06-30 仓库匹配规则引擎 V1
 

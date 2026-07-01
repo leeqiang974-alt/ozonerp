@@ -190,6 +190,8 @@ test("listWorkflowRuns derives required attribute rule history from existing run
   assert.equal(firstListed.summary.requiredAttributeRuleCandidateHistory.reviewQueue[0].occurrenceCount, 2);
   assert.equal(firstListed.summary.requiredAttributeRuleCandidateHistory.reviewQueue[0].ruleStatus, "ready_for_review");
   assert.deepEqual(firstListed.summary.requiredAttributeRuleCandidateHistory.reviewQueue[0].sampleRunIds.sort(), [first.id, second.id].sort());
+  assert.equal(firstListed.summary.requiredAttributeRuleCandidateHistory.approvalDraftCount, 1);
+  assert.equal(firstListed.summary.requiredAttributeRuleCandidateHistory.approvalDraftQueue[0].draftStatus, "pending_human_approval");
   assert.equal(secondListed.summary.requiredAttributeRuleCandidateHistory.readyForReviewCount, 1);
   assert.equal(persistedFirst.summary?.requiredAttributeRuleCandidateHistory, undefined);
   assert.equal(persistedFirst.payloadDraftValidation?.requiredAttributeRuleCandidateHistory, undefined);
@@ -521,6 +523,8 @@ test("buildPreflightGateNode carries required attribute fill plan without unlock
   assert.equal(node.output.requiredAttributeRuleCandidateHistory.reviewQueue[0].occurrenceCount, 2);
   assert.equal(node.output.requiredAttributeRuleCandidateHistory.reviewQueue[0].ruleStatus, "ready_for_review");
   assert.deepEqual(Object.keys(node.output.requiredAttributeRuleCandidateHistory.reviewQueue[0]).filter((key) => /payload|submit|action/i.test(key)), []);
+  assert.equal(node.output.requiredAttributeRuleCandidateHistory.approvalDraftQueue, undefined);
+  assert.equal(node.output.requiredAttributeRuleCandidateHistory.approvalDraftCount, undefined);
   assert.equal(node.status, "failed");
   assert.equal(node.runStatus, "waiting_human");
 });

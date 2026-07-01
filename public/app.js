@@ -6554,6 +6554,8 @@ function collectRequiredAttributeRulePool(runs = []) {
   (Array.isArray(runs) ? runs : []).forEach((run) => {
     const history = run.summary?.requiredAttributeRuleCandidateHistory || null;
     const queue = Array.isArray(history?.reviewQueue) ? history.reviewQueue : [];
+    const approvalDrafts = new Map((Array.isArray(history?.approvalDraftQueue) ? history.approvalDraftQueue : [])
+      .map((draft) => [[draft.categoryKey || "", draft.attributeId || draft.attributeName || ""].join(":"), draft]));
     queue.forEach((item) => {
       const key = [item.categoryKey || "", item.attributeId || item.attributeName || ""].join(":");
       const current = pool.get(key) || {
@@ -6566,6 +6568,7 @@ function collectRequiredAttributeRulePool(runs = []) {
         sampleRunIds: new Set(),
         sourceRunIds: new Set(),
         safeNextStep: item.safeNextStep || "",
+        approvalDraft: approvalDrafts.get(key) || null,
       };
       current.occurrenceCount = Math.max(Number(current.occurrenceCount || 0), Number(item.occurrenceCount || 0));
       (item.sampleProductIds || []).forEach((id) => current.sampleProductIds.add(id));
@@ -6573,6 +6576,7 @@ function collectRequiredAttributeRulePool(runs = []) {
       if (run.id) current.sourceRunIds.add(run.id);
       if (item.ruleStatus === "ready_for_review") current.ruleStatus = "ready_for_review";
       if (!current.safeNextStep && item.safeNextStep) current.safeNextStep = item.safeNextStep;
+      if (!current.approvalDraft && approvalDrafts.has(key)) current.approvalDraft = approvalDrafts.get(key);
       pool.set(key, current);
     });
   });
@@ -6646,6 +6650,15 @@ function renderListingRequiredAttributeRulePoolWorkbench() {
             <small>样本 ${Number((item.sampleProductIds || []).length || 0)} 个 · workflow ${(item.sampleRunIds || item.sourceRunIds || []).slice(0, 3).map(escapeHtml).join("、") || "-"}</small>
           </div>
           <p>${escapeHtml(item.safeNextStep || "人工审核前不生成规则；确认后仍需独立测试和预检。")}</p>
+          ${item.approvalDraft ? `
+            <div class="rule-pool-approval-draft">
+              <strong>人工批准草案</strong>
+              <span>${escapeHtml(item.approvalDraft.draftStatus || "pending_human_approval")} · ${Number(item.approvalDraft.occurrenceCount || item.occurrenceCount || 0)} 个样本信号</span>
+              <small>检查项：${(item.approvalDraft.requiredChecks || []).map(escapeHtml).join("、") || "人工复核、独立预检"}</small>
+              <small>禁止效果：${(item.approvalDraft.forbiddenEffects || []).map(escapeHtml).join("、") || "不写草稿、不提交、不启用规则"}</small>
+              <p>${escapeHtml(item.approvalDraft.safeNextStep || "批准前只做草案预览；不会自动写草稿、提交 Ozon 或启用规则。")}</p>
+            </div>
+          ` : ""}
         </article>
       `).join("") : `<p class="hint">当前筛选下没有规则候选。规则池只读，不会因为筛选而写入 Payload 或改变工作流状态。</p>`}
     </div>

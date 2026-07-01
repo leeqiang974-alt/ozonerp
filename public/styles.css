@@ -2954,6 +2954,18 @@ tr:hover td {
   color: #667085;
   margin: 0;
 }
+.rule-pool-approval-draft {
+  background: #fff;
+  border: 1px dashed #93c5fd;
+  border-radius: 10px;
+  display: grid;
+  gap: 4px;
+  grid-column: 1 / -1;
+  padding: 10px;
+}
+.rule-pool-approval-draft strong {
+  color: #1d4ed8;
+}
 .workflow-run-list,
 .workflow-node-timeline,
 .workflow-node-detail {

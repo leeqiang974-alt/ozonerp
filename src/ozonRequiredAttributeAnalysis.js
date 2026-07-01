@@ -359,6 +359,34 @@ export function buildRequiredAttributeRuleCandidateHistory(samples = []) {
   };
 }
 
+export function buildRequiredAttributeApprovalDraftPreview(history = {}) {
+  const reviewQueue = Array.isArray(history?.reviewQueue) ? history.reviewQueue : [];
+  const approvalDraftQueue = reviewQueue
+    .filter((item) => item.ruleStatus === "ready_for_review")
+    .map((item) => ({
+      categoryKey: item.categoryKey || "",
+      categoryPath: item.categoryPath || "",
+      attributeId: Number(item.attributeId || 0),
+      attributeName: item.attributeName || `属性 ${item.attributeId || ""}`,
+      occurrenceCount: Number(item.occurrenceCount || 0),
+      sampleProductIds: Array.isArray(item.sampleProductIds) ? [...item.sampleProductIds] : [],
+      sampleRunIds: Array.isArray(item.sampleRunIds) ? [...item.sampleRunIds] : [],
+      draftStatus: "pending_human_approval",
+      requiredChecks: ["同类目样本复核", "人工批准", "独立预检回归"],
+      forbiddenEffects: ["payload_write", "ozon_submit", "rule_auto_enable"],
+      safeNextStep: "批准前只做草案预览；必须人工复核样本并跑独立预检，不能自动写草稿、提交 Ozon 或启用规则。",
+      readOnly: true,
+    }));
+  return {
+    readOnly: true,
+    approvalDraftCount: approvalDraftQueue.length,
+    approvalDraftQueue,
+    safeNextStep: approvalDraftQueue.length
+      ? "人工批准草案仅为上架中心预览；不会持久化、不会自动启用规则、不会写 Payload。"
+      : "暂无可预览的人工批准草案。",
+  };
+}
+
 export function categoryAttributeCacheKey(category = {}) {
   return `${Number(category.description_category_id || 0)}:${Number(category.type_id || 0)}`;
 }

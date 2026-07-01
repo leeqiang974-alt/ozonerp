@@ -5,6 +5,7 @@ import { diagnoseListingQuality } from "./listingQuality.js";
 import { loadCategoryCache } from "./ozonCategoryCache.js";
 import {
   buildRequiredAttributeManualBacklog,
+  buildRequiredAttributeApprovalDraftPreview,
   buildRequiredAttributeFillPlan,
   buildRequiredAttributeRuleCandidateHistory,
   buildRequiredAttributeRuleCandidateIndex,
@@ -105,11 +106,15 @@ function withRequiredAttributeRuleHistorySummaries(runs = []) {
     const categorySamples = samples.filter((sample) => sample.index?.categoryKey === currentCategoryKey);
     if (!categorySamples.length) return { ...run, summary };
     const history = buildRequiredAttributeRuleCandidateHistory(categorySamples);
+    const approvalDraftPreview = buildRequiredAttributeApprovalDraftPreview(history);
     return {
       ...run,
       summary: {
         ...summary,
-        requiredAttributeRuleCandidateHistory: history,
+        requiredAttributeRuleCandidateHistory: {
+          ...history,
+          ...approvalDraftPreview,
+        },
       },
     };
   });

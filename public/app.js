@@ -6518,7 +6518,10 @@ function renderRequiredAttributeRuleCandidateIndex(run = {}, node = {}) {
 }
 
 function renderRequiredAttributeRuleCandidateHistory(run = {}, node = {}) {
-  const history = run.payloadDraftValidation?.requiredAttributeRuleCandidateHistory || node?.output?.requiredAttributeRuleCandidateHistory || null;
+  const history = run.payloadDraftValidation?.requiredAttributeRuleCandidateHistory
+    || node?.output?.requiredAttributeRuleCandidateHistory
+    || run.summary?.requiredAttributeRuleCandidateHistory
+    || null;
   const queue = Array.isArray(history?.reviewQueue) ? history.reviewQueue : [];
   if (!queue.length) return "";
   return `

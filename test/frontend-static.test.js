@@ -241,6 +241,7 @@ test("frontend renders required attribute fill plan groups", async () => {
   assert.match(js, /规则沉淀候选/);
   assert.match(js, /renderRequiredAttributeRuleCandidateHistory/);
   assert.match(js, /requiredAttributeRuleCandidateHistory/);
+  assert.match(js, /summary\?\.requiredAttributeRuleCandidateHistory/);
   assert.match(js, /类目规则池草案/);
   assert.match(js, /可规则化/);
   assert.match(js, /建议换货源/);
@@ -265,6 +266,8 @@ test("frontend renders required attribute fill plan groups", async () => {
   assert.ok(ruleCandidateHistoryRendererSource);
   assert.doesNotMatch(ruleCandidateHistoryRendererSource, /fetch\(/);
   assert.doesNotMatch(ruleCandidateHistoryRendererSource, /data-workflow-action/);
+  assert.doesNotMatch(ruleCandidateHistoryRendererSource, /<button/i);
+  assert.doesNotMatch(ruleCandidateHistoryRendererSource, /onclick/i);
   const fillPlanRendererSource = js.match(/function renderRequiredAttributeFillPlan[\s\S]+?\n}\n\nfunction variantWorkbenchStatusText/)?.[0] || "";
   assert.ok(fillPlanRendererSource);
   assert.doesNotMatch(fillPlanRendererSource, /fetch\(/);

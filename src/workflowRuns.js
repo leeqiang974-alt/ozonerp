@@ -69,13 +69,50 @@ async function writeStore(store) {
 
 export async function listWorkflowRuns() {
   const store = await readStore();
-  const items = store.items
-    .map((item) => ({ ...item, summary: summarizeWorkflowRun(item) }))
+  const items = withRequiredAttributeRuleHistorySummaries(store.items)
     .sort((a, b) => String(b.updatedAt || "").localeCompare(String(a.updatedAt || "")));
   return {
     items,
     summary: summarizeWorkflowRunList(items),
   };
+}
+
+function requiredAttributeRuleCandidateIndexFromRun(run = {}) {
+  return run.payloadDraftValidation?.requiredAttributeRuleCandidateIndex
+    || (Array.isArray(run.nodes) ? run.nodes.find((node) => node.key === "preflight_check")?.output?.requiredAttributeRuleCandidateIndex : null)
+    || null;
+}
+
+function requiredAttributeRuleCandidateHistorySample(run = {}) {
+  const index = requiredAttributeRuleCandidateIndexFromRun(run);
+  const candidates = Array.isArray(index?.candidates) ? index.candidates : [];
+  if (!index?.categoryKey || !candidates.length) return null;
+  return {
+    sourceProductId: run.entity?.parentSku || firstPayloadOfferId(run.payloadDraft || {}) || run.id || "",
+    sourceRunId: run.id || "",
+    index,
+  };
+}
+
+function withRequiredAttributeRuleHistorySummaries(runs = []) {
+  const sourceRuns = Array.isArray(runs) ? runs : [];
+  const samples = sourceRuns.map(requiredAttributeRuleCandidateHistorySample).filter(Boolean);
+  return sourceRuns.map((run) => {
+    const summary = summarizeWorkflowRun(run);
+    const currentIndex = requiredAttributeRuleCandidateIndexFromRun(run);
+    const currentCategoryKey = currentIndex?.categoryKey || "";
+    if (!currentCategoryKey) return { ...run, summary };
+    const categorySamples = samples.filter((sample) => sample.index?.categoryKey === currentCategoryKey);
+    if (!categorySamples.length) return { ...run, summary };
+    const history = buildRequiredAttributeRuleCandidateHistory(categorySamples);
+    return {
+      ...run,
+      summary: {
+        ...summary,
+        requiredAttributeRuleCandidateHistory: history,
+      },
+    };
+  });
 }
 
 export async function getWorkflowRun(id) {

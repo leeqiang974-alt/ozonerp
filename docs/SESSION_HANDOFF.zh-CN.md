@@ -284,10 +284,14 @@
   - `buildPreflightGateNode()` 只有在显式传入历史样本或历史草案时才输出只读 `requiredAttributeRuleCandidateHistory`。
   - 前端“必填属性填充计划”可渲染只读“类目规则池草案”，展示出现次数、样本数和人工审核下一步。
   - 本阶段仍不持久化规则、不自动生成规则、不写 Payload、不触发 Ozon 提交；规则进入自动化前必须另走人工审核和测试。
+- 类目规则池草案已接入真实 workflow 历史读出：
+  - `listWorkflowRuns()` 读取现有 run 时，会从同类目 `requiredAttributeRuleCandidateIndex` 临时聚合 `summary.requiredAttributeRuleCandidateHistory`。
+  - 该字段只存在于 API 读出对象的 `summary` 副本，不写回 `workflow-runs.json`、不写 `payloadDraftValidation`、不写 Payload。
+  - 前端 `renderRequiredAttributeRuleCandidateHistory()` 已读取 `run.summary.requiredAttributeRuleCandidateHistory`，继续保持只读渲染，无按钮、无 API 调用、无自动应用规则。
 
 ### 下一步
 
-- 继续做“必填属性规则引擎 V2”的规则候选复用：把 `requiredAttributeRuleCandidateHistory` 接入真实 workflow 历史/同类目样本读取，形成可筛选、可人工批准的规则池；并继续把变体整组差异建议推进到可复制修复说明和整组草稿定位。
+- 继续做“必填属性规则引擎 V2”的规则候选复用：把 `summary.requiredAttributeRuleCandidateHistory` 推进成可筛选、可人工批准的规则池工作台；仍不能自动生成规则或写入 Payload。并继续把变体整组差异建议推进到可复制修复说明和整组草稿定位。
 
 ## 2026-06-30 仓库匹配规则引擎 V1
 

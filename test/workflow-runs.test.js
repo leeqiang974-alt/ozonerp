@@ -126,6 +126,75 @@ test("workflow runs can be created and node status can be updated", async () => 
   assert.equal((await getWorkflowRun(run.id)).entity.parentSku, "SKUlq00999");
 });
 
+test("listWorkflowRuns derives required attribute rule history from existing runs without persistence", async () => {
+  reset();
+  const first = await createWorkflowRun({
+    title: "当前规则候选",
+    nodes: [{
+      key: "preflight_check",
+      output: { requiredAttributeRuleCandidateIndex: {
+        categoryKey: "17028673:95183",
+        categoryPath: "Дом / Кухня",
+        candidates: [{
+          attributeId: 1234,
+          attributeName: "Комментарий к комплектации",
+          categoryKey: "17028673:95183",
+          occurrenceCount: 1,
+          readOnly: true,
+        }],
+      } },
+    }],
+  });
+  const second = await createWorkflowRun({
+    title: "历史规则候选",
+    nodes: [{
+      key: "preflight_check",
+      output: { requiredAttributeRuleCandidateIndex: {
+        categoryKey: "17028673:95183",
+        categoryPath: "Дом / Кухня",
+        candidates: [{
+          attributeId: 1234,
+          attributeName: "Комментарий к комплектации",
+          categoryKey: "17028673:95183",
+          occurrenceCount: 1,
+          readOnly: true,
+        }],
+      } },
+    }],
+  });
+  await createWorkflowRun({
+    title: "其他类目候选",
+    nodes: [{
+      key: "preflight_check",
+      output: { requiredAttributeRuleCandidateIndex: {
+        categoryKey: "17028674:95184",
+        categoryPath: "Дом / Ванная",
+        candidates: [{
+          attributeId: 1234,
+          attributeName: "Комментарий к комплектации",
+          categoryKey: "17028674:95184",
+          occurrenceCount: 1,
+          readOnly: true,
+        }],
+      } },
+    }],
+  });
+
+  const listed = await listWorkflowRuns();
+  const firstListed = listed.items.find((item) => item.id === first.id);
+  const secondListed = listed.items.find((item) => item.id === second.id);
+  const persistedFirst = await getWorkflowRun(first.id);
+
+  assert.equal(firstListed.summary.requiredAttributeRuleCandidateHistory.readOnly, true);
+  assert.equal(firstListed.summary.requiredAttributeRuleCandidateHistory.readyForReviewCount, 1);
+  assert.equal(firstListed.summary.requiredAttributeRuleCandidateHistory.reviewQueue[0].occurrenceCount, 2);
+  assert.equal(firstListed.summary.requiredAttributeRuleCandidateHistory.reviewQueue[0].ruleStatus, "ready_for_review");
+  assert.deepEqual(firstListed.summary.requiredAttributeRuleCandidateHistory.reviewQueue[0].sampleRunIds.sort(), [first.id, second.id].sort());
+  assert.equal(secondListed.summary.requiredAttributeRuleCandidateHistory.readyForReviewCount, 1);
+  assert.equal(persistedFirst.summary?.requiredAttributeRuleCandidateHistory, undefined);
+  assert.equal(persistedFirst.payloadDraftValidation?.requiredAttributeRuleCandidateHistory, undefined);
+});
+
 test("workflow node upsert preserves decision metadata", async () => {
   reset();
   const run = await createWorkflowRun({ title: "风险元数据" });

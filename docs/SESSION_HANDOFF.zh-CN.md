@@ -257,10 +257,15 @@
   - `Количество в упаковке` / 包装数量 / 套装字段在商品文本含 `3-pack`、`一包3个` 等表达时，只候选当前类目当前属性字典中的同数量值。
   - `Сценарий использования` / 适用场景字段在商品文本含 travel/旅行、office/办公、bath/浴室、outdoor/户外、home/家用、car/车载、school/学校等明确场景词时，只候选当前属性字典里的对应场景值。
   - 候选来源标记为 `size_synonym` / `package_count_synonym` / `scenario_synonym`；仍保持 `action=suggest_dictionary`，不设置行级 `dictionaryValueId`，不自动写 Payload。
+- 必填属性填充计划新增安全分层元数据：
+  - 每条 `requiredAttributeFillPlan` 都输出 `safetyTier`、`safetyLabelZh`、`requiresHumanConfirmation`、`blocksAutomation`、`safeNextStep`。
+  - 分层固定为 `autofill-safe`、`candidate-needs-human-confirmation`、`manual-required`、`blocked-never-guess`。
+  - `auto_fill` 仍需经过 Payload validation 和预检；`suggest_dictionary` 只允许人工确认后走已有 `waiting_human + confirmLocalDraftRepair` 本地草稿修复；合规敏感/禁止猜测字段必须人工核实或换货源。
+  - 前端“必填属性填充计划”只读展示安全分层和安全下一步，不新增 API、不新增自动填充按钮、不提交 Ozon。
 
 ### 下一步
 
-- 继续做“必填属性规则引擎 V2”和媒体质量：扩展水印/Logo 视觉风险、更多 Ozon 场景词；把变体整组差异建议继续推进到可复制修复说明和整组草稿定位。
+- 继续做“必填属性规则引擎 V2”的覆盖率汇总：按当前商品统计可自动、候选确认、人工必填、禁止猜测数量，并把高频 `manual-required` 属性沉淀成可复用规则 backlog；并继续把变体整组差异建议推进到可复制修复说明和整组草稿定位。
 
 ## 2026-06-30 仓库匹配规则引擎 V1
 

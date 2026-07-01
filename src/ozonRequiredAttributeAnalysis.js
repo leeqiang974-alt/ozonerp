@@ -141,7 +141,8 @@ export function buildRequiredAttributeFillPlan(input = {}) {
       productText,
       packageInfo,
     }))
-    .filter(Boolean);
+    .filter(Boolean)
+    .map(withFillPlanSafety);
 }
 
 export function categoryAttributeCacheKey(category = {}) {
@@ -154,6 +155,52 @@ export function attributeValueCacheKey(category = {}, attribute = {}, language =
 
 function strategy(strategyName, fillLogic, confidence) {
   return { strategy: strategyName, fillLogic, confidence };
+}
+
+function fillPlanSafetyForAction(action = "") {
+  if (action === "auto_fill") {
+    return {
+      safetyTier: "autofill-safe",
+      safetyLabelZh: "可自动填",
+      requiresHumanConfirmation: false,
+      blocksAutomation: false,
+      safeNextStep: "进入草稿前仍需经过 Payload validation 和预检校验；不会跳过人工提交确认。",
+    };
+  }
+  if (action === "suggest_dictionary") {
+    return {
+      safetyTier: "candidate-needs-human-confirmation",
+      safetyLabelZh: "候选需确认",
+      requiresHumanConfirmation: true,
+      blocksAutomation: false,
+      safeNextStep: "人工确认后只能通过 waiting_human + confirmLocalDraftRepair 写本地草稿，然后重新预检；不会提交 Ozon。",
+    };
+  }
+  if (action === "blocked_sensitive") {
+    return {
+      safetyTier: "blocked-never-guess",
+      safetyLabelZh: "禁止猜测",
+      requiresHumanConfirmation: true,
+      blocksAutomation: true,
+      safeNextStep: "必须人工核实真实属性或更换货源后重新预检；系统不能猜测或自动接受。",
+    };
+  }
+  return {
+    safetyTier: "manual-required",
+    safetyLabelZh: "必须人工填",
+    requiresHumanConfirmation: true,
+    blocksAutomation: true,
+    safeNextStep: "人工填写真实属性后重新预检；系统不会用低置信内容自动补齐。",
+  };
+}
+
+function withFillPlanSafety(row = {}) {
+  const safety = fillPlanSafetyForAction(row.action);
+  return {
+    ...row,
+    ...safety,
+    safeNextStep: row.safeNextStep || safety.safeNextStep,
+  };
 }
 
 function fillPlanRow({

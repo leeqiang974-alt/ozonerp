@@ -274,27 +274,65 @@ test("buildRequiredAttributeFillPlan keeps dictionary candidates in current cate
 
   const originPlan = plan.find((row) => row.attributeId === 4389);
   assert.equal(originPlan.action, "auto_fill");
+  assert.equal(originPlan.safetyTier, "autofill-safe");
+  assert.equal(originPlan.requiresHumanConfirmation, false);
+  assert.equal(originPlan.blocksAutomation, false);
   assert.equal(originPlan.strategy, "fixed_country_china");
   assert.equal(originPlan.dictionaryValueId, 22);
   assert.equal(originPlan.source, "fixed_country_china");
 
   const dictionaryPlan = plan.find((row) => row.attributeId === 777);
   assert.equal(dictionaryPlan.action, "suggest_dictionary");
+  assert.equal(dictionaryPlan.safetyTier, "candidate-needs-human-confirmation");
+  assert.equal(dictionaryPlan.requiresHumanConfirmation, true);
+  assert.equal(dictionaryPlan.blocksAutomation, false);
   assert.equal(dictionaryPlan.dictionaryValueId, undefined);
   assert.deepEqual(dictionaryPlan.dictionaryCandidates.map((item) => item.dictionaryValueId), [11]);
 
   const packagePlan = plan.find((row) => row.attributeId === 888);
   assert.equal(packagePlan.action, "auto_fill");
+  assert.equal(packagePlan.safetyTier, "autofill-safe");
   assert.equal(packagePlan.source, "1688_package");
   assert.equal(packagePlan.value, "700");
 
   const sensitivePlan = plan.find((row) => row.attributeId === 999);
   assert.equal(sensitivePlan.action, "blocked_sensitive");
+  assert.equal(sensitivePlan.safetyTier, "blocked-never-guess");
+  assert.equal(sensitivePlan.requiresHumanConfirmation, true);
+  assert.equal(sensitivePlan.blocksAutomation, true);
   assert.equal(sensitivePlan.confidence, "low");
 
   const manufacturerPlan = plan.find((row) => row.attributeId === 23487);
   assert.equal(manufacturerPlan.action, "blocked_sensitive");
   assert.equal(manufacturerPlan.strategy, "compliance_sensitive");
+});
+
+test("buildRequiredAttributeFillPlan classifies every required row into one safety tier", () => {
+  const plan = buildRequiredAttributeFillPlan({
+    categoryMatch: { description_category_id: 17028673, type_id: 95183 },
+    attrsMeta: [
+      { id: 9048, name: "Название модели (для объединения в одну карточку)", is_required: true },
+      { id: 777, name: "Материал", is_required: true, dictionary_id: 100 },
+      { id: 1234, name: "Комментарий к комплектации", is_required: true },
+      { id: 23487, name: "Производитель", is_required: true, dictionary_id: 300 },
+    ],
+    attributeValuesById: {
+      777: [{ id: 11, value: "пластик" }],
+    },
+    modelName: "Органайзер SKUlq01005",
+    productText: "1688 参数：PP 塑料收纳盒",
+  });
+
+  assert.deepEqual(plan.map((row) => row.safetyTier), [
+    "autofill-safe",
+    "candidate-needs-human-confirmation",
+    "manual-required",
+    "blocked-never-guess",
+  ]);
+  assert.ok(plan.every((row) => row.safetyLabelZh));
+  assert.ok(plan.every((row) => /预检/.test(row.safeNextStep)));
+  assert.ok(plan.filter((row) => row.requiresHumanConfirmation).every((row) => row.safetyTier !== "autofill-safe"));
+  assert.ok(plan.find((row) => row.safetyTier === "blocked-never-guess").blocksAutomation);
 });
 
 test("buildRequiredAttributeFillPlan suggests dictionary candidates from material synonyms only", () => {

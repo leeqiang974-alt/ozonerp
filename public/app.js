@@ -6395,6 +6395,17 @@ function requiredFillPlanActionText(action = "") {
   return map[action] || "必须人工处理";
 }
 
+function requiredFillPlanSafetyText(row = {}) {
+  const tier = row.safetyTier || "manual-required";
+  const label = row.safetyLabelZh || {
+    "autofill-safe": "可自动填",
+    "candidate-needs-human-confirmation": "候选需确认",
+    "manual-required": "必须人工填",
+    "blocked-never-guess": "禁止猜测",
+  }[tier] || "必须人工填";
+  return `安全分层：${label} / ${tier}`;
+}
+
 function requiredFillPlanGroups(plan = []) {
   return [
     { key: "auto_fill", title: "已安全补齐" },
@@ -6428,7 +6439,7 @@ function renderRequiredAttributeFillPlan(run = {}, node = {}) {
       <div class="workflow-required-fill-plan-head">
         <div>
           <strong>必填属性填充计划</strong>
-          <p class="hint">只读计划：展示来源、置信度和安全动作；建议项需人工确认，且不会自动提交 Ozon。</p>
+          <p class="hint">只读计划：展示来源、置信度、安全分层和安全动作；建议项需人工确认，且不会自动提交 Ozon。</p>
         </div>
         <span>${plan.length} 个必填属性</span>
       </div>
@@ -6441,6 +6452,7 @@ function renderRequiredAttributeFillPlan(run = {}, node = {}) {
                 <div>
                   <strong>${escapeHtml(row.name || `属性 ${row.attributeId || ""}`)}</strong>
                   <small>#${escapeHtml(row.attributeId || "")} · ${escapeHtml(row.strategy || "")} · ${escapeHtml(row.confidence || "")}</small>
+                  <small>${escapeHtml(requiredFillPlanSafetyText(row))}</small>
                 </div>
                 <div>
                   <span>${escapeHtml(requiredFillPlanActionText(row.action))}</span>
@@ -6449,6 +6461,7 @@ function renderRequiredAttributeFillPlan(run = {}, node = {}) {
                   ${renderRequiredFillPlanCandidates(row)}
                 </div>
                 <p>${escapeHtml(row.reasonZh || "修复后重新预检；不会自动提交 Ozon。")}</p>
+                <p>${escapeHtml(row.safeNextStep || "修复后重新预检；不会自动提交 Ozon。")}</p>
               </div>
             `).join("")}
           </div>

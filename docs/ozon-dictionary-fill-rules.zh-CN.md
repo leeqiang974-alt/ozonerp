@@ -274,7 +274,12 @@ low：不自动填，进入人工规则池
   value,
   dictionaryValueId,
   dictionaryCandidates,
-  reasonZh
+  reasonZh,
+  safetyTier: "autofill-safe" | "candidate-needs-human-confirmation" | "manual-required" | "blocked-never-guess",
+  safetyLabelZh,
+  requiresHumanConfirmation,
+  blocksAutomation,
+  safeNextStep
 }
 ```
 
@@ -284,13 +289,15 @@ low：不自动填，进入人工规则池
 2. 中置信字典匹配：材质、类型、用途等只生成当前类目合法候选，动作是 `suggest_dictionary`，不自动写入。
 3. 合规敏感：保质期、储存条件、成分、危险、温度、儿童/食品/化妆品/医疗/电池等进入 `blocked_sensitive`。
 4. Payload 草稿和 preflight 总闸都会输出该计划，前端只读展示，不提交 Ozon。
+5. 安全分层是只读元数据：`auto_fill` 对应 `autofill-safe`，`suggest_dictionary` 对应 `candidate-needs-human-confirmation`，普通人工项对应 `manual-required`，合规敏感项对应 `blocked-never-guess`。
+6. `candidate-needs-human-confirmation` 只能在 workflow 等待人工且用户确认后走现有本地草稿修复路径；`blocked-never-guess` 不能被系统猜测、接受风险或自动写入。
 
 ## 后续接入建议
 
-1. 把 `suggest_dictionary` 候选接入现有“人工确认写回本地草稿”入口，继续保持重新预检。
+1. 在 Payload 预检中增加必填属性覆盖率汇总，按四个 `safetyTier` 展示当前商品还差什么。
 2. 扩展 `variant_aspect_from_sku` 的可解释计划，显示每个 SKU 的 aspect 来源、字典候选和重复风险。
-3. 为高频 `manual_rule_needed` 属性沉淀人工规则池。
-4. 在 Payload 预检中增加必填属性覆盖率汇总。
+3. 为高频 `manual_rule_needed` / `manual-required` 属性沉淀人工规则池。
+4. 继续保持 `suggest_dictionary` 候选走人工确认写回本地草稿并重新预检。
 
 ## 参考资料
 

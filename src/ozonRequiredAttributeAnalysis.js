@@ -195,6 +195,59 @@ export function summarizeRequiredAttributeFillPlan(plan = []) {
   };
 }
 
+export function buildRequiredAttributeManualBacklog(plan = []) {
+  const rows = Array.isArray(plan) ? plan : [];
+  const buckets = [
+    { key: "rule_candidate", title: "可规则化", items: [] },
+    { key: "manual_required", title: "必须人工", items: [] },
+    { key: "replace_source", title: "建议换货源", items: [] },
+  ];
+  const bucketByKey = new Map(buckets.map((bucket) => [bucket.key, bucket]));
+  for (const row of rows) {
+    const tier = String(row.safetyTier || "");
+    const action = String(row.action || "");
+    if (!["manual-required", "blocked-never-guess"].includes(tier) && !["manual_required", "blocked_sensitive"].includes(action)) continue;
+    const bucketKey = manualBacklogBucketKey(row);
+    const bucket = bucketByKey.get(bucketKey);
+    if (!bucket) continue;
+    bucket.items.push({
+      attributeId: Number(row.attributeId || 0),
+      attributeName: row.name || `属性 ${row.attributeId || ""}`,
+      strategy: row.strategy || "",
+      action: row.action || "manual_required",
+      safetyTier: row.safetyTier || "manual-required",
+      source: row.source || "",
+      reasonZh: row.reasonZh || "需要人工确认属性值。",
+      safeNextStep: manualBacklogNextStep(bucketKey),
+      readOnly: true,
+    });
+  }
+  const ruleCandidateCount = bucketByKey.get("rule_candidate")?.items.length || 0;
+  const manualRequiredCount = bucketByKey.get("manual_required")?.items.length || 0;
+  const replaceSourceCount = bucketByKey.get("replace_source")?.items.length || 0;
+  let readinessStatus = "ready";
+  let safeNextAction = "没有人工属性 backlog；继续保持预检和人工提交确认。";
+  if (replaceSourceCount) {
+    readinessStatus = "replace_source";
+    safeNextAction = "存在货源缺关键资料的属性，优先补齐尺重/规格证据或更换货源后重新预检。";
+  } else if (manualRequiredCount) {
+    readinessStatus = "manual_review";
+    safeNextAction = "存在必须人工核实的属性，补齐真实资料后重新预检；系统不能猜测。";
+  } else if (ruleCandidateCount) {
+    readinessStatus = "rule_backlog";
+    safeNextAction = "存在可规则化的人工属性，先人工填写本次商品，再沉淀为后续类目规则。";
+  }
+  return {
+    totalCount: ruleCandidateCount + manualRequiredCount + replaceSourceCount,
+    ruleCandidateCount,
+    manualRequiredCount,
+    replaceSourceCount,
+    readinessStatus,
+    safeNextAction,
+    buckets,
+  };
+}
+
 export function categoryAttributeCacheKey(category = {}) {
   return `${Number(category.description_category_id || 0)}:${Number(category.type_id || 0)}`;
 }
@@ -251,6 +304,25 @@ function withFillPlanSafety(row = {}) {
     ...safety,
     safeNextStep: row.safeNextStep || safety.safeNextStep,
   };
+}
+
+function manualBacklogBucketKey(row = {}) {
+  const source = String(row.source || "");
+  const strategyName = String(row.strategy || "");
+  const reason = normalizeText(`${row.reasonZh || ""} ${row.safeNextStep || ""} ${row.name || ""}`);
+  if (source === "1688_package_missing" || strategyName === "package_data" || /尺重|重量|вес|длина|ширина|высота/.test(reason)) {
+    return "replace_source";
+  }
+  if (String(row.safetyTier || "") === "blocked-never-guess" || String(row.action || "") === "blocked_sensitive") {
+    return "manual_required";
+  }
+  return "rule_candidate";
+}
+
+function manualBacklogNextStep(bucketKey = "") {
+  if (bucketKey === "replace_source") return "补齐货源尺重/规格证据或更换货源后重新预检；不会自动写 Payload。";
+  if (bucketKey === "manual_required") return "人工核实真实属性后再写本地草稿并重新预检；系统不能猜测。";
+  return "先人工填写本次商品，同时把样本沉淀为类目规则；不会自动写 Payload。";
 }
 
 function fillPlanRow({

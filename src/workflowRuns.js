@@ -4,6 +4,7 @@ import { fileURLToPath } from "node:url";
 import { diagnoseListingQuality } from "./listingQuality.js";
 import { loadCategoryCache } from "./ozonCategoryCache.js";
 import {
+  buildRequiredAttributeManualBacklog,
   buildRequiredAttributeFillPlan,
   summarizeRequiredAttributeFillPlan,
 } from "./ozonRequiredAttributeAnalysis.js";
@@ -1007,6 +1008,7 @@ function buildPayloadDraftValidation(payload = {}, options = {}) {
   const issues = [...(payloadValidation.issues || []), ...qualityIssues, ...matrixIssues];
   const requiredAttributeFillPlan = buildRequiredAttributePlanForPayload(payload, options);
   const requiredAttributeFillSummary = summarizeRequiredAttributeFillPlan(requiredAttributeFillPlan);
+  const requiredAttributeManualBacklog = buildRequiredAttributeManualBacklog(requiredAttributeFillPlan);
   return {
     ...payloadValidation,
     ok: issues.length === 0,
@@ -1016,6 +1018,7 @@ function buildPayloadDraftValidation(payload = {}, options = {}) {
     attributeMatrix,
     requiredAttributeFillPlan,
     requiredAttributeFillSummary,
+    requiredAttributeManualBacklog,
     variantConfiguration,
   };
 }
@@ -1048,6 +1051,7 @@ export function buildPreflightGateNode(input = {}) {
     contentSummary: input.contentSummary || {},
   });
   const requiredAttributeFillSummary = input.requiredAttributeFillSummary || summarizeRequiredAttributeFillPlan(requiredAttributeFillPlan);
+  const requiredAttributeManualBacklog = input.requiredAttributeManualBacklog || buildRequiredAttributeManualBacklog(requiredAttributeFillPlan);
   const variantConfiguration = input.variantConfiguration || buildVariantConfigurationSummary({
     payload: input.payload || {},
     attrsMeta: input.attrsMeta || [],
@@ -1096,6 +1100,7 @@ export function buildPreflightGateNode(input = {}) {
       attributeMatrix,
       requiredAttributeFillPlan,
       requiredAttributeFillSummary,
+      requiredAttributeManualBacklog,
       variantConfiguration,
       summary: {
         itemCount: payloadItems(input.payload || {}).length,

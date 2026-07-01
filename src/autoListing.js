@@ -11,6 +11,7 @@ import { nextParentSku } from "./skuSequence.js";
 import { recordListingExperience } from "./learningMemory.js";
 import { attributeValueCacheKey, flattenCategories, loadCategoryCache, matchCategory } from "./ozonCategoryCache.js";
 import {
+  buildRequiredAttributeManualBacklog,
   buildRequiredAttributeFillPlan,
   summarizeRequiredAttributeFillPlan,
 } from "./ozonRequiredAttributeAnalysis.js";
@@ -1782,6 +1783,7 @@ export function buildListingPayloadDraftFromJob(job = {}, options = {}) {
     packageInfo,
   });
   const requiredAttributeFillSummary = summarizeRequiredAttributeFillPlan(requiredAttributeFillPlan);
+  const requiredAttributeManualBacklog = buildRequiredAttributeManualBacklog(requiredAttributeFillPlan);
   const baseAttrs = dedupeAttrs(highConfidenceRequiredAttributes(attrsMeta, attributeOptions)
     .concat(modelAttributesForMeta(modelName, attrsMeta))
     .concat(countryAttributes())
@@ -1887,6 +1889,7 @@ export function buildListingPayloadDraftFromJob(job = {}, options = {}) {
       pricingDiagnosis,
       requiredAttributeFillPlan,
       requiredAttributeFillSummary,
+      requiredAttributeManualBacklog,
     },
   };
 }

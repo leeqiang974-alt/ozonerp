@@ -383,6 +383,7 @@ test("buildPreflightGateNode carries required attribute fill plan without unlock
       { id: 85, name: "Бренд", is_required: true, dictionary_id: 971082 },
       { id: 9048, name: "Название модели (для объединения в одну карточку)", is_required: true },
       { id: 777, name: "Материал", is_required: true, dictionary_id: 100 },
+      { id: 1234, name: "Комментарий к комплектации", is_required: true },
       { id: 999, name: "Срок годности", is_required: true },
     ],
     dictionaryValuesByAttributeId: {
@@ -410,13 +411,18 @@ test("buildPreflightGateNode carries required attribute fill plan without unlock
   assert.deepEqual(node.output.requiredAttributeFillSummary.safetyTierCounts, {
     "autofill-safe": 2,
     "candidate-needs-human-confirmation": 1,
-    "manual-required": 0,
+    "manual-required": 1,
     "blocked-never-guess": 1,
   });
-  assert.equal(node.output.requiredAttributeFillSummary.humanRequiredCount, 2);
-  assert.equal(node.output.requiredAttributeFillSummary.blockingCount, 1);
+  assert.equal(node.output.requiredAttributeFillSummary.humanRequiredCount, 3);
+  assert.equal(node.output.requiredAttributeFillSummary.blockingCount, 2);
   assert.equal(node.output.requiredAttributeFillSummary.readinessStatus, "blocked");
   assert.match(node.output.requiredAttributeFillSummary.safeNextAction, /禁止猜测/);
+  assert.equal(node.output.requiredAttributeManualBacklog.totalCount, 2);
+  assert.equal(node.output.requiredAttributeManualBacklog.ruleCandidateCount, 1);
+  assert.equal(node.output.requiredAttributeManualBacklog.manualRequiredCount, 1);
+  assert.equal(node.output.requiredAttributeManualBacklog.replaceSourceCount, 0);
+  assert.match(node.output.requiredAttributeManualBacklog.safeNextAction, /人工/);
   assert.equal(node.status, "failed");
   assert.equal(node.runStatus, "waiting_human");
 });

@@ -267,10 +267,15 @@
   - `buildListingPayloadDraftFromJob()`、`buildPayloadDraftValidation()`、`buildPreflightGateNode()` 都输出 `requiredAttributeFillSummary`。
   - 前端“必填属性填充计划”新增只读“属性覆盖率”摘要，顶部直接显示四类数量和安全下一步。
   - 该摘要不新增写入按钮、不触发 Ozon 预检/提交、不改变 workflow lock / `waiting_human`，只帮助当前商品快速定位卡点。
+- 高频人工属性 backlog 已接入：
+  - `buildRequiredAttributeManualBacklog()` 从 `requiredAttributeFillPlan` 只读提取 `manual-required` / `blocked-never-guess` 行，分为 `rule_candidate`、`manual_required`、`replace_source` 三类。
+  - 缺尺重/包装证据等货源关键资料进入“建议换货源”；合规敏感、制造商、保质期等禁止猜测字段进入“必须人工”；普通无规则字段进入“可规则化”。
+  - `buildListingPayloadDraftFromJob()`、`buildPayloadDraftValidation()`、`buildPreflightGateNode()` 都输出 `requiredAttributeManualBacklog`。
+  - 前端“必填属性填充计划”新增只读“高频人工属性”摘要，不新增按钮、不触发换货源、不写 Payload、不提交 Ozon。
 
 ### 下一步
 
-- 继续做“必填属性规则引擎 V2”的高频人工属性 backlog：按当前商品/类目沉淀 `manual-required` 和 `blocked-never-guess` 字段，区分可规则化、必须人工、需换货源；并继续把变体整组差异建议推进到可复制修复说明和整组草稿定位。
+- 继续做“必填属性规则引擎 V2”的 backlog 持久化/复用：按当前商品/类目统计 `rule_candidate` 高频字段，形成可沉淀规则池；并继续把变体整组差异建议推进到可复制修复说明和整组草稿定位。
 
 ## 2026-06-30 仓库匹配规则引擎 V1
 

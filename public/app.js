@@ -6460,6 +6460,40 @@ function renderRequiredAttributeFillSummary(run = {}, node = {}, plan = []) {
   `;
 }
 
+function requiredAttributeManualBacklogBucketTitle(bucket = {}) {
+  const map = {
+    rule_candidate: "可规则化",
+    manual_required: "必须人工",
+    replace_source: "建议换货源",
+  };
+  return bucket.title || map[bucket.key] || "人工属性";
+}
+
+function renderRequiredAttributeManualBacklog(run = {}, node = {}) {
+  const backlog = run.payloadDraftValidation?.requiredAttributeManualBacklog || node?.output?.requiredAttributeManualBacklog || null;
+  if (!backlog || !Number(backlog.totalCount || 0)) return "";
+  const buckets = Array.isArray(backlog.buckets) ? backlog.buckets : [];
+  return `
+    <div class="required-attribute-manual-backlog">
+      <div>
+        <strong>高频人工属性</strong>
+        <small>${escapeHtml(backlog.readinessStatus || "manual_review")} · ${Number(backlog.totalCount || 0)} 项</small>
+      </div>
+      <p>${escapeHtml(backlog.safeNextAction || "人工处理后重新预检；不会自动提交 Ozon。")}</p>
+      <div class="required-attribute-manual-backlog-grid">
+        ${buckets.map((bucket) => `
+          <article>
+            <strong>${escapeHtml(requiredAttributeManualBacklogBucketTitle(bucket))} · ${Number((bucket.items || []).length || 0)}</strong>
+            ${(bucket.items || []).slice(0, 4).map((item) => `
+              <span>${escapeHtml(item.attributeName || `属性 ${item.attributeId || ""}`)}</span>
+            `).join("") || "<small>暂无</small>"}
+          </article>
+        `).join("")}
+      </div>
+    </div>
+  `;
+}
+
 function renderRequiredAttributeFillPlan(run = {}, node = {}) {
   const plan = run.payloadDraftValidation?.requiredAttributeFillPlan || node?.output?.requiredAttributeFillPlan || [];
   if (!Array.isArray(plan) || !plan.length) return "";
@@ -6474,6 +6508,7 @@ function renderRequiredAttributeFillPlan(run = {}, node = {}) {
         <span>${plan.length} 个必填属性</span>
       </div>
       ${renderRequiredAttributeFillSummary(run, node, plan)}
+      ${renderRequiredAttributeManualBacklog(run, node)}
       ${groups.map((group) => `
         <div class="required-fill-plan-group required-fill-plan-group-${escapeHtml(group.key)}">
           <strong>${escapeHtml(group.title)}</strong>

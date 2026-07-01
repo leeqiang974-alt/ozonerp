@@ -291,12 +291,16 @@ low：不自动填，进入人工规则池
 4. Payload 草稿和 preflight 总闸都会输出该计划，前端只读展示，不提交 Ozon。
 5. 安全分层是只读元数据：`auto_fill` 对应 `autofill-safe`，`suggest_dictionary` 对应 `candidate-needs-human-confirmation`，普通人工项对应 `manual-required`，合规敏感项对应 `blocked-never-guess`。
 6. `candidate-needs-human-confirmation` 只能在 workflow 等待人工且用户确认后走现有本地草稿修复路径；`blocked-never-guess` 不能被系统猜测、接受风险或自动写入。
+7. `requiredAttributeFillSummary` 按四类安全分层汇总当前商品覆盖率；`requiredAttributeManualBacklog` 只读沉淀人工属性 backlog：
+   - `rule_candidate`：普通人工字段，可继续沉淀类目规则。
+   - `manual_required`：合规敏感/禁止猜测字段，必须人工核实。
+   - `replace_source`：货源缺尺重、规格等关键证据，建议补证据或换货源。
 
 ## 后续接入建议
 
-1. 在 Payload 预检中增加必填属性覆盖率汇总，按四个 `safetyTier` 展示当前商品还差什么。
+1. 将 `rule_candidate` 高频字段沉淀成类目规则池，并继续保持测试先行。
 2. 扩展 `variant_aspect_from_sku` 的可解释计划，显示每个 SKU 的 aspect 来源、字典候选和重复风险。
-3. 为高频 `manual_rule_needed` / `manual-required` 属性沉淀人工规则池。
+3. 为高频 `manual_rule_needed` / `manual-required` 属性补充可复用样本和人工规则说明。
 4. 继续保持 `suggest_dictionary` 候选走人工确认写回本地草稿并重新预检。
 
 ## 参考资料

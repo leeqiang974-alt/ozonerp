@@ -2,6 +2,7 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import { buildListingPayloadDraftFromJob } from "../src/autoListing.js";
 import {
+  buildRequiredAttributeManualBacklog,
   buildRequiredAttributeFillPlan,
   summarizeRequiredAttributeFillPlan,
 } from "../src/ozonRequiredAttributeAnalysis.js";
@@ -369,6 +370,33 @@ test("summarizeRequiredAttributeFillPlan reports current product coverage by saf
   assert.match(summary.safeNextAction, /禁止猜测/);
   assert.equal(summary.safetyTierCounts["blocked-never-guess"], 1);
   assert.equal(summary.actionCounts.blocked_sensitive, 1);
+});
+
+test("buildRequiredAttributeManualBacklog groups manual rows by safe next decision", () => {
+  const plan = buildRequiredAttributeFillPlan({
+    categoryMatch: { description_category_id: 17028673, type_id: 95183 },
+    attrsMeta: [
+      { id: 9048, name: "Название модели (для объединения в одну карточку)", is_required: true },
+      { id: 888, name: "Вес товара, г", is_required: true },
+      { id: 1234, name: "Комментарий к комплектации", is_required: true },
+      { id: 23487, name: "Производитель", is_required: true, dictionary_id: 300 },
+    ],
+    modelName: "Органайзер SKUlq01005",
+  });
+
+  const backlog = buildRequiredAttributeManualBacklog(plan);
+  assert.equal(backlog.totalCount, 3);
+  assert.equal(backlog.ruleCandidateCount, 1);
+  assert.equal(backlog.manualRequiredCount, 1);
+  assert.equal(backlog.replaceSourceCount, 1);
+  assert.equal(backlog.readinessStatus, "replace_source");
+  assert.match(backlog.safeNextAction, /换货源/);
+  assert.deepEqual(backlog.buckets.map((bucket) => bucket.key), ["rule_candidate", "manual_required", "replace_source"]);
+  assert.deepEqual(backlog.buckets.map((bucket) => bucket.items.length), [1, 1, 1]);
+  assert.ok(backlog.buckets.flatMap((bucket) => bucket.items).every((item) => item.readOnly === true));
+  assert.ok(backlog.buckets.find((bucket) => bucket.key === "rule_candidate").items[0].attributeName.includes("Комментарий"));
+  assert.ok(backlog.buckets.find((bucket) => bucket.key === "manual_required").items[0].attributeName.includes("Производитель"));
+  assert.ok(backlog.buckets.find((bucket) => bucket.key === "replace_source").items[0].attributeName.includes("Вес"));
 });
 
 test("buildRequiredAttributeFillPlan suggests dictionary candidates from material synonyms only", () => {

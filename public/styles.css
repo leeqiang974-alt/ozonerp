@@ -3501,6 +3501,49 @@ tr:hover td {
   color: #0f172a;
   font-size: 18px;
 }
+.required-attribute-manual-backlog {
+  background: #fff7ed;
+  border: 1px solid #fed7aa;
+  border-radius: 8px;
+  display: grid;
+  gap: 10px;
+  padding: 10px;
+}
+.required-attribute-manual-backlog > div:first-child {
+  align-items: center;
+  display: flex;
+  gap: 10px;
+  justify-content: space-between;
+}
+.required-attribute-manual-backlog strong {
+  color: #7c2d12;
+}
+.required-attribute-manual-backlog small,
+.required-attribute-manual-backlog p {
+  color: #9a3412;
+  margin: 0;
+}
+.required-attribute-manual-backlog-grid {
+  display: grid;
+  gap: 8px;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+}
+.required-attribute-manual-backlog-grid article {
+  background: #fff;
+  border: 1px solid #fed7aa;
+  border-radius: 8px;
+  display: grid;
+  gap: 6px;
+  padding: 8px;
+}
+.required-attribute-manual-backlog-grid span {
+  background: #ffedd5;
+  border-radius: 6px;
+  color: #7c2d12;
+  display: block;
+  font-size: 12px;
+  padding: 4px 6px;
+}
 .required-fill-plan-group {
   display: grid;
   gap: 8px;

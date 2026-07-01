@@ -1280,6 +1280,7 @@ function listingFillTaskQueueItems(run = currentListingWorkflowRun()) {
   const preflightOutput = preflightNode.output || {};
   const validation = run.payloadDraftValidation || {};
   const requiredAttributeFillPlan = validation.requiredAttributeFillPlan || preflightOutput.requiredAttributeFillPlan || [];
+  const requiredAttributeFillSummary = validation.requiredAttributeFillSummary || preflightOutput.requiredAttributeFillSummary || null;
   const variantConfiguration = validation.variantConfiguration || preflightOutput.variantConfiguration || null;
   const listingQuality = validation.listingQuality || preflightOutput.listingQuality || null;
   const repairCandidate = listingFillTaskRepairCandidate(run);
@@ -1288,15 +1289,16 @@ function listingFillTaskQueueItems(run = currentListingWorkflowRun()) {
   const variantAspectSuggestion = listingFillTaskVariantAspectSuggestion(variantConfiguration);
   const items = [];
   if (Array.isArray(requiredAttributeFillPlan) && requiredAttributeFillPlan.length) {
-    const autoCount = requiredAttributeFillPlan.filter((row) => row.action === "auto_fill").length;
-    const confirmCount = requiredAttributeFillPlan.filter((row) => row.action === "suggest_dictionary").length;
-    const manualCount = requiredAttributeFillPlan.filter((row) => ["manual_required", "blocked_sensitive"].includes(row.action)).length;
+    const autoCount = Number(requiredAttributeFillSummary?.autofillSafeCount ?? requiredAttributeFillPlan.filter((row) => row.action === "auto_fill").length);
+    const confirmCount = Number(requiredAttributeFillSummary?.candidateNeedsHumanConfirmationCount ?? requiredAttributeFillPlan.filter((row) => row.action === "suggest_dictionary").length);
+    const manualCount = Number((requiredAttributeFillSummary?.manualRequiredCount ?? 0) + (requiredAttributeFillSummary?.blockedNeverGuessCount ?? 0))
+      || requiredAttributeFillPlan.filter((row) => ["manual_required", "blocked_sensitive"].includes(row.action)).length;
     items.push({
       tone: manualCount ? "warning" : confirmCount ? "info" : "success",
       label: "分类属性",
       title: `${requiredAttributeFillPlan.length} 个必填属性任务`,
       body: `${autoCount} 个已安全补齐，${confirmCount} 个需确认字典，${manualCount} 个需人工处理。`,
-      meta: "数据来自 requiredAttributeFillPlan，只读汇总，不自动写入或提交。",
+      meta: requiredAttributeFillSummary?.safeNextAction || "数据来自 requiredAttributeFillPlan，只读汇总，不自动写入或提交。",
       target: "content-images",
       repairCandidate: repairCandidate && confirmCount ? repairCandidate : null,
       textRepairCandidate: textRepairCandidate && manualCount ? textRepairCandidate : null,
@@ -6430,6 +6432,34 @@ function renderRequiredFillPlanCandidates(row = {}) {
   `;
 }
 
+function renderRequiredAttributeFillSummary(run = {}, node = {}, plan = []) {
+  const summary = run.payloadDraftValidation?.requiredAttributeFillSummary || node?.output?.requiredAttributeFillSummary || null;
+  if (!summary || !Number(summary.totalCount || 0)) return "";
+  const cards = [
+    ["可自动填", summary.autofillSafeCount || 0],
+    ["候选确认", summary.candidateNeedsHumanConfirmationCount || 0],
+    ["人工必填", summary.manualRequiredCount || 0],
+    ["禁止猜测", summary.blockedNeverGuessCount || 0],
+  ];
+  return `
+    <div class="required-attribute-coverage-summary">
+      <div>
+        <strong>属性覆盖率</strong>
+        <small>${escapeHtml(summary.readinessStatus || "ready")} · ${Number(summary.totalCount || plan.length || 0)} 个必填属性</small>
+      </div>
+      <div class="required-attribute-coverage-grid">
+        ${cards.map(([label, value]) => `
+          <span>
+            <b>${escapeHtml(value)}</b>
+            <small>${escapeHtml(label)}</small>
+          </span>
+        `).join("")}
+      </div>
+      <p>${escapeHtml(summary.safeNextAction || "修复后重新预检；不会自动提交 Ozon。")}</p>
+    </div>
+  `;
+}
+
 function renderRequiredAttributeFillPlan(run = {}, node = {}) {
   const plan = run.payloadDraftValidation?.requiredAttributeFillPlan || node?.output?.requiredAttributeFillPlan || [];
   if (!Array.isArray(plan) || !plan.length) return "";
@@ -6443,6 +6473,7 @@ function renderRequiredAttributeFillPlan(run = {}, node = {}) {
         </div>
         <span>${plan.length} 个必填属性</span>
       </div>
+      ${renderRequiredAttributeFillSummary(run, node, plan)}
       ${groups.map((group) => `
         <div class="required-fill-plan-group required-fill-plan-group-${escapeHtml(group.key)}">
           <strong>${escapeHtml(group.title)}</strong>

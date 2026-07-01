@@ -3462,6 +3462,45 @@ tr:hover td {
   font-weight: 800;
   padding: 4px 10px;
 }
+.required-attribute-coverage-summary {
+  background: #fff;
+  border: 1px solid #cbd5e1;
+  border-radius: 8px;
+  display: grid;
+  gap: 10px;
+  padding: 10px;
+}
+.required-attribute-coverage-summary > div:first-child {
+  align-items: center;
+  display: flex;
+  gap: 10px;
+  justify-content: space-between;
+}
+.required-attribute-coverage-summary strong {
+  color: #0f172a;
+}
+.required-attribute-coverage-summary small,
+.required-attribute-coverage-summary p {
+  color: #475569;
+  margin: 0;
+}
+.required-attribute-coverage-grid {
+  display: grid;
+  gap: 8px;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+}
+.required-attribute-coverage-grid span {
+  background: #f8fafc;
+  border: 1px solid #e2e8f0;
+  border-radius: 8px;
+  display: grid;
+  gap: 2px;
+  padding: 8px;
+}
+.required-attribute-coverage-grid b {
+  color: #0f172a;
+  font-size: 18px;
+}
 .required-fill-plan-group {
   display: grid;
   gap: 8px;

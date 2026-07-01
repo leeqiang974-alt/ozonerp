@@ -230,15 +230,24 @@ test("frontend renders required attribute fill plan groups", async () => {
   assert.match(js, /合规敏感/);
   assert.match(js, /safetyTier/);
   assert.match(js, /安全分层/);
+  assert.match(js, /renderRequiredAttributeFillSummary/);
+  assert.match(js, /requiredAttributeFillSummary/);
+  assert.match(js, /属性覆盖率/);
+  assert.match(js, /禁止猜测/);
   assert.match(js, /candidate-needs-human-confirmation/);
   assert.match(js, /blocked-never-guess/);
   assert.match(js, /不会自动提交 Ozon/);
   assert.match(js, /dictionaryCandidates/);
+  const fillSummaryRendererSource = js.match(/function renderRequiredAttributeFillSummary[\s\S]+?\n}\n\nfunction renderRequiredAttributeFillPlan/)?.[0] || "";
+  assert.ok(fillSummaryRendererSource);
+  assert.doesNotMatch(fillSummaryRendererSource, /fetch\(/);
+  assert.doesNotMatch(fillSummaryRendererSource, /data-workflow-action/);
   const fillPlanRendererSource = js.match(/function renderRequiredAttributeFillPlan[\s\S]+?\n}\n\nfunction variantWorkbenchStatusText/)?.[0] || "";
   assert.ok(fillPlanRendererSource);
   assert.doesNotMatch(fillPlanRendererSource, /fetch\(/);
   assert.doesNotMatch(fillPlanRendererSource, /data-workflow-action/);
   assert.match(css, /workflow-required-fill-plan/);
+  assert.match(css, /required-attribute-coverage-summary/);
   assert.match(css, /required-fill-plan-row/);
 });
 

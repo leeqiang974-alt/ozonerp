@@ -1,7 +1,10 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import { buildListingPayloadDraftFromJob } from "../src/autoListing.js";
-import { buildRequiredAttributeFillPlan } from "../src/ozonRequiredAttributeAnalysis.js";
+import {
+  buildRequiredAttributeFillPlan,
+  summarizeRequiredAttributeFillPlan,
+} from "../src/ozonRequiredAttributeAnalysis.js";
 import { validateSubmitPayload } from "../src/workflowRuns.js";
 
 test("buildListingPayloadDraftFromJob creates workflow payload draft without Ozon submit", () => {
@@ -113,6 +116,9 @@ test("buildListingPayloadDraftFromJob autofills no-brand and China from current 
   const attrs = draft.items[0].attributes;
   assert.equal(attrs.find((attribute) => Number(attribute.id) === 85)?.values[0].dictionary_value_id, 971082);
   assert.equal(attrs.find((attribute) => Number(attribute.id) === 4389)?.values[0].dictionary_value_id, 356971);
+  assert.equal(draft.summary.requiredAttributeFillSummary.totalCount, 2);
+  assert.equal(draft.summary.requiredAttributeFillSummary.autofillSafeCount, 2);
+  assert.equal(draft.summary.requiredAttributeFillSummary.readinessStatus, "ready");
 });
 
 test("buildListingPayloadDraftFromJob does not guess dictionary ids for no-brand and China", () => {
@@ -333,6 +339,36 @@ test("buildRequiredAttributeFillPlan classifies every required row into one safe
   assert.ok(plan.every((row) => /预检/.test(row.safeNextStep)));
   assert.ok(plan.filter((row) => row.requiresHumanConfirmation).every((row) => row.safetyTier !== "autofill-safe"));
   assert.ok(plan.find((row) => row.safetyTier === "blocked-never-guess").blocksAutomation);
+});
+
+test("summarizeRequiredAttributeFillPlan reports current product coverage by safety tier", () => {
+  const plan = buildRequiredAttributeFillPlan({
+    categoryMatch: { description_category_id: 17028673, type_id: 95183 },
+    attrsMeta: [
+      { id: 9048, name: "Название модели (для объединения в одну карточку)", is_required: true },
+      { id: 777, name: "Материал", is_required: true, dictionary_id: 100 },
+      { id: 1234, name: "Комментарий к комплектации", is_required: true },
+      { id: 23487, name: "Производитель", is_required: true, dictionary_id: 300 },
+    ],
+    attributeValuesById: {
+      777: [{ id: 11, value: "пластик" }],
+    },
+    modelName: "Органайзер SKUlq01005",
+    productText: "1688 参数：PP 塑料收纳盒",
+  });
+
+  const summary = summarizeRequiredAttributeFillPlan(plan);
+  assert.equal(summary.totalCount, 4);
+  assert.equal(summary.autofillSafeCount, 1);
+  assert.equal(summary.candidateNeedsHumanConfirmationCount, 1);
+  assert.equal(summary.manualRequiredCount, 1);
+  assert.equal(summary.blockedNeverGuessCount, 1);
+  assert.equal(summary.humanRequiredCount, 3);
+  assert.equal(summary.blockingCount, 2);
+  assert.equal(summary.readinessStatus, "blocked");
+  assert.match(summary.safeNextAction, /禁止猜测/);
+  assert.equal(summary.safetyTierCounts["blocked-never-guess"], 1);
+  assert.equal(summary.actionCounts.blocked_sensitive, 1);
 });
 
 test("buildRequiredAttributeFillPlan suggests dictionary candidates from material synonyms only", () => {

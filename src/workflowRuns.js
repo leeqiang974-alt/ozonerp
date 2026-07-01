@@ -3,7 +3,10 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { diagnoseListingQuality } from "./listingQuality.js";
 import { loadCategoryCache } from "./ozonCategoryCache.js";
-import { buildRequiredAttributeFillPlan } from "./ozonRequiredAttributeAnalysis.js";
+import {
+  buildRequiredAttributeFillPlan,
+  summarizeRequiredAttributeFillPlan,
+} from "./ozonRequiredAttributeAnalysis.js";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const DATA_DIR = path.resolve(__dirname, "..", "data");
@@ -1003,6 +1006,7 @@ function buildPayloadDraftValidation(payload = {}, options = {}) {
   const matrixIssues = listingAttributeMatrixIssues(attributeMatrix);
   const issues = [...(payloadValidation.issues || []), ...qualityIssues, ...matrixIssues];
   const requiredAttributeFillPlan = buildRequiredAttributePlanForPayload(payload, options);
+  const requiredAttributeFillSummary = summarizeRequiredAttributeFillPlan(requiredAttributeFillPlan);
   return {
     ...payloadValidation,
     ok: issues.length === 0,
@@ -1011,6 +1015,7 @@ function buildPayloadDraftValidation(payload = {}, options = {}) {
     listingQualityWarnings: Array.isArray(listingQuality.warnings) ? listingQuality.warnings : [],
     attributeMatrix,
     requiredAttributeFillPlan,
+    requiredAttributeFillSummary,
     variantConfiguration,
   };
 }
@@ -1042,6 +1047,7 @@ export function buildPreflightGateNode(input = {}) {
     dictionaryValuesByAttributeId: input.dictionaryValuesByAttributeId || {},
     contentSummary: input.contentSummary || {},
   });
+  const requiredAttributeFillSummary = input.requiredAttributeFillSummary || summarizeRequiredAttributeFillPlan(requiredAttributeFillPlan);
   const variantConfiguration = input.variantConfiguration || buildVariantConfigurationSummary({
     payload: input.payload || {},
     attrsMeta: input.attrsMeta || [],
@@ -1089,6 +1095,7 @@ export function buildPreflightGateNode(input = {}) {
       listingQualityWarnings: Array.isArray(listingQuality.warnings) ? listingQuality.warnings : [],
       attributeMatrix,
       requiredAttributeFillPlan,
+      requiredAttributeFillSummary,
       variantConfiguration,
       summary: {
         itemCount: payloadItems(input.payload || {}).length,

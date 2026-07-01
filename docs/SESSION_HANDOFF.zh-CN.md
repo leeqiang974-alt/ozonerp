@@ -262,10 +262,15 @@
   - 分层固定为 `autofill-safe`、`candidate-needs-human-confirmation`、`manual-required`、`blocked-never-guess`。
   - `auto_fill` 仍需经过 Payload validation 和预检；`suggest_dictionary` 只允许人工确认后走已有 `waiting_human + confirmLocalDraftRepair` 本地草稿修复；合规敏感/禁止猜测字段必须人工核实或换货源。
   - 前端“必填属性填充计划”只读展示安全分层和安全下一步，不新增 API、不新增自动填充按钮、不提交 Ozon。
+- 当前商品属性覆盖率汇总已接入：
+  - `summarizeRequiredAttributeFillPlan()` 按 `safetyTier` / `action` 汇总必填属性，输出可自动、候选确认、人工必填、禁止猜测、人工参与数、阻塞数、`readinessStatus` 和 `safeNextAction`。
+  - `buildListingPayloadDraftFromJob()`、`buildPayloadDraftValidation()`、`buildPreflightGateNode()` 都输出 `requiredAttributeFillSummary`。
+  - 前端“必填属性填充计划”新增只读“属性覆盖率”摘要，顶部直接显示四类数量和安全下一步。
+  - 该摘要不新增写入按钮、不触发 Ozon 预检/提交、不改变 workflow lock / `waiting_human`，只帮助当前商品快速定位卡点。
 
 ### 下一步
 
-- 继续做“必填属性规则引擎 V2”的覆盖率汇总：按当前商品统计可自动、候选确认、人工必填、禁止猜测数量，并把高频 `manual-required` 属性沉淀成可复用规则 backlog；并继续把变体整组差异建议推进到可复制修复说明和整组草稿定位。
+- 继续做“必填属性规则引擎 V2”的高频人工属性 backlog：按当前商品/类目沉淀 `manual-required` 和 `blocked-never-guess` 字段，区分可规则化、必须人工、需换货源；并继续把变体整组差异建议推进到可复制修复说明和整组草稿定位。
 
 ## 2026-06-30 仓库匹配规则引擎 V1
 

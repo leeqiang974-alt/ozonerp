@@ -145,6 +145,56 @@ export function buildRequiredAttributeFillPlan(input = {}) {
     .map(withFillPlanSafety);
 }
 
+export function summarizeRequiredAttributeFillPlan(plan = []) {
+  const rows = Array.isArray(plan) ? plan : [];
+  const safetyTierCounts = {
+    "autofill-safe": 0,
+    "candidate-needs-human-confirmation": 0,
+    "manual-required": 0,
+    "blocked-never-guess": 0,
+  };
+  const actionCounts = {
+    auto_fill: 0,
+    suggest_dictionary: 0,
+    manual_required: 0,
+    blocked_sensitive: 0,
+  };
+  for (const row of rows) {
+    const tier = String(row.safetyTier || "manual-required");
+    safetyTierCounts[tier] = (safetyTierCounts[tier] || 0) + 1;
+    const action = String(row.action || "manual_required");
+    actionCounts[action] = (actionCounts[action] || 0) + 1;
+  }
+  const autofillSafeCount = safetyTierCounts["autofill-safe"] || 0;
+  const candidateNeedsHumanConfirmationCount = safetyTierCounts["candidate-needs-human-confirmation"] || 0;
+  const manualRequiredCount = safetyTierCounts["manual-required"] || 0;
+  const blockedNeverGuessCount = safetyTierCounts["blocked-never-guess"] || 0;
+  const humanRequiredCount = candidateNeedsHumanConfirmationCount + manualRequiredCount + blockedNeverGuessCount;
+  const blockingCount = manualRequiredCount + blockedNeverGuessCount;
+  const readinessStatus = blockedNeverGuessCount ? "blocked" : manualRequiredCount ? "manual_required" : candidateNeedsHumanConfirmationCount ? "needs_confirmation" : "ready";
+  let safeNextAction = "必填属性已安全补齐，仍需经过 Payload validation、预检和人工提交确认。";
+  if (blockedNeverGuessCount) {
+    safeNextAction = "存在禁止猜测的合规/敏感属性，必须人工核实真实值或更换货源后重新预检。";
+  } else if (manualRequiredCount) {
+    safeNextAction = "存在必须人工填写的属性，补齐真实值后重新预检；系统不会用低置信内容自动补齐。";
+  } else if (candidateNeedsHumanConfirmationCount) {
+    safeNextAction = "存在候选字典值，需人工确认后通过等待人工的本地草稿修复路径写入并重新预检。";
+  }
+  return {
+    totalCount: rows.length,
+    autofillSafeCount,
+    candidateNeedsHumanConfirmationCount,
+    manualRequiredCount,
+    blockedNeverGuessCount,
+    humanRequiredCount,
+    blockingCount,
+    readinessStatus,
+    safeNextAction,
+    safetyTierCounts,
+    actionCounts,
+  };
+}
+
 export function categoryAttributeCacheKey(category = {}) {
   return `${Number(category.description_category_id || 0)}:${Number(category.type_id || 0)}`;
 }

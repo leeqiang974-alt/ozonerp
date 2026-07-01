@@ -10,7 +10,10 @@ import { ozonRequest } from "./ozon.js";
 import { nextParentSku } from "./skuSequence.js";
 import { recordListingExperience } from "./learningMemory.js";
 import { attributeValueCacheKey, flattenCategories, loadCategoryCache, matchCategory } from "./ozonCategoryCache.js";
-import { buildRequiredAttributeFillPlan } from "./ozonRequiredAttributeAnalysis.js";
+import {
+  buildRequiredAttributeFillPlan,
+  summarizeRequiredAttributeFillPlan,
+} from "./ozonRequiredAttributeAnalysis.js";
 import { enqueueStockJob, recordFailedStockJob, resolveWarehouseIdForStore } from "./stockQueue.js";
 import { buildVisualCardPrompt } from "./visualCardTemplate.js";
 import { prepareOzonImages } from "./imageOss.js";
@@ -1778,6 +1781,7 @@ export function buildListingPayloadDraftFromJob(job = {}, options = {}) {
     ].filter(Boolean).join(" "),
     packageInfo,
   });
+  const requiredAttributeFillSummary = summarizeRequiredAttributeFillPlan(requiredAttributeFillPlan);
   const baseAttrs = dedupeAttrs(highConfidenceRequiredAttributes(attrsMeta, attributeOptions)
     .concat(modelAttributesForMeta(modelName, attrsMeta))
     .concat(countryAttributes())
@@ -1882,6 +1886,7 @@ export function buildListingPayloadDraftFromJob(job = {}, options = {}) {
       priceCny: finalPriceCny,
       pricingDiagnosis,
       requiredAttributeFillPlan,
+      requiredAttributeFillSummary,
     },
   };
 }

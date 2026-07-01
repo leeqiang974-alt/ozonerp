@@ -407,6 +407,16 @@ test("buildPreflightGateNode carries required attribute fill plan without unlock
   assert.equal(plan.find((row) => row.attributeId === 9048)?.action, "auto_fill");
   assert.equal(plan.find((row) => row.attributeId === 777)?.action, "suggest_dictionary");
   assert.equal(plan.find((row) => row.attributeId === 999)?.action, "blocked_sensitive");
+  assert.deepEqual(node.output.requiredAttributeFillSummary.safetyTierCounts, {
+    "autofill-safe": 2,
+    "candidate-needs-human-confirmation": 1,
+    "manual-required": 0,
+    "blocked-never-guess": 1,
+  });
+  assert.equal(node.output.requiredAttributeFillSummary.humanRequiredCount, 2);
+  assert.equal(node.output.requiredAttributeFillSummary.blockingCount, 1);
+  assert.equal(node.output.requiredAttributeFillSummary.readinessStatus, "blocked");
+  assert.match(node.output.requiredAttributeFillSummary.safeNextAction, /禁止猜测/);
   assert.equal(node.status, "failed");
   assert.equal(node.runStatus, "waiting_human");
 });

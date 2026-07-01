@@ -317,11 +317,19 @@ test("frontend renders read-only variant configuration workbench", async () => {
   assert.match(js, /repairSuggestions/);
   assert.match(js, /只读修复建议/);
   assert.match(js, /renderVariantRepairSuggestions/);
-  const repairRendererSource = js.match(/function renderVariantRepairSuggestions[\s\S]+?\n}\n\nfunction renderVariantConfigurationWorkbench/)?.[0] || "";
+  assert.match(js, /differenceSuggestions/);
+  assert.match(js, /整组差异建议/);
+  assert.match(js, /renderVariantGroupDifferenceSuggestions/);
+  const repairRendererSource = js.match(/function renderVariantRepairSuggestions[\s\S]+?\n}\n\nfunction renderVariantGroupDifferenceSuggestions/)?.[0] || "";
   assert.ok(repairRendererSource);
   assert.doesNotMatch(repairRendererSource, /<button/);
   assert.doesNotMatch(repairRendererSource, /data-workflow-action/);
   assert.doesNotMatch(repairRendererSource, /fetch\(/);
+  const differenceRendererSource = js.match(/function renderVariantGroupDifferenceSuggestions[\s\S]+?\n}\n\nfunction renderVariantConfigurationWorkbench/)?.[0] || "";
+  assert.ok(differenceRendererSource);
+  assert.doesNotMatch(differenceRendererSource, /<button/);
+  assert.doesNotMatch(differenceRendererSource, /data-workflow-action/);
+  assert.doesNotMatch(differenceRendererSource, /fetch\(/);
   assert.match(js, /aspectCoveredRowCount/);
   assert.match(js, /duplicateAspectRowCount/);
   assert.match(js, /missingAspectRowCount/);
@@ -344,6 +352,7 @@ test("frontend renders read-only variant configuration workbench", async () => {
   assert.match(js, /仅定位，不修改数据/);
   assert.match(css, /workflow-variant-workbench/);
   assert.match(css, /variant-workbench-row/);
+  assert.match(css, /variant-group-difference-suggestions/);
 });
 
 test("workflow payload locator targets aspect id inside the same SKU slice", async () => {

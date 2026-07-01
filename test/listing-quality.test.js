@@ -178,6 +178,55 @@ test("diagnoseListingQuality gives read-only SKU image quality recommendations",
   assert.ok(diagnosis.imageQualityRecommendations.every((item) => !/生成图片|GPT|提交 Ozon/.test(`${item.action} ${item.nextStep}`)));
 });
 
+test("diagnoseListingQuality surfaces OCR skipped image risks as read-only recommendations", () => {
+  const diagnosis = diagnoseListingQuality({
+    payload: {
+      items: [{
+        offer_id: "SKU-ocr",
+        name: "Органайзер для кухни",
+        description_category_id: 17028673,
+        type_id: 95183,
+        price: "1200",
+        images: [
+          "https://example.com/1.jpg",
+          "https://example.com/2.jpg",
+          "https://example.com/3.jpg",
+          "https://example.com/4.jpg",
+          "https://example.com/5.jpg",
+        ],
+        attributes: [
+          { id: 85, values: [{ dictionary_value_id: 971082, value: "Нет бренда" }] },
+          { id: 9048, values: [{ value: "Kitchen organizer" }] },
+        ],
+      }],
+    },
+    attrsMeta: [
+      { id: 85, name: "Бренд", is_required: true, dictionary_id: 971082 },
+      { id: 9048, name: "Название модели (для объединения в одну карточку)", is_required: true },
+    ],
+    imagePreparation: {
+      images: [
+        { sourceUrl: "https://example.com/factory.jpg", skipped: true, reason: "factory_intro", ocr: { text: "厂家直销 包邮" } },
+        { sourceUrl: "https://example.com/chinese.jpg", skipped: true, reason: "needs_translation", ocr: { hasChinese: true, text: "中文说明" } },
+        { sourceUrl: "https://example.com/policy.jpg", skipped: true, reason: "ozon_image_policy_text", ocr: { hasOzonPolicyText: true, text: "Бесплатная доставка" } },
+      ],
+    },
+  });
+
+  assert.equal(diagnosis.status, "warning");
+  assert.ok(diagnosis.warnings.some((warning) => warning.code === "IMAGE_OCR_FACTORY_TEXT"));
+  assert.ok(diagnosis.warnings.some((warning) => warning.code === "IMAGE_OCR_NEEDS_TRANSLATION"));
+  assert.ok(diagnosis.warnings.some((warning) => warning.code === "IMAGE_OCR_POLICY_TEXT"));
+  assert.deepEqual(diagnosis.imageQualityRecommendations.map((item) => item.code), [
+    "IMAGE_OCR_FACTORY_TEXT",
+    "IMAGE_OCR_NEEDS_TRANSLATION",
+    "IMAGE_OCR_POLICY_TEXT",
+  ]);
+  assert.ok(diagnosis.imageQualityRecommendations.every((item) => item.readOnly === true));
+  assert.ok(diagnosis.imageQualityRecommendations.every((item) => /重新预检/.test(item.nextStep)));
+  assert.ok(diagnosis.imageQualityRecommendations.every((item) => !/生成图片|GPT|提交 Ozon/.test(`${item.action} ${item.nextStep}`)));
+});
+
 test("diagnoseListingQuality explains Ozon content score by media, attributes, description, and package", () => {
   const diagnosis = diagnoseListingQuality({
     payload: {

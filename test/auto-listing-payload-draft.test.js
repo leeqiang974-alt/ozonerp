@@ -672,6 +672,59 @@ test("buildRequiredAttributeFillPlan suggests size dimension combinations only f
   assert.deepEqual(noMatch.dictionaryCandidates, []);
 });
 
+test("buildRequiredAttributeFillPlan suggests home car and school scenario candidates only", () => {
+  const scenarioPlan = buildRequiredAttributeFillPlan({
+    categoryMatch: { description_category_id: 17028673, type_id: 95183 },
+    attrsMeta: [
+      { id: 9017, name: "Сценарий использования", is_required: true, dictionary_id: 112 },
+    ],
+    attributeValuesById: {
+      9017: [
+        { id: 181, value: "для дома" },
+        { id: 182, value: "для автомобиля" },
+        { id: 183, value: "для школы" },
+        { id: 184, value: "для путешествий" },
+      ],
+    },
+    productText: "1688 标题：家用车载学生收纳盒 home car school organizer",
+  })[0];
+
+  assert.equal(scenarioPlan.action, "suggest_dictionary");
+  assert.equal(scenarioPlan.dictionaryValueId, undefined);
+  assert.deepEqual(scenarioPlan.dictionaryCandidates, [
+    {
+      dictionaryValueId: 181,
+      value: "для дома",
+      confidence: 0.7,
+      source: "scenario_synonym",
+    },
+    {
+      dictionaryValueId: 182,
+      value: "для автомобиля",
+      confidence: 0.7,
+      source: "scenario_synonym",
+    },
+    {
+      dictionaryValueId: 183,
+      value: "для школы",
+      confidence: 0.7,
+      source: "scenario_synonym",
+    },
+  ]);
+
+  const typePlan = buildRequiredAttributeFillPlan({
+    categoryMatch: { description_category_id: 17028673, type_id: 95183 },
+    attrsMeta: [
+      { id: 8229, name: "Тип", is_required: true, dictionary_id: 101 },
+    ],
+    attributeValuesById: {
+      8229: [{ id: 185, value: "для дома" }],
+    },
+    productText: "1688 标题：home 家用",
+  })[0];
+  assert.deepEqual(typePlan.dictionaryCandidates, []);
+});
+
 test("buildListingPayloadDraftFromJob applies explainable pricing policy fields", () => {
   const draft = buildListingPayloadDraftFromJob({
     pendingParentSku: "SKUlq01007",

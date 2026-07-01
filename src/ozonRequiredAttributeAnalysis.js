@@ -658,6 +658,24 @@ function scenarioSynonymDictionaryCandidatesForMeta({
   const text = normalizeText(productText);
   const scenarioRules = [
     {
+      sourcePattern: /home|дом|дома|家用|家居|家庭|居家/,
+      valuePattern: /home|дом|дома|家用|家居|家庭|居家/i,
+      source: "scenario_synonym",
+      confidence: 0.7,
+    },
+    {
+      sourcePattern: /car|auto|авто|автомоб|车载|汽车|车用/,
+      valuePattern: /car|auto|авто|автомоб|车载|汽车|车用/i,
+      source: "scenario_synonym",
+      confidence: 0.7,
+    },
+    {
+      sourcePattern: /school|школ|учеб|student|学生|学校|上学/,
+      valuePattern: /school|школ|учеб|student|学生|学校|上学/i,
+      source: "scenario_synonym",
+      confidence: 0.7,
+    },
+    {
       sourcePattern: /travel|путеше|туризм|旅行|旅游|出差/,
       valuePattern: /travel|путеше|туризм|旅行|旅游/i,
       source: "scenario_synonym",

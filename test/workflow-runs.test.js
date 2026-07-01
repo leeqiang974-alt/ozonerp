@@ -454,6 +454,12 @@ test("buildVariantConfigurationSummary explains duplicate aspects and SKU image 
   assert.ok(summary.rows[0].reasons.some((reason) => reason.code === "DUPLICATE_ASPECT"));
   assert.ok(summary.rows[0].repairSuggestions.some((suggestion) => suggestion.code === "DUPLICATE_ASPECT" && /唯一/.test(suggestion.action)));
   assert.ok(summary.rows[0].repairSuggestions.some((suggestion) => suggestion.code === "SKU_IMAGE_NOT_UNIQUE" && /区分/.test(suggestion.action)));
+  assert.equal(summary.differenceSuggestions.length, 1);
+  assert.equal(summary.differenceSuggestions[0].code, "VARIANT_GROUP_DIFFERENCE");
+  assert.deepEqual(summary.differenceSuggestions[0].affectedOfferIds, ["SKU-WHITE", "SKU-BLUE"]);
+  assert.match(summary.differenceSuggestions[0].action, /整组/);
+  assert.match(summary.differenceSuggestions[0].action, /Название цвета/);
+  assert.equal(summary.summary.differenceSuggestionCount, 1);
   assert.equal(summary.summary.repairSuggestionCount, 4);
   assert.ok(summary.rows[0].safeNextAction.includes("修正"));
 });

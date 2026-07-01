@@ -372,7 +372,24 @@ function variantRepairSuggestions(row = {}, reasons = [], skuImage = {}) {
   return suggestions;
 }
 
-function variantCoverageSummary(rows = [], grouping = {}) {
+function variantGroupDifferenceSuggestions(grouping = {}) {
+  const rowsByOffer = new Map((grouping.rows || []).map((row) => [String(row.offerId || ""), row]));
+  return (grouping.duplicateGroups || []).map((group) => {
+    const affectedRows = (group.offerIds || []).map((offerId) => rowsByOffer.get(String(offerId))).filter(Boolean);
+    const aspectNames = [...new Set(affectedRows.flatMap((row) => (row.aspects || []).map((aspect) => aspect.name || `属性 ${aspect.id || ""}`)).filter(Boolean))];
+    const aspectLabel = aspectNames.join(" / ") || "Ozon 可变特性";
+    return {
+      code: "VARIANT_GROUP_DIFFERENCE",
+      duplicateGroupId: group.id || "",
+      affectedOfferIds: group.offerIds || [],
+      aspectNames,
+      action: `整组检查 ${aspectLabel}，为重复 SKU 改成唯一颜色、尺码、容量或套装组合。`,
+      nextStep: "整组 SKU 差异确认后重新预检；不会自动写 Payload 或提交 Ozon。",
+    };
+  });
+}
+
+function variantCoverageSummary(rows = [], grouping = {}, differenceSuggestions = []) {
   const rowCount = rows.length;
   const blockedRowCount = rows.filter((row) => ["duplicate_aspect", "missing_aspect", "pricing_blocked"].includes(row.rowStatus)).length;
   const imageWarningRowCount = rows.filter((row) => ["missing", "not_unique"].includes(row.skuImage?.status)).length;
@@ -384,6 +401,7 @@ function variantCoverageSummary(rows = [], grouping = {}) {
   const missingSkuImageRowCount = rows.filter((row) => row.skuImage?.status === "missing").length;
   const nonUniqueSkuImageRowCount = rows.filter((row) => row.skuImage?.status === "not_unique").length;
   const repairSuggestionCount = rows.reduce((sum, row) => sum + (Array.isArray(row.repairSuggestions) ? row.repairSuggestions.length : 0), 0);
+  const differenceSuggestionCount = Array.isArray(differenceSuggestions) ? differenceSuggestions.length : 0;
   const readinessStatus = blockedRowCount ? "blocked" : imageWarningRowCount ? "warning" : "ready";
   let safeNextAction = "变体属性和 SKU 图覆盖已达标，可以继续预检总闸和人工确认。";
   if (pricingBlockedRowCount) {
@@ -406,6 +424,7 @@ function variantCoverageSummary(rows = [], grouping = {}) {
     missingSkuImageRowCount,
     nonUniqueSkuImageRowCount,
     repairSuggestionCount,
+    differenceSuggestionCount,
     readinessStatus,
     safeNextAction,
   };
@@ -784,9 +803,11 @@ export function buildVariantConfigurationSummary(input = {}) {
       safeNextAction: safeVariantNextAction(rowStatus, reasons),
     };
   });
+  const differenceSuggestions = variantGroupDifferenceSuggestions(grouping);
   return {
     rows,
-    summary: variantCoverageSummary(rows, grouping),
+    differenceSuggestions,
+    summary: variantCoverageSummary(rows, grouping, differenceSuggestions),
   };
 }
 

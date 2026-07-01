@@ -172,6 +172,45 @@ function pushImageRecommendation(list, item) {
   });
 }
 
+function preparedImageRows(input = {}) {
+  const sources = [
+    input.imagePreparation?.images,
+    input.preparedImages?.images,
+    input.preparedImages,
+    input.contentSummary?.imagePreparation?.images,
+    input.contentSummary?.preparedImages?.images,
+    input.contentSummary?.preparedImages,
+  ];
+  return sources.find((rows) => Array.isArray(rows)) || [];
+}
+
+function preparedImageRisk(row = {}) {
+  const reason = String(row.reason || row.skipReason || "").trim();
+  const ocr = row.ocr || row.ozonImageOcr || {};
+  if (reason === "factory_intro" || ocr.isFactoryIntro) {
+    return {
+      code: "IMAGE_OCR_FACTORY_TEXT",
+      title: "图片含工厂/批发文字",
+      action: "移除含厂家、批发、包邮等平台外营销文字的图片，改用干净产品图或详情图。",
+    };
+  }
+  if (reason === "ozon_image_policy_text" || ocr.hasOzonPolicyText) {
+    return {
+      code: "IMAGE_OCR_POLICY_TEXT",
+      title: "图片含平台政策文字",
+      action: "移除含配送、退货、平台政策或促销承诺的图片，避免影响 Ozon 审核。",
+    };
+  }
+  if (reason === "needs_translation" || (ocr.hasChinese && reason !== "translated")) {
+    return {
+      code: "IMAGE_OCR_NEEDS_TRANSLATION",
+      title: "图片含中文文字",
+      action: "替换或人工处理含中文说明的图片，确保 Ozon 展示图不残留中文营销文字。",
+    };
+  }
+  return null;
+}
+
 function buildScoreBreakdown({ mediaScore, attributeScore, descriptionScore, packageScore }) {
   return {
     media: {
@@ -436,6 +475,24 @@ export function diagnoseListingQuality(input = {}) {
       });
       nextActions.push("为每个变体补充可区分的 SKU 图，修复后重新预检。");
     }
+  }
+
+  for (const row of preparedImageRows(input)) {
+    if (!row?.skipped && !row?.ocr?.hasChinese && !row?.ocr?.isFactoryIntro && !row?.ocr?.hasOzonPolicyText) continue;
+    const risk = preparedImageRisk(row);
+    if (!risk) continue;
+    mediaScore -= 5;
+    pushUnique(warnings, {
+      code: risk.code,
+      message: `${risk.title}，建议人工替换或处理后重新预检。`,
+    });
+    pushImageRecommendation(imageQualityRecommendations, {
+      severity: "warning",
+      code: risk.code,
+      title: risk.title,
+      action: risk.action,
+      nextStep: "处理图片后重新预检；仅提示，不写 Payload，不触发任何成本动作。",
+    });
   }
 
   const descriptionLength = Number(contentSummary.descriptionLength || 0)

@@ -6510,6 +6510,23 @@ function renderVariantRepairSuggestions(row = {}) {
   `;
 }
 
+function renderVariantGroupDifferenceSuggestions(workbench = {}) {
+  const suggestions = Array.isArray(workbench.differenceSuggestions) ? workbench.differenceSuggestions : [];
+  if (!suggestions.length) return "";
+  return `
+    <div class="variant-group-difference-suggestions">
+      <strong>整组差异建议</strong>
+      ${suggestions.map((suggestion) => `
+        <article>
+          <span>${escapeHtml((suggestion.affectedOfferIds || []).join(" / ") || suggestion.duplicateGroupId || "重复组")}</span>
+          <p>${escapeHtml(suggestion.action || "整组检查变体差异。")}</p>
+          <small>${escapeHtml(suggestion.nextStep || "整组修复后重新预检；不会自动提交 Ozon。")}</small>
+        </article>
+      `).join("")}
+    </div>
+  `;
+}
+
 function renderVariantConfigurationWorkbench(run = {}, node = {}) {
   const workbench = run.payloadDraftValidation?.variantConfiguration || node?.output?.variantConfiguration || null;
   const rows = Array.isArray(workbench?.rows) ? workbench.rows : [];
@@ -6530,6 +6547,7 @@ function renderVariantConfigurationWorkbench(run = {}, node = {}) {
         <span>SKU 图区分 ${Number(summary.uniqueSkuImageRowCount || 0)}/${Number(summary.rowCount || rows.length)}，缺图 ${Number(summary.missingSkuImageRowCount || 0)}，未区分 ${Number(summary.nonUniqueSkuImageRowCount || 0)}</span>
         <small>${escapeHtml(summary.safeNextAction || "修复后重新预检；不会自动提交 Ozon。")}</small>
       </div>
+      ${renderVariantGroupDifferenceSuggestions(workbench)}
       <div class="workflow-variant-workbench-table-wrap">
         <table class="workflow-variant-workbench-table">
           <thead>

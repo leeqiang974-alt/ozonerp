@@ -239,6 +239,9 @@ test("frontend renders required attribute fill plan groups", async () => {
   assert.match(js, /renderRequiredAttributeRuleCandidateIndex/);
   assert.match(js, /requiredAttributeRuleCandidateIndex/);
   assert.match(js, /规则沉淀候选/);
+  assert.match(js, /renderRequiredAttributeRuleCandidateHistory/);
+  assert.match(js, /requiredAttributeRuleCandidateHistory/);
+  assert.match(js, /类目规则池草案/);
   assert.match(js, /可规则化/);
   assert.match(js, /建议换货源/);
   assert.match(js, /禁止猜测/);
@@ -254,10 +257,14 @@ test("frontend renders required attribute fill plan groups", async () => {
   assert.ok(manualBacklogRendererSource);
   assert.doesNotMatch(manualBacklogRendererSource, /fetch\(/);
   assert.doesNotMatch(manualBacklogRendererSource, /data-workflow-action/);
-  const ruleCandidateRendererSource = js.match(/function renderRequiredAttributeRuleCandidateIndex[\s\S]+?\n}\n\nfunction renderRequiredAttributeFillPlan/)?.[0] || "";
+  const ruleCandidateRendererSource = js.match(/function renderRequiredAttributeRuleCandidateIndex[\s\S]+?\n}\n\nfunction renderRequiredAttributeRuleCandidateHistory/)?.[0] || "";
   assert.ok(ruleCandidateRendererSource);
   assert.doesNotMatch(ruleCandidateRendererSource, /fetch\(/);
   assert.doesNotMatch(ruleCandidateRendererSource, /data-workflow-action/);
+  const ruleCandidateHistoryRendererSource = js.match(/function renderRequiredAttributeRuleCandidateHistory[\s\S]+?\n}\n\nfunction renderRequiredAttributeFillPlan/)?.[0] || "";
+  assert.ok(ruleCandidateHistoryRendererSource);
+  assert.doesNotMatch(ruleCandidateHistoryRendererSource, /fetch\(/);
+  assert.doesNotMatch(ruleCandidateHistoryRendererSource, /data-workflow-action/);
   const fillPlanRendererSource = js.match(/function renderRequiredAttributeFillPlan[\s\S]+?\n}\n\nfunction variantWorkbenchStatusText/)?.[0] || "";
   assert.ok(fillPlanRendererSource);
   assert.doesNotMatch(fillPlanRendererSource, /fetch\(/);
@@ -266,6 +273,7 @@ test("frontend renders required attribute fill plan groups", async () => {
   assert.match(css, /required-attribute-coverage-summary/);
   assert.match(css, /required-attribute-manual-backlog/);
   assert.match(css, /required-attribute-rule-candidate-index/);
+  assert.match(css, /required-attribute-rule-candidate-history/);
   assert.match(css, /required-fill-plan-row/);
 });
 

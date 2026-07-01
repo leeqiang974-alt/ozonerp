@@ -280,6 +280,85 @@ export function buildRequiredAttributeRuleCandidateIndex({
   };
 }
 
+export function buildRequiredAttributeRuleCandidateHistory(samples = []) {
+  const rows = [];
+  const inputSamples = Array.isArray(samples) ? samples : [];
+  for (let sampleIndex = 0; sampleIndex < inputSamples.length; sampleIndex += 1) {
+    const sample = inputSamples[sampleIndex];
+    const index = sample?.index && typeof sample.index === "object" ? sample.index : sample;
+    const candidates = Array.isArray(index?.candidates) ? index.candidates : [];
+    const sampleProductId = sample?.sourceProductId || index?.sourceProductId || "";
+    const sampleRunId = sample?.sourceRunId || index?.sourceRunId || "";
+    const seenCandidateKeys = new Set();
+    for (const candidate of candidates) {
+      const attributeId = Number(candidate.attributeId || 0);
+      const categoryKey = String(candidate.categoryKey || index?.categoryKey || "");
+      if (!attributeId || !categoryKey) continue;
+      const sampleKey = sampleProductId || sampleRunId || `sample-${sampleIndex}`;
+      const candidateKey = `${categoryKey}:${attributeId}:${sampleKey}`;
+      if (seenCandidateKeys.has(candidateKey)) continue;
+      seenCandidateKeys.add(candidateKey);
+      rows.push({
+        categoryKey,
+        categoryPath: candidate.categoryPath || index?.categoryPath || "",
+        attributeId,
+        attributeName: candidate.attributeName || `属性 ${attributeId}`,
+        sampleProductId,
+        sampleRunId,
+      });
+    }
+  }
+
+  const grouped = new Map();
+  for (const row of rows) {
+    const key = `${row.categoryKey}:${row.attributeId}`;
+    if (!grouped.has(key)) {
+      grouped.set(key, {
+        categoryKey: row.categoryKey,
+        categoryPath: row.categoryPath,
+        attributeId: row.attributeId,
+        attributeName: row.attributeName,
+        occurrenceCount: 0,
+        sampleProductIds: [],
+        sampleRunIds: [],
+        readOnly: true,
+      });
+    }
+    const item = grouped.get(key);
+    item.occurrenceCount += 1;
+    if (!item.categoryPath && row.categoryPath) item.categoryPath = row.categoryPath;
+    if (row.sampleProductId && !item.sampleProductIds.includes(row.sampleProductId)) {
+      item.sampleProductIds.push(row.sampleProductId);
+    }
+    if (row.sampleRunId && !item.sampleRunIds.includes(row.sampleRunId)) {
+      item.sampleRunIds.push(row.sampleRunId);
+    }
+  }
+
+  const reviewQueue = [...grouped.values()]
+    .map((item) => ({
+      ...item,
+      ruleStatus: item.occurrenceCount >= 2 ? "ready_for_review" : "collect_more_samples",
+      safeNextStep: item.occurrenceCount >= 2
+        ? "已在多个样本出现，可进入人工审核规则池；审核通过前不会自动生成规则或写入草稿。"
+        : "继续收集同类目样本；本次商品仍需人工填写并重新预检。",
+    }))
+    .sort((a, b) => b.occurrenceCount - a.occurrenceCount || a.categoryKey.localeCompare(b.categoryKey) || a.attributeId - b.attributeId);
+
+  const categoryCount = new Set(reviewQueue.map((item) => item.categoryKey)).size;
+  return {
+    readOnly: true,
+    totalCount: rows.length,
+    categoryCount,
+    ruleCandidateCount: reviewQueue.length,
+    readyForReviewCount: reviewQueue.filter((item) => item.ruleStatus === "ready_for_review").length,
+    safeNextStep: reviewQueue.length
+      ? "类目规则池草案仅供人工审核；不会自动生成规则、不会写 Payload，也不会绕过预检或人工提交确认。"
+      : "暂无可聚合的规则候选；继续按当前商品预检结果处理。",
+    reviewQueue,
+  };
+}
+
 export function categoryAttributeCacheKey(category = {}) {
   return `${Number(category.description_category_id || 0)}:${Number(category.type_id || 0)}`;
 }

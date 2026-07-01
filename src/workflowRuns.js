@@ -6,6 +6,7 @@ import { loadCategoryCache } from "./ozonCategoryCache.js";
 import {
   buildRequiredAttributeManualBacklog,
   buildRequiredAttributeFillPlan,
+  buildRequiredAttributeRuleCandidateHistory,
   buildRequiredAttributeRuleCandidateIndex,
   summarizeRequiredAttributeFillPlan,
 } from "./ozonRequiredAttributeAnalysis.js";
@@ -277,6 +278,10 @@ export function diagnoseWorkflowError(error = {}) {
 
 function payloadItems(payload = {}) {
   return Array.isArray(payload.items) ? payload.items : (payload.offer_id ? [payload] : []);
+}
+
+function firstPayloadOfferId(payload = {}) {
+  return String(payloadItems(payload)[0]?.offer_id || "");
 }
 
 function hasAttr(item, id) {
@@ -1062,6 +1067,21 @@ export function buildPreflightGateNode(input = {}) {
     categoryMatch: input.category || categoryMatchFromPayload(input.payload || {}),
     manualBacklog: requiredAttributeManualBacklog,
   });
+  const requiredAttributeRuleCandidateHistorySamples = Array.isArray(input.requiredAttributeRuleCandidateHistorySamples)
+    ? input.requiredAttributeRuleCandidateHistorySamples
+    : [];
+  const requiredAttributeRuleCandidateHistory = input.requiredAttributeRuleCandidateHistory || (
+    requiredAttributeRuleCandidateHistorySamples.length
+      ? buildRequiredAttributeRuleCandidateHistory([
+        ...requiredAttributeRuleCandidateHistorySamples,
+        {
+          sourceProductId: firstPayloadOfferId(input.payload || {}),
+          sourceRunId: input.workflowRun?.id || "",
+          index: requiredAttributeRuleCandidateIndex,
+        },
+      ])
+      : null
+  );
   const variantConfiguration = input.variantConfiguration || buildVariantConfigurationSummary({
     payload: input.payload || {},
     attrsMeta: input.attrsMeta || [],
@@ -1112,6 +1132,7 @@ export function buildPreflightGateNode(input = {}) {
       requiredAttributeFillSummary,
       requiredAttributeManualBacklog,
       requiredAttributeRuleCandidateIndex,
+      ...(requiredAttributeRuleCandidateHistory ? { requiredAttributeRuleCandidateHistory } : {}),
       variantConfiguration,
       summary: {
         itemCount: payloadItems(input.payload || {}).length,

@@ -51,6 +51,16 @@ Ozon 字典不是“翻译文本后随便填”，而是“类目 + 商品类型
 
 ## 字典值匹配技巧
 
+### 0. 规则沉淀必须先过样本聚合和人工审核
+
+低置信或暂未规则化的必填属性，不能因为当前商品缺值就直接生成自动规则。ERP 现在按三层只读结构沉淀：
+
+1. 当前商品 `requiredAttributeRuleCandidateIndex`：只说明这个类目有哪个属性值得后续规则化。
+2. 多商品 `requiredAttributeRuleCandidateHistory`：按 `categoryKey + attributeId` 聚合同类目样本，2 个及以上不同商品/run 出现后才进入 `ready_for_review`。
+3. 后续人工审核规则池：只有人工确认规则来源、适用品类、反例和安全边界后，才能进入真实自动填充规则。
+
+此阶段不会持久化规则，也不会把规则池草案默认写入草稿 summary 或 payloadDraftValidation；不会自动写 Payload、不会触发预检或提交。当前商品仍按预检结果人工补齐并重新校验。
+
 ### 1. 类型字段优先匹配“产品本体”
 
 `类型` 是最重要的字典字段。匹配优先级：

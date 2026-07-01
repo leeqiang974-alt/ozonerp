@@ -4,6 +4,7 @@ import { buildListingPayloadDraftFromJob } from "../src/autoListing.js";
 import {
   buildRequiredAttributeManualBacklog,
   buildRequiredAttributeFillPlan,
+  buildRequiredAttributeRuleCandidateHistory,
   buildRequiredAttributeRuleCandidateIndex,
   summarizeRequiredAttributeFillPlan,
 } from "../src/ozonRequiredAttributeAnalysis.js";
@@ -121,6 +122,7 @@ test("buildListingPayloadDraftFromJob autofills no-brand and China from current 
   assert.equal(draft.summary.requiredAttributeFillSummary.totalCount, 2);
   assert.equal(draft.summary.requiredAttributeFillSummary.autofillSafeCount, 2);
   assert.equal(draft.summary.requiredAttributeFillSummary.readinessStatus, "ready");
+  assert.equal(draft.summary.requiredAttributeRuleCandidateHistory, undefined);
 });
 
 test("buildListingPayloadDraftFromJob does not guess dictionary ids for no-brand and China", () => {
@@ -425,6 +427,107 @@ test("buildRequiredAttributeRuleCandidateIndex creates read-only category rule c
   assert.equal(index.candidates[0].readOnly, true);
   assert.equal(index.candidates.some((candidate) => candidate.attributeId === 23487), false);
   assert.deepEqual(Object.keys(index.candidates[0]).filter((key) => /payload|submit|action/i.test(key)), []);
+});
+
+test("buildRequiredAttributeRuleCandidateHistory aggregates category samples without write controls", () => {
+  const currentIndex = {
+    categoryKey: "17028673:95183",
+    categoryPath: "Дом / Кухня",
+    candidates: [
+      {
+        attributeId: 1234,
+        attributeName: "Комментарий к комплектации",
+        categoryKey: "17028673:95183",
+        occurrenceCount: 1,
+        readOnly: true,
+      },
+    ],
+  };
+  const previousIndex = {
+    sourceProductId: "SKU-OLD-1",
+    sourceRunId: "run-old-1",
+    categoryKey: "17028673:95183",
+    categoryPath: "Дом / Кухня",
+    candidates: [
+      {
+        attributeId: 1234,
+        attributeName: "Комментарий к комплектации",
+        categoryKey: "17028673:95183",
+        occurrenceCount: 1,
+        readOnly: true,
+      },
+    ],
+  };
+  const otherCategoryIndex = {
+    sourceProductId: "SKU-OTHER-1",
+    sourceRunId: "run-other-1",
+    categoryKey: "17028674:95184",
+    categoryPath: "Дом / Ванная",
+    candidates: [
+      {
+        attributeId: 1234,
+        attributeName: "Комментарий к комплектации",
+        categoryKey: "17028674:95184",
+        occurrenceCount: 1,
+        readOnly: true,
+      },
+    ],
+  };
+
+  const history = buildRequiredAttributeRuleCandidateHistory([
+    { sourceProductId: "SKU-CURRENT", sourceRunId: "run-current", index: currentIndex },
+    previousIndex,
+    otherCategoryIndex,
+  ]);
+
+  assert.equal(history.readOnly, true);
+  assert.equal(history.totalCount, 3);
+  assert.equal(history.categoryCount, 2);
+  assert.equal(history.reviewQueue.length, 2);
+  const kitchenRule = history.reviewQueue.find((item) => item.categoryKey === "17028673:95183");
+  const bathRule = history.reviewQueue.find((item) => item.categoryKey === "17028674:95184");
+  assert.equal(kitchenRule.attributeId, 1234);
+  assert.equal(kitchenRule.occurrenceCount, 2);
+  assert.equal(kitchenRule.ruleStatus, "ready_for_review");
+  assert.deepEqual(kitchenRule.sampleProductIds, ["SKU-CURRENT", "SKU-OLD-1"]);
+  assert.deepEqual(kitchenRule.sampleRunIds, ["run-current", "run-old-1"]);
+  assert.equal(kitchenRule.readOnly, true);
+  assert.match(kitchenRule.safeNextStep, /人工审核/);
+  assert.equal(bathRule.occurrenceCount, 1);
+  assert.equal(bathRule.ruleStatus, "collect_more_samples");
+  assert.deepEqual(Object.keys(kitchenRule).filter((key) => /payload|submit|action/i.test(key)), []);
+});
+
+test("buildRequiredAttributeRuleCandidateHistory requires distinct samples before review", () => {
+  const history = buildRequiredAttributeRuleCandidateHistory([
+    {
+      sourceProductId: "SKU-DUP",
+      sourceRunId: "run-dup",
+      categoryKey: "17028673:95183",
+      categoryPath: "Дом / Кухня",
+      candidates: [
+        {
+          attributeId: 1234,
+          attributeName: "Комментарий к комплектации",
+          categoryKey: "17028673:95183",
+          occurrenceCount: 1,
+          readOnly: true,
+        },
+        {
+          attributeId: 1234,
+          attributeName: "Комментарий к комплектации",
+          categoryKey: "17028673:95183",
+          occurrenceCount: 1,
+          readOnly: true,
+        },
+      ],
+    },
+  ]);
+
+  assert.equal(history.totalCount, 1);
+  assert.equal(history.reviewQueue[0].occurrenceCount, 1);
+  assert.equal(history.reviewQueue[0].ruleStatus, "collect_more_samples");
+  assert.deepEqual(history.reviewQueue[0].sampleProductIds, ["SKU-DUP"]);
 });
 
 test("buildRequiredAttributeFillPlan suggests dictionary candidates from material synonyms only", () => {

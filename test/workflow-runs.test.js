@@ -391,6 +391,23 @@ test("buildPreflightGateNode carries required attribute fill plan without unlock
       777: [{ id: 11, value: "пластик" }],
     },
     category: { description_category_id: 17028673, type_id: 95183, path: "Дом / Кухня" },
+    requiredAttributeRuleCandidateHistorySamples: [
+      {
+        sourceProductId: "SKU-plan-old",
+        sourceRunId: "run-plan-old",
+        categoryKey: "17028673:95183",
+        categoryPath: "Дом / Кухня",
+        candidates: [
+          {
+            attributeId: 1234,
+            attributeName: "Комментарий к комплектации",
+            categoryKey: "17028673:95183",
+            occurrenceCount: 1,
+            readOnly: true,
+          },
+        ],
+      },
+    ],
     variantCount: 1,
     contentSummary: {
       candidateImageCount: 3,
@@ -428,6 +445,13 @@ test("buildPreflightGateNode carries required attribute fill plan without unlock
   assert.equal(node.output.requiredAttributeRuleCandidateIndex.readOnly, true);
   assert.equal(node.output.requiredAttributeRuleCandidateIndex.candidates[0].attributeId, 1234);
   assert.equal(node.output.requiredAttributeRuleCandidateIndex.candidates[0].ruleStatus, "candidate");
+  assert.equal(node.output.requiredAttributeRuleCandidateHistory.readOnly, true);
+  assert.equal(node.output.requiredAttributeRuleCandidateHistory.totalCount, 2);
+  assert.equal(node.output.requiredAttributeRuleCandidateHistory.readyForReviewCount, 1);
+  assert.equal(node.output.requiredAttributeRuleCandidateHistory.reviewQueue[0].attributeId, 1234);
+  assert.equal(node.output.requiredAttributeRuleCandidateHistory.reviewQueue[0].occurrenceCount, 2);
+  assert.equal(node.output.requiredAttributeRuleCandidateHistory.reviewQueue[0].ruleStatus, "ready_for_review");
+  assert.deepEqual(Object.keys(node.output.requiredAttributeRuleCandidateHistory.reviewQueue[0]).filter((key) => /payload|submit|action/i.test(key)), []);
   assert.equal(node.status, "failed");
   assert.equal(node.runStatus, "waiting_human");
 });
@@ -1326,6 +1350,38 @@ test("payload draft validation suggests cached legal dictionary candidates", asy
   assert.ok(issue);
   assert.deepEqual(issue.dictionaryCandidates, reason.dictionaryCandidates);
   assert.deepEqual(issue.enteredValues, ["Нет бренда"]);
+});
+
+test("payload draft validation does not persist transient rule candidate history", async () => {
+  reset();
+  const run = await createWorkflowRun({ title: "规则候选校验不持久化历史" });
+  await savePayloadDraft(run.id, {
+    items: [{
+      offer_id: "SKU-rule-history",
+      name: "Органайзер для кухни",
+      description_category_id: 17028673,
+      type_id: 95183,
+      price: "1200",
+      images: ["https://example.com/a.jpg", "https://example.com/b.jpg", "https://example.com/c.jpg"],
+      attributes: [
+        { id: 85, values: [{ value: "Нет бренда" }] },
+        { id: 9048, values: [{ value: "SKU-rule-history" }] },
+      ],
+    }],
+  }, {
+    attrsMeta: [
+      { id: 85, name: "Бренд", is_required: true, dictionary_id: 971082 },
+      { id: 9048, name: "Название модели (для объединения в одну карточку)", is_required: true },
+      { id: 1234, name: "Комментарий к комплектации", is_required: true },
+    ],
+  });
+
+  const validation = await validatePayloadDraft(run.id);
+  const updated = await getWorkflowRun(run.id);
+
+  assert.ok(validation.requiredAttributeRuleCandidateIndex.candidates.some((candidate) => candidate.attributeId === 1234));
+  assert.equal(validation.requiredAttributeRuleCandidateHistory, undefined);
+  assert.equal(updated.payloadDraftValidation.requiredAttributeRuleCandidateHistory, undefined);
 });
 
 test("payload draft submit blocks non-current dictionary value ids before Ozon import", async () => {

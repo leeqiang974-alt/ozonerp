@@ -6517,6 +6517,30 @@ function renderRequiredAttributeRuleCandidateIndex(run = {}, node = {}) {
   `;
 }
 
+function renderRequiredAttributeRuleCandidateHistory(run = {}, node = {}) {
+  const history = run.payloadDraftValidation?.requiredAttributeRuleCandidateHistory || node?.output?.requiredAttributeRuleCandidateHistory || null;
+  const queue = Array.isArray(history?.reviewQueue) ? history.reviewQueue : [];
+  if (!queue.length) return "";
+  return `
+    <div class="required-attribute-rule-candidate-history">
+      <div>
+        <strong>类目规则池草案</strong>
+        <small>${Number(history.readyForReviewCount || 0)} 待审核 · ${Number(history.ruleCandidateCount || queue.length)} 类规则</small>
+      </div>
+      <p>${escapeHtml(history.safeNextStep || "仅供人工审核沉淀规则；不会自动生成规则、写 Payload 或提交 Ozon。")}</p>
+      <div class="required-attribute-rule-candidate-history-list">
+        ${queue.slice(0, 6).map((item) => `
+          <span>
+            <b>${escapeHtml(item.attributeName || `属性 ${item.attributeId || ""}`)}</b>
+            <small>${escapeHtml(item.categoryKey || "")} · ${escapeHtml(item.ruleStatus || "collect_more_samples")} · ${Number(item.occurrenceCount || 0)} 次</small>
+            <small>样本 ${Number((item.sampleProductIds || []).length || 0)} 个 · ${escapeHtml(item.safeNextStep || "人工审核前不生成规则。")}</small>
+          </span>
+        `).join("")}
+      </div>
+    </div>
+  `;
+}
+
 function renderRequiredAttributeFillPlan(run = {}, node = {}) {
   const plan = run.payloadDraftValidation?.requiredAttributeFillPlan || node?.output?.requiredAttributeFillPlan || [];
   if (!Array.isArray(plan) || !plan.length) return "";
@@ -6533,6 +6557,7 @@ function renderRequiredAttributeFillPlan(run = {}, node = {}) {
       ${renderRequiredAttributeFillSummary(run, node, plan)}
       ${renderRequiredAttributeManualBacklog(run, node)}
       ${renderRequiredAttributeRuleCandidateIndex(run, node)}
+      ${renderRequiredAttributeRuleCandidateHistory(run, node)}
       ${groups.map((group) => `
         <div class="required-fill-plan-group required-fill-plan-group-${escapeHtml(group.key)}">
           <strong>${escapeHtml(group.title)}</strong>

@@ -755,6 +755,8 @@ test("listing center exposes read-only required attribute rule pool workbench", 
   assert.match(js, /requiredAttributeRuleCandidateHistory/);
   assert.match(js, /approvalDraftQueue/);
   assert.match(js, /人工批准草案/);
+  assert.match(js, /auditReadiness/);
+  assert.match(js, /审计准备/);
   assert.match(js, /forbiddenEffects/);
   assert.match(js, /rule-pool-status-filter/);
   assert.match(js, /rule-pool-keyword/);
@@ -765,9 +767,13 @@ test("listing center exposes read-only required attribute rule pool workbench", 
   assert.doesNotMatch(rulePoolRendererSource, /payloadDraftValidation/);
   assert.doesNotMatch(rulePoolRendererSource, /fetch\(/);
   assert.doesNotMatch(rulePoolRendererSource, /data-workflow-action/);
+  assert.doesNotMatch(rulePoolRendererSource, /canStoreApproval\s*=\s*true/);
+  assert.doesNotMatch(rulePoolRendererSource, /canEnableRule\s*=\s*true/);
+  assert.match(rulePoolRendererSource, /auditReadiness\.status === "audit_ready"/);
   assert.doesNotMatch(rulePoolRendererSource, /<button/i);
   assert.match(css, /workflow-rule-pool-workbench/);
   assert.match(css, /rule-pool-approval-draft/);
+  assert.match(css, /rule-pool-audit-readiness/);
   assert.match(css, /rule-pool-controls/);
   assert.match(css, /rule-pool-row/);
 });

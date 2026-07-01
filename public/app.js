@@ -6656,6 +6656,14 @@ function renderListingRequiredAttributeRulePoolWorkbench() {
               <span>${escapeHtml(item.approvalDraft.draftStatus || "pending_human_approval")} · ${Number(item.approvalDraft.occurrenceCount || item.occurrenceCount || 0)} 个样本信号</span>
               <small>检查项：${(item.approvalDraft.requiredChecks || []).map(escapeHtml).join("、") || "人工复核、独立预检"}</small>
               <small>禁止效果：${(item.approvalDraft.forbiddenEffects || []).map(escapeHtml).join("、") || "不写草稿、不提交、不启用规则"}</small>
+              ${item.approvalDraft.auditReadiness ? `
+                <div class="rule-pool-audit-readiness">
+                  <span>审计准备：${escapeHtml(item.approvalDraft.auditReadiness.status || "blocked_until_audit_ready")}</span>
+                  <small>缺少证明：${(item.approvalDraft.auditReadiness.missingProofs || []).map(escapeHtml).join("、") || "样本复核、人工批准、独立预检"}</small>
+                  <small>存储批准：${item.approvalDraft.auditReadiness.status === "audit_ready" && item.approvalDraft.auditReadiness.canStoreApproval ? "允许" : "暂不允许"} · 启用规则：${item.approvalDraft.auditReadiness.status === "audit_ready" && item.approvalDraft.auditReadiness.canEnableRule ? "允许" : "暂不允许"}</small>
+                  <p>${escapeHtml(item.approvalDraft.auditReadiness.safeNextStep || "先补齐审计记录设计和独立预检结果，再进入真实人工批准存储。")}</p>
+                </div>
+              ` : ""}
               <p>${escapeHtml(item.approvalDraft.safeNextStep || "批准前只做草案预览；不会自动写草稿、提交 Ozon 或启用规则。")}</p>
             </div>
           ` : ""}

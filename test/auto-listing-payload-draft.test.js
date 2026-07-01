@@ -539,8 +539,14 @@ test("buildRequiredAttributeApprovalDraftPreview derives read-only approval draf
   assert.equal(preview.approvalDraftQueue[0].readOnly, true);
   assert.deepEqual(preview.approvalDraftQueue[0].requiredChecks, ["同类目样本复核", "人工批准", "独立预检回归"]);
   assert.deepEqual(preview.approvalDraftQueue[0].forbiddenEffects, ["payload_write", "ozon_submit", "rule_auto_enable"]);
+  assert.equal(preview.approvalDraftQueue[0].auditReadiness.status, "blocked_until_audit_ready");
+  assert.equal(preview.approvalDraftQueue[0].auditReadiness.canStoreApproval, false);
+  assert.equal(preview.approvalDraftQueue[0].auditReadiness.canEnableRule, false);
+  assert.deepEqual(preview.approvalDraftQueue[0].auditReadiness.missingProofs, ["样本复核记录", "人工批准人和时间", "独立预检回归结果"]);
+  assert.match(preview.approvalDraftQueue[0].auditReadiness.safeNextStep, /审计记录/);
   assert.match(preview.approvalDraftQueue[0].safeNextStep, /批准前/);
   assert.deepEqual(Object.keys(preview.approvalDraftQueue[0]).filter((key) => /payload|submit|action/i.test(key)), []);
+  assert.deepEqual(Object.keys(preview.approvalDraftQueue[0].auditReadiness).filter((key) => /payload|submit|action/i.test(key)), []);
   assert.deepEqual(preview.approvalDraftQueue[0].sampleProductIds, ["SKU-CURRENT", "SKU-OLD-1"]);
   assert.notEqual(preview.approvalDraftQueue[0].sampleProductIds, history.reviewQueue[0].sampleProductIds);
   assert.notEqual(preview.approvalDraftQueue[0].sampleRunIds, history.reviewQueue[0].sampleRunIds);

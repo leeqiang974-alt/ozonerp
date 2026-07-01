@@ -374,6 +374,14 @@ export function buildRequiredAttributeApprovalDraftPreview(history = {}) {
       draftStatus: "pending_human_approval",
       requiredChecks: ["同类目样本复核", "人工批准", "独立预检回归"],
       forbiddenEffects: ["payload_write", "ozon_submit", "rule_auto_enable"],
+      auditReadiness: {
+        readOnly: true,
+        status: "blocked_until_audit_ready",
+        canStoreApproval: false,
+        canEnableRule: false,
+        missingProofs: ["样本复核记录", "人工批准人和时间", "独立预检回归结果"],
+        safeNextStep: "先补齐审计记录设计和独立预检结果，再进入真实人工批准存储；当前仍不能启用规则。",
+      },
       safeNextStep: "批准前只做草案预览；必须人工复核样本并跑独立预检，不能自动写草稿、提交 Ozon 或启用规则。",
       readOnly: true,
     }));

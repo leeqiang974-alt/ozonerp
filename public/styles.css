@@ -2966,6 +2966,16 @@ tr:hover td {
 .rule-pool-approval-draft strong {
   color: #1d4ed8;
 }
+.rule-pool-audit-readiness {
+  border-top: 1px solid #dbeafe;
+  display: grid;
+  gap: 3px;
+  padding-top: 6px;
+}
+.rule-pool-audit-readiness span {
+  color: #1e40af;
+  font-weight: 700;
+}
 .workflow-run-list,
 .workflow-node-timeline,
 .workflow-node-detail {

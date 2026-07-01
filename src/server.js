@@ -123,6 +123,11 @@ import {
   summarizeListingEditJournal,
 } from "./listingEditJournal.js";
 import {
+  appendRuleApprovalAuditIntent,
+  listRuleApprovalAuditIntents,
+  summarizeRuleApprovalAuditIntents,
+} from "./ruleApprovalAudit.js";
+import {
   buildOzonImageStyleObservations,
   getOzonImageStyleObservations,
 } from "./ozonImageStyleLearning.js";
@@ -665,6 +670,19 @@ app.post("/api/listing-edit-journal/events", asyncRoute(async (req, res) => {
 
 app.get("/api/listing-edit-journal/summary", asyncRoute(async (_req, res) => {
   res.json(await summarizeListingEditJournal());
+}));
+
+// ruleApprovalAudit writes only audit records; it never enables rules or writes listing drafts.
+app.get("/api/listing-rule-approval-audit/intents", asyncRoute(async (req, res) => {
+  res.json(await listRuleApprovalAuditIntents(req.query || {}));
+}));
+
+app.post("/api/listing-rule-approval-audit/intents", asyncRoute(async (req, res) => {
+  res.json({ ok: true, intent: await appendRuleApprovalAuditIntent(parseBody(req.body)) });
+}));
+
+app.get("/api/listing-rule-approval-audit/summary", asyncRoute(async (_req, res) => {
+  res.json(await summarizeRuleApprovalAuditIntents());
 }));
 
 app.post("/api/ozon-learning/tasks", asyncRoute(async (req, res) => {

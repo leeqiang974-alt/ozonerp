@@ -301,10 +301,15 @@
   - 每个审批草案带 `auditReadiness`，默认 `blocked_until_audit_ready`，列出缺少的样本复核记录、人工批准人和时间、独立预检回归结果。
   - `canStoreApproval=false`、`canEnableRule=false` 是当前阶段的硬边界；它只是告诉后续真实批准存储前还缺什么，不存储批准、不启用规则、不写 Payload。
   - 前端只展示审计准备状态和缺失证明，无按钮、无 API 调用、无 workflow 状态变化。
+- 规则批准审计意图日志已接入后端最小版：
+  - `src/ruleApprovalAudit.js` 使用 `data/rule-approval-audit.json` 记录人工批准意图；测试可用 `RULE_APPROVAL_AUDIT_FILE` 指向临时文件。
+  - `POST /api/listing-rule-approval-audit/intents` 只在 `confirmAuditIntent=true` 且样本复核记录、人工批准人、独立预检回归通过都齐全时写一条 `stored_for_review` 审计记录。
+  - 记录结果固定 `effectStatus=no_rule_or_payload_effect`，`safetyLocks.draftWrite/ozonSubmit/ruleEnable/workflowUnlock=false`，不会启用规则、写草稿、提交 Ozon 或改变 workflow lock。
+  - `GET /api/listing-rule-approval-audit/intents` 与 `/summary` 只读查看审计意图；本阶段没有前端按钮，后续接 UI 必须另做人工确认与安全提示。
 
 ### 下一步
 
-- 继续做“必填属性规则引擎 V2”的规则候选复用：下一步可设计真实人工批准审计日志的持久化 schema/API，但必须先要求 `auditReadiness` 的证明项齐全、人工确认、独立预检通过；批准前仍不能自动生成规则或写入 Payload。并继续把变体整组差异建议推进到可复制修复说明和整组草稿定位。
+- 继续做“必填属性规则引擎 V2”的规则候选复用：下一步可把审计意图日志接入上架中心只读审计列表，或设计独立“启用规则发布闸”；启用前必须再次验证审计记录、人工确认、独立预检通过，仍不能自动写 Payload。并继续把变体整组差异建议推进到可复制修复说明和整组草稿定位。
 
 ## 2026-06-30 仓库匹配规则引擎 V1
 

@@ -288,10 +288,14 @@
   - `listWorkflowRuns()` 读取现有 run 时，会从同类目 `requiredAttributeRuleCandidateIndex` 临时聚合 `summary.requiredAttributeRuleCandidateHistory`。
   - 该字段只存在于 API 读出对象的 `summary` 副本，不写回 `workflow-runs.json`、不写 `payloadDraftValidation`、不写 Payload。
   - 前端 `renderRequiredAttributeRuleCandidateHistory()` 已读取 `run.summary.requiredAttributeRuleCandidateHistory`，继续保持只读渲染，无按钮、无 API 调用、无自动应用规则。
+- 上架中心新增只读“规则审查池”工作台：
+  - `collectRequiredAttributeRulePool()` 聚合 `state.workflowRuns[].summary.requiredAttributeRuleCandidateHistory.reviewQueue`，按类目和属性去重后展示。
+  - 支持按规则状态和关键词本地筛选；筛选只更新前端 `state.rulePoolFilter`，不调用 API、不写 workflow、不写 Payload。
+  - 工作台只做人工审核前的队列观察，不提供通过/忽略/应用按钮；规则沉淀、自动生成规则和 Payload 写入仍必须另走人工批准和测试。
 
 ### 下一步
 
-- 继续做“必填属性规则引擎 V2”的规则候选复用：把 `summary.requiredAttributeRuleCandidateHistory` 推进成可筛选、可人工批准的规则池工作台；仍不能自动生成规则或写入 Payload。并继续把变体整组差异建议推进到可复制修复说明和整组草稿定位。
+- 继续做“必填属性规则引擎 V2”的规则候选复用：为“规则审查池”增加人工批准草案模型和测试护栏；批准前仍不能自动生成规则或写入 Payload。并继续把变体整组差异建议推进到可复制修复说明和整组草稿定位。
 
 ## 2026-06-30 仓库匹配规则引擎 V1
 

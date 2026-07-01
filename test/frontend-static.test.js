@@ -13,6 +13,7 @@ const OPTIONAL_DYNAMIC_IDS = new Set([
   "ozonManualKeyword",
   "ozonManualParse",
   "ozonManualResult",
+  "rulePoolKeyword",
   "variantGroupSelect",
   "workflowPayloadEditor",
 ]);
@@ -730,6 +731,40 @@ test("frontend exposes workflow filter chips", async () => {
   assert.match(html, /workflowFilterChips/);
   assert.match(js, /workflowRunMatchesFilter/);
   assert.match(js, /workflow-filter-chip/);
+});
+
+test("listing center exposes read-only required attribute rule pool workbench", async () => {
+  const [html, js, css] = await Promise.all([
+    readFile(new URL("../public/index.html", import.meta.url), "utf8"),
+    readFile(new URL("../public/app.js", import.meta.url), "utf8"),
+    readFile(new URL("../public/styles.css", import.meta.url), "utf8"),
+  ]);
+
+  assert.match(html, /listingRulePoolWorkbench/);
+  assert.match(html, /规则审查池/);
+  const listingSectionStart = html.indexOf("<section id=\"listing\"");
+  const workflowSectionStart = html.indexOf("<section id=\"workflow-console\"");
+  const listingRulePoolIndex = html.indexOf("id=\"listingRulePoolWorkbench\"");
+  assert.ok(listingSectionStart >= 0);
+  assert.ok(workflowSectionStart >= 0);
+  assert.ok(listingRulePoolIndex > listingSectionStart);
+  assert.doesNotMatch(html.slice(workflowSectionStart, listingSectionStart), /RulePoolWorkbench|规则审查池/);
+  assert.match(js, /rulePoolFilter/);
+  assert.match(js, /collectRequiredAttributeRulePool/);
+  assert.match(js, /renderListingRequiredAttributeRulePoolWorkbench/);
+  assert.match(js, /requiredAttributeRuleCandidateHistory/);
+  assert.match(js, /rule-pool-status-filter/);
+  assert.match(js, /rule-pool-keyword/);
+  assert.match(js, /setSelectionRange/);
+  assert.match(js, /不会自动生成规则、写 Payload 或提交 Ozon/);
+  const rulePoolRendererSource = js.match(/function renderListingRequiredAttributeRulePoolWorkbench[\s\S]+?\n}\n\nfunction renderRequiredAttributeFillPlan/)?.[0] || "";
+  assert.ok(rulePoolRendererSource);
+  assert.doesNotMatch(rulePoolRendererSource, /payloadDraftValidation/);
+  assert.doesNotMatch(rulePoolRendererSource, /fetch\(/);
+  assert.doesNotMatch(rulePoolRendererSource, /data-workflow-action/);
+  assert.match(css, /workflow-rule-pool-workbench/);
+  assert.match(css, /rule-pool-controls/);
+  assert.match(css, /rule-pool-row/);
 });
 
 test("frontend exposes stale workflow governance action", async () => {

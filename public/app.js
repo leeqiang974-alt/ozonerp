@@ -44,6 +44,10 @@ const state = {
   workflowRuns: [],
   workflowSummary: null,
   workflowFilter: "all",
+  rulePoolFilter: {
+    status: "all",
+    keyword: "",
+  },
   selectedWorkflowRunId: "",
   selectedWorkflowNodeKey: "",
 };
@@ -1445,6 +1449,7 @@ function renderListingStagePanels() {
   const tabs = $("#listingSecondaryTabs");
   const panels = $("#listingStagePanels");
   if (!tabs || !panels) return;
+  renderListingRequiredAttributeRulePoolWorkbench();
   const active = state.listingStage || "current-product";
   tabs.querySelectorAll("[data-listing-stage]").forEach((button) => {
     button.classList.toggle("active", button.dataset.listingStage === active);
@@ -6544,6 +6549,109 @@ function renderRequiredAttributeRuleCandidateHistory(run = {}, node = {}) {
   `;
 }
 
+function collectRequiredAttributeRulePool(runs = []) {
+  const pool = new Map();
+  (Array.isArray(runs) ? runs : []).forEach((run) => {
+    const history = run.summary?.requiredAttributeRuleCandidateHistory || null;
+    const queue = Array.isArray(history?.reviewQueue) ? history.reviewQueue : [];
+    queue.forEach((item) => {
+      const key = [item.categoryKey || "", item.attributeId || item.attributeName || ""].join(":");
+      const current = pool.get(key) || {
+        categoryKey: item.categoryKey || "",
+        attributeId: item.attributeId || "",
+        attributeName: item.attributeName || "",
+        ruleStatus: item.ruleStatus || "collect_more_samples",
+        occurrenceCount: 0,
+        sampleProductIds: new Set(),
+        sampleRunIds: new Set(),
+        sourceRunIds: new Set(),
+        safeNextStep: item.safeNextStep || "",
+      };
+      current.occurrenceCount = Math.max(Number(current.occurrenceCount || 0), Number(item.occurrenceCount || 0));
+      (item.sampleProductIds || []).forEach((id) => current.sampleProductIds.add(id));
+      (item.sampleRunIds || []).forEach((id) => current.sampleRunIds.add(id));
+      if (run.id) current.sourceRunIds.add(run.id);
+      if (item.ruleStatus === "ready_for_review") current.ruleStatus = "ready_for_review";
+      if (!current.safeNextStep && item.safeNextStep) current.safeNextStep = item.safeNextStep;
+      pool.set(key, current);
+    });
+  });
+  return [...pool.values()]
+    .map((item) => ({
+      ...item,
+      sampleProductIds: [...item.sampleProductIds],
+      sampleRunIds: [...item.sampleRunIds],
+      sourceRunIds: [...item.sourceRunIds],
+    }))
+    .sort((a, b) => Number(b.occurrenceCount || 0) - Number(a.occurrenceCount || 0));
+}
+
+function rulePoolItemMatchesFilter(item = {}, filter = {}) {
+  const status = filter.status || "all";
+  const keyword = String(filter.keyword || "").trim().toLowerCase();
+  if (status !== "all" && item.ruleStatus !== status) return false;
+  if (!keyword) return true;
+  return [
+    item.attributeName,
+    item.attributeId,
+    item.categoryKey,
+    ...(item.sampleRunIds || []),
+    ...(item.sourceRunIds || []),
+  ].some((value) => String(value || "").toLowerCase().includes(keyword));
+}
+
+function renderListingRequiredAttributeRulePoolWorkbench() {
+  const el = $("#listingRulePoolWorkbench");
+  if (!el) return;
+  const filter = state.rulePoolFilter || { status: "all", keyword: "" };
+  const items = collectRequiredAttributeRulePool(state.workflowRuns);
+  const filtered = items.filter((item) => rulePoolItemMatchesFilter(item, filter));
+  const readyCount = items.filter((item) => item.ruleStatus === "ready_for_review").length;
+  const collectMoreCount = items.filter((item) => item.ruleStatus !== "ready_for_review").length;
+  el.innerHTML = `
+    <div class="section-headline">
+      <div>
+        <h2>规则审查池</h2>
+        <p class="hint">聚合真实 workflow 的类目属性候选，只做筛选和人工判断准备；不会自动生成规则、写 Payload 或提交 Ozon。</p>
+      </div>
+      <span class="module-map-badge soft">${Number(filtered.length || 0)}/${Number(items.length || 0)} 项</span>
+    </div>
+    <div class="rule-pool-controls">
+      <label class="field">
+        <span>状态筛选</span>
+        <select id="rulePoolStatusFilter" class="rule-pool-status-filter">
+          <option value="all"${filter.status === "all" ? " selected" : ""}>全部候选</option>
+          <option value="ready_for_review"${filter.status === "ready_for_review" ? " selected" : ""}>待人工审核</option>
+          <option value="collect_more_samples"${filter.status === "collect_more_samples" ? " selected" : ""}>继续积累样本</option>
+        </select>
+      </label>
+      <label class="field">
+        <span>关键词</span>
+        <input id="rulePoolKeyword" class="rule-pool-keyword" value="${escapeHtml(filter.keyword || "")}" placeholder="属性、类目、样本 workflow" />
+      </label>
+      <div class="rule-pool-stats">
+        <span>待审 ${Number(readyCount || 0)}</span>
+        <span>积累样本 ${Number(collectMoreCount || 0)}</span>
+      </div>
+    </div>
+    <div class="rule-pool-list">
+      ${filtered.length ? filtered.slice(0, 12).map((item) => `
+        <article class="rule-pool-row rule-pool-row-${escapeHtml(item.ruleStatus || "collect_more_samples")}">
+          <div>
+            <strong>${escapeHtml(item.attributeName || `属性 ${item.attributeId || ""}`)}</strong>
+            <small>${escapeHtml(item.categoryKey || "")} · ${escapeHtml(item.ruleStatus || "collect_more_samples")}</small>
+          </div>
+          <div>
+            <span>${Number(item.occurrenceCount || 0)} 次出现</span>
+            <small>样本 ${Number((item.sampleProductIds || []).length || 0)} 个 · workflow ${(item.sampleRunIds || item.sourceRunIds || []).slice(0, 3).map(escapeHtml).join("、") || "-"}</small>
+          </div>
+          <p>${escapeHtml(item.safeNextStep || "人工审核前不生成规则；确认后仍需独立测试和预检。")}</p>
+        </article>
+      `).join("") : `<p class="hint">当前筛选下没有规则候选。规则池只读，不会因为筛选而写入 Payload 或改变工作流状态。</p>`}
+    </div>
+  `;
+}
+
 function renderRequiredAttributeFillPlan(run = {}, node = {}) {
   const plan = run.payloadDraftValidation?.requiredAttributeFillPlan || node?.output?.requiredAttributeFillPlan || [];
   if (!Array.isArray(plan) || !plan.length) return "";
@@ -9602,6 +9710,22 @@ $("#ozonManualParse")?.addEventListener("click", parseOzonSearchHtml);
     if (!chip) return;
     state.workflowFilter = chip.dataset.filter || "all";
     renderWorkflowConsole();
+  });
+  $("#listingRulePoolWorkbench")?.addEventListener("input", (event) => {
+    if (event.target?.id !== "rulePoolKeyword") return;
+    const cursorPosition = event.target.selectionStart ?? String(event.target.value || "").length;
+    state.rulePoolFilter.keyword = event.target.value || "";
+    renderListingRequiredAttributeRulePoolWorkbench();
+    const keywordInput = $("#rulePoolKeyword");
+    if (keywordInput) {
+      keywordInput.focus();
+      keywordInput.setSelectionRange?.(cursorPosition, cursorPosition);
+    }
+  });
+  $("#listingRulePoolWorkbench")?.addEventListener("change", (event) => {
+    if (event.target?.id !== "rulePoolStatusFilter") return;
+    state.rulePoolFilter.status = event.target.value || "all";
+    renderListingRequiredAttributeRulePoolWorkbench();
   });
   $("#workflowRunList")?.addEventListener("click", (event) => {
     const card = event.target.closest(".workflow-run-card");

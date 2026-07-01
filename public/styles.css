@@ -2898,6 +2898,62 @@ tr:hover td {
   color: #1d4ed8;
   font-weight: 700;
 }
+.workflow-rule-pool-workbench {
+  background: #fff;
+  border: 1px solid #dbeafe;
+  border-radius: 14px;
+  box-shadow: 0 8px 24px rgba(16, 24, 40, 0.04);
+  display: grid;
+  gap: 12px;
+  margin: 0 0 16px;
+  padding: 16px;
+}
+.rule-pool-controls {
+  align-items: end;
+  display: grid;
+  gap: 12px;
+  grid-template-columns: 180px minmax(220px, 1fr) auto;
+}
+.rule-pool-stats {
+  align-items: center;
+  color: #475467;
+  display: flex;
+  flex-wrap: wrap;
+  font-size: 13px;
+  gap: 8px;
+}
+.rule-pool-stats span {
+  background: #f8fafc;
+  border: 1px solid #e4e7ec;
+  border-radius: 999px;
+  padding: 7px 10px;
+}
+.rule-pool-list {
+  display: grid;
+  gap: 8px;
+}
+.rule-pool-row {
+  background: #f8fafc;
+  border: 1px solid #e4e7ec;
+  border-radius: 10px;
+  display: grid;
+  gap: 8px;
+  grid-template-columns: minmax(180px, 1.2fr) minmax(180px, .8fr) minmax(220px, 1.4fr);
+  padding: 10px;
+}
+.rule-pool-row-ready_for_review {
+  background: #f0fdf4;
+  border-color: #bbf7d0;
+}
+.rule-pool-row strong,
+.rule-pool-row span {
+  color: #101828;
+}
+.rule-pool-row small,
+.rule-pool-row p {
+  color: #667085;
+  margin: 0;
+}
 .workflow-run-list,
 .workflow-node-timeline,
 .workflow-node-detail {
@@ -4273,6 +4329,10 @@ tr:hover td {
   color: #b45309;
 }
 @media (max-width: 1320px) {
+  .rule-pool-controls,
+  .rule-pool-row {
+    grid-template-columns: 1fr;
+  }
   .workflow-console-layout {
     grid-template-columns: 1fr;
   }

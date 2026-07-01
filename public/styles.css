@@ -2976,6 +2976,18 @@ tr:hover td {
   color: #1e40af;
   font-weight: 700;
 }
+.rule-pool-audit-log {
+  background: #fefce8;
+  border: 1px dashed #fde68a;
+  border-radius: 10px;
+  display: grid;
+  gap: 4px;
+  grid-column: 1 / -1;
+  padding: 10px;
+}
+.rule-pool-audit-log strong {
+  color: #92400e;
+}
 .workflow-run-list,
 .workflow-node-timeline,
 .workflow-node-detail {

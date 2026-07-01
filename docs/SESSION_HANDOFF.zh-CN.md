@@ -306,10 +306,15 @@
   - `POST /api/listing-rule-approval-audit/intents` 只在 `confirmAuditIntent=true` 且样本复核记录、人工批准人、独立预检回归通过都齐全时写一条 `stored_for_review` 审计记录。
   - 记录结果固定 `effectStatus=no_rule_or_payload_effect`，`safetyLocks.draftWrite/ozonSubmit/ruleEnable/workflowUnlock=false`，不会启用规则、写草稿、提交 Ozon 或改变 workflow lock。
   - `GET /api/listing-rule-approval-audit/intents` 与 `/summary` 只读查看审计意图；本阶段没有前端按钮，后续接 UI 必须另做人工确认与安全提示。
+- 上架中心规则审查池已只读接入审计意图日志：
+  - 前端 `loadRuleApprovalAuditIntents()` 只通过 `GET /api/listing-rule-approval-audit/intents?limit=200` 读取记录，缓存到 `state.ruleApprovalAuditIntents`。
+  - `collectRuleApprovalAuditIntentsByCandidate()` 只在审计记录同时具备 `categoryKey + attributeId` 时关联到已有规则候选；不能用属性名兜底，避免审计证据挂错属性。
+  - 规则池行内展示已挂载候选的最新“审计记录”、批准人、独立预检结果、`stored_for_review` / `no_rule_or_payload_effect` 和四个安全锁状态。
+  - 本阶段仍无前端保存/批准/启用按钮，不发 POST，不写 Payload，不解锁 workflow，不触发 Ozon 提交。
 
 ### 下一步
 
-- 继续做“必填属性规则引擎 V2”的规则候选复用：下一步可把审计意图日志接入上架中心只读审计列表，或设计独立“启用规则发布闸”；启用前必须再次验证审计记录、人工确认、独立预检通过，仍不能自动写 Payload。并继续把变体整组差异建议推进到可复制修复说明和整组草稿定位。
+- 继续做“必填属性规则引擎 V2”的规则候选复用：下一步应设计独立“启用规则发布闸”的只读判定模型，先验证审计记录、人工确认、独立预检通过、样本覆盖和回滚方案；启用前仍不能自动写 Payload。并继续把变体整组差异建议推进到可复制修复说明和整组草稿定位。
 
 ## 2026-06-30 仓库匹配规则引擎 V1
 

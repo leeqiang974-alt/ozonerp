@@ -6678,6 +6678,75 @@ function renderRuleApprovalAuditLog(audit = null) {
   `;
 }
 
+function rulePublishSafetyLocksClosed(locks = {}) {
+  return ["draftWrite", "ozonSubmit", "ruleEnable", "workflowUnlock"]
+    .every((key) => locks[key] === false);
+}
+
+function evaluateRulePublishGate(item = {}) {
+  const audit = item.latestApprovalAudit || null;
+  const proof = audit?.proof || {};
+  const sampleCount = Number((item.sampleProductIds || []).length || 0);
+  const missingProofs = [];
+  const blockedReasons = [];
+  if (item.ruleStatus !== "ready_for_review" || sampleCount < 2) {
+    missingProofs.push("至少两个不同商品样本");
+  }
+  if (!audit) {
+    missingProofs.push("审计意图记录");
+  } else {
+    if (audit.intentStatus !== "stored_for_review") blockedReasons.push("审计意图状态异常");
+    if (audit.effectStatus !== "no_rule_or_payload_effect") blockedReasons.push("审计记录存在写入效果");
+    if (!proof.independentPreflightRunId || proof.independentPreflightPassed !== true) {
+      missingProofs.push("独立预检通过记录");
+    }
+    const rollbackText = [audit.rollbackPlan, audit.note, proof.rollbackPlan].filter(Boolean).join(" ");
+    if (!/回滚|撤回|禁用|rollback|disable/i.test(rollbackText)) {
+      missingProofs.push("回滚方案");
+    }
+    if (!rulePublishSafetyLocksClosed(audit.safetyLocks || {})) {
+      blockedReasons.push("安全锁存在开启项");
+    }
+  }
+  const status = blockedReasons.length
+    ? "publish_blocked"
+    : missingProofs.length ? "needs_evidence" : "ready_for_publish_review";
+  const labelMap = {
+    publish_blocked: "发布被阻断",
+    needs_evidence: "需补证据",
+    ready_for_publish_review: "可进入发布复核",
+  };
+  return {
+    readOnly: true,
+    status,
+    label: labelMap[status] || labelMap.needs_evidence,
+    missingProofs,
+    blockedReasons,
+    canEnableRule: false,
+    canWritePayload: false,
+    forbiddenEffects: ["rule_enable", "payload_write", "workflow_unlock", "ozon_submit"],
+    safeNextStep: status === "ready_for_publish_review"
+      ? "只读发布闸已满足发布复核条件；下一阶段仍需独立人工发布流程，不能在本页启用规则。"
+      : status === "publish_blocked"
+        ? "先修复阻断原因并重新完成审计与独立预检；本页不会启用规则。"
+        : "先补齐样本、审计、独立预检或回滚方案；本页只展示缺口。",
+  };
+}
+
+function renderRulePublishGate(item = {}) {
+  const gate = evaluateRulePublishGate(item);
+  return `
+    <div class="rule-pool-publish-gate rule-pool-publish-gate-${escapeHtml(gate.status)}">
+      <strong>只读发布闸</strong>
+      <span>${escapeHtml(gate.label)} · ${escapeHtml(gate.status)}</span>
+      <small>缺少证明：${(gate.missingProofs || []).map(escapeHtml).join("、") || "无"}</small>
+      <small>阻断原因：${(gate.blockedReasons || []).map(escapeHtml).join("、") || "无"}</small>
+      <small>禁止效果：${(gate.forbiddenEffects || []).map(escapeHtml).join("、")}</small>
+      <p>${escapeHtml(gate.safeNextStep)}</p>
+    </div>
+  `;
+}
+
 function renderListingRequiredAttributeRulePoolWorkbench() {
   const el = $("#listingRulePoolWorkbench");
   if (!el) return;
@@ -6744,6 +6813,7 @@ function renderListingRequiredAttributeRulePoolWorkbench() {
             </div>
           ` : ""}
           ${renderRuleApprovalAuditLog(item.latestApprovalAudit)}
+          ${renderRulePublishGate(item)}
         </article>
       `).join("") : `<p class="hint">当前筛选下没有规则候选。规则池只读，不会因为筛选而写入 Payload 或改变工作流状态。</p>`}
     </div>

@@ -2988,6 +2988,26 @@ tr:hover td {
 .rule-pool-audit-log strong {
   color: #92400e;
 }
+.rule-pool-publish-gate {
+  background: #f8fafc;
+  border: 1px solid #d0d5dd;
+  border-radius: 10px;
+  display: grid;
+  gap: 4px;
+  grid-column: 1 / -1;
+  padding: 10px;
+}
+.rule-pool-publish-gate strong {
+  color: #344054;
+}
+.rule-pool-publish-gate-ready_for_publish_review {
+  background: #f0fdf4;
+  border-color: #86efac;
+}
+.rule-pool-publish-gate-publish_blocked {
+  background: #fef2f2;
+  border-color: #fecaca;
+}
 .workflow-run-list,
 .workflow-node-timeline,
 .workflow-node-detail {

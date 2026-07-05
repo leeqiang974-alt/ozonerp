@@ -292,6 +292,7 @@ test("listing center exposes a read-only fill task queue from existing diagnosti
   assert.match(js, /listingFillTaskRepairCandidate/);
   assert.match(js, /listingFillTaskTextRepairCandidate/);
   assert.match(js, /listingFillTaskVariantTextRepairCandidate/);
+  assert.match(js, /listingRequiredAttributeConfirmationItems/);
   assert.match(js, /listingVariantCoverageTaskText/);
   assert.match(js, /listingFillTaskVariantAspectSuggestion/);
   assert.match(js, /listingVariantAspectContext/);
@@ -308,6 +309,10 @@ test("listing center exposes a read-only fill task queue from existing diagnosti
   assert.match(js, /确认写入草稿并预检/);
   assert.match(js, /填写文本属性并预检/);
   assert.match(js, /填写变体文本并预检/);
+  assert.match(js, /待确认字典候选/);
+  assert.match(js, /候选值/);
+  assert.match(js, /来源/);
+  assert.match(js, /置信度/);
   assert.match(js, /属性覆盖/);
   assert.match(js, /SKU 图区分/);
   assert.match(js, /变体属性修复建议/);
@@ -319,8 +324,56 @@ test("listing center exposes a read-only fill task queue from existing diagnosti
   assert.match(js, /listing-variant-context-list/);
   assert.match(css, /listing-fill-task-queue/);
   assert.match(css, /listing-fill-task-card/);
+  assert.match(css, /listing-attribute-confirmation-list/);
   assert.match(css, /listing-variant-suggestion/);
   assert.match(css, /listing-variant-context-list/);
+});
+
+test("listing fill task queue extracts required attribute confirmation items", async () => {
+  const js = await readFile(new URL("../public/app.js", import.meta.url), "utf8");
+  const source = js.match(/function listingRequiredAttributeConfirmationItems[\s\S]+?\n}\n\nfunction listingFillTaskQueueItems/)?.[0]
+    .replace(/\nfunction listingFillTaskQueueItems$/, "");
+  assert.ok(source);
+  const listingRequiredAttributeConfirmationItems = new Function(`${source}\nreturn listingRequiredAttributeConfirmationItems;`)();
+
+  const items = listingRequiredAttributeConfirmationItems([
+    {
+      attributeId: 777,
+      attributeName: "Материал",
+      action: "suggest_dictionary",
+      safetyLabelZh: "候选需确认",
+      safeNextStep: "人工确认后写回本地草稿并重新预检。",
+      reasonZh: "根据材质同义词匹配。",
+      dictionaryCandidates: [
+        { dictionaryValueId: 11, value: "пластик", confidence: 0.72, source: "material_synonym" },
+      ],
+    },
+    {
+      attributeId: 85,
+      attributeName: "Бренд",
+      action: "auto_fill",
+      dictionaryCandidates: [{ dictionaryValueId: 22, value: "Нет бренда" }],
+    },
+    {
+      attributeId: 999,
+      attributeName: "危险等级",
+      action: "blocked_sensitive",
+      dictionaryCandidates: [{ dictionaryValueId: 33, value: "A" }],
+    },
+  ]);
+
+  assert.equal(items.length, 1);
+  assert.equal(items[0].attributeId, 777);
+  assert.equal(items[0].attributeName, "Материал");
+  assert.equal(items[0].candidateText, "#11 пластик");
+  assert.equal(items[0].sourceText, "material_synonym");
+  assert.equal(items[0].confidenceText, "72%");
+  assert.match(items[0].reason, /必须人工确认/);
+  assert.equal(items[0].matchReason, "根据材质同义词匹配。");
+  assert.match(items[0].safeNextStep, /重新预检/);
+  assert.match(items[0].copyText, /Материал/);
+  assert.match(items[0].copyText, /匹配线索：根据材质同义词匹配。/);
+  assert.match(items[0].copyText, /不会自动写 Payload/);
 });
 
 test("listing variant aspect suggestion carries SKU aspect repair context", async () => {

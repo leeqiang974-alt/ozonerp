@@ -1273,6 +1273,49 @@ function listingFillTaskVariantAspectSuggestion(variantConfiguration = null) {
   };
 }
 
+function listingRequiredAttributeConfirmationItems(requiredAttributeFillPlan = []) {
+  return (Array.isArray(requiredAttributeFillPlan) ? requiredAttributeFillPlan : [])
+    .filter((row) => row?.action === "suggest_dictionary" && Array.isArray(row.dictionaryCandidates) && row.dictionaryCandidates.length)
+    .slice(0, 4)
+    .map((row) => {
+      const candidates = row.dictionaryCandidates.slice(0, 3);
+      const candidateText = candidates.map((candidate) => {
+        const id = candidate.dictionaryValueId || candidate.dictionary_value_id || candidate.id || "";
+        const value = candidate.value || candidate.name || "";
+        return `${id ? `#${id} ` : ""}${value}`.trim();
+      }).filter(Boolean).join(" / ");
+      const sourceText = [...new Set(candidates.map((candidate) => candidate.source).filter(Boolean))].join(" / ") || row.source || "current_category_dictionary";
+      const confidence = candidates
+        .map((candidate) => Number(candidate.confidence))
+        .filter((value) => Number.isFinite(value))
+        .sort((a, b) => b - a)[0];
+      const confidenceText = Number.isFinite(confidence) ? `${Math.round(confidence * 100)}%` : "待人工判断";
+      const safeNextStep = row.safeNextStep || "人工确认候选后，只能写回本地草稿并重新预检；不会自动提交 Ozon。";
+      const attributeName = row.attributeName || row.name || `属性 ${row.attributeId || ""}`.trim();
+      const matchReason = row.reasonZh || row.reason || "根据当前商品文本和当前类目字典生成候选。";
+      const reason = "该字段是中置信字典候选，必须人工确认当前类目合法值，不能自动写入 Payload。";
+      return {
+        attributeId: row.attributeId || row.id || "",
+        attributeName,
+        safetyLabel: row.safetyLabelZh || "候选需确认",
+        candidateText,
+        sourceText,
+        confidenceText,
+        reason,
+        matchReason,
+        safeNextStep,
+        copyText: [
+          `属性：${attributeName}${row.attributeId ? ` / ID ${row.attributeId}` : ""}`,
+          `候选值：${candidateText || "-"}`,
+          `来源：${sourceText}`,
+          `匹配线索：${matchReason}`,
+          `下一步：${safeNextStep}`,
+          "安全边界：不会自动写 Payload，不会提交 Ozon，确认后仍需重新预检。",
+        ].join("\n"),
+      };
+    });
+}
+
 function listingFillTaskQueueItems(run = currentListingWorkflowRun()) {
   if (!run) {
     return [{
@@ -1301,6 +1344,7 @@ function listingFillTaskQueueItems(run = currentListingWorkflowRun()) {
     const confirmCount = Number(requiredAttributeFillSummary?.candidateNeedsHumanConfirmationCount ?? requiredAttributeFillPlan.filter((row) => row.action === "suggest_dictionary").length);
     const manualCount = Number((requiredAttributeFillSummary?.manualRequiredCount ?? 0) + (requiredAttributeFillSummary?.blockedNeverGuessCount ?? 0))
       || requiredAttributeFillPlan.filter((row) => ["manual_required", "blocked_sensitive"].includes(row.action)).length;
+    const confirmationItems = listingRequiredAttributeConfirmationItems(requiredAttributeFillPlan);
     items.push({
       tone: manualCount ? "warning" : confirmCount ? "info" : "success",
       label: "分类属性",
@@ -1308,6 +1352,7 @@ function listingFillTaskQueueItems(run = currentListingWorkflowRun()) {
       body: `${autoCount} 个已安全补齐，${confirmCount} 个需确认字典，${manualCount} 个需人工处理。`,
       meta: requiredAttributeFillSummary?.safeNextAction || "数据来自 requiredAttributeFillPlan，只读汇总，不自动写入或提交。",
       target: "content-images",
+      attributeConfirmationItems: confirmationItems,
       repairCandidate: repairCandidate && confirmCount ? repairCandidate : null,
       textRepairCandidate: textRepairCandidate && manualCount ? textRepairCandidate : null,
     });
@@ -1372,6 +1417,21 @@ function renderListingFillTaskQueue(run = currentListingWorkflowRun()) {
             <strong>${escapeHtml(item.title)}</strong>
             <p>${escapeHtml(item.body)}</p>
             <small>${escapeHtml(item.meta)}</small>
+            ${Array.isArray(item.attributeConfirmationItems) && item.attributeConfirmationItems.length ? `
+              <div class="listing-attribute-confirmation-list" aria-label="待确认字典候选">
+                <strong>待确认字典候选</strong>
+                ${item.attributeConfirmationItems.map((candidateItem) => `
+                  <div class="listing-attribute-confirmation-item">
+                    <b>${escapeHtml(candidateItem.attributeName || "字典属性")}${candidateItem.attributeId ? ` / ID ${escapeHtml(candidateItem.attributeId)}` : ""}</b>
+                    <span>候选值：${escapeHtml(candidateItem.candidateText || "-")}</span>
+                    <span>来源：${escapeHtml(candidateItem.sourceText || "-")} · 置信度：${escapeHtml(candidateItem.confidenceText || "待人工判断")}</span>
+                    <span>为什么不能自动写：${escapeHtml(candidateItem.reason || "字典候选必须人工确认。")}</span>
+                    <span>匹配线索：${escapeHtml(candidateItem.matchReason || "根据当前商品文本和当前类目字典生成候选。")}</span>
+                    <span>下一步：${escapeHtml(candidateItem.safeNextStep || "人工确认后写回本地草稿并重新预检。")}</span>
+                  </div>
+                `).join("")}
+              </div>
+            ` : ""}
             ${item.repairCandidate ? `<button
               type="button"
               data-workflow-action="apply-attribute-dictionary-repair"

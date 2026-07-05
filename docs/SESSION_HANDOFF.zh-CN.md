@@ -198,6 +198,9 @@
   - 变体/SKU 图任务卡会列出受影响 SKU、首个 aspect 名称/属性 ID、为什么卡住、下一步。
   - 数据仍来自 `variantConfiguration.rows`，只读展示；复制建议和查看工作簿不写 Payload、不提交 Ozon。
   - 修正后仍必须回到预检/Workflow Console 重新校验。
+- 上架中心“只读填报任务队列”已前置展示必填属性候选确认清单：
+  - 分类属性任务卡会从 `requiredAttributeFillPlan` 中提取 `action=suggest_dictionary` 且有 `dictionaryCandidates` 的字段，展示属性名/ID、候选值、来源、置信度、为什么不能自动写和安全下一步。
+  - 该清单只读，不新增 API、不写 Payload、不解锁 workflow、不提交 Ozon；真正写回仍只能走既有 `waiting_human + confirmLocalDraftRepair + 重新预检` 的修复入口。
 - 上架草稿侧的变体修复入口 V2 已接入非字典 aspect 文本属性：
   - `applyPayloadDraftAttributeRepair()` 新增 `repairType: "variant_text_value"`。
   - 仅允许 `waiting_human` / `locks.waitingHuman=true` 且 `confirmLocalDraftRepair=true` 的 workflow 写回本地 Payload 草稿。

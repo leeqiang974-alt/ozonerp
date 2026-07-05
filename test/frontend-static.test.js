@@ -360,6 +360,9 @@ test("required attribute manual backlog groups seller-facing blockers", async ()
   assert.equal(groups[0].items[0].packageEvidence.statusText, "缺少 1688 尺重证据");
   assert.match(groups[0].items[0].packageEvidence.missingText, /重量/);
   assert.match(groups[0].items[0].packageEvidence.safeSourceAction, /重新采集|人工实测/);
+  assert.deepEqual(groups[0].items[0].packageEvidence.payloadTargets.map((target) => target.field), ["weight"]);
+  assert.equal(groups[0].items[0].packageEvidence.payloadTargets[0].canWriteDraft, false);
+  assert.equal(groups[0].items[0].packageEvidence.payloadTargets[0].path, "\"weight\"");
   assert.match(groups[1].items[0].blockReason, /涉及合规/);
   assert.ok(groups[1].items.some((item) => item.attributeId === 1004));
   assert.ok(groups[1].items.every((item) => item.repairStatusText === "暂不可直接填写"));
@@ -486,6 +489,12 @@ test("listing center exposes a read-only fill task queue from existing diagnosti
   assert.match(js, /证据状态/);
   assert.match(js, /证据来源/);
   assert.match(js, /packageEvidence/);
+  assert.match(js, /payloadTargets/);
+  assert.match(js, /定位包装字段/);
+  assert.match(js, /data-payload-path="\$\{escapeHtml\(target\.path \|\| ""\)\}"/);
+  assert.match(js, /#listingStagePanels \[data-payload-path\]/);
+  assert.match(js, /focusWorkflowPayloadIssue\(listingPayloadLocatorTarget\)/);
+  assert.doesNotMatch(js, /apply-package/);
   assert.match(js, /填写变体文本并预检/);
   assert.match(js, /待确认字典候选/);
   assert.match(js, /候选值/);
@@ -508,6 +517,7 @@ test("listing center exposes a read-only fill task queue from existing diagnosti
   assert.match(css, /listing-variant-suggestion/);
   assert.match(css, /listing-variant-context-list/);
   assert.match(css, /required-attribute-package-evidence/);
+  assert.match(css, /required-attribute-package-targets/);
 });
 
 test("listing fill task queue extracts required attribute confirmation items", async () => {

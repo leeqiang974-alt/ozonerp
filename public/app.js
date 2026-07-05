@@ -6631,6 +6631,19 @@ function requiredAttributeManualWorkbenchGroups(backlog = {}, textRepairCandidat
     if (/длина|глубина|长|length|depth/i.test(text)) missingFields.push("长度/深度");
     if (/ширина|宽|width/i.test(text)) missingFields.push("宽度");
     if (/высота|高|height/i.test(text)) missingFields.push("高度");
+    const targetDefinitions = [
+      { field: "weight", label: "重量 weight", pattern: /вес|重量|weight/i },
+      { field: "depth", label: "长度/深度 depth", pattern: /длина|глубина|长|length|depth/i },
+      { field: "width", label: "宽度 width", pattern: /ширина|宽|width/i },
+      { field: "height", label: "高度 height", pattern: /высота|高|height/i },
+    ];
+    const payloadTargets = targetDefinitions
+      .filter((target) => target.pattern.test(text) || !missingFields.length)
+      .map((target) => ({
+        ...target,
+        path: `"${target.field}"`,
+        canWriteDraft: false,
+      }));
     const source = String(item.source || "");
     const missingSource = source === "1688_package_missing" || /缺少|缺失|missing/i.test(text);
     return {
@@ -6638,6 +6651,7 @@ function requiredAttributeManualWorkbenchGroups(backlog = {}, textRepairCandidat
       statusText: missingSource ? "缺少 1688 尺重证据" : "需核实尺重证据",
       sourceText: source === "1688_package_missing" ? "1688 详情解析未取得完整包装尺重" : (source || "当前货源/人工资料"),
       missingText: missingFields.length ? missingFields.join("、") : "重量、长宽高或规格",
+      payloadTargets,
       safeSourceAction: "回到 1688 采集或详情页重新采集尺重；没有可靠来源时人工实测后更新货源，再重新预检。",
     };
   }
@@ -6713,6 +6727,18 @@ function renderRequiredAttributeManualWorkbench(workbenchGroups = []) {
                       <small>证据来源：${escapeHtml(item.packageEvidence.sourceText || "当前货源/人工资料")}</small>
                       <small>缺少字段：${escapeHtml(item.packageEvidence.missingText || "重量、长宽高或规格")}</small>
                       <small>补证据动作：${escapeHtml(item.packageEvidence.safeSourceAction || "补齐真实尺重证据后重新预检。")}</small>
+                      ${Array.isArray(item.packageEvidence.payloadTargets) && item.packageEvidence.payloadTargets.length ? `
+                        <span class="required-attribute-package-targets">
+                          ${item.packageEvidence.payloadTargets.slice(0, 4).map((target) => `
+                            <button
+                              class="ghost"
+                              type="button"
+                              data-payload-path="${escapeHtml(target.path || "")}"
+                              data-payload-label="${escapeHtml(target.label || target.field || "包装字段")}"
+                            >定位包装字段</button>
+                          `).join("")}
+                        </span>
+                      ` : ""}
                     </span>
                   ` : ""}
                   <small>下一步：${escapeHtml(item.safeNextStep || group.safeNextStep)}</small>
@@ -9932,6 +9958,16 @@ async function init() {
       handleWorkflowAction(listingWorkflowActionTarget.dataset.workflowAction, listingWorkflowActionTarget)
         .catch((error) => toast(error.message, "error"))
         .finally(() => setBusy(listingWorkflowActionTarget, false));
+      return;
+    }
+    const listingPayloadLocatorTarget = event.target.closest("#listingStagePanels [data-payload-path]");
+    if (listingPayloadLocatorTarget) {
+      event.preventDefault();
+      state.selectedWorkflowRunId = currentListingWorkflowRun()?.id || state.selectedWorkflowRunId;
+      state.selectedWorkflowNodeKey = "preflight_check";
+      activateErpView("workflow-console");
+      renderWorkflowConsole();
+      window.setTimeout(() => focusWorkflowPayloadIssue(listingPayloadLocatorTarget), 0);
       return;
     }
     const listingTaskViewTarget = event.target.closest("[data-listing-task-view]");

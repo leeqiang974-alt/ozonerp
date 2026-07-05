@@ -3762,6 +3762,17 @@ tr:hover td {
 .required-attribute-package-evidence small {
   color: #7c2d12;
 }
+.required-attribute-package-targets {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-top: 3px;
+}
+.required-attribute-package-targets button {
+  border-radius: 999px;
+  font-size: 12px;
+  padding: 4px 8px;
+}
 .required-attribute-manual-actions {
   display: flex;
   flex-wrap: wrap;

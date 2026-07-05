@@ -214,6 +214,11 @@
   - `包装尺重证据` 分组会逐项展示证据状态、证据来源、缺少字段和补证据动作。
   - `1688_package_missing` 会明确显示“缺少 1688 尺重证据”，引导回 1688 详情重新采集或人工实测后更新货源，再重新预检。
   - 该分组继续只读，`canWriteDraft=false`，不展示属性修复按钮、不写 Payload、不提交 Ozon、不解锁 workflow。
+- 包装尺重证据工作台已补充 Payload 字段定位准备：
+  - 缺重量/长宽高时会生成 `weight` / `depth` / `width` / `height` 的只读定位目标。
+  - 前端只显示“定位包装字段”；点击后从 Listing Center 切到 Workflow Console，复用现有 payload 编辑器高亮机制定位字段。
+  - 该入口只是定位，不在 Listing Center 内编辑包装字段；没有新增 fetch、保存、写草稿或提交动作。
+  - 后续若做人工确认后的尺重回填，必须继续经过 `waiting_human`、本地草稿确认、重新预检和提交总闸。
 - 上架草稿侧的变体修复入口 V2 已接入非字典 aspect 文本属性：
   - `applyPayloadDraftAttributeRepair()` 新增 `repairType: "variant_text_value"`。
   - 仅允许 `waiting_human` / `locks.waitingHuman=true` 且 `confirmLocalDraftRepair=true` 的 workflow 写回本地 Payload 草稿。

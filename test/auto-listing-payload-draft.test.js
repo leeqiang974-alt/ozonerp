@@ -585,6 +585,68 @@ test("buildRequiredAttributeRuleCandidateHistory requires distinct samples befor
   assert.deepEqual(history.reviewQueue[0].sampleProductIds, ["SKU-DUP"]);
 });
 
+test("buildRequiredAttributeFillPlan suggests color dictionary candidates from color synonyms only", () => {
+  const colorPlan = buildRequiredAttributeFillPlan({
+    categoryMatch: { description_category_id: 17028673, type_id: 95183 },
+    attrsMeta: [
+      { id: 10097, name: "Цвет", is_required: true, dictionary_id: 120 },
+    ],
+    attributeValuesById: {
+      10097: [
+        { id: 201, value: "красный" },
+        { id: 202, value: "синий" },
+        { id: 203, value: "белый" },
+      ],
+    },
+    productText: "1688 SKU：红色 red органайзер",
+  })[0];
+
+  assert.equal(colorPlan.action, "suggest_dictionary");
+  assert.equal(colorPlan.dictionaryValueId, undefined);
+  assert.deepEqual(colorPlan.dictionaryCandidates, [{
+    dictionaryValueId: 201,
+    value: "красный",
+    confidence: 0.7,
+    source: "color_synonym",
+  }]);
+
+  const typePlan = buildRequiredAttributeFillPlan({
+    categoryMatch: { description_category_id: 17028673, type_id: 95183 },
+    attrsMeta: [
+      { id: 8229, name: "Тип", is_required: true, dictionary_id: 101 },
+    ],
+    attributeValuesById: {
+      8229: [{ id: 204, value: "красный" }],
+    },
+    productText: "1688 标题：红色 red",
+  })[0];
+  assert.deepEqual(typePlan.dictionaryCandidates, []);
+
+  const featurePlan = buildRequiredAttributeFillPlan({
+    categoryMatch: { description_category_id: 17028673, type_id: 95183 },
+    attrsMeta: [
+      { id: 8230, name: "特色", is_required: true, dictionary_id: 102 },
+    ],
+    attributeValuesById: {
+      8230: [{ id: 205, value: "красный" }],
+    },
+    productText: "1688 标题：红色 red",
+  })[0];
+  assert.deepEqual(featurePlan.dictionaryCandidates, []);
+
+  const greySeriesPlan = buildRequiredAttributeFillPlan({
+    categoryMatch: { description_category_id: 17028673, type_id: 95183 },
+    attrsMeta: [
+      { id: 10097, name: "Цвет", is_required: true, dictionary_id: 120 },
+    ],
+    attributeValuesById: {
+      10097: [{ id: 206, value: "серый" }],
+    },
+    productText: "серия 2 органайзер",
+  })[0];
+  assert.deepEqual(greySeriesPlan.dictionaryCandidates, []);
+});
+
 test("buildRequiredAttributeFillPlan suggests dictionary candidates from material synonyms only", () => {
   const plan = buildRequiredAttributeFillPlan({
     categoryMatch: { description_category_id: 17028673, type_id: 95183 },

@@ -661,6 +661,7 @@ function dictionaryCandidatesForMeta({
       } : null;
     })
     .filter(Boolean)
+    .concat(colorSynonymDictionaryCandidatesForMeta({ meta, categoryMatch, attributeValuesById, categoryCache, productText }))
     .concat(synonymDictionaryCandidatesForMeta({ meta, categoryMatch, attributeValuesById, categoryCache, productText }))
     .concat(typeSynonymDictionaryCandidatesForMeta({ meta, categoryMatch, attributeValuesById, categoryCache, productText }))
     .concat(purposeSynonymDictionaryCandidatesForMeta({ meta, categoryMatch, attributeValuesById, categoryCache, productText }))
@@ -675,6 +676,47 @@ function dictionaryCandidatesForMeta({
       && list.findIndex((item) => item.dictionaryValueId === candidate.dictionaryValueId) === index
     ))
     .slice(0, 5);
+}
+
+function colorSynonymDictionaryCandidatesForMeta({
+  meta = {},
+  categoryMatch = {},
+  attributeValuesById = {},
+  categoryCache = {},
+  productText = "",
+} = {}) {
+  const classified = classifyAttributeFillStrategy(meta);
+  if (!["dictionary_lookup_from_product_text", "dictionary_lookup_or_manual_rule"].includes(classified.strategy)) return [];
+  if (!/цвет|color|colour|颜色|顏色|色彩|色号|色號/.test(normalizeText(`${meta.name || ""} ${meta.description || ""}`))) return [];
+  const text = normalizeText(productText);
+  const colorRules = [
+    { sourcePattern: /красн|\bred\b|红|紅/, valuePattern: /красн|\bred\b|红|紅/i },
+    { sourcePattern: /син|голуб|\bblue\b|蓝|藍/, valuePattern: /син|голуб|\bblue\b|蓝|藍/i },
+    { sourcePattern: /бел|\bwhite\b|白/, valuePattern: /бел|\bwhite\b|白/i },
+    { sourcePattern: /черн|чёрн|\bblack\b|黑/, valuePattern: /черн|чёрн|\bblack\b|黑/i },
+    { sourcePattern: /зелен|зелён|\bgreen\b|绿|綠/, valuePattern: /зелен|зелён|\bgreen\b|绿|綠/i },
+    { sourcePattern: /желт|жёлт|\byellow\b|黄|黃/, valuePattern: /желт|жёлт|\byellow\b|黄|黃/i },
+    { sourcePattern: /розов|\bpink\b|粉/, valuePattern: /розов|\bpink\b|粉/i },
+    { sourcePattern: /фиолет|\bpurple\b|紫/, valuePattern: /фиолет|\bpurple\b|紫/i },
+    { sourcePattern: /оранж|\borange\b|橙/, valuePattern: /оранж|\borange\b|橙/i },
+    { sourcePattern: /коричнев|\bbrown\b|棕|咖啡/, valuePattern: /коричнев|\bbrown\b|棕|咖啡/i },
+    { sourcePattern: /\bсер(ый|ая|ое|ые|ого|ому|ым|ом|ую|ой|ых|ыми)\b|\bgray\b|\bgrey\b|灰/, valuePattern: /\bсер(ый|ая|ое|ые|ого|ому|ым|ом|ую|ой|ых|ыми)\b|\bgray\b|\bgrey\b|灰/i },
+    { sourcePattern: /прозрач|\btransparent\b|透明/, valuePattern: /прозрач|\btransparent\b|透明/i },
+  ];
+  const values = dictionaryValuesForPlan({ meta, categoryMatch, attributeValuesById, categoryCache });
+  return colorRules
+    .filter((rule) => rule.sourcePattern.test(text))
+    .flatMap((rule) => values.map((entry) => {
+      const value = String(entry?.value || entry?.name || "").replace(/\s+/g, " ").trim();
+      if (!value || !rule.valuePattern.test(value)) return null;
+      return {
+        dictionaryValueId: dictionaryValueId(entry),
+        value,
+        confidence: 0.7,
+        source: "color_synonym",
+      };
+    }))
+    .filter(Boolean);
 }
 
 function synonymDictionaryCandidatesForMeta({

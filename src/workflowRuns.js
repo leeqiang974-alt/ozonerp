@@ -430,11 +430,31 @@ function variantGroupDifferenceSuggestions(grouping = {}) {
     const affectedRows = (group.offerIds || []).map((offerId) => rowsByOffer.get(String(offerId))).filter(Boolean);
     const aspectNames = [...new Set(affectedRows.flatMap((row) => (row.aspects || []).map((aspect) => aspect.name || `属性 ${aspect.id || ""}`)).filter(Boolean))];
     const aspectLabel = aspectNames.join(" / ") || "Ozon 可变特性";
+    const repairTargets = affectedRows.flatMap((row) => (row.aspects || []).map((aspect) => {
+      const attributeId = Number(aspect.id || 0);
+      const payloadPath = `items[${Number(row.itemIndex || 0)}].attributes[id=${attributeId || ""}]`;
+      const payloadLabel = `${row.offerId || "SKU"} / ${aspect.name || `属性 ${attributeId || ""}`}`;
+      return {
+        offerId: row.offerId || "",
+        attributeId,
+        attributeName: aspect.name || `属性 ${attributeId || ""}`,
+        currentValue: aspect.value || "",
+        payloadPath,
+        payloadLabel,
+        copyText: `SKU ${row.offerId || "未记录"} 的 ${aspect.name || `属性 ${attributeId || ""}`} 当前值为「${aspect.value || "空"}」，请在 ${payloadPath} 改成与同父 SKU 不重复的值；整组修复后重新预检，不会自动写 Payload 或提交 Ozon。`,
+      };
+    }));
     return {
       code: "VARIANT_GROUP_DIFFERENCE",
       duplicateGroupId: group.id || "",
       affectedOfferIds: group.offerIds || [],
       aspectNames,
+      repairTargets,
+      copyText: [
+        `整组修复说明：重复组 ${group.id || ""} 涉及 SKU ${(group.offerIds || []).join("、") || "未记录"}。`,
+        ...repairTargets.map((target) => target.copyText),
+        "修完后必须重新预检；本建议不会自动写 Payload 或提交 Ozon。",
+      ].join("\n"),
       action: `整组检查 ${aspectLabel}，为重复 SKU 改成唯一颜色、尺码、容量或套装组合。`,
       nextStep: "整组 SKU 差异确认后重新预检；不会自动写 Payload 或提交 Ozon。",
     };
@@ -746,7 +766,7 @@ export function buildVariantGroupingDiagnosis(input = {}) {
   const aspectMeta = attrsMeta.filter((meta) => meta?.is_aspect && Number(meta?.id || 0));
   const aspectAttributeIds = aspectMeta.map((meta) => Number(meta.id));
   const metaById = new Map(attrsMeta.map((meta) => [Number(meta?.id || 0), meta]));
-  const rows = items.map((item) => {
+  const rows = items.map((item, index) => {
     const attributes = Array.isArray(item?.attributes) ? item.attributes : [];
     const modelValues = attributes
       .filter((attribute) => modelAttributeIds.includes(Number(attribute?.id || 0)))
@@ -762,6 +782,7 @@ export function buildVariantGroupingDiagnosis(input = {}) {
       }))
       .sort((left, right) => left.id - right.id);
     return {
+      itemIndex: index,
       offerId: String(item?.offer_id || ""),
       modelValue: modelValues.join(" / "),
       aspects,

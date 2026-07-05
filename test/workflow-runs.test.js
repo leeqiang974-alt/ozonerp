@@ -577,6 +577,21 @@ test("buildVariantConfigurationSummary explains duplicate aspects and SKU image 
   assert.deepEqual(summary.differenceSuggestions[0].affectedOfferIds, ["SKU-WHITE", "SKU-BLUE"]);
   assert.match(summary.differenceSuggestions[0].action, /整组/);
   assert.match(summary.differenceSuggestions[0].action, /Название цвета/);
+  assert.equal(summary.differenceSuggestions[0].repairTargets.length, 2);
+  assert.deepEqual(
+    summary.differenceSuggestions[0].repairTargets.map((target) => target.offerId),
+    ["SKU-WHITE", "SKU-BLUE"],
+  );
+  assert.equal(summary.differenceSuggestions[0].repairTargets[0].attributeId, 10097);
+  assert.match(summary.differenceSuggestions[0].repairTargets[0].payloadPath, /items\[0\]\.attributes/);
+  assert.match(summary.differenceSuggestions[0].repairTargets[0].payloadPath, /10097/);
+  assert.match(summary.differenceSuggestions[0].repairTargets[0].payloadLabel, /SKU-WHITE/);
+  assert.match(summary.differenceSuggestions[0].repairTargets[0].copyText, /SKU-WHITE/);
+  assert.match(summary.differenceSuggestions[0].repairTargets[0].copyText, /Название цвета/);
+  assert.match(summary.differenceSuggestions[0].repairTargets[0].copyText, /重新预检/);
+  assert.match(summary.differenceSuggestions[0].copyText, /SKU-WHITE/);
+  assert.match(summary.differenceSuggestions[0].copyText, /SKU-BLUE/);
+  assert.match(summary.differenceSuggestions[0].copyText, /不会自动写 Payload 或提交 Ozon/);
   assert.equal(summary.summary.differenceSuggestionCount, 1);
   assert.equal(summary.summary.repairSuggestionCount, 4);
   assert.ok(summary.rows[0].safeNextAction.includes("修正"));

@@ -6994,6 +6994,25 @@ function renderVariantGroupDifferenceSuggestions(workbench = {}) {
         <article>
           <span>${escapeHtml((suggestion.affectedOfferIds || []).join(" / ") || suggestion.duplicateGroupId || "重复组")}</span>
           <p>${escapeHtml(suggestion.action || "整组检查变体差异。")}</p>
+          ${suggestion.copyText ? `<code data-variant-difference-copy="${escapeHtml(suggestion.copyText)}">整组修复说明：${escapeHtml(suggestion.copyText)}</code>` : ""}
+          ${(suggestion.repairTargets || []).length ? `
+            <div class="variant-group-difference-targets">
+              ${(suggestion.repairTargets || []).map((target) => `
+                <span>
+                  <b>${escapeHtml(target.offerId || "SKU")}</b>
+                  <small>${escapeHtml(target.attributeName || `属性 ${target.attributeId || ""}`)}：${escapeHtml(target.currentValue || "空")}</small>
+                  <em
+                    class="workflow-payload-locator"
+                    data-payload-path="${escapeHtml(target.payloadPath || "")}"
+                    data-payload-label="${escapeHtml(target.payloadLabel || "变体差异字段")}"
+                    data-payload-offer-id="${escapeHtml(target.offerId || "")}"
+                    data-payload-attribute-id="${escapeHtml(target.attributeId || "")}"
+                    title="仅定位，不修改数据"
+                  >定位该差异字段</em>
+                </span>
+              `).join("")}
+            </div>
+          ` : ""}
           <small>${escapeHtml(suggestion.nextStep || "整组修复后重新预检；不会自动提交 Ozon。")}</small>
         </article>
       `).join("")}

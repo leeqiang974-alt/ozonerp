@@ -367,6 +367,10 @@ test("frontend renders read-only variant configuration workbench", async () => {
   assert.match(js, /differenceSuggestions/);
   assert.match(js, /整组差异建议/);
   assert.match(js, /renderVariantGroupDifferenceSuggestions/);
+  assert.match(js, /repairTargets/);
+  assert.match(js, /data-variant-difference-copy/);
+  assert.match(js, /整组修复说明/);
+  assert.match(js, /定位该差异字段/);
   const repairRendererSource = js.match(/function renderVariantRepairSuggestions[\s\S]+?\n}\n\nfunction renderVariantGroupDifferenceSuggestions/)?.[0] || "";
   assert.ok(repairRendererSource);
   assert.doesNotMatch(repairRendererSource, /<button/);
@@ -377,6 +381,11 @@ test("frontend renders read-only variant configuration workbench", async () => {
   assert.doesNotMatch(differenceRendererSource, /<button/);
   assert.doesNotMatch(differenceRendererSource, /data-workflow-action/);
   assert.doesNotMatch(differenceRendererSource, /fetch\(/);
+  assert.match(differenceRendererSource, /workflow-payload-locator/);
+  assert.match(differenceRendererSource, /data-payload-path/);
+  assert.match(differenceRendererSource, /data-payload-offer-id/);
+  assert.match(differenceRendererSource, /data-payload-attribute-id/);
+  assert.match(differenceRendererSource, /data-variant-difference-copy/);
   assert.match(js, /aspectCoveredRowCount/);
   assert.match(js, /duplicateAspectRowCount/);
   assert.match(js, /missingAspectRowCount/);
@@ -400,6 +409,7 @@ test("frontend renders read-only variant configuration workbench", async () => {
   assert.match(css, /workflow-variant-workbench/);
   assert.match(css, /variant-workbench-row/);
   assert.match(css, /variant-group-difference-suggestions/);
+  assert.match(css, /variant-group-difference-targets/);
 });
 
 test("workflow payload locator targets aspect id inside the same SKU slice", async () => {

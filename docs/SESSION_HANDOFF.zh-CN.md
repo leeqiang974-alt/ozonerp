@@ -224,6 +224,10 @@
   - `variantConfiguration.differenceSuggestions` 现在按重复组输出受影响 SKU、重复组、建议区分的 aspect 名称和安全下一步。
   - 前端工作簿新增“整组差异建议”只读块，提示按颜色、尺码、容量或套装组合拉开整组 SKU。
   - 不自动补 aspect、不写 Payload、不提交 Ozon；修复后仍必须重新预检。
+- 变体整组差异建议已推进到可复制修复说明和 Payload 定位：
+  - `differenceSuggestions[].repairTargets[]` 按受影响 SKU 输出 `offerId`、`attributeId/name`、当前值、`payloadPath`、`payloadLabel` 和 `copyText`。
+  - 整组建议本身新增 `copyText`，把重复 SKU、每个 SKU 要改的 aspect 和“重新预检、不会自动写 Payload 或提交 Ozon”合成可复制说明。
+  - 前端“整组差异建议”显示每个 target，并复用现有 `[data-payload-path]` 定位机制跳到同一 SKU 的属性位置；该入口只定位，不写草稿、不解锁 workflow、不提交 Ozon。
 - 必填属性规则引擎 V2 继续修正原产国/制造商边界：
   - `Страна-изготовитель` / 原产国 / 生产国 / 制造国 走 `fixed_country_china`，只使用当前类目字典中的 Китай/中国。
   - 单独的 `Производитель` / 制造商不再被误识别为原产国；仍进入合规敏感人工阻塞。

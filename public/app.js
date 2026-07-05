@@ -1116,32 +1116,38 @@ function listingStageStatus(stage) {
   return stage.status;
 }
 
-function listingFillTaskRepairCandidate(run = currentListingWorkflowRun()) {
-  if (!run) return null;
+function listingFillTaskDictionaryRepairCandidates(run = currentListingWorkflowRun()) {
+  if (!run) return [];
   const waitingHuman = run.status === "waiting_human" || run.locks?.waitingHuman === true;
-  if (!waitingHuman) return null;
+  if (!waitingHuman) return [];
   const preflightNode = (run.nodes || []).find((node) => node.key === "preflight_check") || {};
   const matrix = run.payloadDraftValidation?.attributeMatrix || preflightNode.output?.attributeMatrix || null;
   const rows = Array.isArray(matrix?.rows) ? matrix.rows : [];
+  const repairCandidates = [];
   for (const row of rows) {
     for (const cell of row.cells || []) {
       const guidance = cell.repairGuidance || {};
       const candidates = Array.isArray(guidance.dictionaryCandidates) ? guidance.dictionaryCandidates : [];
-      const candidate = candidates[0] || null;
-      if (guidance.canApplyLocalDraftRepair === true && candidate) {
-        return {
-          runId: run.id || "",
-          nodeKey: preflightNode.key || "preflight_check",
-          offerId: guidance.offerId || cell.offerId || "",
-          attributeId: guidance.attributeId || row.attributeId || "",
-          attributeName: guidance.attributeName || row.name || "",
-          dictionaryValueId: candidate.dictionary_value_id || candidate.dictionaryValueId || "",
-          value: candidate.value || "",
-        };
+      if (guidance.canApplyLocalDraftRepair === true) {
+        candidates.forEach((candidate) => {
+          repairCandidates.push({
+            runId: run.id || "",
+            nodeKey: preflightNode.key || "preflight_check",
+            offerId: guidance.offerId || cell.offerId || "",
+            attributeId: guidance.attributeId || row.attributeId || "",
+            attributeName: guidance.attributeName || row.name || "",
+            dictionaryValueId: candidate.dictionary_value_id || candidate.dictionaryValueId || "",
+            value: candidate.value || "",
+          });
+        });
       }
     }
   }
-  return null;
+  return repairCandidates;
+}
+
+function listingFillTaskRepairCandidate(run = currentListingWorkflowRun()) {
+  return listingFillTaskDictionaryRepairCandidates(run)[0] || null;
 }
 
 function listingFillTaskTextRepairCandidate(run = currentListingWorkflowRun()) {
@@ -1273,7 +1279,7 @@ function listingFillTaskVariantAspectSuggestion(variantConfiguration = null) {
   };
 }
 
-function listingRequiredAttributeConfirmationItems(requiredAttributeFillPlan = []) {
+function listingRequiredAttributeConfirmationItems(requiredAttributeFillPlan = [], repairCandidates = []) {
   return (Array.isArray(requiredAttributeFillPlan) ? requiredAttributeFillPlan : [])
     .filter((row) => row?.action === "suggest_dictionary" && Array.isArray(row.dictionaryCandidates) && row.dictionaryCandidates.length)
     .slice(0, 4)
@@ -1290,23 +1296,38 @@ function listingRequiredAttributeConfirmationItems(requiredAttributeFillPlan = [
         .filter((value) => Number.isFinite(value))
         .sort((a, b) => b - a)[0];
       const confidenceText = Number.isFinite(confidence) ? `${Math.round(confidence * 100)}%` : "待人工判断";
-      const safeNextStep = row.safeNextStep || "人工确认候选后，只能写回本地草稿并重新预检；不会自动提交 Ozon。";
       const attributeName = row.attributeName || row.name || `属性 ${row.attributeId || ""}`.trim();
       const matchReason = row.reasonZh || row.reason || "根据当前商品文本和当前类目字典生成候选。";
       const reason = "该字段是中置信字典候选，必须人工确认当前类目合法值，不能自动写入 Payload。";
+      const attributeId = row.attributeId || row.id || "";
+      const dictionaryValueIds = candidates
+        .map((candidate) => candidate.dictionaryValueId || candidate.dictionary_value_id || candidate.id || "")
+        .filter(Boolean)
+        .map(String);
+      const repairCandidate = (Array.isArray(repairCandidates) ? repairCandidates : []).find((candidate) => (
+        String(candidate.attributeId || "") === String(attributeId || "")
+        && dictionaryValueIds.includes(String(candidate.dictionaryValueId || ""))
+      )) || null;
+      const repairStatusText = repairCandidate ? "可安全写回" : "暂不可直接写回";
+      const safeNextStep = repairCandidate
+        ? `当前 workflow 已等待人工，可确认后写回 SKU ${repairCandidate.offerId || "-"} 的属性 ${attributeName}，系统只改本地草稿并重新预检；不会提交 Ozon。`
+        : row.safeNextStep || "先在属性矩阵/预检结果中确认合法候选；只有 workflow 等待人工且候选来自当前矩阵时，才能写回本地草稿并重新预检。";
       return {
-        attributeId: row.attributeId || row.id || "",
+        attributeId,
         attributeName,
         safetyLabel: row.safetyLabelZh || "候选需确认",
         candidateText,
         sourceText,
         confidenceText,
+        repairStatusText,
+        repairCandidate,
         reason,
         matchReason,
         safeNextStep,
         copyText: [
           `属性：${attributeName}${row.attributeId ? ` / ID ${row.attributeId}` : ""}`,
           `候选值：${candidateText || "-"}`,
+          `写回状态：${repairStatusText}`,
           `来源：${sourceText}`,
           `匹配线索：${matchReason}`,
           `下一步：${safeNextStep}`,
@@ -1334,7 +1355,7 @@ function listingFillTaskQueueItems(run = currentListingWorkflowRun()) {
   const requiredAttributeFillSummary = validation.requiredAttributeFillSummary || preflightOutput.requiredAttributeFillSummary || null;
   const variantConfiguration = validation.variantConfiguration || preflightOutput.variantConfiguration || null;
   const listingQuality = validation.listingQuality || preflightOutput.listingQuality || null;
-  const repairCandidate = listingFillTaskRepairCandidate(run);
+  const repairCandidates = listingFillTaskDictionaryRepairCandidates(run);
   const textRepairCandidate = listingFillTaskTextRepairCandidate(run);
   const variantTextRepairCandidate = listingFillTaskVariantTextRepairCandidate(run);
   const variantAspectSuggestion = listingFillTaskVariantAspectSuggestion(variantConfiguration);
@@ -1344,7 +1365,7 @@ function listingFillTaskQueueItems(run = currentListingWorkflowRun()) {
     const confirmCount = Number(requiredAttributeFillSummary?.candidateNeedsHumanConfirmationCount ?? requiredAttributeFillPlan.filter((row) => row.action === "suggest_dictionary").length);
     const manualCount = Number((requiredAttributeFillSummary?.manualRequiredCount ?? 0) + (requiredAttributeFillSummary?.blockedNeverGuessCount ?? 0))
       || requiredAttributeFillPlan.filter((row) => ["manual_required", "blocked_sensitive"].includes(row.action)).length;
-    const confirmationItems = listingRequiredAttributeConfirmationItems(requiredAttributeFillPlan);
+    const confirmationItems = listingRequiredAttributeConfirmationItems(requiredAttributeFillPlan, repairCandidates);
     items.push({
       tone: manualCount ? "warning" : confirmCount ? "info" : "success",
       label: "分类属性",
@@ -1353,7 +1374,6 @@ function listingFillTaskQueueItems(run = currentListingWorkflowRun()) {
       meta: requiredAttributeFillSummary?.safeNextAction || "数据来自 requiredAttributeFillPlan，只读汇总，不自动写入或提交。",
       target: "content-images",
       attributeConfirmationItems: confirmationItems,
-      repairCandidate: repairCandidate && confirmCount ? repairCandidate : null,
       textRepairCandidate: textRepairCandidate && manualCount ? textRepairCandidate : null,
     });
   }
@@ -1425,24 +1445,25 @@ function renderListingFillTaskQueue(run = currentListingWorkflowRun()) {
                     <b>${escapeHtml(candidateItem.attributeName || "字典属性")}${candidateItem.attributeId ? ` / ID ${escapeHtml(candidateItem.attributeId)}` : ""}</b>
                     <span>候选值：${escapeHtml(candidateItem.candidateText || "-")}</span>
                     <span>来源：${escapeHtml(candidateItem.sourceText || "-")} · 置信度：${escapeHtml(candidateItem.confidenceText || "待人工判断")}</span>
+                    <span>写回状态：${escapeHtml(candidateItem.repairStatusText || "暂不可直接写回")}</span>
                     <span>为什么不能自动写：${escapeHtml(candidateItem.reason || "字典候选必须人工确认。")}</span>
                     <span>匹配线索：${escapeHtml(candidateItem.matchReason || "根据当前商品文本和当前类目字典生成候选。")}</span>
                     <span>下一步：${escapeHtml(candidateItem.safeNextStep || "人工确认后写回本地草稿并重新预检。")}</span>
+                    ${candidateItem.repairCandidate ? `<button
+                      type="button"
+                      data-workflow-action="apply-attribute-dictionary-repair"
+                      data-workflow-run-id="${escapeHtml(candidateItem.repairCandidate.runId)}"
+                      data-workflow-node-key="${escapeHtml(candidateItem.repairCandidate.nodeKey)}"
+                      data-repair-offer-id="${escapeHtml(candidateItem.repairCandidate.offerId)}"
+                      data-repair-attribute-id="${escapeHtml(candidateItem.repairCandidate.attributeId)}"
+                      data-repair-dictionary-value-id="${escapeHtml(candidateItem.repairCandidate.dictionaryValueId)}"
+                      data-repair-value="${escapeHtml(candidateItem.repairCandidate.value)}"
+                      title="${escapeHtml(candidateItem.repairCandidate.attributeName || "字典属性")}"
+                    >确认写入草稿并预检</button>` : ""}
                   </div>
                 `).join("")}
               </div>
             ` : ""}
-            ${item.repairCandidate ? `<button
-              type="button"
-              data-workflow-action="apply-attribute-dictionary-repair"
-              data-workflow-run-id="${escapeHtml(item.repairCandidate.runId)}"
-              data-workflow-node-key="${escapeHtml(item.repairCandidate.nodeKey)}"
-              data-repair-offer-id="${escapeHtml(item.repairCandidate.offerId)}"
-              data-repair-attribute-id="${escapeHtml(item.repairCandidate.attributeId)}"
-              data-repair-dictionary-value-id="${escapeHtml(item.repairCandidate.dictionaryValueId)}"
-              data-repair-value="${escapeHtml(item.repairCandidate.value)}"
-              title="${escapeHtml(item.repairCandidate.attributeName || "字典属性")}"
-            >确认写入草稿并预检</button>` : ""}
             ${item.textRepairCandidate ? `<button
               type="button"
               data-workflow-action="apply-attribute-text-repair"

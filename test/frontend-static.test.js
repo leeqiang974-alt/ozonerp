@@ -290,6 +290,7 @@ test("listing center exposes a read-only fill task queue from existing diagnosti
   assert.match(js, /renderListingFillTaskQueue/);
   assert.match(js, /listingFillTaskQueueItems/);
   assert.match(js, /listingFillTaskRepairCandidate/);
+  assert.match(js, /listingFillTaskDictionaryRepairCandidates/);
   assert.match(js, /listingFillTaskTextRepairCandidate/);
   assert.match(js, /listingFillTaskVariantTextRepairCandidate/);
   assert.match(js, /listingRequiredAttributeConfirmationItems/);
@@ -313,6 +314,8 @@ test("listing center exposes a read-only fill task queue from existing diagnosti
   assert.match(js, /候选值/);
   assert.match(js, /来源/);
   assert.match(js, /置信度/);
+  assert.match(js, /可安全写回/);
+  assert.match(js, /暂不可直接写回/);
   assert.match(js, /属性覆盖/);
   assert.match(js, /SKU 图区分/);
   assert.match(js, /变体属性修复建议/);
@@ -370,10 +373,114 @@ test("listing fill task queue extracts required attribute confirmation items", a
   assert.equal(items[0].confidenceText, "72%");
   assert.match(items[0].reason, /必须人工确认/);
   assert.equal(items[0].matchReason, "根据材质同义词匹配。");
+  assert.equal(items[0].repairStatusText, "暂不可直接写回");
+  assert.equal(items[0].repairCandidate, null);
   assert.match(items[0].safeNextStep, /重新预检/);
   assert.match(items[0].copyText, /Материал/);
   assert.match(items[0].copyText, /匹配线索：根据材质同义词匹配。/);
   assert.match(items[0].copyText, /不会自动写 Payload/);
+});
+
+test("listing fill task queue binds confirmation items to matching repair candidates only", async () => {
+  const js = await readFile(new URL("../public/app.js", import.meta.url), "utf8");
+  const repairSource = js.match(/function listingFillTaskDictionaryRepairCandidates[\s\S]+?\n}\n\nfunction listingFillTaskRepairCandidate/)?.[0]
+    .replace(/\nfunction listingFillTaskRepairCandidate$/, "");
+  const confirmationSource = js.match(/function listingRequiredAttributeConfirmationItems[\s\S]+?\n}\n\nfunction listingFillTaskQueueItems/)?.[0]
+    .replace(/\nfunction listingFillTaskQueueItems$/, "");
+  assert.ok(repairSource);
+  assert.ok(confirmationSource);
+  const exported = new Function(`${repairSource}\n${confirmationSource}\nreturn { listingFillTaskDictionaryRepairCandidates, listingRequiredAttributeConfirmationItems };`)();
+
+  const run = {
+    id: "wr_1",
+    status: "waiting_human",
+    nodes: [{ key: "preflight_check" }],
+    payloadDraftValidation: {
+      attributeMatrix: {
+        rows: [{
+          attributeId: 777,
+          name: "Материал",
+          cells: [{
+            offerId: "SKU-1",
+            repairGuidance: {
+              canApplyLocalDraftRepair: true,
+              offerId: "SKU-1",
+              attributeId: 777,
+              attributeName: "Материал",
+              dictionaryCandidates: [
+                { dictionary_value_id: 10, value: "металл" },
+                { dictionary_value_id: 11, value: "пластик" },
+              ],
+            },
+          }],
+        }],
+      },
+    },
+  };
+  const repairCandidates = exported.listingFillTaskDictionaryRepairCandidates(run);
+  const items = exported.listingRequiredAttributeConfirmationItems([
+    {
+      attributeId: 777,
+      attributeName: "Материал",
+      action: "suggest_dictionary",
+      dictionaryCandidates: [
+        { dictionaryValueId: 11, value: "пластик", confidence: 0.72, source: "material_synonym" },
+      ],
+    },
+    {
+      attributeId: 778,
+      attributeName: "Тип",
+      action: "suggest_dictionary",
+      dictionaryCandidates: [
+        { dictionaryValueId: 22, value: "органайзер", confidence: 0.7, source: "type_synonym" },
+      ],
+    },
+    {
+      attributeId: 779,
+      attributeName: "Назначение",
+      action: "suggest_dictionary",
+      dictionaryCandidates: [
+        { dictionaryValueId: 11, value: "пластик", confidence: 0.7, source: "purpose_synonym" },
+      ],
+    },
+    {
+      attributeId: 777,
+      attributeName: "Материал",
+      action: "suggest_dictionary",
+      dictionaryCandidates: [
+        { dictionaryValueId: 12, value: "силикон", confidence: 0.7, source: "material_synonym" },
+      ],
+    },
+  ], repairCandidates);
+
+  assert.equal(repairCandidates.length, 2);
+  assert.equal(items[0].repairStatusText, "可安全写回");
+  assert.equal(items[0].repairCandidate.offerId, "SKU-1");
+  assert.equal(items[0].repairCandidate.attributeId, 777);
+  assert.equal(items[0].repairCandidate.dictionaryValueId, 11);
+  assert.match(items[0].safeNextStep, /SKU-1/);
+  assert.equal(items[1].repairCandidate, null);
+  assert.equal(items[1].repairStatusText, "暂不可直接写回");
+  assert.match(items[1].safeNextStep, /属性矩阵/);
+  assert.equal(items[2].repairCandidate, null);
+  assert.equal(items[2].repairStatusText, "暂不可直接写回");
+  assert.equal(items[3].repairCandidate, null);
+  assert.equal(items[3].repairStatusText, "暂不可直接写回");
+
+  const runningRepairCandidates = exported.listingFillTaskDictionaryRepairCandidates({ ...run, status: "running" });
+  const runningItems = exported.listingRequiredAttributeConfirmationItems([
+    {
+      attributeId: 777,
+      attributeName: "Материал",
+      action: "suggest_dictionary",
+      dictionaryCandidates: [
+        { dictionaryValueId: 11, value: "пластик", confidence: 0.72, source: "material_synonym" },
+      ],
+    },
+  ], runningRepairCandidates);
+  assert.equal(runningRepairCandidates.length, 0);
+  assert.equal(runningItems[0].repairCandidate, null);
+  assert.equal(runningItems[0].repairStatusText, "暂不可直接写回");
 });
 
 test("listing variant aspect suggestion carries SKU aspect repair context", async () => {

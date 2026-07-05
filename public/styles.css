@@ -359,6 +359,10 @@
   font-size: 12px;
   line-height: 1.35;
 }
+.listing-attribute-confirmation-item button {
+  justify-self: start;
+  margin-top: 4px;
+}
 .listing-variant-suggestion {
   border: 1px solid rgba(248, 113, 113, .26);
   border-radius: 8px;

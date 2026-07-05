@@ -155,7 +155,7 @@
     - workflow 必须处于 `waiting_human` 或 `locks.waitingHuman=true`，避免运行中流程被静默改草稿。
   - 非候选字典 ID 仍拒绝，不能信任前端注入。
 - 上架中心“只读填报任务队列”新增安全确认入口：
-  - 从属性矩阵里挑出第一个 `canApplyLocalDraftRepair` 的候选。
+  - 从当前 workflow 的属性矩阵收集所有 `canApplyLocalDraftRepair` 字典候选。
   - 只有当前 workflow 处于等待人工时才展示候选写回按钮。
   - 点击后复用现有 `apply-attribute-dictionary-repair` 动作、确认弹窗和 `/payload-draft/attribute-repair` API。
   - 写回后立即重新预检，仍保持 `submitLocked`，不提交 Ozon。
@@ -200,6 +200,7 @@
   - 修正后仍必须回到预检/Workflow Console 重新校验。
 - 上架中心“只读填报任务队列”已前置展示必填属性候选确认清单：
   - 分类属性任务卡会从 `requiredAttributeFillPlan` 中提取 `action=suggest_dictionary` 且有 `dictionaryCandidates` 的字段，展示属性名/ID、候选值、来源、置信度、为什么不能自动写和安全下一步。
+  - 每个候选现在按 `attributeId + dictionaryValueId` 逐条匹配当前属性矩阵里的本地修复候选；匹配成功才显示“可安全写回”和对应 SKU 的确认按钮，未匹配则保持“暂不可直接写回”。
   - 该清单只读，不新增 API、不写 Payload、不解锁 workflow、不提交 Ozon；真正写回仍只能走既有 `waiting_human + confirmLocalDraftRepair + 重新预检` 的修复入口。
 - 上架草稿侧的变体修复入口 V2 已接入非字典 aspect 文本属性：
   - `applyPayloadDraftAttributeRepair()` 新增 `repairType: "variant_text_value"`。

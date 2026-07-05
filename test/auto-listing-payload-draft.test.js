@@ -722,6 +722,18 @@ test("buildRequiredAttributeFillPlan suggests type dictionary candidates from pr
     productText: "1688 标题：厨房收纳盒 organizer",
   })[0];
   assert.deepEqual(materialPlan.dictionaryCandidates, []);
+
+  const sceneImagePlan = buildRequiredAttributeFillPlan({
+    categoryMatch: { description_category_id: 17028673, type_id: 95183 },
+    attrsMeta: [
+      { id: 9016, name: "场景图", is_required: true, dictionary_id: 111 },
+    ],
+    attributeValuesById: {
+      9016: [{ id: 153, value: "для путешествий" }],
+    },
+    productText: "1688 标题：旅行收纳包 travel organizer",
+  })[0];
+  assert.deepEqual(sceneImagePlan.dictionaryCandidates, []);
 });
 
 test("buildRequiredAttributeFillPlan suggests purpose dictionary candidates from product synonyms only", () => {

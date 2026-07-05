@@ -264,6 +264,7 @@
   - 尺寸组合如 `10x20cm` / `10*20 см` 会优先匹配当前字典中的同组合值（如 `10 x 20 см`），不会因为单个数字 `20` 误候选 `20 x 30 см`。
   - `Количество в упаковке` / 包装数量 / 套装字段在商品文本含 `3-pack`、`一包3个` 等表达时，只候选当前类目当前属性字典中的同数量值。
   - `Сценарий использования` / 适用场景字段在商品文本含 travel/旅行、office/办公、bath/浴室、outdoor/户外、home/家用、car/车载、school/学校等明确场景词时，只候选当前属性字典里的对应场景值。
+  - 场景候选已收窄为明确适用场景字段；`场景图` 等素材/图片字段即使商品文本含 travel/旅行，也不会触发 `scenario_synonym`。
   - 候选来源标记为 `size_synonym` / `package_count_synonym` / `scenario_synonym`；仍保持 `action=suggest_dictionary`，不设置行级 `dictionaryValueId`，不自动写 Payload。
 - 必填属性填充计划新增安全分层元数据：
   - 每条 `requiredAttributeFillPlan` 都输出 `safetyTier`、`safetyLabelZh`、`requiresHumanConfirmation`、`blocksAutomation`、`safeNextStep`。

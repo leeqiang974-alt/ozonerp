@@ -1012,7 +1012,7 @@ function scenarioSynonymDictionaryCandidatesForMeta({
 } = {}) {
   const classified = classifyAttributeFillStrategy(meta);
   if (classified.strategy !== "dictionary_lookup_from_product_text") return [];
-  if (!/сценар|назначение|применение|для чего|用途|适用场景|场景/.test(normalizeText(`${meta.name || ""} ${meta.description || ""}`))) return [];
+  if (!/сценар|назначение|применение|для чего|用途|适用场景/.test(normalizeText(`${meta.name || ""} ${meta.description || ""}`))) return [];
   const text = normalizeText(productText);
   const scenarioRules = [
     {

@@ -180,8 +180,8 @@
 ### 后续补充
 
 - 上架中心任务队列已继续接入普通文本属性安全入口：
-  - 从属性矩阵里挑出第一个 `canApplyTextDraftRepair` 的缺失普通文本属性。
-  - 只有当前 workflow 处于等待人工时才展示“填写文本属性并预检”按钮。
+  - 从属性矩阵里收集 `canApplyTextDraftRepair` 的缺失普通文本属性候选。
+  - 当前不再展示卡片级“第一个文本属性”按钮；只在人工属性工作台的 `手动属性缺口` 分组里，按属性/SKU 逐项展示“填写该 SKU 文本并预检”。
   - 点击后复用现有 `apply-attribute-text-repair` prompt、`/payload-draft/attribute-repair` API 和重新预检流程。
   - 后端同样要求 `waiting_human` / `locks.waitingHuman=true`、`confirmLocalDraftRepair=true`，且只能修复非字典、非变体的缺失普通文本属性。
 - 上架中心任务队列已接入变体 aspect 安全修复建议：
@@ -206,6 +206,10 @@
   - 把人工卡点按卖家业务问题分为“包装尺重证据”“合规敏感字段”“手动属性缺口”。
   - 每组展示为什么阻断、必须补什么、补完后的安全下一步；只读展示，不提供输入、保存、fetch、workflow action 或提交按钮。
   - 包装/尺重缺口仍建议补齐 1688/人工实测证据或更换货源；合规敏感字段仍禁止猜测。
+- 人工属性工作台 V1 已接入普通文本字段的安全填写入口：
+  - 从当前属性矩阵收集所有 `canApplyTextDraftRepair=true` 的候选；只有 workflow 处于 `waiting_human` / `locks.waitingHuman=true` 时才会出现。
+  - 仅 `手动属性缺口` 分组可显示“填写该 SKU 文本并预检”；`包装尺重证据` 和 `合规敏感字段` 继续只读，不能直接写草稿。
+  - 点击后复用既有 `apply-attribute-text-repair`、`repairType: "text_value"` 和人工 prompt；只写本地草稿并重新预检，不提交 Ozon、不解锁 workflow。
 - 上架草稿侧的变体修复入口 V2 已接入非字典 aspect 文本属性：
   - `applyPayloadDraftAttributeRepair()` 新增 `repairType: "variant_text_value"`。
   - 仅允许 `waiting_human` / `locks.waitingHuman=true` 且 `confirmLocalDraftRepair=true` 的 workflow 写回本地 Payload 草稿。

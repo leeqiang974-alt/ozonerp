@@ -258,7 +258,7 @@ test("frontend renders required attribute fill plan groups", async () => {
   assert.match(js, /blocked-never-guess/);
   assert.match(js, /不会自动提交 Ozon/);
   assert.match(js, /dictionaryCandidates/);
-  const fillSummaryRendererSource = js.match(/function renderRequiredAttributeFillSummary[\s\S]+?\n}\n\nfunction renderRequiredAttributeManualBacklog/)?.[0] || "";
+  const fillSummaryRendererSource = js.match(/function renderRequiredAttributeFillSummary[\s\S]+?\n}\n\nfunction requiredAttributeManualBacklogBucketTitle/)?.[0] || "";
   assert.ok(fillSummaryRendererSource);
   assert.doesNotMatch(fillSummaryRendererSource, /fetch\(/);
   assert.doesNotMatch(fillSummaryRendererSource, /data-workflow-action/);
@@ -299,6 +299,13 @@ test("required attribute manual backlog groups seller-facing blockers", async ()
     .replace(/\nfunction renderRequiredAttributeManualBacklog$/, "");
   assert.ok(source);
   const requiredAttributeManualWorkbenchGroups = new Function(`${source}\nreturn requiredAttributeManualWorkbenchGroups;`)();
+  const textRepairCandidates = [{
+    runId: "wr_1",
+    nodeKey: "preflight_check",
+    offerId: "SKU-1",
+    attributeId: 1003,
+    attributeName: "Материал",
+  }];
   const groups = requiredAttributeManualWorkbenchGroups({
     buckets: [
       {
@@ -342,15 +349,99 @@ test("required attribute manual backlog groups seller-facing blockers", async ()
         }],
       },
     ],
-  });
+  }, textRepairCandidates);
 
   assert.deepEqual(groups.map((group) => group.key), ["package_evidence", "compliance_sensitive", "manual_value"]);
   assert.equal(groups[0].items[0].mustSupplyText, "1688 或人工实测的包装重量、长宽高、规格证据");
   assert.match(groups[0].items[0].safeNextStep, /更换货源|尺重/);
+  assert.equal(groups[0].items[0].repairStatusText, "暂不可直接填写");
+  assert.deepEqual(groups[0].items[0].textRepairCandidates, []);
   assert.match(groups[1].items[0].blockReason, /涉及合规/);
   assert.ok(groups[1].items.some((item) => item.attributeId === 1004));
+  assert.ok(groups[1].items.every((item) => item.repairStatusText === "暂不可直接填写"));
   assert.match(groups[1].safeNextStep, /不能猜测/);
   assert.match(groups[2].items[0].mustSupplyText, /真实属性值/);
+  assert.equal(groups[2].items[0].repairStatusText, "可安全填写");
+  assert.equal(groups[2].items[0].textRepairCandidates[0].offerId, "SKU-1");
+});
+
+test("listing fill task queue binds manual workbench text repairs only to safe text candidates", async () => {
+  const js = await readFile(new URL("../public/app.js", import.meta.url), "utf8");
+  const textRepairSource = js.match(/function listingFillTaskTextRepairCandidates[\s\S]+?\n}\n\nfunction listingFillTaskTextRepairCandidate/)?.[0]
+    .replace(/\nfunction listingFillTaskTextRepairCandidate$/, "");
+  const workbenchSource = js.match(/function requiredAttributeManualWorkbenchGroups[\s\S]+?\n}\n\nfunction renderRequiredAttributeManualBacklog/)?.[0]
+    .replace(/\nfunction renderRequiredAttributeManualBacklog$/, "");
+  assert.ok(textRepairSource);
+  assert.ok(workbenchSource);
+  const exported = new Function(`${textRepairSource}\n${workbenchSource}\nreturn { listingFillTaskTextRepairCandidates, requiredAttributeManualWorkbenchGroups };`)();
+
+  const run = {
+    id: "wr_1",
+    status: "waiting_human",
+    nodes: [{ key: "preflight_check" }],
+    payloadDraftValidation: {
+      attributeMatrix: {
+        rows: [{
+          attributeId: 1003,
+          name: "Материал",
+          cells: [{
+            offerId: "SKU-1",
+            repairGuidance: {
+              canApplyTextDraftRepair: true,
+              offerId: "SKU-1",
+              attributeId: 1003,
+              attributeName: "Материал",
+            },
+          }],
+        }, {
+          attributeId: 1002,
+          name: "Срок годности",
+          cells: [{
+            offerId: "SKU-1",
+            repairGuidance: {
+              canApplyTextDraftRepair: true,
+              offerId: "SKU-1",
+              attributeId: 1002,
+              attributeName: "Срок годности",
+            },
+          }],
+        }],
+      },
+    },
+  };
+  const textCandidates = exported.listingFillTaskTextRepairCandidates(run);
+  const groups = exported.requiredAttributeManualWorkbenchGroups({
+    buckets: [{
+      key: "manual_required",
+      items: [{
+        attributeId: 1002,
+        attributeName: "Срок годности",
+        action: "blocked_sensitive",
+        safetyTier: "blocked-never-guess",
+        reasonZh: "涉及合规。",
+      }],
+    }, {
+      key: "rule_candidate",
+      items: [{
+        attributeId: 1003,
+        attributeName: "Материал",
+        action: "manual_required",
+        safetyTier: "manual-required",
+        reasonZh: "低置信文本。",
+      }],
+    }],
+  }, textCandidates);
+
+  assert.equal(textCandidates.length, 2);
+  const complianceGroup = groups.find((group) => group.key === "compliance_sensitive");
+  const manualGroup = groups.find((group) => group.key === "manual_value");
+  assert.equal(complianceGroup.items[0].repairStatusText, "暂不可直接填写");
+  assert.deepEqual(complianceGroup.items[0].textRepairCandidates, []);
+  assert.equal(manualGroup.items[0].repairStatusText, "可安全填写");
+  assert.equal(manualGroup.items[0].textRepairCandidates[0].attributeId, 1003);
+
+  const runningCandidates = exported.listingFillTaskTextRepairCandidates({ ...run, status: "running" });
+  assert.equal(runningCandidates.length, 0);
 });
 
 test("listing center exposes a read-only fill task queue from existing diagnostics", async () => {
@@ -364,6 +455,7 @@ test("listing center exposes a read-only fill task queue from existing diagnosti
   assert.match(js, /listingFillTaskRepairCandidate/);
   assert.match(js, /listingFillTaskDictionaryRepairCandidates/);
   assert.match(js, /listingFillTaskTextRepairCandidate/);
+  assert.match(js, /listingFillTaskTextRepairCandidates/);
   assert.match(js, /listingFillTaskVariantTextRepairCandidate/);
   assert.match(js, /listingRequiredAttributeConfirmationItems/);
   assert.match(js, /requiredAttributeManualBacklog/);
@@ -383,7 +475,10 @@ test("listing center exposes a read-only fill task queue from existing diagnosti
   assert.match(js, /data-workflow-action="apply-attribute-text-repair"/);
   assert.match(js, /data-workflow-action="apply-variant-text-repair"/);
   assert.match(js, /确认写入草稿并预检/);
-  assert.match(js, /填写文本属性并预检/);
+  assert.match(js, /填写该 SKU 文本并预检/);
+  assert.doesNotMatch(js, />填写文本属性并预检<\/button>/);
+  assert.match(js, /可安全填写/);
+  assert.match(js, /暂不可直接填写/);
   assert.match(js, /填写变体文本并预检/);
   assert.match(js, /待确认字典候选/);
   assert.match(js, /候选值/);

@@ -1150,28 +1150,33 @@ function listingFillTaskRepairCandidate(run = currentListingWorkflowRun()) {
   return listingFillTaskDictionaryRepairCandidates(run)[0] || null;
 }
 
-function listingFillTaskTextRepairCandidate(run = currentListingWorkflowRun()) {
-  if (!run) return null;
+function listingFillTaskTextRepairCandidates(run = currentListingWorkflowRun()) {
+  if (!run) return [];
   const waitingHuman = run.status === "waiting_human" || run.locks?.waitingHuman === true;
-  if (!waitingHuman) return null;
+  if (!waitingHuman) return [];
   const preflightNode = (run.nodes || []).find((node) => node.key === "preflight_check") || {};
   const matrix = run.payloadDraftValidation?.attributeMatrix || preflightNode.output?.attributeMatrix || null;
   const rows = Array.isArray(matrix?.rows) ? matrix.rows : [];
+  const repairCandidates = [];
   for (const row of rows) {
     for (const cell of row.cells || []) {
       const guidance = cell.repairGuidance || {};
       if (guidance.canApplyTextDraftRepair === true) {
-        return {
+        repairCandidates.push({
           runId: run.id || "",
           nodeKey: preflightNode.key || "preflight_check",
           offerId: guidance.offerId || cell.offerId || "",
           attributeId: guidance.attributeId || row.attributeId || "",
           attributeName: guidance.attributeName || row.name || "",
-        };
+        });
       }
     }
   }
-  return null;
+  return repairCandidates;
+}
+
+function listingFillTaskTextRepairCandidate(run = currentListingWorkflowRun()) {
+  return listingFillTaskTextRepairCandidates(run)[0] || null;
 }
 
 function listingFillTaskVariantTextRepairCandidate(run = currentListingWorkflowRun()) {
@@ -1357,7 +1362,7 @@ function listingFillTaskQueueItems(run = currentListingWorkflowRun()) {
   const variantConfiguration = validation.variantConfiguration || preflightOutput.variantConfiguration || null;
   const listingQuality = validation.listingQuality || preflightOutput.listingQuality || null;
   const repairCandidates = listingFillTaskDictionaryRepairCandidates(run);
-  const textRepairCandidate = listingFillTaskTextRepairCandidate(run);
+  const textRepairCandidates = listingFillTaskTextRepairCandidates(run);
   const variantTextRepairCandidate = listingFillTaskVariantTextRepairCandidate(run);
   const variantAspectSuggestion = listingFillTaskVariantAspectSuggestion(variantConfiguration);
   const items = [];
@@ -1367,7 +1372,7 @@ function listingFillTaskQueueItems(run = currentListingWorkflowRun()) {
     const manualCount = Number((requiredAttributeFillSummary?.manualRequiredCount ?? 0) + (requiredAttributeFillSummary?.blockedNeverGuessCount ?? 0))
       || requiredAttributeFillPlan.filter((row) => ["manual_required", "blocked_sensitive"].includes(row.action)).length;
     const confirmationItems = listingRequiredAttributeConfirmationItems(requiredAttributeFillPlan, repairCandidates);
-    const manualAttributeWorkbenchGroups = requiredAttributeManualWorkbenchGroups(requiredAttributeManualBacklog);
+    const manualAttributeWorkbenchGroups = requiredAttributeManualWorkbenchGroups(requiredAttributeManualBacklog, textRepairCandidates);
     items.push({
       tone: manualCount ? "warning" : confirmCount ? "info" : "success",
       label: "分类属性",
@@ -1377,7 +1382,6 @@ function listingFillTaskQueueItems(run = currentListingWorkflowRun()) {
       target: "content-images",
       attributeConfirmationItems: confirmationItems,
       manualAttributeWorkbenchGroups,
-      textRepairCandidate: textRepairCandidate && manualCount ? textRepairCandidate : null,
     });
   }
   const variantRows = Array.isArray(variantConfiguration?.rows) ? variantConfiguration.rows : [];
@@ -1470,15 +1474,6 @@ function renderListingFillTaskQueue(run = currentListingWorkflowRun()) {
             ${Array.isArray(item.manualAttributeWorkbenchGroups) && item.manualAttributeWorkbenchGroups.length
               ? renderRequiredAttributeManualWorkbench(item.manualAttributeWorkbenchGroups)
               : ""}
-            ${item.textRepairCandidate ? `<button
-              type="button"
-              data-workflow-action="apply-attribute-text-repair"
-              data-workflow-run-id="${escapeHtml(item.textRepairCandidate.runId)}"
-              data-workflow-node-key="${escapeHtml(item.textRepairCandidate.nodeKey)}"
-              data-repair-offer-id="${escapeHtml(item.textRepairCandidate.offerId)}"
-              data-repair-attribute-id="${escapeHtml(item.textRepairCandidate.attributeId)}"
-              title="${escapeHtml(item.textRepairCandidate.attributeName || "文本属性")}"
-            >填写文本属性并预检</button>` : ""}
             ${item.variantTextRepairCandidate ? `<button
               type="button"
               data-workflow-action="apply-variant-text-repair"
@@ -6593,7 +6588,7 @@ function requiredAttributeManualBacklogBucketTitle(bucket = {}) {
   return bucket.title || map[bucket.key] || "人工属性";
 }
 
-function requiredAttributeManualWorkbenchGroups(backlog = {}) {
+function requiredAttributeManualWorkbenchGroups(backlog = {}, textRepairCandidates = []) {
   const groupDefinitions = [
     {
       key: "package_evidence",
@@ -6620,6 +6615,7 @@ function requiredAttributeManualWorkbenchGroups(backlog = {}) {
   const groups = groupDefinitions.map((definition) => ({ ...definition, items: [] }));
   const groupByKey = new Map(groups.map((group) => [group.key, group]));
   const buckets = Array.isArray(backlog.buckets) ? backlog.buckets : [];
+  const safeTextRepairCandidates = Array.isArray(textRepairCandidates) ? textRepairCandidates : [];
   const packagePattern = /package|weight|dimension|length|width|height|尺重|重量|长宽高|规格|вес|длина|ширина|высота/i;
   const compliancePattern = /合规|保质期|储存|成分|危险|儿童|食品|化妆|医疗|电池|срок|состав|опас|дет|пищ|battery/i;
   buckets.forEach((bucket) => {
@@ -6641,16 +6637,73 @@ function requiredAttributeManualWorkbenchGroups(backlog = {}) {
         groupKey = "package_evidence";
       }
       const group = groupByKey.get(groupKey) || groupByKey.get("manual_value");
+      const itemRepairCandidates = groupKey === "manual_value"
+        ? safeTextRepairCandidates.filter((candidate) => String(candidate.attributeId || "") === String(item.attributeId || ""))
+        : [];
       group.items.push({
         ...item,
         bucketKey: bucket.key || "",
         blockReason: item.reasonZh || group.problemText,
         mustSupplyText: group.mustSupplyText,
-        safeNextStep: item.safeNextStep || group.safeNextStep,
+        safeNextStep: itemRepairCandidates.length
+          ? "当前 workflow 已等待人工；可人工填写该 SKU 文本值，系统只写本地草稿并重新预检，不提交 Ozon。"
+          : item.safeNextStep || group.safeNextStep,
+        repairStatusText: itemRepairCandidates.length ? "可安全填写" : "暂不可直接填写",
+        textRepairCandidates: itemRepairCandidates,
       });
     });
   });
   return groups.filter((group) => group.items.length);
+}
+
+function renderRequiredAttributeManualWorkbench(workbenchGroups = []) {
+  const groups = Array.isArray(workbenchGroups) ? workbenchGroups : [];
+  if (!groups.length) return "";
+  return `
+    <div class="required-attribute-manual-workbench" aria-label="人工属性工作台">
+      <div>
+        <strong>人工属性工作台</strong>
+        <small>本页只读优先：只给当前属性矩阵确认可安全本地填写的普通文本字段提供入口。</small>
+      </div>
+      <div class="required-attribute-manual-workbench-grid">
+        ${groups.map((group) => `
+          <article class="required-attribute-manual-workbench-group required-attribute-manual-workbench-group-${escapeHtml(group.key)}">
+            <strong>${escapeHtml(group.title)} · ${Number(group.items.length || 0)}</strong>
+            <p>${escapeHtml(group.problemText)}</p>
+            <small>必须补：${escapeHtml(group.mustSupplyText)}</small>
+            <small>安全下一步：${escapeHtml(group.safeNextStep)}</small>
+            <div>
+              ${group.items.slice(0, 5).map((item) => `
+                <span>
+                  <b>${escapeHtml(item.attributeName || `属性 ${item.attributeId || ""}`)}</b>
+                  <small>#${escapeHtml(item.attributeId || "")} · ${escapeHtml(item.strategy || item.bucketKey || "manual_required")}</small>
+                  <small>原因：${escapeHtml(item.blockReason || group.problemText)}</small>
+                  <small>要补：${escapeHtml(item.mustSupplyText || group.mustSupplyText)}</small>
+                  <small>填写状态：${escapeHtml(item.repairStatusText || "暂不可直接填写")}</small>
+                  <small>下一步：${escapeHtml(item.safeNextStep || group.safeNextStep)}</small>
+                  ${Array.isArray(item.textRepairCandidates) && item.textRepairCandidates.length ? `
+                    <div class="required-attribute-manual-actions">
+                      ${item.textRepairCandidates.slice(0, 4).map((candidate) => `
+                        <button
+                          type="button"
+                          data-workflow-action="apply-attribute-text-repair"
+                          data-workflow-run-id="${escapeHtml(candidate.runId)}"
+                          data-workflow-node-key="${escapeHtml(candidate.nodeKey)}"
+                          data-repair-offer-id="${escapeHtml(candidate.offerId)}"
+                          data-repair-attribute-id="${escapeHtml(candidate.attributeId)}"
+                          title="${escapeHtml(candidate.attributeName || item.attributeName || "文本属性")}"
+                        >填写该 SKU 文本并预检</button>
+                      `).join("")}
+                    </div>
+                  ` : ""}
+                </span>
+              `).join("")}
+            </div>
+          </article>
+        `).join("")}
+      </div>
+    </div>
+  `;
 }
 
 function renderRequiredAttributeManualBacklog(run = {}, node = {}, options = {}) {
@@ -6674,40 +6727,6 @@ function renderRequiredAttributeManualBacklog(run = {}, node = {}, options = {})
             ${(bucket.items || []).slice(0, 4).map((item) => `
               <span>${escapeHtml(item.attributeName || `属性 ${item.attributeId || ""}`)}</span>
             `).join("") || "<small>暂无</small>"}
-          </article>
-        `).join("")}
-      </div>
-    </div>
-  `;
-}
-
-function renderRequiredAttributeManualWorkbench(workbenchGroups = []) {
-  const groups = Array.isArray(workbenchGroups) ? workbenchGroups : [];
-  if (!groups.length) return "";
-  return `
-    <div class="required-attribute-manual-workbench" aria-label="人工属性工作台">
-      <div>
-        <strong>人工属性工作台</strong>
-        <small>本页只读：只说明业务卡点、必须补什么、补完后怎么安全继续。</small>
-      </div>
-      <div class="required-attribute-manual-workbench-grid">
-        ${groups.map((group) => `
-          <article class="required-attribute-manual-workbench-group required-attribute-manual-workbench-group-${escapeHtml(group.key)}">
-            <strong>${escapeHtml(group.title)} · ${Number(group.items.length || 0)}</strong>
-            <p>${escapeHtml(group.problemText)}</p>
-            <small>必须补：${escapeHtml(group.mustSupplyText)}</small>
-            <small>安全下一步：${escapeHtml(group.safeNextStep)}</small>
-            <div>
-              ${group.items.slice(0, 5).map((item) => `
-                <span>
-                  <b>${escapeHtml(item.attributeName || `属性 ${item.attributeId || ""}`)}</b>
-                  <small>#${escapeHtml(item.attributeId || "")} · ${escapeHtml(item.strategy || item.bucketKey || "manual_required")}</small>
-                  <small>原因：${escapeHtml(item.blockReason || group.problemText)}</small>
-                  <small>要补：${escapeHtml(item.mustSupplyText || group.mustSupplyText)}</small>
-                  <small>下一步：${escapeHtml(item.safeNextStep || group.safeNextStep)}</small>
-                </span>
-              `).join("")}
-            </div>
           </article>
         `).join("")}
       </div>

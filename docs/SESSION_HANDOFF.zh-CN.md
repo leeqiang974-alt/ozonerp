@@ -219,6 +219,10 @@
   - 前端只显示“定位包装字段”；点击后从 Listing Center 切到 Workflow Console，复用现有 payload 编辑器高亮机制定位字段。
   - 该入口只是定位，不在 Listing Center 内编辑包装字段；没有新增 fetch、保存、写草稿或提交动作。
   - 后续若做人工确认后的尺重回填，必须继续经过 `waiting_human`、本地草稿确认、重新预检和提交总闸。
+- Payload 本地修复闸口已预留包装尺重回填 V1：
+  - `applyPayloadDraftAttributeRepair()` 支持 `repairType: "package_info"`，但必须 `confirmLocalDraftRepair=true` 且 workflow 处于 `waiting_human` / `locks.waitingHuman=true`。
+  - 只接受可信来源 `1688_package`、`manual_measurement`、`manual_measured`、`supplier_package`，并要求重量、长、宽、高四项均为正数。
+  - 写入范围仅为当前 SKU 的 `weight` / `depth` / `width` / `height` 本地草稿字段；写完立即重新预检，继续 `submitLocked`，不提交 Ozon、不解锁 workflow。
 - 上架草稿侧的变体修复入口 V2 已接入非字典 aspect 文本属性：
   - `applyPayloadDraftAttributeRepair()` 新增 `repairType: "variant_text_value"`。
   - 仅允许 `waiting_human` / `locks.waitingHuman=true` 且 `confirmLocalDraftRepair=true` 的 workflow 写回本地 Payload 草稿。

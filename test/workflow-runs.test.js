@@ -1088,6 +1088,92 @@ test("applyPayloadDraftAttributeRepair writes confirmed missing text attributes 
   assert.equal(updated.events.at(-1).type, "payload_attribute_repair_applied");
 });
 
+test("applyPayloadDraftAttributeRepair writes confirmed package info without Ozon submit", async () => {
+  reset();
+  const run = await createWorkflowRun({
+    title: "包装尺重修复",
+    status: "waiting_human",
+    currentNode: "preflight_check",
+    locks: { waitingHuman: true, submitLocked: true },
+  });
+  await savePayloadDraft(run.id, {
+    items: [{
+      offer_id: "SKU-PACKAGE-REPAIR",
+      name: "Cat feeder",
+      description_category_id: 17028673,
+      type_id: 95183,
+      price: "1200",
+      images: ["1", "2", "3"],
+      weight: "",
+      depth: "",
+      width: "",
+      height: "",
+      attributes: [
+        { id: 85, values: [{ dictionary_value_id: 971082, value: "Нет бренда" }] },
+        { id: 9048, values: [{ value: "Cat feeder" }] },
+      ],
+    }],
+  }, {
+    attrsMeta: [
+      { id: 85, name: "Бренд", is_required: true, dictionary_id: 971082 },
+      { id: 9048, name: "Название модели (для объединения в одну карточку)", is_required: true },
+    ],
+  });
+
+  await assert.rejects(
+    () => applyPayloadDraftAttributeRepair(run.id, {
+      confirmLocalDraftRepair: true,
+      repairType: "package_info",
+      offerId: "SKU-PACKAGE-REPAIR",
+      packageInfoSource: "guessed",
+      packageInfo: { weightG: 650, lengthMm: 220, widthMm: 160, heightMm: 80 },
+    }),
+    /可信尺重来源/,
+  );
+  await assert.rejects(
+    () => applyPayloadDraftAttributeRepair(run.id, {
+      confirmLocalDraftRepair: true,
+      repairType: "package_info",
+      offerId: "SKU-PACKAGE-REPAIR",
+      packageInfoSource: "1688_package",
+      packageInfo: { weightG: 650, lengthMm: 220, widthMm: 160 },
+    }),
+    /重量和长宽高/,
+  );
+  await assert.rejects(
+    () => applyPayloadDraftAttributeRepair(run.id, {
+      confirmLocalDraftRepair: true,
+      repairType: "package_info",
+      offerId: "SKU-PACKAGE-REPAIR",
+      packageInfoSource: "1688_package",
+      packageInfo: { weightG: 0.4, lengthMm: 220, widthMm: 160, heightMm: 80 },
+    }),
+    /重量和长宽高/,
+  );
+
+  const result = await applyPayloadDraftAttributeRepair(run.id, {
+    confirmLocalDraftRepair: true,
+    repairType: "package_info",
+    offerId: "SKU-PACKAGE-REPAIR",
+    packageInfoSource: "1688_package",
+    packageInfo: { weightG: 650, lengthMm: 220, widthMm: 160, heightMm: 80 },
+    note: "人工确认 1688 详情尺重",
+  });
+
+  const updated = await getWorkflowRun(run.id);
+  const item = updated.payloadDraft.items[0];
+  assert.equal(result.submittedToOzon, false);
+  assert.equal(item.weight, 650);
+  assert.equal(item.depth, 220);
+  assert.equal(item.width, 160);
+  assert.equal(item.height, 80);
+  assert.equal(updated.locks.waitingHuman, true);
+  assert.equal(updated.locks.submitLocked, true);
+  assert.equal(updated.events.at(-1).data.repairType, "package_info");
+  assert.equal(updated.events.at(-1).data.packageInfoSource, "1688_package");
+  assert.equal(updated.events.at(-1).data.submittedToOzon, false);
+});
+
 test("applyPayloadDraftAttributeRepair writes confirmed missing non-dictionary variant text only", async () => {
   reset();
   const run = await createWorkflowRun({

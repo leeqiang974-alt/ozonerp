@@ -1527,6 +1527,55 @@ function applyAttributeTextValue(payload = {}, input = {}) {
   return draft;
 }
 
+function normalizePackageRepairInfo(input = {}) {
+  const packageInfo = input.packageInfo || input.package || {};
+  const normalized = {
+    weight: Number(packageInfo.weight || packageInfo.weightG || packageInfo.weight_g || 0),
+    depth: Number(packageInfo.depth || packageInfo.lengthMm || packageInfo.length_mm || packageInfo.length || 0),
+    width: Number(packageInfo.width || packageInfo.widthMm || packageInfo.width_mm || 0),
+    height: Number(packageInfo.height || packageInfo.heightMm || packageInfo.height_mm || 0),
+  };
+  const rounded = {
+    weight: Math.round(normalized.weight),
+    depth: Math.round(normalized.depth),
+    width: Math.round(normalized.width),
+    height: Math.round(normalized.height),
+  };
+  if (!Number.isFinite(normalized.weight) || rounded.weight < 1
+    || !Number.isFinite(normalized.depth) || rounded.depth < 1
+    || !Number.isFinite(normalized.width) || rounded.width < 1
+    || !Number.isFinite(normalized.height) || rounded.height < 1) {
+    throw new Error("包装尺重修复必须提供重量和长宽高。");
+  }
+  return rounded;
+}
+
+function trustedPackageRepairSource(input = {}) {
+  const source = String(input.packageInfoSource || input.source || "").trim();
+  const allowed = new Set(["1688_package", "manual_measurement", "manual_measured", "supplier_package"]);
+  if (!allowed.has(source)) {
+    throw new Error("包装尺重修复必须来自可信尺重来源。");
+  }
+  return source;
+}
+
+function applyPackageInfoValue(payload = {}, input = {}) {
+  const offerId = String(input.offerId || "").trim();
+  const packageInfo = normalizePackageRepairInfo(input);
+  const draft = clonePayload(payload);
+  const items = payloadItems(draft);
+  if (!items.length) throw new Error("Payload 草稿没有 items");
+  const item = offerId
+    ? items.find((entry) => String(entry?.offer_id || "") === offerId)
+    : (items.length === 1 ? items[0] : null);
+  if (!item) throw new Error("找不到要修复尺重的 SKU: " + (offerId || "未指定"));
+  item.weight = packageInfo.weight;
+  item.depth = packageInfo.depth;
+  item.width = packageInfo.width;
+  item.height = packageInfo.height;
+  return { draft, packageInfo };
+}
+
 export async function applyPayloadDraftAttributeRepair(runId, input = {}) {
   if (input.confirmLocalDraftRepair !== true) {
     throw new Error("需要人工确认后才能写回本地 Payload 草稿。");
@@ -1537,7 +1586,7 @@ export async function applyPayloadDraftAttributeRepair(runId, input = {}) {
     throw new Error("需要工作流处于等待人工状态，才能写回本地 Payload 草稿。");
   }
   const repairType = String(input.repairType || "dictionary_value").trim();
-  if (!["dictionary_value", "text_value", "variant_text_value"].includes(repairType)) throw new Error("不支持的属性修复类型。");
+  if (!["dictionary_value", "text_value", "variant_text_value", "package_info"].includes(repairType)) throw new Error("不支持的属性修复类型。");
   const categoryCache = await loadCategoryCache();
   const attributeMatrix = buildListingAttributeMatrix({
     payload: run.payloadDraft || {},
@@ -1572,12 +1621,20 @@ export async function applyPayloadDraftAttributeRepair(runId, input = {}) {
     }
     payloadDraft = applyAttributeTextValue(run.payloadDraft || {}, input);
     repairData = { value: String(input.value || "").trim() };
-  } else {
+  } else if (repairType === "variant_text_value") {
     if (!row || !cell || cell.status !== "missing" || !row.aspect || row.dictionary) {
       throw new Error("只能修复缺失的非字典变体文本属性。");
     }
     payloadDraft = applyAttributeTextValue(run.payloadDraft || {}, input);
     repairData = { value: String(input.value || "").trim() };
+  } else {
+    const packageInfoSource = trustedPackageRepairSource(input);
+    const packageResult = applyPackageInfoValue(run.payloadDraft || {}, input);
+    payloadDraft = packageResult.draft;
+    repairData = {
+      packageInfoSource,
+      packageInfo: packageResult.packageInfo,
+    };
   }
   await savePayloadDraft(runId, payloadDraft, { attrsMeta: run.payloadDraftAttrsMeta || [] });
   const validation = await validatePayloadDraft(runId);

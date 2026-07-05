@@ -45,6 +45,8 @@ const state = {
   workflowSummary: null,
   ruleApprovalAuditIntents: [],
   ruleApprovalAuditSummary: null,
+  rulePublishReviewIntents: [],
+  rulePublishReviewSummary: null,
   workflowFilter: "all",
   rulePoolFilter: {
     status: "all",
@@ -5807,6 +5809,20 @@ async function loadRuleApprovalAuditIntents() {
   renderListingRequiredAttributeRulePoolWorkbench();
 }
 
+async function loadRulePublishReviewIntents() {
+  try {
+    const data = await api("/api/listing-rule-publish-review/intents?limit=200");
+    state.rulePublishReviewIntents = Array.isArray(data.items) ? data.items : [];
+    state.rulePublishReviewSummary = data.summary || null;
+  } catch (error) {
+    state.rulePublishReviewIntents = [];
+    state.rulePublishReviewSummary = {
+      safeNextStep: `发布复核记录暂不可用：${error.message}`,
+    };
+  }
+  renderListingRequiredAttributeRulePoolWorkbench();
+}
+
 function renderWorkflowRunList(run) {
   const list = $("#workflowRunList");
   if (!list) return;
@@ -6592,9 +6608,25 @@ function collectRuleApprovalAuditIntentsByCandidate(intents = []) {
   return grouped;
 }
 
-function collectRequiredAttributeRulePool(runs = [], auditIntents = []) {
+function collectRulePublishReviewIntentsByCandidate(intents = []) {
+  const grouped = new Map();
+  (Array.isArray(intents) ? intents : []).forEach((intent) => {
+    const key = strictRuleApprovalAuditCandidateKey(intent);
+    if (!key) return;
+    const items = grouped.get(key) || [];
+    items.push(intent);
+    grouped.set(key, items);
+  });
+  grouped.forEach((items) => {
+    items.sort((left, right) => new Date(right.createdAt || 0) - new Date(left.createdAt || 0));
+  });
+  return grouped;
+}
+
+function collectRequiredAttributeRulePool(runs = [], auditIntents = [], publishReviewIntents = []) {
   const pool = new Map();
   const approvalAuditIntents = collectRuleApprovalAuditIntentsByCandidate(auditIntents);
+  const publishReviewIntentsByCandidate = collectRulePublishReviewIntentsByCandidate(publishReviewIntents);
   (Array.isArray(runs) ? runs : []).forEach((run) => {
     const history = run.summary?.requiredAttributeRuleCandidateHistory || null;
     const queue = Array.isArray(history?.reviewQueue) ? history.reviewQueue : [];
@@ -6614,6 +6646,7 @@ function collectRequiredAttributeRulePool(runs = [], auditIntents = []) {
         safeNextStep: item.safeNextStep || "",
         approvalDraft: approvalDrafts.get(key) || null,
         approvalAuditIntents: approvalAuditIntents.get(strictRuleApprovalAuditCandidateKey(item)) || [],
+        publishReviewIntents: publishReviewIntentsByCandidate.get(strictRuleApprovalAuditCandidateKey(item)) || [],
       };
       current.occurrenceCount = Math.max(Number(current.occurrenceCount || 0), Number(item.occurrenceCount || 0));
       (item.sampleProductIds || []).forEach((id) => current.sampleProductIds.add(id));
@@ -6632,6 +6665,7 @@ function collectRequiredAttributeRulePool(runs = [], auditIntents = []) {
       sampleRunIds: [...item.sampleRunIds],
       sourceRunIds: [...item.sourceRunIds],
       latestApprovalAudit: item.approvalAuditIntents[0] || null,
+      latestPublishReview: item.publishReviewIntents[0] || null,
     }))
     .sort((a, b) => Number(b.occurrenceCount || 0) - Number(a.occurrenceCount || 0));
 }
@@ -6652,6 +6686,13 @@ function rulePoolItemMatchesFilter(item = {}, filter = {}) {
       audit.approver,
       audit.intentStatus,
       audit.effectStatus,
+    ])),
+    ...((item.publishReviewIntents || []).flatMap((review) => [
+      review.id,
+      review.reviewer,
+      review.intentStatus,
+      review.publishStatus,
+      review.effectStatus,
     ])),
   ].some((value) => String(value || "").toLowerCase().includes(keyword));
 }
@@ -6674,6 +6715,29 @@ function renderRuleApprovalAuditLog(audit = null) {
       <small>独立预检：${escapeHtml(proof.independentPreflightRunId || "未记录")} · ${proof.independentPreflightPassed === true ? "已通过" : "未通过"}</small>
       <small>安全锁：${escapeHtml(lockText)}</small>
       <p>${escapeHtml(audit.auditReadiness?.safeNextStep || "审计记录仅证明人工意图；启用规则前仍需独立发布闸和预检回归。")}</p>
+    </div>
+  `;
+}
+
+function renderRulePublishReviewLog(review = null) {
+  if (!review) return "";
+  const proof = review.proof || {};
+  const locks = review.safetyLocks || {};
+  const sampleCoverage = review.sampleCoverage || {};
+  const lockText = [
+    `ruleEnable:${locks.ruleEnable ? "异常开启" : "关闭"}`,
+    `payloadWrite:${locks.payloadWrite ? "异常开启" : "关闭"}`,
+    `workflowUnlock:${locks.workflowUnlock ? "异常开启" : "关闭"}`,
+    `ozonSubmit:${locks.ozonSubmit ? "异常开启" : "关闭"}`,
+  ].join(" · ");
+  return `
+    <div class="rule-pool-publish-review-log">
+      <strong>发布复核记录</strong>
+      <span>${escapeHtml(review.intentStatus || "stored_for_publish_review")} · ${escapeHtml(review.publishStatus || "review_only_not_enabled")}</span>
+      <small>审核人：${escapeHtml(review.reviewer || proof.reviewedBy || "未记录")} · 时间：${escapeHtml(review.createdAt ? new Date(review.createdAt).toLocaleString("zh-CN") : "未记录")}</small>
+      <small>样本：${Number(sampleCoverage.distinctProductCount || 0)} 个商品 · 独立预检：${escapeHtml(proof.independentPreflightRunId || "未记录")} · ${proof.independentPreflightPassed === true ? "已通过" : "未通过"}</small>
+      <small>安全锁：${escapeHtml(lockText)}</small>
+      <p>${escapeHtml(review.safeNextStep || "发布复核记录只证明人工复核意图；不能自动启用规则、写草稿或提交 Ozon。")}</p>
     </div>
   `;
 }
@@ -6751,11 +6815,12 @@ function renderListingRequiredAttributeRulePoolWorkbench() {
   const el = $("#listingRulePoolWorkbench");
   if (!el) return;
   const filter = state.rulePoolFilter || { status: "all", keyword: "" };
-  const items = collectRequiredAttributeRulePool(state.workflowRuns, state.ruleApprovalAuditIntents);
+  const items = collectRequiredAttributeRulePool(state.workflowRuns, state.ruleApprovalAuditIntents, state.rulePublishReviewIntents);
   const filtered = items.filter((item) => rulePoolItemMatchesFilter(item, filter));
   const readyCount = items.filter((item) => item.ruleStatus === "ready_for_review").length;
   const collectMoreCount = items.filter((item) => item.ruleStatus !== "ready_for_review").length;
   const auditCount = items.reduce((count, item) => count + Number((item.approvalAuditIntents || []).length || 0), 0);
+  const publishReviewCount = items.reduce((count, item) => count + Number((item.publishReviewIntents || []).length || 0), 0);
   el.innerHTML = `
     <div class="section-headline">
       <div>
@@ -6781,6 +6846,7 @@ function renderListingRequiredAttributeRulePoolWorkbench() {
         <span>待审 ${Number(readyCount || 0)}</span>
         <span>积累样本 ${Number(collectMoreCount || 0)}</span>
         <span>审计记录 ${Number(auditCount || 0)}</span>
+        <span>发布复核 ${Number(publishReviewCount || 0)}</span>
       </div>
     </div>
     <div class="rule-pool-list">
@@ -6813,6 +6879,7 @@ function renderListingRequiredAttributeRulePoolWorkbench() {
             </div>
           ` : ""}
           ${renderRuleApprovalAuditLog(item.latestApprovalAudit)}
+          ${renderRulePublishReviewLog(item.latestPublishReview)}
           ${renderRulePublishGate(item)}
         </article>
       `).join("") : `<p class="hint">当前筛选下没有规则候选。规则池只读，不会因为筛选而写入 Payload 或改变工作流状态。</p>`}
@@ -9550,6 +9617,7 @@ async function init() {
   await loadStores();
   await loadWorkflowRuns();
   await loadRuleApprovalAuditIntents();
+  await loadRulePublishReviewIntents();
   on("#storeSelect", "change", () => {
     updateStoreHint();
     refreshActiveStoreView();

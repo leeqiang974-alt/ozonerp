@@ -2988,6 +2988,18 @@ tr:hover td {
 .rule-pool-audit-log strong {
   color: #92400e;
 }
+.rule-pool-publish-review-log {
+  background: #eef2ff;
+  border: 1px dashed #a5b4fc;
+  border-radius: 10px;
+  display: grid;
+  gap: 4px;
+  grid-column: 1 / -1;
+  padding: 10px;
+}
+.rule-pool-publish-review-log strong {
+  color: #3730a3;
+}
 .rule-pool-publish-gate {
   background: #f8fafc;
   border: 1px solid #d0d5dd;

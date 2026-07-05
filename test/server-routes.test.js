@@ -89,6 +89,16 @@ test("server exposes listing rule approval audit routes", async () => {
   assert.match(source, /summarizeRuleApprovalAuditIntents/);
 });
 
+test("server exposes listing rule publish review routes", async () => {
+  const source = await readFile(new URL("../src/server.js", import.meta.url), "utf8");
+
+  assert.match(source, /rulePublishReview/);
+  assert.match(source, /\/api\/listing-rule-publish-review\/intents/);
+  assert.match(source, /appendRulePublishReviewIntent/);
+  assert.match(source, /listRulePublishReviewIntents/);
+  assert.match(source, /summarizeRulePublishReviewIntents/);
+});
+
 test("server exposes GPT image style analysis routes", async () => {
   const source = await readFile(new URL("../src/server.js", import.meta.url), "utf8");
 

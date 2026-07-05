@@ -315,10 +315,15 @@
   - `evaluateRulePublishGate()` 基于候选状态、样本数、已挂载审计意图、独立预检、回滚方案和四个安全锁，输出 `needs_evidence` / `publish_blocked` / `ready_for_publish_review`。
   - 判定结果固定 `canEnableRule=false`、`canWritePayload=false`，只说明缺少证明、阻断原因、禁止效果和安全下一步。
   - 行内展示“只读发布闸”，无按钮、无链接、无 API 写请求；即便显示“可进入发布复核”，也只是说明下一阶段可设计独立人工发布流程，不在本页启用规则。
+- 规则发布复核意图记录已接入后端最小版：
+  - `src/rulePublishReview.js` 使用 `data/rule-publish-review.json` 记录发布复核意图；测试可用 `RULE_PUBLISH_REVIEW_FILE` 指向临时文件。
+  - `POST /api/listing-rule-publish-review/intents` 必须具备人工确认、批准审计 ID、`categoryKey + attributeId`、至少两个商品样本、独立预检通过、回滚方案和审核人一致性。
+  - 记录结果固定 `publishStatus=review_only_not_enabled`、`effectStatus=no_rule_or_payload_effect`，`safetyLocks.ruleEnable/payloadWrite/workflowUnlock/ozonSubmit=false`。
+  - `GET /api/listing-rule-publish-review/intents` 与 `/summary` 只读查看复核意图；本阶段仍不会启用规则、写 Payload、解锁 workflow 或提交 Ozon。
 
 ### 下一步
 
-- 继续做“必填属性规则引擎 V2”的规则候选复用：下一步可设计独立规则发布记录的后端草案，但仍必须先验证人工确认、审计记录、独立预检、样本覆盖和回滚方案；启用前仍不能自动写 Payload。并继续把变体整组差异建议推进到可复制修复说明和整组草稿定位。
+- 继续做“必填属性规则引擎 V2”的规则候选复用：下一步可把发布复核意图回接到规则审查池只读展示，或继续设计真正发布前的独立人工流程；启用前仍不能自动写 Payload。并继续把变体整组差异建议推进到可复制修复说明和整组草稿定位。
 
 ## 2026-06-30 仓库匹配规则引擎 V1
 

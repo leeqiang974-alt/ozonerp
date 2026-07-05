@@ -128,6 +128,11 @@ import {
   summarizeRuleApprovalAuditIntents,
 } from "./ruleApprovalAudit.js";
 import {
+  appendRulePublishReviewIntent,
+  listRulePublishReviewIntents,
+  summarizeRulePublishReviewIntents,
+} from "./rulePublishReview.js";
+import {
   buildOzonImageStyleObservations,
   getOzonImageStyleObservations,
 } from "./ozonImageStyleLearning.js";
@@ -683,6 +688,19 @@ app.post("/api/listing-rule-approval-audit/intents", asyncRoute(async (req, res)
 
 app.get("/api/listing-rule-approval-audit/summary", asyncRoute(async (_req, res) => {
   res.json(await summarizeRuleApprovalAuditIntents());
+}));
+
+// rulePublishReview stores review intent only; it never enables rules or writes listing drafts.
+app.get("/api/listing-rule-publish-review/intents", asyncRoute(async (req, res) => {
+  res.json(await listRulePublishReviewIntents(req.query || {}));
+}));
+
+app.post("/api/listing-rule-publish-review/intents", asyncRoute(async (req, res) => {
+  res.json({ ok: true, intent: await appendRulePublishReviewIntent(parseBody(req.body)) });
+}));
+
+app.get("/api/listing-rule-publish-review/summary", asyncRoute(async (_req, res) => {
+  res.json(await summarizeRulePublishReviewIntents());
 }));
 
 app.post("/api/ozon-learning/tasks", asyncRoute(async (req, res) => {

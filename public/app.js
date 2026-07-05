@@ -6618,6 +6618,29 @@ function requiredAttributeManualWorkbenchGroups(backlog = {}, textRepairCandidat
   const safeTextRepairCandidates = Array.isArray(textRepairCandidates) ? textRepairCandidates : [];
   const packagePattern = /package|weight|dimension|length|width|height|尺重|重量|长宽高|规格|вес|длина|ширина|высота/i;
   const compliancePattern = /合规|保质期|储存|成分|危险|儿童|食品|化妆|医疗|电池|срок|состав|опас|дет|пищ|battery/i;
+  function packageEvidenceForItem(item = {}) {
+    const text = [
+      item.attributeName,
+      item.reasonZh,
+      item.safeNextStep,
+      item.source,
+      item.strategy,
+    ].join(" ");
+    const missingFields = [];
+    if (/вес|重量|weight/i.test(text)) missingFields.push("重量");
+    if (/длина|глубина|长|length|depth/i.test(text)) missingFields.push("长度/深度");
+    if (/ширина|宽|width/i.test(text)) missingFields.push("宽度");
+    if (/высота|高|height/i.test(text)) missingFields.push("高度");
+    const source = String(item.source || "");
+    const missingSource = source === "1688_package_missing" || /缺少|缺失|missing/i.test(text);
+    return {
+      canWriteDraft: false,
+      statusText: missingSource ? "缺少 1688 尺重证据" : "需核实尺重证据",
+      sourceText: source === "1688_package_missing" ? "1688 详情解析未取得完整包装尺重" : (source || "当前货源/人工资料"),
+      missingText: missingFields.length ? missingFields.join("、") : "重量、长宽高或规格",
+      safeSourceAction: "回到 1688 采集或详情页重新采集尺重；没有可靠来源时人工实测后更新货源，再重新预检。",
+    };
+  }
   buckets.forEach((bucket) => {
     (Array.isArray(bucket.items) ? bucket.items : []).forEach((item) => {
       const text = [
@@ -6640,6 +6663,7 @@ function requiredAttributeManualWorkbenchGroups(backlog = {}, textRepairCandidat
       const itemRepairCandidates = groupKey === "manual_value"
         ? safeTextRepairCandidates.filter((candidate) => String(candidate.attributeId || "") === String(item.attributeId || ""))
         : [];
+      const packageEvidence = groupKey === "package_evidence" ? packageEvidenceForItem(item) : null;
       group.items.push({
         ...item,
         bucketKey: bucket.key || "",
@@ -6648,8 +6672,11 @@ function requiredAttributeManualWorkbenchGroups(backlog = {}, textRepairCandidat
         safeNextStep: itemRepairCandidates.length
           ? "当前 workflow 已等待人工；可人工填写该 SKU 文本值，系统只写本地草稿并重新预检，不提交 Ozon。"
           : item.safeNextStep || group.safeNextStep,
-        repairStatusText: itemRepairCandidates.length ? "可安全填写" : "暂不可直接填写",
+        repairStatusText: groupKey === "package_evidence"
+          ? "需补证据，不可猜填"
+          : itemRepairCandidates.length ? "可安全填写" : "暂不可直接填写",
         textRepairCandidates: itemRepairCandidates,
+        packageEvidence,
       });
     });
   });
@@ -6680,6 +6707,14 @@ function renderRequiredAttributeManualWorkbench(workbenchGroups = []) {
                   <small>原因：${escapeHtml(item.blockReason || group.problemText)}</small>
                   <small>要补：${escapeHtml(item.mustSupplyText || group.mustSupplyText)}</small>
                   <small>填写状态：${escapeHtml(item.repairStatusText || "暂不可直接填写")}</small>
+                  ${item.packageEvidence ? `
+                    <span class="required-attribute-package-evidence">
+                      <small>证据状态：${escapeHtml(item.packageEvidence.statusText || "需核实尺重证据")}</small>
+                      <small>证据来源：${escapeHtml(item.packageEvidence.sourceText || "当前货源/人工资料")}</small>
+                      <small>缺少字段：${escapeHtml(item.packageEvidence.missingText || "重量、长宽高或规格")}</small>
+                      <small>补证据动作：${escapeHtml(item.packageEvidence.safeSourceAction || "补齐真实尺重证据后重新预检。")}</small>
+                    </span>
+                  ` : ""}
                   <small>下一步：${escapeHtml(item.safeNextStep || group.safeNextStep)}</small>
                   ${Array.isArray(item.textRepairCandidates) && item.textRepairCandidates.length ? `
                     <div class="required-attribute-manual-actions">

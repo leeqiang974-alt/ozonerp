@@ -210,6 +210,10 @@
   - 从当前属性矩阵收集所有 `canApplyTextDraftRepair=true` 的候选；只有 workflow 处于 `waiting_human` / `locks.waitingHuman=true` 时才会出现。
   - 仅 `手动属性缺口` 分组可显示“填写该 SKU 文本并预检”；`包装尺重证据` 和 `合规敏感字段` 继续只读，不能直接写草稿。
   - 点击后复用既有 `apply-attribute-text-repair`、`repairType: "text_value"` 和人工 prompt；只写本地草稿并重新预检，不提交 Ozon、不解锁 workflow。
+- 包装尺重证据工作台 V1 已接入上架中心人工属性工作台：
+  - `包装尺重证据` 分组会逐项展示证据状态、证据来源、缺少字段和补证据动作。
+  - `1688_package_missing` 会明确显示“缺少 1688 尺重证据”，引导回 1688 详情重新采集或人工实测后更新货源，再重新预检。
+  - 该分组继续只读，`canWriteDraft=false`，不展示属性修复按钮、不写 Payload、不提交 Ozon、不解锁 workflow。
 - 上架草稿侧的变体修复入口 V2 已接入非字典 aspect 文本属性：
   - `applyPayloadDraftAttributeRepair()` 新增 `repairType: "variant_text_value"`。
   - 仅允许 `waiting_human` / `locks.waitingHuman=true` 且 `confirmLocalDraftRepair=true` 的 workflow 写回本地 Payload 草稿。

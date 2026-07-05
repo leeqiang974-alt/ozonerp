@@ -354,8 +354,12 @@ test("required attribute manual backlog groups seller-facing blockers", async ()
   assert.deepEqual(groups.map((group) => group.key), ["package_evidence", "compliance_sensitive", "manual_value"]);
   assert.equal(groups[0].items[0].mustSupplyText, "1688 或人工实测的包装重量、长宽高、规格证据");
   assert.match(groups[0].items[0].safeNextStep, /更换货源|尺重/);
-  assert.equal(groups[0].items[0].repairStatusText, "暂不可直接填写");
+  assert.equal(groups[0].items[0].repairStatusText, "需补证据，不可猜填");
   assert.deepEqual(groups[0].items[0].textRepairCandidates, []);
+  assert.equal(groups[0].items[0].packageEvidence.canWriteDraft, false);
+  assert.equal(groups[0].items[0].packageEvidence.statusText, "缺少 1688 尺重证据");
+  assert.match(groups[0].items[0].packageEvidence.missingText, /重量/);
+  assert.match(groups[0].items[0].packageEvidence.safeSourceAction, /重新采集|人工实测/);
   assert.match(groups[1].items[0].blockReason, /涉及合规/);
   assert.ok(groups[1].items.some((item) => item.attributeId === 1004));
   assert.ok(groups[1].items.every((item) => item.repairStatusText === "暂不可直接填写"));
@@ -478,7 +482,10 @@ test("listing center exposes a read-only fill task queue from existing diagnosti
   assert.match(js, /填写该 SKU 文本并预检/);
   assert.doesNotMatch(js, />填写文本属性并预检<\/button>/);
   assert.match(js, /可安全填写/);
-  assert.match(js, /暂不可直接填写/);
+  assert.match(js, /需补证据，不可猜填/);
+  assert.match(js, /证据状态/);
+  assert.match(js, /证据来源/);
+  assert.match(js, /packageEvidence/);
   assert.match(js, /填写变体文本并预检/);
   assert.match(js, /待确认字典候选/);
   assert.match(js, /候选值/);
@@ -500,6 +507,7 @@ test("listing center exposes a read-only fill task queue from existing diagnosti
   assert.match(css, /listing-attribute-confirmation-list/);
   assert.match(css, /listing-variant-suggestion/);
   assert.match(css, /listing-variant-context-list/);
+  assert.match(css, /required-attribute-package-evidence/);
 });
 
 test("listing fill task queue extracts required attribute confirmation items", async () => {

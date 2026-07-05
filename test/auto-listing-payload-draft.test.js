@@ -948,6 +948,46 @@ test("buildRequiredAttributeFillPlan suggests capacity and count dictionary cand
     source: "capacity_synonym",
   }]);
 
+  const exactCapacityPlan = buildRequiredAttributeFillPlan({
+    categoryMatch: { description_category_id: 17028673, type_id: 95183 },
+    attrsMeta: [
+      { id: 9030, name: "Объем", is_required: true, dictionary_id: 106 },
+    ],
+    attributeValuesById: {
+      9030: [{ id: 134, value: "500ml" }],
+    },
+    productText: "1688 参数：容量 500ml，透明水杯",
+  })[0];
+
+  assert.equal(exactCapacityPlan.action, "suggest_dictionary");
+  assert.equal(exactCapacityPlan.dictionaryValueId, undefined);
+  assert.deepEqual(exactCapacityPlan.dictionaryCandidates, [{
+    dictionaryValueId: 134,
+    value: "500ml",
+    confidence: 0.68,
+    source: "capacity_synonym",
+  }]);
+
+  const cyrillicCapacityPlan = buildRequiredAttributeFillPlan({
+    categoryMatch: { description_category_id: 17028673, type_id: 95183 },
+    attrsMeta: [
+      { id: 9020, name: "Объем", is_required: true, dictionary_id: 106 },
+    ],
+    attributeValuesById: {
+      9020: [{ id: 124, value: "500 ml" }],
+    },
+    productText: "1688 参数：容量 500 мл，透明水杯",
+  })[0];
+
+  assert.equal(cyrillicCapacityPlan.action, "suggest_dictionary");
+  assert.equal(cyrillicCapacityPlan.dictionaryValueId, undefined);
+  assert.deepEqual(cyrillicCapacityPlan.dictionaryCandidates, [{
+    dictionaryValueId: 124,
+    value: "500 ml",
+    confidence: 0.68,
+    source: "capacity_synonym",
+  }]);
+
   const countPlan = buildRequiredAttributeFillPlan({
     categoryMatch: { description_category_id: 17028673, type_id: 95183 },
     attrsMeta: [
@@ -967,6 +1007,190 @@ test("buildRequiredAttributeFillPlan suggests capacity and count dictionary cand
   assert.deepEqual(countPlan.dictionaryCandidates, [{
     dictionaryValueId: 112,
     value: "10 шт",
+    confidence: 0.68,
+    source: "count_synonym",
+  }]);
+
+  const exactCountPlan = buildRequiredAttributeFillPlan({
+    categoryMatch: { description_category_id: 17028673, type_id: 95183 },
+    attrsMeta: [
+      { id: 9031, name: "Количество предметов", is_required: true, dictionary_id: 107 },
+    ],
+    attributeValuesById: {
+      9031: [{ id: 135, value: "10pcs" }],
+    },
+    productText: "1688 标题：10pcs 收纳夹",
+  })[0];
+
+  assert.equal(exactCountPlan.action, "suggest_dictionary");
+  assert.equal(exactCountPlan.dictionaryValueId, undefined);
+  assert.deepEqual(exactCountPlan.dictionaryCandidates, [{
+    dictionaryValueId: 135,
+    value: "10pcs",
+    confidence: 0.68,
+    source: "count_synonym",
+  }]);
+
+  const modelCapacityPlan = buildRequiredAttributeFillPlan({
+    categoryMatch: { description_category_id: 17028673, type_id: 95183 },
+    attrsMeta: [
+      { id: 9018, name: "Объем", is_required: true, dictionary_id: 106 },
+    ],
+    attributeValuesById: {
+      9018: [{ id: 122, value: "500 мл" }],
+    },
+    productText: "1688 标题：型号 X500ml 旅行收纳瓶",
+  })[0];
+  assert.equal(modelCapacityPlan.action, "suggest_dictionary");
+  assert.equal(modelCapacityPlan.dictionaryValueId, undefined);
+  assert.deepEqual(modelCapacityPlan.dictionaryCandidates, []);
+
+  const skuCountPlan = buildRequiredAttributeFillPlan({
+    categoryMatch: { description_category_id: 17028673, type_id: 95183 },
+    attrsMeta: [
+      { id: 9019, name: "Количество предметов", is_required: true, dictionary_id: 107 },
+    ],
+    attributeValuesById: {
+      9019: [{ id: 123, value: "10 шт" }],
+    },
+    productText: "1688 标题：SKU A10pcs 收纳盒",
+  })[0];
+  assert.equal(skuCountPlan.action, "suggest_dictionary");
+  assert.equal(skuCountPlan.dictionaryValueId, undefined);
+  assert.deepEqual(skuCountPlan.dictionaryCandidates, []);
+
+  const leftJoinedExactCountPlan = buildRequiredAttributeFillPlan({
+    categoryMatch: { description_category_id: 17028673, type_id: 95183 },
+    attrsMeta: [
+      { id: 9028, name: "Количество предметов", is_required: true, dictionary_id: 107 },
+    ],
+    attributeValuesById: {
+      9028: [{ id: 132, value: "10pcs" }],
+    },
+    productText: "1688 标题：SKU A10pcs 收纳盒",
+  })[0];
+  assert.equal(leftJoinedExactCountPlan.action, "suggest_dictionary");
+  assert.equal(leftJoinedExactCountPlan.dictionaryValueId, undefined);
+  assert.deepEqual(leftJoinedExactCountPlan.dictionaryCandidates, []);
+
+  const rightJoinedCountPlan = buildRequiredAttributeFillPlan({
+    categoryMatch: { description_category_id: 17028673, type_id: 95183 },
+    attrsMeta: [
+      { id: 9021, name: "Количество предметов", is_required: true, dictionary_id: 107 },
+    ],
+    attributeValuesById: {
+      9021: [{ id: 125, value: "10 шт" }],
+    },
+    productText: "1688 标题：SKU 10pcsX 收纳盒",
+  })[0];
+  assert.equal(rightJoinedCountPlan.action, "suggest_dictionary");
+  assert.equal(rightJoinedCountPlan.dictionaryValueId, undefined);
+  assert.deepEqual(rightJoinedCountPlan.dictionaryCandidates, []);
+
+  const rightJoinedExactCountPlan = buildRequiredAttributeFillPlan({
+    categoryMatch: { description_category_id: 17028673, type_id: 95183 },
+    attrsMeta: [
+      { id: 9026, name: "Количество предметов", is_required: true, dictionary_id: 107 },
+    ],
+    attributeValuesById: {
+      9026: [{ id: 130, value: "10pcs" }],
+    },
+    productText: "1688 标题：SKU 10pcsX 收纳盒",
+  })[0];
+  assert.equal(rightJoinedExactCountPlan.action, "suggest_dictionary");
+  assert.equal(rightJoinedExactCountPlan.dictionaryValueId, undefined);
+  assert.deepEqual(rightJoinedExactCountPlan.dictionaryCandidates, []);
+
+  const rightJoinedCapacityPlan = buildRequiredAttributeFillPlan({
+    categoryMatch: { description_category_id: 17028673, type_id: 95183 },
+    attrsMeta: [
+      { id: 9022, name: "Объем", is_required: true, dictionary_id: 106 },
+    ],
+    attributeValuesById: {
+      9022: [{ id: 126, value: "500 мл" }],
+    },
+    productText: "1688 标题：SKU 500mlX 收纳瓶",
+  })[0];
+  assert.equal(rightJoinedCapacityPlan.action, "suggest_dictionary");
+  assert.equal(rightJoinedCapacityPlan.dictionaryValueId, undefined);
+  assert.deepEqual(rightJoinedCapacityPlan.dictionaryCandidates, []);
+
+  const leftJoinedExactCapacityPlan = buildRequiredAttributeFillPlan({
+    categoryMatch: { description_category_id: 17028673, type_id: 95183 },
+    attrsMeta: [
+      { id: 9029, name: "Объем", is_required: true, dictionary_id: 106 },
+    ],
+    attributeValuesById: {
+      9029: [{ id: 133, value: "500ml" }],
+    },
+    productText: "1688 标题：型号 X500ml 旅行收纳瓶",
+  })[0];
+  assert.equal(leftJoinedExactCapacityPlan.action, "suggest_dictionary");
+  assert.equal(leftJoinedExactCapacityPlan.dictionaryValueId, undefined);
+  assert.deepEqual(leftJoinedExactCapacityPlan.dictionaryCandidates, []);
+
+  const rightJoinedExactCapacityPlan = buildRequiredAttributeFillPlan({
+    categoryMatch: { description_category_id: 17028673, type_id: 95183 },
+    attrsMeta: [
+      { id: 9027, name: "Объем", is_required: true, dictionary_id: 106 },
+    ],
+    attributeValuesById: {
+      9027: [{ id: 131, value: "500ml" }],
+    },
+    productText: "1688 标题：SKU 500mlX 收纳瓶",
+  })[0];
+  assert.equal(rightJoinedExactCapacityPlan.action, "suggest_dictionary");
+  assert.equal(rightJoinedExactCapacityPlan.dictionaryValueId, undefined);
+  assert.deepEqual(rightJoinedExactCapacityPlan.dictionaryCandidates, []);
+
+  const chineseCapacityPlan = buildRequiredAttributeFillPlan({
+    categoryMatch: { description_category_id: 17028673, type_id: 95183 },
+    attrsMeta: [
+      { id: 9023, name: "Объем", is_required: true, dictionary_id: 106 },
+    ],
+    attributeValuesById: {
+      9023: [{ id: 127, value: "500 мл" }],
+    },
+    productText: "1688 参数：容量 500毫升，便携瓶",
+  })[0];
+  assert.equal(chineseCapacityPlan.action, "suggest_dictionary");
+  assert.equal(chineseCapacityPlan.dictionaryValueId, undefined);
+  assert.deepEqual(chineseCapacityPlan.dictionaryCandidates, [{
+    dictionaryValueId: 127,
+    value: "500 мл",
+    confidence: 0.68,
+    source: "capacity_synonym",
+  }]);
+
+  const rightJoinedCyrillicCountPlan = buildRequiredAttributeFillPlan({
+    categoryMatch: { description_category_id: 17028673, type_id: 95183 },
+    attrsMeta: [
+      { id: 9024, name: "Количество предметов", is_required: true, dictionary_id: 107 },
+    ],
+    attributeValuesById: {
+      9024: [{ id: 128, value: "10 шт" }],
+    },
+    productText: "1688 标题：SKU 10штABC 收纳盒",
+  })[0];
+  assert.equal(rightJoinedCyrillicCountPlan.action, "suggest_dictionary");
+  assert.equal(rightJoinedCyrillicCountPlan.dictionaryValueId, undefined);
+  assert.deepEqual(rightJoinedCyrillicCountPlan.dictionaryCandidates, []);
+
+  const standaloneCyrillicCountPlan = buildRequiredAttributeFillPlan({
+    categoryMatch: { description_category_id: 17028673, type_id: 95183 },
+    attrsMeta: [
+      { id: 9025, name: "Количество предметов", is_required: true, dictionary_id: 107 },
+    ],
+    attributeValuesById: {
+      9025: [{ id: 129, value: "10 pcs" }],
+    },
+    productText: "1688 参数：数量 10 шт，套装",
+  })[0];
+  assert.equal(standaloneCyrillicCountPlan.action, "suggest_dictionary");
+  assert.equal(standaloneCyrillicCountPlan.dictionaryValueId, undefined);
+  assert.deepEqual(standaloneCyrillicCountPlan.dictionaryCandidates, [{
+    dictionaryValueId: 129,
+    value: "10 pcs",
     confidence: 0.68,
     source: "count_synonym",
   }]);

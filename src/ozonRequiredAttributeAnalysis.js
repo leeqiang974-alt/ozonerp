@@ -647,12 +647,19 @@ function dictionaryCandidatesForMeta({
   categoryCache = {},
   productText = "",
 } = {}) {
+  const text = normalizeText(productText);
+  const numericUnitManaged = isCapacityAttributeMeta(meta) || isCountAttributeMeta(meta);
   return dictionaryValuesForPlan({ meta, categoryMatch, attributeValuesById, categoryCache })
     .map((entry) => {
       const value = String(entry?.value || entry?.name || "").replace(/\s+/g, " ").trim();
       if (!value) return null;
       const normalizedValue = normalizeText(value);
-      const matched = normalizedValue && productText.includes(normalizedValue);
+      if (numericUnitManaged && /\d/.test(normalizedValue)) return null;
+      const matched = normalizedValue && (
+        /\d/.test(normalizedValue)
+          ? new RegExp(`(^|[^\\p{L}\\p{N}])${escapeRegExp(normalizedValue)}(?=$|[^\\p{L}\\p{N}])`, "u").test(text)
+          : text.includes(normalizedValue)
+      );
       return matched ? {
         dictionaryValueId: dictionaryValueId(entry),
         value,
@@ -802,10 +809,10 @@ function capacitySynonymDictionaryCandidatesForMeta({
 } = {}) {
   const classified = classifyAttributeFillStrategy(meta);
   if (classified.strategy !== "dictionary_lookup_from_product_text") return [];
-  if (!/объем|объ[её]м|volume|容量|体积|毫升|литр|мл/.test(normalizeText(`${meta.name || ""} ${meta.description || ""}`))) return [];
+  if (!isCapacityAttributeMeta(meta)) return [];
   const text = normalizeText(productText);
-  const numbers = [...text.matchAll(/(\d+(?:[.,]\d+)?)\s*(?:мл|ml|毫升|литр|литра|литров|л|l)\b/g)]
-    .map((match) => match[1].replace(",", "."));
+  const numbers = [...text.matchAll(/(^|[^\p{L}\p{N}])(\d+(?:[.,]\d+)?)\s*(?:литров|литра|литр|мл|ml|毫升|л|l)(?=$|[^\p{L}\p{N}])/gu)]
+    .map((match) => match[2].replace(",", "."));
   return numericDictionaryCandidates({
     meta,
     categoryMatch,
@@ -827,9 +834,9 @@ function countSynonymDictionaryCandidatesForMeta({
 } = {}) {
   const classified = classifyAttributeFillStrategy(meta);
   if (classified.strategy !== "dictionary_lookup_from_product_text") return [];
-  if (!/колич|комплект|штук|шт|pieces?|pcs?|数量|件数|件|个|只|套/.test(normalizeText(`${meta.name || ""} ${meta.description || ""}`))) return [];
+  if (!isCountAttributeMeta(meta)) return [];
   const text = normalizeText(productText);
-  const numbers = [...text.matchAll(/(\d+)\s*(?:шт|штук|pcs?|pieces?|件|个|只|套)/g)].map((match) => match[1]);
+  const numbers = [...text.matchAll(/(^|[^\p{L}\p{N}])(\d+)\s*(?:pieces?|штук|pcs?|шт|件|个|只|套)(?=$|[^\p{L}\p{N}])/gu)].map((match) => match[2]);
   return numericDictionaryCandidates({
     meta,
     categoryMatch,
@@ -1179,10 +1186,22 @@ function isOriginCountryAttribute(attribute = {}) {
     || /原产国|生产国|制造国/.test(text);
 }
 
+function isCapacityAttributeMeta(attribute = {}) {
+  return /объем|объ[её]м|volume|容量|体积|毫升|литр|мл/.test(normalizeText(`${attribute.name || ""} ${attribute.description || ""}`));
+}
+
+function isCountAttributeMeta(attribute = {}) {
+  return /колич|комплект|штук|шт|pieces?|pcs?|数量|件数|件|个|只|套/.test(normalizeText(`${attribute.name || ""} ${attribute.description || ""}`));
+}
+
 function normalizeText(value = "") {
   return String(value || "")
     .toLowerCase()
     .replace(/ё/g, "е")
     .replace(/\s+/g, " ")
     .trim();
+}
+
+function escapeRegExp(value = "") {
+  return String(value).replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 }

@@ -202,6 +202,10 @@
   - 分类属性任务卡会从 `requiredAttributeFillPlan` 中提取 `action=suggest_dictionary` 且有 `dictionaryCandidates` 的字段，展示属性名/ID、候选值、来源、置信度、为什么不能自动写和安全下一步。
   - 每个候选现在按 `attributeId + dictionaryValueId` 逐条匹配当前属性矩阵里的本地修复候选；匹配成功才显示“可安全写回”和对应 SKU 的确认按钮，未匹配则保持“暂不可直接写回”。
   - 该清单只读，不新增 API、不写 Payload、不解锁 workflow、不提交 Ozon；真正写回仍只能走既有 `waiting_human + confirmLocalDraftRepair + 重新预检` 的修复入口。
+- 必填属性计划里的 `requiredAttributeManualBacklog` 已新增只读“人工属性工作台”：
+  - 把人工卡点按卖家业务问题分为“包装尺重证据”“合规敏感字段”“手动属性缺口”。
+  - 每组展示为什么阻断、必须补什么、补完后的安全下一步；只读展示，不提供输入、保存、fetch、workflow action 或提交按钮。
+  - 包装/尺重缺口仍建议补齐 1688/人工实测证据或更换货源；合规敏感字段仍禁止猜测。
 - 上架草稿侧的变体修复入口 V2 已接入非字典 aspect 文本属性：
   - `applyPayloadDraftAttributeRepair()` 新增 `repairType: "variant_text_value"`。
   - 仅允许 `waiting_human` / `locks.waitingHuman=true` 且 `confirmLocalDraftRepair=true` 的 workflow 写回本地 Payload 草稿。

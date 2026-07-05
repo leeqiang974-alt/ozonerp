@@ -1353,6 +1353,7 @@ function listingFillTaskQueueItems(run = currentListingWorkflowRun()) {
   const validation = run.payloadDraftValidation || {};
   const requiredAttributeFillPlan = validation.requiredAttributeFillPlan || preflightOutput.requiredAttributeFillPlan || [];
   const requiredAttributeFillSummary = validation.requiredAttributeFillSummary || preflightOutput.requiredAttributeFillSummary || null;
+  const requiredAttributeManualBacklog = validation.requiredAttributeManualBacklog || preflightOutput.requiredAttributeManualBacklog || null;
   const variantConfiguration = validation.variantConfiguration || preflightOutput.variantConfiguration || null;
   const listingQuality = validation.listingQuality || preflightOutput.listingQuality || null;
   const repairCandidates = listingFillTaskDictionaryRepairCandidates(run);
@@ -1366,6 +1367,7 @@ function listingFillTaskQueueItems(run = currentListingWorkflowRun()) {
     const manualCount = Number((requiredAttributeFillSummary?.manualRequiredCount ?? 0) + (requiredAttributeFillSummary?.blockedNeverGuessCount ?? 0))
       || requiredAttributeFillPlan.filter((row) => ["manual_required", "blocked_sensitive"].includes(row.action)).length;
     const confirmationItems = listingRequiredAttributeConfirmationItems(requiredAttributeFillPlan, repairCandidates);
+    const manualAttributeWorkbenchGroups = requiredAttributeManualWorkbenchGroups(requiredAttributeManualBacklog);
     items.push({
       tone: manualCount ? "warning" : confirmCount ? "info" : "success",
       label: "分类属性",
@@ -1374,6 +1376,7 @@ function listingFillTaskQueueItems(run = currentListingWorkflowRun()) {
       meta: requiredAttributeFillSummary?.safeNextAction || "数据来自 requiredAttributeFillPlan，只读汇总，不自动写入或提交。",
       target: "content-images",
       attributeConfirmationItems: confirmationItems,
+      manualAttributeWorkbenchGroups,
       textRepairCandidate: textRepairCandidate && manualCount ? textRepairCandidate : null,
     });
   }
@@ -1464,6 +1467,9 @@ function renderListingFillTaskQueue(run = currentListingWorkflowRun()) {
                 `).join("")}
               </div>
             ` : ""}
+            ${Array.isArray(item.manualAttributeWorkbenchGroups) && item.manualAttributeWorkbenchGroups.length
+              ? renderRequiredAttributeManualWorkbench(item.manualAttributeWorkbenchGroups)
+              : ""}
             ${item.textRepairCandidate ? `<button
               type="button"
               data-workflow-action="apply-attribute-text-repair"
@@ -6587,10 +6593,72 @@ function requiredAttributeManualBacklogBucketTitle(bucket = {}) {
   return bucket.title || map[bucket.key] || "人工属性";
 }
 
-function renderRequiredAttributeManualBacklog(run = {}, node = {}) {
+function requiredAttributeManualWorkbenchGroups(backlog = {}) {
+  const groupDefinitions = [
+    {
+      key: "package_evidence",
+      title: "包装尺重证据",
+      problemText: "1688 或当前货源缺少重量、长宽高、规格证据时，上架自动化不能继续猜测。",
+      mustSupplyText: "1688 或人工实测的包装重量、长宽高、规格证据",
+      safeNextStep: "补齐 1688 尺重/规格证据或更换货源后重新预检；本页只读，不写 Payload。",
+    },
+    {
+      key: "compliance_sensitive",
+      title: "合规敏感字段",
+      problemText: "保质期、成分、危险、儿童、食品、化妆品、医疗、电池等字段必须来自真实资料。",
+      mustSupplyText: "真实合规资料、包装标识或供应商证明",
+      safeNextStep: "人工核实真实属性后再写本地草稿并重新预检；系统不能猜测。",
+    },
+    {
+      key: "manual_value",
+      title: "手动属性缺口",
+      problemText: "当前商品文本或类目字典证据不足，不能低置信自动填入 Ozon 草稿。",
+      mustSupplyText: "真实属性值、当前类目合法字典值或可沉淀规则的样本证明",
+      safeNextStep: "先人工填写本次商品；后续再沉淀类目规则，不自动写 Payload。",
+    },
+  ];
+  const groups = groupDefinitions.map((definition) => ({ ...definition, items: [] }));
+  const groupByKey = new Map(groups.map((group) => [group.key, group]));
+  const buckets = Array.isArray(backlog.buckets) ? backlog.buckets : [];
+  const packagePattern = /package|weight|dimension|length|width|height|尺重|重量|长宽高|规格|вес|длина|ширина|высота/i;
+  const compliancePattern = /合规|保质期|储存|成分|危险|儿童|食品|化妆|医疗|电池|срок|состав|опас|дет|пищ|battery/i;
+  buckets.forEach((bucket) => {
+    (Array.isArray(bucket.items) ? bucket.items : []).forEach((item) => {
+      const text = [
+        bucket.key,
+        item.strategy,
+        item.source,
+        item.action,
+        item.safetyTier,
+        item.attributeName,
+        item.reasonZh,
+        item.safeNextStep,
+      ].join(" ");
+      let groupKey = "manual_value";
+      if (item.action === "blocked_sensitive" || item.safetyTier === "blocked-never-guess" || compliancePattern.test(text)) {
+        groupKey = "compliance_sensitive";
+      } else if (bucket.key === "replace_source" || packagePattern.test(text)) {
+        groupKey = "package_evidence";
+      }
+      const group = groupByKey.get(groupKey) || groupByKey.get("manual_value");
+      group.items.push({
+        ...item,
+        bucketKey: bucket.key || "",
+        blockReason: item.reasonZh || group.problemText,
+        mustSupplyText: group.mustSupplyText,
+        safeNextStep: item.safeNextStep || group.safeNextStep,
+      });
+    });
+  });
+  return groups.filter((group) => group.items.length);
+}
+
+function renderRequiredAttributeManualBacklog(run = {}, node = {}, options = {}) {
   const backlog = run.payloadDraftValidation?.requiredAttributeManualBacklog || node?.output?.requiredAttributeManualBacklog || null;
   if (!backlog || !Number(backlog.totalCount || 0)) return "";
   const buckets = Array.isArray(backlog.buckets) ? backlog.buckets : [];
+  const showWorkbench = options.showWorkbench === true;
+  const workbenchGroups = showWorkbench ? requiredAttributeManualWorkbenchGroups(backlog) : [];
   return `
     <div class="required-attribute-manual-backlog">
       <div>
@@ -6598,6 +6666,7 @@ function renderRequiredAttributeManualBacklog(run = {}, node = {}) {
         <small>${escapeHtml(backlog.readinessStatus || "manual_review")} · ${Number(backlog.totalCount || 0)} 项</small>
       </div>
       <p>${escapeHtml(backlog.safeNextAction || "人工处理后重新预检；不会自动提交 Ozon。")}</p>
+      ${workbenchGroups.length ? renderRequiredAttributeManualWorkbench(workbenchGroups) : ""}
       <div class="required-attribute-manual-backlog-grid">
         ${buckets.map((bucket) => `
           <article>
@@ -6605,6 +6674,40 @@ function renderRequiredAttributeManualBacklog(run = {}, node = {}) {
             ${(bucket.items || []).slice(0, 4).map((item) => `
               <span>${escapeHtml(item.attributeName || `属性 ${item.attributeId || ""}`)}</span>
             `).join("") || "<small>暂无</small>"}
+          </article>
+        `).join("")}
+      </div>
+    </div>
+  `;
+}
+
+function renderRequiredAttributeManualWorkbench(workbenchGroups = []) {
+  const groups = Array.isArray(workbenchGroups) ? workbenchGroups : [];
+  if (!groups.length) return "";
+  return `
+    <div class="required-attribute-manual-workbench" aria-label="人工属性工作台">
+      <div>
+        <strong>人工属性工作台</strong>
+        <small>本页只读：只说明业务卡点、必须补什么、补完后怎么安全继续。</small>
+      </div>
+      <div class="required-attribute-manual-workbench-grid">
+        ${groups.map((group) => `
+          <article class="required-attribute-manual-workbench-group required-attribute-manual-workbench-group-${escapeHtml(group.key)}">
+            <strong>${escapeHtml(group.title)} · ${Number(group.items.length || 0)}</strong>
+            <p>${escapeHtml(group.problemText)}</p>
+            <small>必须补：${escapeHtml(group.mustSupplyText)}</small>
+            <small>安全下一步：${escapeHtml(group.safeNextStep)}</small>
+            <div>
+              ${group.items.slice(0, 5).map((item) => `
+                <span>
+                  <b>${escapeHtml(item.attributeName || `属性 ${item.attributeId || ""}`)}</b>
+                  <small>#${escapeHtml(item.attributeId || "")} · ${escapeHtml(item.strategy || item.bucketKey || "manual_required")}</small>
+                  <small>原因：${escapeHtml(item.blockReason || group.problemText)}</small>
+                  <small>要补：${escapeHtml(item.mustSupplyText || group.mustSupplyText)}</small>
+                  <small>下一步：${escapeHtml(item.safeNextStep || group.safeNextStep)}</small>
+                </span>
+              `).join("")}
+            </div>
           </article>
         `).join("")}
       </div>
@@ -6982,7 +7085,7 @@ function renderRequiredAttributeFillPlan(run = {}, node = {}) {
         <span>${plan.length} 个必填属性</span>
       </div>
       ${renderRequiredAttributeFillSummary(run, node, plan)}
-      ${renderRequiredAttributeManualBacklog(run, node)}
+      ${renderRequiredAttributeManualBacklog(run, node, { showWorkbench: false })}
       ${renderRequiredAttributeRuleCandidateIndex(run, node)}
       ${renderRequiredAttributeRuleCandidateHistory(run, node)}
       ${groups.map((group) => `

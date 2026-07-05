@@ -236,6 +236,13 @@ test("frontend renders required attribute fill plan groups", async () => {
   assert.match(js, /属性覆盖率/);
   assert.match(js, /renderRequiredAttributeManualBacklog/);
   assert.match(js, /requiredAttributeManualBacklog/);
+  assert.match(js, /requiredAttributeManualWorkbenchGroups/);
+  assert.match(js, /renderRequiredAttributeManualWorkbench/);
+  assert.match(js, /人工属性工作台/);
+  assert.match(js, /包装尺重证据/);
+  assert.match(js, /合规敏感字段/);
+  assert.match(js, /手动属性缺口/);
+  assert.match(js, /本页只读/);
   assert.match(js, /高频人工属性/);
   assert.match(js, /renderRequiredAttributeRuleCandidateIndex/);
   assert.match(js, /requiredAttributeRuleCandidateIndex/);
@@ -259,6 +266,9 @@ test("frontend renders required attribute fill plan groups", async () => {
   assert.ok(manualBacklogRendererSource);
   assert.doesNotMatch(manualBacklogRendererSource, /fetch\(/);
   assert.doesNotMatch(manualBacklogRendererSource, /data-workflow-action/);
+  assert.doesNotMatch(manualBacklogRendererSource, /<button/i);
+  assert.doesNotMatch(manualBacklogRendererSource, /<input/i);
+  assert.doesNotMatch(manualBacklogRendererSource, /<select/i);
   const ruleCandidateRendererSource = js.match(/function renderRequiredAttributeRuleCandidateIndex[\s\S]+?\n}\n\nfunction renderRequiredAttributeRuleCandidateHistory/)?.[0] || "";
   assert.ok(ruleCandidateRendererSource);
   assert.doesNotMatch(ruleCandidateRendererSource, /fetch\(/);
@@ -273,12 +283,74 @@ test("frontend renders required attribute fill plan groups", async () => {
   assert.ok(fillPlanRendererSource);
   assert.doesNotMatch(fillPlanRendererSource, /fetch\(/);
   assert.doesNotMatch(fillPlanRendererSource, /data-workflow-action/);
+  assert.match(fillPlanRendererSource, /renderRequiredAttributeManualBacklog\(run, node, \{ showWorkbench: false \}\)/);
   assert.match(css, /workflow-required-fill-plan/);
   assert.match(css, /required-attribute-coverage-summary/);
   assert.match(css, /required-attribute-manual-backlog/);
+  assert.match(css, /required-attribute-manual-workbench/);
   assert.match(css, /required-attribute-rule-candidate-index/);
   assert.match(css, /required-attribute-rule-candidate-history/);
   assert.match(css, /required-fill-plan-row/);
+});
+
+test("required attribute manual backlog groups seller-facing blockers", async () => {
+  const js = await readFile(new URL("../public/app.js", import.meta.url), "utf8");
+  const source = js.match(/function requiredAttributeManualWorkbenchGroups[\s\S]+?\n}\n\nfunction renderRequiredAttributeManualBacklog/)?.[0]
+    .replace(/\nfunction renderRequiredAttributeManualBacklog$/, "");
+  assert.ok(source);
+  const requiredAttributeManualWorkbenchGroups = new Function(`${source}\nreturn requiredAttributeManualWorkbenchGroups;`)();
+  const groups = requiredAttributeManualWorkbenchGroups({
+    buckets: [
+      {
+        key: "replace_source",
+        items: [
+          {
+            attributeId: 1001,
+            attributeName: "Вес товара",
+            strategy: "package_data",
+            source: "1688_package_missing",
+            reasonZh: "1688 货源缺少尺重。",
+          },
+          {
+            attributeId: 1004,
+            attributeName: "Опасный весовой товар",
+            action: "blocked_sensitive",
+            safetyTier: "blocked-never-guess",
+            strategy: "package_data",
+            reasonZh: "涉及合规和 вес 字段。",
+          },
+        ],
+      },
+      {
+        key: "manual_required",
+        items: [{
+          attributeId: 1002,
+          attributeName: "Срок годности",
+          action: "blocked_sensitive",
+          safetyTier: "blocked-never-guess",
+          reasonZh: "涉及合规。",
+        }],
+      },
+      {
+        key: "rule_candidate",
+        items: [{
+          attributeId: 1003,
+          attributeName: "Материал",
+          action: "manual_required",
+          safetyTier: "manual-required",
+          reasonZh: "低置信文本。",
+        }],
+      },
+    ],
+  });
+
+  assert.deepEqual(groups.map((group) => group.key), ["package_evidence", "compliance_sensitive", "manual_value"]);
+  assert.equal(groups[0].items[0].mustSupplyText, "1688 或人工实测的包装重量、长宽高、规格证据");
+  assert.match(groups[0].items[0].safeNextStep, /更换货源|尺重/);
+  assert.match(groups[1].items[0].blockReason, /涉及合规/);
+  assert.ok(groups[1].items.some((item) => item.attributeId === 1004));
+  assert.match(groups[1].safeNextStep, /不能猜测/);
+  assert.match(groups[2].items[0].mustSupplyText, /真实属性值/);
 });
 
 test("listing center exposes a read-only fill task queue from existing diagnostics", async () => {
@@ -294,6 +366,9 @@ test("listing center exposes a read-only fill task queue from existing diagnosti
   assert.match(js, /listingFillTaskTextRepairCandidate/);
   assert.match(js, /listingFillTaskVariantTextRepairCandidate/);
   assert.match(js, /listingRequiredAttributeConfirmationItems/);
+  assert.match(js, /requiredAttributeManualBacklog/);
+  assert.match(js, /manualAttributeWorkbenchGroups/);
+  assert.match(js, /renderRequiredAttributeManualWorkbench/);
   assert.match(js, /listingVariantCoverageTaskText/);
   assert.match(js, /listingFillTaskVariantAspectSuggestion/);
   assert.match(js, /listingVariantAspectContext/);

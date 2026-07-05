@@ -782,6 +782,18 @@ test("buildRequiredAttributeFillPlan suggests purpose dictionary candidates from
     source: "purpose_synonym",
   }]);
 
+  const catalogPlan = buildRequiredAttributeFillPlan({
+    categoryMatch: { description_category_id: 17028673, type_id: 95183 },
+    attrsMeta: [
+      { id: 4960, name: "适用对象", is_required: true, dictionary_id: 103 },
+    ],
+    attributeValuesById: {
+      4960: [{ id: 53, value: "для животных" }],
+    },
+    productText: "1688 标题：catalog organizer storage box",
+  })[0];
+  assert.deepEqual(catalogPlan.dictionaryCandidates, []);
+
   const typePlan = buildRequiredAttributeFillPlan({
     categoryMatch: { description_category_id: 17028673, type_id: 95183 },
     attrsMeta: [

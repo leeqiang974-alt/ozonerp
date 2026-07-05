@@ -981,8 +981,8 @@ function purposeSynonymDictionaryCandidatesForMeta({
       confidence: 0.7,
     },
     {
-      sourcePattern: /животн|pet|cat|dog|кошка|собак|宠物|猫|狗/,
-      valuePattern: /животн|pet|cat|dog|кош|собак|宠物|猫|狗/i,
+      sourcePattern: /животн|\b(?:pet|cat|dog)\b|кошка|собак|宠物|猫|狗/,
+      valuePattern: /животн|\b(?:pet|cat|dog)\b|кош|собак|宠物|猫|狗/i,
       source: "purpose_synonym",
       confidence: 0.7,
     },

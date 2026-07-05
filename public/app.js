@@ -1203,6 +1203,107 @@ function listingFillTaskVariantTextRepairCandidate(run = currentListingWorkflowR
   return null;
 }
 
+function listingNormalizePackageRepairInfo(input = {}) {
+  const source = input.package || input.packageInfo || input;
+  const normalized = {
+    weight: Math.round(Number(source.weight || source.weightG || source.weight_g || 0)),
+    depth: Math.round(Number(source.depth || source.lengthMm || source.length_mm || source.length || 0)),
+    width: Math.round(Number(source.width || source.widthMm || source.width_mm || 0)),
+    height: Math.round(Number(source.height || source.heightMm || source.height_mm || 0)),
+  };
+  if (!Number.isFinite(normalized.weight) || normalized.weight < 1
+    || !Number.isFinite(normalized.depth) || normalized.depth < 1
+    || !Number.isFinite(normalized.width) || normalized.width < 1
+    || !Number.isFinite(normalized.height) || normalized.height < 1) {
+    return null;
+  }
+  return normalized;
+}
+
+function listingTrustedPackageRepairSource(source = "") {
+  const value = String(source || "").trim();
+  return ["1688_package", "manual_measurement", "manual_measured", "supplier_package"].includes(value) ? value : "";
+}
+
+function listingPackageMissingFields(item = {}) {
+  return [
+    ["weight", item.weight],
+    ["depth", item.depth],
+    ["width", item.width],
+    ["height", item.height],
+  ].filter(([, value]) => !Number.isFinite(Number(value)) || Number(value) < 1)
+    .map(([field]) => field);
+}
+
+function listingPackageRepairEvidenceItems(run = {}) {
+  const nodes = Array.isArray(run.nodes) ? run.nodes : [];
+  const evidenceItems = [];
+  function pushEvidence(node = {}, rawPackage = {}, rawSource = "", offerId = "") {
+    const packageInfo = listingNormalizePackageRepairInfo(rawPackage);
+    const explicitSource = listingTrustedPackageRepairSource(rawSource || rawPackage?.packageInfoSource || rawPackage?.source || "");
+    if (!packageInfo || !explicitSource) return;
+    evidenceItems.push({
+      nodeKey: node.key || "preflight_check",
+      offerId: String(offerId || rawPackage?.offerId || rawPackage?.offer_id || "").trim(),
+      packageInfoSource: explicitSource,
+      packageInfo,
+    });
+  }
+  nodes.forEach((node) => {
+    const output = node.output || {};
+    const input = node.input || {};
+    const pricingDiagnosis = output.pricingDiagnosis || input.pricingDiagnosis || {};
+    if (pricingDiagnosis?.package) {
+      pushEvidence(node, pricingDiagnosis.package, pricingDiagnosis.packageInfoSource || output.packageInfoSource || input.packageInfoSource || "", "");
+    }
+    if (input.package) {
+      pushEvidence(node, input.package, input.packageInfoSource || "", input.offerId || "");
+    }
+    (Array.isArray(pricingDiagnosis?.variants) ? pricingDiagnosis.variants : []).forEach((variant) => {
+      pushEvidence(node, variant.package || variant.packageInfo || {}, variant.packageInfoSource || pricingDiagnosis.packageInfoSource || "", variant.offerId || "");
+    });
+  });
+  const validation = run.payloadDraftValidation || {};
+  if (validation.pricingDiagnosis?.package) {
+    pushEvidence({ key: "preflight_check" }, validation.pricingDiagnosis.package, validation.pricingDiagnosis.packageInfoSource || "", "");
+  }
+  return evidenceItems;
+}
+
+function listingFillTaskPackageRepairCandidates(run = currentListingWorkflowRun()) {
+  if (!run) return [];
+  const waitingHuman = run.status === "waiting_human" || run.locks?.waitingHuman === true;
+  if (!waitingHuman) return [];
+  const items = Array.isArray(run.payloadDraft?.items) ? run.payloadDraft.items : [];
+  if (!items.length) return [];
+  const preflightNode = (run.nodes || []).find((node) => node.key === "preflight_check") || {};
+  const evidenceItems = listingPackageRepairEvidenceItems(run);
+  if (!evidenceItems.length) return [];
+  const candidates = [];
+  for (const item of items) {
+    const offerId = String(item.offer_id || item.offerId || "").trim();
+    const missingFields = listingPackageMissingFields(item);
+    if (!missingFields.length) continue;
+    const evidence = evidenceItems.find((entry) => entry.offerId && entry.offerId === offerId)
+      || evidenceItems.find((entry) => !entry.offerId)
+      || null;
+    if (!evidence) continue;
+    candidates.push({
+      runId: run.id || "",
+      nodeKey: preflightNode.key || "preflight_check",
+      offerId,
+      packageInfoSource: evidence.packageInfoSource,
+      packageInfo: evidence.packageInfo,
+      missingFields,
+    });
+  }
+  return candidates;
+}
+
+function listingFillTaskPackageRepairCandidate(run = currentListingWorkflowRun()) {
+  return listingFillTaskPackageRepairCandidates(run)[0] || null;
+}
+
 function listingVariantCoverageTaskText(summary = {}) {
   const rowCount = Number(summary.rowCount || 0);
   const aspectCovered = Number(summary.aspectCoveredRowCount || 0);
@@ -1363,6 +1464,7 @@ function listingFillTaskQueueItems(run = currentListingWorkflowRun()) {
   const listingQuality = validation.listingQuality || preflightOutput.listingQuality || null;
   const repairCandidates = listingFillTaskDictionaryRepairCandidates(run);
   const textRepairCandidates = listingFillTaskTextRepairCandidates(run);
+  const packageRepairCandidates = listingFillTaskPackageRepairCandidates(run);
   const variantTextRepairCandidate = listingFillTaskVariantTextRepairCandidate(run);
   const variantAspectSuggestion = listingFillTaskVariantAspectSuggestion(variantConfiguration);
   const items = [];
@@ -1372,7 +1474,7 @@ function listingFillTaskQueueItems(run = currentListingWorkflowRun()) {
     const manualCount = Number((requiredAttributeFillSummary?.manualRequiredCount ?? 0) + (requiredAttributeFillSummary?.blockedNeverGuessCount ?? 0))
       || requiredAttributeFillPlan.filter((row) => ["manual_required", "blocked_sensitive"].includes(row.action)).length;
     const confirmationItems = listingRequiredAttributeConfirmationItems(requiredAttributeFillPlan, repairCandidates);
-    const manualAttributeWorkbenchGroups = requiredAttributeManualWorkbenchGroups(requiredAttributeManualBacklog, textRepairCandidates);
+    const manualAttributeWorkbenchGroups = requiredAttributeManualWorkbenchGroups(requiredAttributeManualBacklog, textRepairCandidates, packageRepairCandidates);
     items.push({
       tone: manualCount ? "warning" : confirmCount ? "info" : "success",
       label: "分类属性",
@@ -6588,7 +6690,7 @@ function requiredAttributeManualBacklogBucketTitle(bucket = {}) {
   return bucket.title || map[bucket.key] || "人工属性";
 }
 
-function requiredAttributeManualWorkbenchGroups(backlog = {}, textRepairCandidates = []) {
+function requiredAttributeManualWorkbenchGroups(backlog = {}, textRepairCandidates = [], packageRepairCandidates = []) {
   const groupDefinitions = [
     {
       key: "package_evidence",
@@ -6616,6 +6718,7 @@ function requiredAttributeManualWorkbenchGroups(backlog = {}, textRepairCandidat
   const groupByKey = new Map(groups.map((group) => [group.key, group]));
   const buckets = Array.isArray(backlog.buckets) ? backlog.buckets : [];
   const safeTextRepairCandidates = Array.isArray(textRepairCandidates) ? textRepairCandidates : [];
+  const safePackageRepairCandidates = Array.isArray(packageRepairCandidates) ? packageRepairCandidates : [];
   const packagePattern = /package|weight|dimension|length|width|height|尺重|重量|长宽高|规格|вес|длина|ширина|высота/i;
   const compliancePattern = /合规|保质期|储存|成分|危险|儿童|食品|化妆|医疗|电池|срок|состав|опас|дет|пищ|battery/i;
   function packageEvidenceForItem(item = {}) {
@@ -6646,11 +6749,30 @@ function requiredAttributeManualWorkbenchGroups(backlog = {}, textRepairCandidat
       }));
     const source = String(item.source || "");
     const missingSource = source === "1688_package_missing" || /缺少|缺失|missing/i.test(text);
+    const canWriteDraft = safePackageRepairCandidates.length > 0;
+    const candidateMissingFields = [...new Set(safePackageRepairCandidates.flatMap((candidate) => candidate.missingFields || []))];
+    const missingFieldLabels = {
+      weight: "重量",
+      depth: "长度/深度",
+      width: "宽度",
+      height: "高度",
+    };
+    const sourceLabels = {
+      "1688_package": "1688 详情解析尺重",
+      "manual_measurement": "人工实测尺重",
+      "manual_measured": "人工实测尺重",
+      "supplier_package": "供应商包装资料",
+    };
+    const candidateSourceText = [...new Set(safePackageRepairCandidates
+      .map((candidate) => sourceLabels[candidate.packageInfoSource] || candidate.packageInfoSource)
+      .filter(Boolean))].join(" / ");
     return {
-      canWriteDraft: false,
-      statusText: missingSource ? "缺少 1688 尺重证据" : "需核实尺重证据",
-      sourceText: source === "1688_package_missing" ? "1688 详情解析未取得完整包装尺重" : (source || "当前货源/人工资料"),
-      missingText: missingFields.length ? missingFields.join("、") : "重量、长宽高或规格",
+      canWriteDraft,
+      statusText: canWriteDraft ? "已有可信尺重证据" : (missingSource ? "缺少 1688 尺重证据" : "需核实尺重证据"),
+      sourceText: canWriteDraft ? candidateSourceText : (source === "1688_package_missing" ? "1688 详情解析未取得完整包装尺重" : (source || "当前货源/人工资料")),
+      missingText: candidateMissingFields.length
+        ? candidateMissingFields.map((field) => missingFieldLabels[field] || field).join("、")
+        : (missingFields.length ? missingFields.join("、") : "重量、长宽高或规格"),
       payloadTargets,
       safeSourceAction: "回到 1688 采集或详情页重新采集尺重；没有可靠来源时人工实测后更新货源，再重新预检。",
     };
@@ -6677,19 +6799,23 @@ function requiredAttributeManualWorkbenchGroups(backlog = {}, textRepairCandidat
       const itemRepairCandidates = groupKey === "manual_value"
         ? safeTextRepairCandidates.filter((candidate) => String(candidate.attributeId || "") === String(item.attributeId || ""))
         : [];
+      const itemPackageRepairCandidates = groupKey === "package_evidence" ? safePackageRepairCandidates : [];
       const packageEvidence = groupKey === "package_evidence" ? packageEvidenceForItem(item) : null;
       group.items.push({
         ...item,
         bucketKey: bucket.key || "",
         blockReason: item.reasonZh || group.problemText,
         mustSupplyText: group.mustSupplyText,
-        safeNextStep: itemRepairCandidates.length
+        safeNextStep: itemPackageRepairCandidates.length
+          ? "当前 workflow 已等待人工；可人工确认可信尺重后写回本地草稿并重新预检，不提交 Ozon。"
+          : itemRepairCandidates.length
           ? "当前 workflow 已等待人工；可人工填写该 SKU 文本值，系统只写本地草稿并重新预检，不提交 Ozon。"
           : item.safeNextStep || group.safeNextStep,
         repairStatusText: groupKey === "package_evidence"
-          ? "需补证据，不可猜填"
+          ? (itemPackageRepairCandidates.length ? "可确认写入本地草稿" : "需补证据，不可猜填")
           : itemRepairCandidates.length ? "可安全填写" : "暂不可直接填写",
         textRepairCandidates: itemRepairCandidates,
+        packageRepairCandidates: itemPackageRepairCandidates,
         packageEvidence,
       });
     });
@@ -6738,6 +6864,25 @@ function renderRequiredAttributeManualWorkbench(workbenchGroups = []) {
                             >定位包装字段</button>
                           `).join("")}
                         </span>
+                      ` : ""}
+                      ${item.packageEvidence.canWriteDraft && Array.isArray(item.packageRepairCandidates) && item.packageRepairCandidates.length ? `
+                        <div class="required-attribute-manual-actions">
+                          ${item.packageRepairCandidates.slice(0, 4).map((candidate) => `
+                            <button
+                              type="button"
+                              data-workflow-action="apply-package-info-repair"
+                              data-workflow-run-id="${escapeHtml(candidate.runId)}"
+                              data-workflow-node-key="${escapeHtml(candidate.nodeKey || "preflight_check")}"
+                              data-repair-offer-id="${escapeHtml(candidate.offerId)}"
+                              data-repair-package-source="${escapeHtml(candidate.packageInfoSource)}"
+                              data-repair-package-weight="${escapeHtml(candidate.packageInfo?.weight || "")}"
+                              data-repair-package-depth="${escapeHtml(candidate.packageInfo?.depth || "")}"
+                              data-repair-package-width="${escapeHtml(candidate.packageInfo?.width || "")}"
+                              data-repair-package-height="${escapeHtml(candidate.packageInfo?.height || "")}"
+                              title="只写本地 Payload 草稿并重新预检，不提交 Ozon"
+                            >确认写入尺重并预检</button>
+                          `).join("")}
+                        </div>
                       ` : ""}
                     </span>
                   ` : ""}
@@ -7853,6 +7998,34 @@ async function handleWorkflowAction(action, button) {
       }),
     });
     toast(result.ok ? "本地变体文本已写回并通过预检，不会提交 Ozon" : "本地变体文本已写回，但预检仍有问题", result.ok ? "ok" : "error");
+    await loadWorkflowRuns();
+    return;
+  }
+  if (action === "apply-package-info-repair") {
+    const offerId = button?.dataset?.repairOfferId || "";
+    const packageInfo = {
+      weight: Number(button?.dataset?.repairPackageWeight || 0),
+      depth: Number(button?.dataset?.repairPackageDepth || 0),
+      width: Number(button?.dataset?.repairPackageWidth || 0),
+      height: Number(button?.dataset?.repairPackageHeight || 0),
+    };
+    if (!packageInfo.weight || !packageInfo.depth || !packageInfo.width || !packageInfo.height) {
+      throw new Error("可信尺重不完整，不能写回本地草稿。");
+    }
+    const ok = window.confirm(`确认把可信包装尺重写回 ${offerId || "当前 SKU"} 的本地 Payload 草稿？系统会立即重新预检，但不会提交 Ozon。`);
+    if (!ok) return;
+    const result = await api(`/api/workflows/${encodeURIComponent(run.id)}/payload-draft/attribute-repair`, {
+      method: "POST",
+      body: JSON.stringify({
+        confirmLocalDraftRepair: true,
+        repairType: "package_info",
+        offerId,
+        packageInfoSource: button?.dataset?.repairPackageSource || "",
+        packageInfo,
+        note: "页面人工确认：可信包装尺重修复",
+      }),
+    });
+    toast(result.ok ? "本地包装尺重已写回并通过预检，不会提交 Ozon" : "本地包装尺重已写回，但预检仍有问题", result.ok ? "ok" : "error");
     await loadWorkflowRuns();
     return;
   }

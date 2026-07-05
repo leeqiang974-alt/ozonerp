@@ -8,6 +8,38 @@
 
 本轮 Codex 桌面环境以 `C:\Users\Administrator\Documents\ozonerp` 为实际项目根；继续开发前仍需先确认 `git status` 和最近提交，避免误入旧复制目录。
 
+## 2026-07-05 包装尺重证据写入本地草稿入口 V1
+
+### 已完成
+
+- 上架中心“人工属性工作台”的包装尺重证据组新增安全写入入口：
+  - 只在当前 workflow 处于 `waiting_human` 或 `locks.waitingHuman=true` 时生成候选。
+  - 只针对 `payloadDraft.items` 中 `weight/depth/width/height` 缺失的 SKU 显示按钮。
+  - 只接受可信尺重来源：`1688_package`、`manual_measurement`、`manual_measured`、`supplier_package`。
+  - 点击“确认写入尺重并预检”前必须二次人工确认。
+  - 前端调用 `/api/workflows/:id/payload-draft/attribute-repair`，`repairType: "package_info"`，只写本地 Payload 草稿并重新预检。
+- 定价诊断链路保留 `packageInfoSource`；只有显式可信来源或 1688 URL/来源才会标记为 `1688_package`，PDD/未知来源即使有尺重也不会被误标为可写证据。
+- 自动上架 Payload 草稿生成新增硬闸：候选尺重必须有可信来源；PDD/未知来源即使带重量和长宽高，也不能生成可提交 Ozon 的 payload 草稿。
+- 包装证据组继续保留“定位包装字段”的只读入口，未知来源或缺证据时仍显示“需补证据，不可猜填”。
+
+### 安全边界
+
+- 该入口不调用 Ozon submit，不解除 `submitLocked`，不绕过 Payload validation。
+- workflow 非等待人工状态不显示修复候选。
+- PDD、未知来源、猜测尺重、不完整尺重不会被当作可写证据；定价诊断不得无条件把缺失来源兜底成 `1688_package`。
+- 未知/PDD 尺重不能只靠“人工确认提交”兜底，必须回到 1688 货源、供应商包装资料或人工实测后再生成草稿。
+- 后端仍二次校验 `confirmLocalDraftRepair`、可信来源、完整尺重和 `waiting_human`，前端按钮不是最终安全边界。
+
+### 已验证
+
+- TDD 红灯：
+  - `test/frontend-static.test.js` 先因缺少 `listingFillTaskPackageRepairCandidates`、缺少 `apply-package-info-repair` 入口失败。
+  - `test/workflow-runs.test.js` 先因 `packageInfoSource` 未保留失败。
+- 已转绿：
+  - `node --test test/frontend-static.test.js --test-name-pattern "package repair|manual backlog groups|read-only fill task queue"`，84/84 通过。
+  - `node --test test/workflow-runs.test.js --test-name-pattern "carries pricing diagnosis"`，68/68 通过。
+  - `node --test test/auto-listing-payload-draft.test.js --test-name-pattern "package evidence|creates workflow payload"`，25/25 通过。
+
 ## 2026-06-30 Claude NVIDIA 默认审阅链路修复
 
 ### 已完成

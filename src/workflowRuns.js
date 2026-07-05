@@ -2075,6 +2075,7 @@ function normalizeWorkflowPricingDiagnosis(input) {
     converged: input.converged !== false,
     level: input.level || null,
     package: input.package || {},
+    packageInfoSource: String(input.packageInfoSource || input.package?.source || ""),
     steps: Array.isArray(input.steps) ? input.steps : [],
     variants: Array.isArray(input.variants) ? input.variants : [],
   };

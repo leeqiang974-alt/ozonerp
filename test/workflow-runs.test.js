@@ -2124,6 +2124,7 @@ test("workflowNodeFromAutoListingStage carries pricing diagnosis for match profi
       baseCost: 61.98,
       profit: 24.62,
       profitRate: 0.3,
+      packageInfoSource: "1688_package",
       package: { weightG: 650, lengthMm: 220, widthMm: 160, heightMm: 80 },
       level: { id: "budget", name: "Budget" },
       steps: [{ iteration: 1, levelName: "Budget", nextPriceCny: 86.6 }],
@@ -2134,6 +2135,7 @@ test("workflowNodeFromAutoListingStage carries pricing diagnosis for match profi
   assert.equal(node.output.pricingDiagnosis.priceCny, 86.6);
   assert.equal(node.output.pricingDiagnosis.oldPriceCny, 173.2);
   assert.equal(node.output.pricingDiagnosis.minPriceCny, "86");
+  assert.equal(node.output.pricingDiagnosis.packageInfoSource, "1688_package");
   assert.equal(node.output.pricingDiagnosis.level.name, "Budget");
   assert.equal(node.diagnosis.reasonCode, "PRICING_DIAGNOSIS_READY");
   assert.match(node.diagnosis.messageZh, /售价 86.6 CNY/);

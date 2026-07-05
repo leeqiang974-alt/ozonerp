@@ -306,6 +306,14 @@ test("required attribute manual backlog groups seller-facing blockers", async ()
     attributeId: 1003,
     attributeName: "Материал",
   }];
+  const packageRepairCandidates = [{
+    runId: "wr_1",
+    nodeKey: "preflight_check",
+    offerId: "SKU-PACKAGE",
+    packageInfoSource: "1688_package",
+    packageInfo: { weight: 650, depth: 220, width: 160, height: 80 },
+    missingFields: ["weight", "depth", "width", "height"],
+  }];
   const groups = requiredAttributeManualWorkbenchGroups({
     buckets: [
       {
@@ -349,20 +357,22 @@ test("required attribute manual backlog groups seller-facing blockers", async ()
         }],
       },
     ],
-  }, textRepairCandidates);
+  }, textRepairCandidates, packageRepairCandidates);
 
   assert.deepEqual(groups.map((group) => group.key), ["package_evidence", "compliance_sensitive", "manual_value"]);
   assert.equal(groups[0].items[0].mustSupplyText, "1688 或人工实测的包装重量、长宽高、规格证据");
   assert.match(groups[0].items[0].safeNextStep, /更换货源|尺重/);
-  assert.equal(groups[0].items[0].repairStatusText, "需补证据，不可猜填");
+  assert.equal(groups[0].items[0].repairStatusText, "可确认写入本地草稿");
   assert.deepEqual(groups[0].items[0].textRepairCandidates, []);
-  assert.equal(groups[0].items[0].packageEvidence.canWriteDraft, false);
-  assert.equal(groups[0].items[0].packageEvidence.statusText, "缺少 1688 尺重证据");
+  assert.equal(groups[0].items[0].packageEvidence.canWriteDraft, true);
+  assert.equal(groups[0].items[0].packageEvidence.statusText, "已有可信尺重证据");
   assert.match(groups[0].items[0].packageEvidence.missingText, /重量/);
   assert.match(groups[0].items[0].packageEvidence.safeSourceAction, /重新采集|人工实测/);
   assert.deepEqual(groups[0].items[0].packageEvidence.payloadTargets.map((target) => target.field), ["weight"]);
   assert.equal(groups[0].items[0].packageEvidence.payloadTargets[0].canWriteDraft, false);
   assert.equal(groups[0].items[0].packageEvidence.payloadTargets[0].path, "\"weight\"");
+  assert.equal(groups[0].items[0].packageRepairCandidates[0].offerId, "SKU-PACKAGE");
+  assert.equal(groups[0].items[0].packageRepairCandidates[0].packageInfo.weight, 650);
   assert.match(groups[1].items[0].blockReason, /涉及合规/);
   assert.ok(groups[1].items.some((item) => item.attributeId === 1004));
   assert.ok(groups[1].items.every((item) => item.repairStatusText === "暂不可直接填写"));
@@ -451,6 +461,61 @@ test("listing fill task queue binds manual workbench text repairs only to safe t
   assert.equal(runningCandidates.length, 0);
 });
 
+test("listing fill task queue extracts trusted package repair candidates only while waiting human", async () => {
+  const js = await readFile(new URL("../public/app.js", import.meta.url), "utf8");
+  const source = js.match(/function listingNormalizePackageRepairInfo[\s\S]+?\n}\n\nfunction listingFillTaskPackageRepairCandidate\(/)?.[0]
+    .replace(/\nfunction listingFillTaskPackageRepairCandidate\($/, "");
+  assert.ok(source);
+  const listingFillTaskPackageRepairCandidates = new Function(`${source}\nreturn listingFillTaskPackageRepairCandidates;`)();
+
+  const run = {
+    id: "wr_pkg",
+    source: "auto_listing",
+    status: "waiting_human",
+    locks: { waitingHuman: true },
+    nodes: [{
+      key: "match_profit",
+      output: {
+        pricingDiagnosis: {
+          packageInfoSource: "1688_package",
+          package: { weightG: 650, lengthMm: 220, widthMm: 160, heightMm: 80 },
+        },
+      },
+    }, {
+      key: "preflight_check",
+    }],
+    payloadDraft: {
+      items: [{
+        offer_id: "SKU-PACKAGE",
+        weight: "",
+        depth: "",
+        width: "",
+        height: "",
+      }],
+    },
+  };
+  const candidates = listingFillTaskPackageRepairCandidates(run);
+
+  assert.equal(candidates.length, 1);
+  assert.equal(candidates[0].runId, "wr_pkg");
+  assert.equal(candidates[0].nodeKey, "preflight_check");
+  assert.equal(candidates[0].offerId, "SKU-PACKAGE");
+  assert.equal(candidates[0].packageInfoSource, "1688_package");
+  assert.deepEqual(candidates[0].packageInfo, { weight: 650, depth: 220, width: 160, height: 80 });
+  assert.deepEqual(candidates[0].missingFields, ["weight", "depth", "width", "height"]);
+
+  assert.equal(listingFillTaskPackageRepairCandidates({ ...run, status: "running", locks: { waitingHuman: false } }).length, 0);
+  assert.equal(listingFillTaskPackageRepairCandidates({
+    ...run,
+    source: "pdd",
+    nodes: [{ key: "match_profit", output: { pricingDiagnosis: { package: { weightG: 650, lengthMm: 220, widthMm: 160, heightMm: 80 } } } }],
+  }).length, 0);
+  assert.equal(listingFillTaskPackageRepairCandidates({
+    ...run,
+    nodes: [{ key: "match_profit", output: { pricingDiagnosis: { packageInfoSource: "1688_package", package: { weightG: 0, lengthMm: 220, widthMm: 160, heightMm: 80 } } } }],
+  }).length, 0);
+});
+
 test("listing center exposes a read-only fill task queue from existing diagnostics", async () => {
   const [js, css] = await Promise.all([
     readFile(new URL("../public/app.js", import.meta.url), "utf8"),
@@ -463,6 +528,8 @@ test("listing center exposes a read-only fill task queue from existing diagnosti
   assert.match(js, /listingFillTaskDictionaryRepairCandidates/);
   assert.match(js, /listingFillTaskTextRepairCandidate/);
   assert.match(js, /listingFillTaskTextRepairCandidates/);
+  assert.match(js, /listingFillTaskPackageRepairCandidates/);
+  assert.match(js, /listingFillTaskPackageRepairCandidate/);
   assert.match(js, /listingFillTaskVariantTextRepairCandidate/);
   assert.match(js, /listingRequiredAttributeConfirmationItems/);
   assert.match(js, /requiredAttributeManualBacklog/);
@@ -494,7 +561,11 @@ test("listing center exposes a read-only fill task queue from existing diagnosti
   assert.match(js, /data-payload-path="\$\{escapeHtml\(target\.path \|\| ""\)\}"/);
   assert.match(js, /#listingStagePanels \[data-payload-path\]/);
   assert.match(js, /focusWorkflowPayloadIssue\(listingPayloadLocatorTarget\)/);
-  assert.doesNotMatch(js, /apply-package/);
+  assert.match(js, /data-workflow-action="apply-package-info-repair"/);
+  assert.match(js, /确认写入尺重并预检/);
+  assert.match(js, /repairType: "package_info"/);
+  assert.match(js, /data-repair-package-weight/);
+  assert.match(js, /data-repair-package-source/);
   assert.match(js, /填写变体文本并预检/);
   assert.match(js, /待确认字典候选/);
   assert.match(js, /候选值/);

@@ -45,7 +45,37 @@ test("buildListingPayloadDraftFromJob creates workflow payload draft without Ozo
   assert.equal(draft.items[0].description_category_id, 17028673);
   assert.equal(draft.items[0].type_id, 95183);
   assert.ok(draft.items[0].attributes.some((attribute) => Number(attribute.id) === 9048));
+  assert.equal(draft.summary.pricingDiagnosis.packageInfoSource, "1688_package");
   assert.equal(validateSubmitPayload(draft).ok, true);
+});
+
+test("buildListingPayloadDraftFromJob rejects PDD package evidence without trusted source", () => {
+  assert.throws(() => buildListingPayloadDraftFromJob({
+    pendingParentSku: "SKUlq00998",
+    ozonTitle: "Автокормушка для кошек",
+    listingContent: {
+      title_ru: "Автоматическая кормушка для кошек",
+      description_ru: "Удобная кормушка для домашних животных.",
+    },
+    visualCard: { url: "https://example.com/cover.jpg" },
+    bestMatch: {
+      candidateTitle: "宠物自动喂食器",
+      candidateUrl: "https://mobile.yangkeduo.com/goods.html?goods_id=1",
+      purchasePriceCny: 18,
+    },
+    candidateData: {
+      source: "pdd",
+      images: ["https://example.com/a.jpg", "https://example.com/b.jpg", "https://example.com/c.jpg"],
+      sizeWeight: { weightG: 220, lengthMm: 160, widthMm: 120, heightMm: 90 },
+      skuVariants: [],
+    },
+  }, {
+    categoryMatch: {
+      description_category_id: 17028673,
+      type_id: 95183,
+      path: "Товары для животных",
+    },
+  }), /可信尺重来源/);
 });
 
 test("buildListingPayloadDraftFromJob marks learned Ozon commission source", () => {

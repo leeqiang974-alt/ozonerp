@@ -123,6 +123,7 @@ function pricingDiagnosisFromCalculation({
       widthMm: Number(packageInfo.width || packageInfo.widthMm || 0),
       heightMm: Number(packageInfo.height || packageInfo.heightMm || 0),
     },
+    packageInfoSource: packageInfo.packageInfoSource || packageInfo.source || "",
     steps: Array.isArray(priceCalc.steps) ? priceCalc.steps.slice(-6) : [],
     variants,
   };
@@ -1680,6 +1681,39 @@ function packageSizeWeight(candidateData = {}) {
   };
 }
 
+function trustedPackageInfoSourceForListingJob(job = {}) {
+  const candidateData = job.candidateData || {};
+  const sizeWeight = candidateData.sizeWeight || {};
+  const explicitSource = String(
+    candidateData.packageInfoSource
+    || sizeWeight.packageInfoSource
+    || candidateData.packageSource
+    || sizeWeight.source
+    || "",
+  ).trim();
+  if (["1688_package", "manual_measurement", "manual_measured", "supplier_package"].includes(explicitSource)) {
+    return explicitSource;
+  }
+  const sourceText = [
+    candidateData.source,
+    candidateData.sourceType,
+    job.source,
+    job.sourceType,
+    job.bestMatch?.source,
+    job.bestMatch?.sourceType,
+  ].map((value) => String(value || "").toLowerCase()).join(" ");
+  const urlText = [
+    candidateData.url,
+    candidateData.productUrl,
+    job.url,
+    job.bestMatch?.candidateUrl,
+  ].map((value) => String(value || "").toLowerCase()).join(" ");
+  if (/(^|\s)(1688|crawler1688|crawler_1688)(\s|$)/.test(sourceText) || /1688\.com/.test(urlText)) {
+    return "1688_package";
+  }
+  return "";
+}
+
 function contentGenerationWorkflowSummary(listingContent = {}, candidate = {}, visualCard = null) {
   var product = candidate?.parsed || candidate || {};
   var titleRu = String(listingContent.title_ru || listingContent.title || listingContent.name || "");
@@ -1727,6 +1761,8 @@ export function buildListingPayloadDraftFromJob(job = {}, options = {}) {
     .slice(0, MAX_OZON_IMAGE_PREPARE_COUNT);
   const packageInfo = packageSizeWeight(job.candidateData || {});
   if (!packageInfo.ok) throw new Error(packageInfo.reason || "候选缺少尺重，无法生成 payload 草稿");
+  packageInfo.packageInfoSource = trustedPackageInfoSourceForListingJob(job);
+  if (!packageInfo.packageInfoSource) throw new Error("候选缺少可信尺重来源，无法生成 payload 草稿");
   const bestMatchPrice = job.bestMatch ? job.bestMatch.purchasePriceCny : 0;
   const purchaseCost = Math.max(Number(bestMatchPrice || 0) + PURCHASE_COST_MARKUP_RMB, 1);
   const commissionInput = resolveCommissionInput(job, categoryMatch);
@@ -3206,6 +3242,11 @@ export async function completeListing(jobId, storeId) {
     if (!packageInfo.ok) {
       await failJob(jobId, packageInfo.reason);
       return { ok: false, error: packageInfo.reason };
+    }
+    packageInfo.packageInfoSource = trustedPackageInfoSourceForListingJob(job);
+    if (!packageInfo.packageInfoSource) {
+      await failJob(jobId, "候选缺少可信尺重来源，无法生成 payload 草稿");
+      return { ok: false, error: "候选缺少可信尺重来源" };
     }
     await addStep(jobId, "size_weight_checked", "尺重确认: " + packageInfo.weight + "g / " + packageInfo.depth + "x" + packageInfo.width + "x" + packageInfo.height + "mm");
     var bestMatchPrice = job.bestMatch ? job.bestMatch.purchasePriceCny : 0;

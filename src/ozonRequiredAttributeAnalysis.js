@@ -1087,8 +1087,8 @@ function genderSynonymDictionaryCandidatesForMeta({
   const text = normalizeText(productText);
   const genderRules = [
     {
-      sourcePattern: /жен|woman|women|female|女士|女性|女式|女/,
-      valuePattern: /жен|woman|women|female|女性|女士|女/i,
+      sourcePattern: /(^|[^\p{L}\p{N}])жен(?:ск|щин)|\b(?:woman|women|female)\b|女士|女性|女式|女/u,
+      valuePattern: /(^|[^\p{L}\p{N}])жен(?:ск|щин)|\b(?:woman|women|female)\b|女性|女士|女/iu,
       source: "gender_synonym",
       confidence: 0.7,
     },
@@ -1099,8 +1099,8 @@ function genderSynonymDictionaryCandidatesForMeta({
       confidence: 0.7,
     },
     {
-      sourcePattern: /дет|child|children|kid|kids|儿童|童|小孩|宝宝/,
-      valuePattern: /дет|child|children|kid|kids|儿童|童/i,
+      sourcePattern: /(^|[^\p{L}\p{N}])дет(?:ск|и|ей|ям)|реб[её]н|\b(?:child|children|kid|kids)\b|儿童|童|小孩|宝宝/u,
+      valuePattern: /(^|[^\p{L}\p{N}])дет(?:ск|и|ей|ям)|реб[её]н|\b(?:child|children|kid|kids)\b|儿童|童/iu,
       source: "gender_synonym",
       confidence: 0.7,
     },

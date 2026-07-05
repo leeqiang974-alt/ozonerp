@@ -831,6 +831,23 @@ test("buildRequiredAttributeFillPlan suggests gender dictionary candidates from 
     source: "gender_synonym",
   }]);
 
+  const russianWomenPlan = buildRequiredAttributeFillPlan({
+    categoryMatch: { description_category_id: 17028673, type_id: 95183 },
+    attrsMeta: [
+      { id: 8296, name: "Пол", is_required: true, dictionary_id: 104 },
+    ],
+    attributeValuesById: {
+      8296: [{ id: 73, value: "женский" }],
+    },
+    productText: "1688 标题：женщина travel organizer",
+  })[0];
+  assert.deepEqual(russianWomenPlan.dictionaryCandidates, [{
+    dictionaryValueId: 73,
+    value: "женский",
+    confidence: 0.7,
+    source: "gender_synonym",
+  }]);
+
   const childrenPlan = buildRequiredAttributeFillPlan({
     categoryMatch: { description_category_id: 17028673, type_id: 95183 },
     attrsMeta: [
@@ -852,6 +869,47 @@ test("buildRequiredAttributeFillPlan suggests gender dictionary candidates from 
     confidence: 0.7,
     source: "gender_synonym",
   }]);
+
+  const russianChildrenPlan = buildRequiredAttributeFillPlan({
+    categoryMatch: { description_category_id: 17028673, type_id: 95183 },
+    attrsMeta: [
+      { id: 8297, name: "Пол", is_required: true, dictionary_id: 105 },
+    ],
+    attributeValuesById: {
+      8297: [{ id: 85, value: "детский" }],
+    },
+    productText: "1688 标题：детская bathroom cup",
+  })[0];
+  assert.deepEqual(russianChildrenPlan.dictionaryCandidates, [{
+    dictionaryValueId: 85,
+    value: "детский",
+    confidence: 0.7,
+    source: "gender_synonym",
+  }]);
+
+  const weeklyPlannerPlan = buildRequiredAttributeFillPlan({
+    categoryMatch: { description_category_id: 17028673, type_id: 95183 },
+    attrsMeta: [
+      { id: 8294, name: "Пол", is_required: true, dictionary_id: 106 },
+    ],
+    attributeValuesById: {
+      8294: [{ id: 83, value: "женский" }],
+    },
+    productText: "1688 标题：еженедельник travel organizer",
+  })[0];
+  assert.deepEqual(weeklyPlannerPlan.dictionaryCandidates, []);
+
+  const detailPlan = buildRequiredAttributeFillPlan({
+    categoryMatch: { description_category_id: 17028673, type_id: 95183 },
+    attrsMeta: [
+      { id: 8295, name: "Пол", is_required: true, dictionary_id: 107 },
+    ],
+    attributeValuesById: {
+      8295: [{ id: 84, value: "детский" }],
+    },
+    productText: "1688 标题：деталь органайзер",
+  })[0];
+  assert.deepEqual(detailPlan.dictionaryCandidates, []);
 
   const purposePlan = buildRequiredAttributeFillPlan({
     categoryMatch: { description_category_id: 17028673, type_id: 95183 },

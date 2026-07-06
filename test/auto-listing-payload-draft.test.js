@@ -288,6 +288,20 @@ test("buildListingPayloadDraftFromJob records source-explained model autofill ac
   assert.equal(modelPlan.action, "auto_fill");
   assert.equal(modelPlan.source, "parent_sku");
   assert.equal(modelPlan.value, modelValues[0]);
+  assert.deepEqual(draft.summary.sourceVariants, [
+    {
+      offerId: "SKUlq01004-belyy",
+      spec: "白色",
+      image: "https://example.com/white.jpg",
+      source: "1688_sku_variant",
+    },
+    {
+      offerId: "SKUlq01004-chernyy",
+      spec: "黑色",
+      image: "https://example.com/black.jpg",
+      source: "1688_sku_variant",
+    },
+  ]);
 });
 
 test("buildRequiredAttributeFillPlan keeps dictionary candidates in current category and marks package/sensitive fields", () => {

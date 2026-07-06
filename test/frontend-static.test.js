@@ -786,6 +786,10 @@ test("frontend renders read-only variant configuration workbench", async () => {
   assert.match(js, /repairSuggestions/);
   assert.match(js, /只读修复建议/);
   assert.match(js, /renderVariantRepairSuggestions/);
+  assert.match(js, /renderVariantSuggestedAspects/);
+  assert.match(js, /suggestedAspects/);
+  assert.match(js, /1688 规格候选/);
+  assert.match(js, /sourceVariant/);
   assert.match(js, /differenceSuggestions/);
   assert.match(js, /整组差异建议/);
   assert.match(js, /renderVariantGroupDifferenceSuggestions/);
@@ -798,6 +802,12 @@ test("frontend renders read-only variant configuration workbench", async () => {
   assert.doesNotMatch(repairRendererSource, /<button/);
   assert.doesNotMatch(repairRendererSource, /data-workflow-action/);
   assert.doesNotMatch(repairRendererSource, /fetch\(/);
+  assert.match(repairRendererSource, /renderVariantSuggestedAspects/);
+  const suggestedAspectsRendererSource = js.match(/function renderVariantSuggestedAspects[\s\S]+?\n}\n\nfunction renderVariantRepairSuggestions/)?.[0] || "";
+  assert.ok(suggestedAspectsRendererSource);
+  assert.doesNotMatch(suggestedAspectsRendererSource, /<button/);
+  assert.doesNotMatch(suggestedAspectsRendererSource, /data-workflow-action/);
+  assert.doesNotMatch(suggestedAspectsRendererSource, /fetch\(/);
   const differenceRendererSource = js.match(/function renderVariantGroupDifferenceSuggestions[\s\S]+?\n}\n\nfunction renderVariantConfigurationWorkbench/)?.[0] || "";
   assert.ok(differenceRendererSource);
   assert.doesNotMatch(differenceRendererSource, /<button/);
@@ -814,6 +824,8 @@ test("frontend renders read-only variant configuration workbench", async () => {
   assert.match(js, /uniqueSkuImageRowCount/);
   assert.match(js, /nonUniqueSkuImageRowCount/);
   assert.match(js, /missingSkuImageRowCount/);
+  assert.match(js, /suggestedAspectRowCount/);
+  assert.match(js, /suggestedAspectCount/);
   assert.match(js, /readinessStatus/);
   assert.match(js, /SKU 图/);
   assert.match(js, /可变特性/);

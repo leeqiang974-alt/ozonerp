@@ -648,6 +648,119 @@ test("buildVariantConfigurationSummary suggests missing aspect and sku image rep
   assert.equal(summary.summary.repairSuggestionCount, 2);
 });
 
+test("buildVariantConfigurationSummary suggests read-only aspect values from source SKU specs", () => {
+  const summary = buildVariantConfigurationSummary({
+    payload: { items: [
+      {
+        offer_id: "SKU-WHITE",
+        images: ["https://example.com/white.jpg"],
+        attributes: [
+          { id: 9048, values: [{ value: "Органайзер" }] },
+        ],
+      },
+      {
+        offer_id: "SKU-BLUE",
+        images: ["https://example.com/blue.jpg"],
+        attributes: [
+          { id: 9048, values: [{ value: "Органайзер" }] },
+        ],
+      },
+    ] },
+    attrsMeta: [
+      { id: 9048, name: "Название модели (для объединения в одну карточку)", is_required: true },
+      { id: 10097, name: "Название цвета", is_aspect: true },
+    ],
+    sourceVariants: [
+      { offerId: "SKU-WHITE", spec: "白色" },
+      { offerId: "SKU-BLUE", spec: "蓝色" },
+    ],
+  });
+
+  const white = summary.rows.find((row) => row.offerId === "SKU-WHITE");
+  const blue = summary.rows.find((row) => row.offerId === "SKU-BLUE");
+  assert.equal(summary.summary.suggestedAspectRowCount, 2);
+  assert.equal(white.sourceVariant.spec, "白色");
+  assert.deepEqual(white.suggestedAspects, [{
+    attributeId: 10097,
+    attributeName: "Название цвета",
+    value: "белый",
+    source: "1688_sku_spec",
+    confidence: 0.72,
+    readOnly: true,
+    forbiddenEffects: ["payload_write", "ozon_submit", "rule_auto_enable"],
+  }]);
+  assert.equal(blue.suggestedAspects[0].value, "синий");
+  assert.ok(white.repairSuggestions.some((suggestion) => (
+    suggestion.code === "MISSING_ASPECT"
+    && suggestion.suggestedAspects?.[0]?.value === "белый"
+    && /不会自动写 Payload/.test(suggestion.nextStep)
+  )));
+});
+
+test("buildVariantConfigurationSummary blocks partially missing variant aspects", () => {
+  const summary = buildVariantConfigurationSummary({
+    payload: { items: [
+      {
+        offer_id: "SKU-WHITE-S",
+        images: ["https://example.com/white-s.jpg"],
+        attributes: [
+          { id: 9048, values: [{ value: "Органайзер" }] },
+          { id: 10097, values: [{ value: "белый" }] },
+        ],
+      },
+      {
+        offer_id: "SKU-BLUE-M",
+        images: ["https://example.com/blue-m.jpg"],
+        attributes: [
+          { id: 9048, values: [{ value: "Органайзер" }] },
+          { id: 10097, values: [{ value: "синий" }] },
+        ],
+      },
+    ] },
+    attrsMeta: [
+      { id: 9048, name: "Название модели (для объединения в одну карточку)", is_required: true },
+      { id: 10097, name: "Название цвета", is_aspect: true },
+      { id: 10098, name: "Размер", is_aspect: true },
+    ],
+    sourceVariants: [
+      { offerId: "SKU-WHITE-S", spec: "白色 S" },
+      { offerId: "SKU-BLUE-M", spec: "蓝色 M" },
+    ],
+  });
+
+  const white = summary.rows.find((row) => row.offerId === "SKU-WHITE-S");
+  assert.equal(white.aspects.length, 1);
+  assert.equal(white.rowStatus, "missing_aspect");
+  assert.deepEqual(white.missingAspects, [{ id: 10098, name: "Размер" }]);
+  assert.equal(white.suggestedAspects[0].attributeId, 10098);
+  assert.equal(white.suggestedAspects[0].readOnly, true);
+  assert.equal(summary.summary.missingAspectRowCount, 2);
+  assert.equal(summary.summary.readinessStatus, "blocked");
+});
+
+test("buildVariantConfigurationSummary does not attach source SKU specs to mismatched offer ids", () => {
+  const summary = buildVariantConfigurationSummary({
+    payload: { items: [{
+      offer_id: "SKU-WHITE",
+      images: ["https://example.com/white.jpg"],
+      attributes: [
+        { id: 9048, values: [{ value: "Органайзер" }] },
+      ],
+    }] },
+    attrsMeta: [
+      { id: 9048, name: "Название модели (для объединения в одну карточку)", is_required: true },
+      { id: 10097, name: "Название цвета", is_aspect: true },
+    ],
+    sourceVariants: [
+      { offerId: "SKU-OTHER", spec: "白色" },
+    ],
+  });
+
+  assert.equal(summary.rows[0].sourceVariant, undefined);
+  assert.deepEqual(summary.rows[0].suggestedAspects, []);
+  assert.equal(summary.summary.suggestedAspectRowCount, 0);
+});
+
 test("buildVariantConfigurationSummary accepts same model name when aspects differ", () => {
   const attrsMeta = [
     { id: 9048, name: "Название модели (для объединения в одну карточку)", is_required: true },
@@ -1373,6 +1486,58 @@ test("buildPreflightGateNode blocks multi variant payloads without aspect metada
   assert.equal(node.output.attributeMatrix.summary.missingVariantAspectMetadata, true);
 });
 
+test("buildPreflightGateNode blocks partially missing variant aspect attributes", () => {
+  const node = buildPreflightGateNode({
+    payload: { items: [
+      {
+        offer_id: "SKU-WHITE-S",
+        name: "Cat feeder",
+        description_category_id: 17028673,
+        type_id: 95183,
+        price: "1200",
+        images: ["1", "2", "3"],
+        attributes: [
+          { id: 85, values: [{ dictionary_value_id: 971082, value: "Нет бренда" }] },
+          { id: 9048, values: [{ value: "Cat feeder" }] },
+          { id: 10097, values: [{ value: "белый" }] },
+        ],
+      },
+      {
+        offer_id: "SKU-BLUE-M",
+        name: "Cat feeder",
+        description_category_id: 17028673,
+        type_id: 95183,
+        price: "1200",
+        images: ["4", "5", "6"],
+        attributes: [
+          { id: 85, values: [{ dictionary_value_id: 971082, value: "Нет бренда" }] },
+          { id: 9048, values: [{ value: "Cat feeder" }] },
+          { id: 10097, values: [{ value: "синий" }] },
+        ],
+      },
+    ] },
+    attrsMeta: [
+      { id: 85, name: "Бренд", is_required: true, dictionary_id: 971082 },
+      { id: 9048, name: "Название модели (для объединения в одну карточку)", is_required: true },
+      { id: 10097, name: "Название цвета", is_aspect: true },
+      { id: 10098, name: "Размер", is_aspect: true },
+    ],
+    sourceVariants: [
+      { offerId: "SKU-WHITE-S", spec: "白色 S" },
+      { offerId: "SKU-BLUE-M", spec: "蓝色 M" },
+    ],
+    variantCount: 2,
+    contentSummary: { candidateImageCount: 3, sizeWeightReady: true, skuVariantCount: 2, contentIssues: [] },
+    category: { path: "宠物用品", description_category_id: 17028673, type_id: 95183 },
+  });
+
+  assert.equal(node.output.ok, false);
+  assert.equal(node.status, "failed");
+  assert.equal(node.runStatus, "waiting_human");
+  assert.equal(node.output.variantConfiguration.summary.missingAspectRowCount, 2);
+  assert.equal(node.output.issues.some((issue) => issue.code === "MISSING_VARIANT_ASPECT"), true);
+});
+
 test("buildPreflightGateNode blocks dictionary ids from direct dictionary sources", () => {
   const node = buildPreflightGateNode({
     payload: {
@@ -1463,6 +1628,49 @@ test("payload draft validation preserves Ozon aspect metadata across saves", asy
   await savePayloadDraft(run.id, duplicatePayload);
   const validationAfterPlainSave = await validatePayloadDraft(run.id);
   assert.ok(validationAfterPlainSave.issues.some((issue) => issue.code === "DUPLICATE_VARIANT_ASPECTS"));
+});
+
+test("payload draft validation preserves source SKU specs as read-only aspect suggestions", async () => {
+  reset();
+  const run = await createWorkflowRun({ title: "来源 SKU 规格候选" });
+  const base = {
+    name: "Органайзер",
+    description_category_id: 17028743,
+    type_id: 93735,
+    price: "10",
+    images: ["https://example.com/a.jpg", "https://example.com/b.jpg", "https://example.com/c.jpg"],
+  };
+  const payload = { items: [
+    { ...base, offer_id: "SKU-WHITE", attributes: [{ id: 85, values: [{ value: "Нет бренда" }] }, { id: 9048, values: [{ value: "Органайзер" }] }] },
+    { ...base, offer_id: "SKU-BLUE", attributes: [{ id: 85, values: [{ value: "Нет бренда" }] }, { id: 9048, values: [{ value: "Органайзер" }] }] },
+  ] };
+  const attrsMeta = [
+    { id: 85, name: "Бренд", is_required: true },
+    { id: 9048, name: "Название модели (для объединения в одну карточку)", is_required: true },
+    { id: 10097, name: "Название цвета", is_aspect: true },
+  ];
+
+  await savePayloadDraft(run.id, payload, {
+    attrsMeta,
+    sourceVariants: [
+      { offerId: "SKU-WHITE", spec: "白色", source: "1688_sku_variant" },
+      { offerId: "SKU-BLUE", spec: "蓝色", source: "1688_sku_variant" },
+    ],
+  });
+  const validation = await validatePayloadDraft(run.id);
+  const updated = await getWorkflowRun(run.id);
+
+  assert.equal(updated.payloadDraftSourceVariants.length, 2);
+  assert.equal(updated.payloadDraft.items[0].attributes.some((attribute) => Number(attribute.id || 0) === 10097), false);
+  assert.equal(updated.locks.submitLocked, true);
+  assert.equal(validation.variantConfiguration.summary.suggestedAspectRowCount, 2);
+  assert.equal(validation.variantConfiguration.rows[0].suggestedAspects[0].value, "белый");
+  assert.equal(validation.variantConfiguration.rows[0].suggestedAspects[0].readOnly, true);
+  assert.deepEqual(validation.variantConfiguration.rows[0].suggestedAspects[0].forbiddenEffects, [
+    "payload_write",
+    "ozon_submit",
+    "rule_auto_enable",
+  ]);
 });
 
 test("payload draft validation blocks listing quality dictionary issues", async () => {

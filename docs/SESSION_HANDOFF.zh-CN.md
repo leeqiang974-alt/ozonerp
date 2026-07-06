@@ -1,12 +1,52 @@
 # Ozon ERP 会话接管与恢复记录
 
-更新时间：2026-07-05
+更新时间：2026-07-06
 
 ## 项目根目录
 
 `C:\Users\Administrator\Documents\ozonerp`
 
 本轮 Codex 桌面环境以 `C:\Users\Administrator\Documents\ozonerp` 为实际项目根；继续开发前仍需先确认 `git status` 和最近提交，避免误入旧复制目录。
+
+## 2026-07-06 1688 SKU 规格进入变体属性只读候选 V2
+
+### 已完成
+
+- 自动上架草稿生成会把 1688 `skuVariants` 映射为 `summary.sourceVariants`，按实际 Ozon `offer_id` 保留 `spec/image/source`，用于后续变体诊断。
+- `savePayloadDraft` 新增 `payloadDraftSourceVariants` 持久化；保存草稿、人工本地修复后重新预检、提交前总闸都会继续携带该来源 SKU 上下文。
+- `buildVariantConfigurationSummary` 在 Ozon 可变特性缺失时，会从来源 SKU 规格生成只读候选：
+  - 白/蓝/黑/红/黄/绿/粉/紫/橙/棕/灰/米色等中文规格可映射到俄文颜色候选。
+  - 候选值只在对应属性为颜色/色号类可变特性时自动翻译；其他可变属性保留来源规格文本，留给人工确认。
+  - 每条候选带 `readOnly=true` 和 `forbiddenEffects=["payload_write","ozon_submit","rule_auto_enable"]`。
+- 多 SKU 草稿现在要求补齐当前类目所有 `is_aspect` 变体属性；如果类目同时要求颜色和尺码，而 SKU 只填了颜色，预检总闸会输出 `MISSING_VARIANT_ASPECT` 并进入 `waiting_human`，不能提交 Ozon。
+- 来源 SKU 规格只按 `offerId` 精确匹配；如果本地草稿被重排或改了 `offer_id`，不会再按行号把错误规格贴到另一个 SKU 上。
+- 上架中心变体配置工作簿会显示：
+  - 顶部“1688 规格候选 X 行 / Y 个值”。
+  - 单个 SKU 缺少可变特性时显示“1688 规格候选”和来源规格。
+  - 修复建议文案明确说明候选不会自动写 Payload 或提交 Ozon。
+
+### 安全边界
+
+- 来源 SKU 规格只作为人工修复参考，不自动写本地 Payload，不启用规则，不解除 workflow lock，不提交 Ozon。
+- 部分缺失变体属性会阻塞预检和提交；即使已有一个 aspect，也不能因为“看起来有变体属性”而绕过总闸。
+- 人工写回仍必须走现有 `waiting_human + confirmLocalDraftRepair + validatePayloadDraft` 后端闸口。
+- 该能力只解决“采集规格如何帮助补变体属性”，不替代 Ozon 类目属性字典学习和人工最终确认。
+
+### 已验证
+
+- TDD 红灯：
+  - `node --test test/workflow-runs.test.js --test-name-pattern "source SKU specs|buildVariantConfigurationSummary"` 先因缺少 `suggestedAspectRowCount` 失败。
+  - `node --test test/frontend-static.test.js --test-name-pattern "variant configuration workbench"` 先因 UI 未消费 `suggestedAspectRowCount` 失败。
+  - 独立 agent 审核发现：部分缺失变体属性可能不阻塞预检、来源 SKU 规格在 `offerId` 不匹配时可能按行号误贴；已补红灯测试后修复。
+- 已转绿：
+  - `node --test test/frontend-static.test.js --test-name-pattern "variant configuration workbench"`，85/85 通过。
+  - `node --test test/workflow-runs.test.js`，73/73 通过。
+  - `node --test test/auto-listing-payload-draft.test.js --test-name-pattern "source-explained model autofill"`，25/25 通过。
+
+### 下一步建议
+
+- 继续做“变体规则 V3”：把来源 SKU 规格候选接入人工确认写回入口，要求仅在 `waiting_human` 时显示，点击后写本地草稿并重新预检，不自动提交 Ozon。
+- 同步完善 Ozon 类目可变特性字典值匹配：颜色/尺寸等如果是字典属性，不能写文本，必须先从当前类目字典候选中选择合法 `dictionary_value_id`。
 
 ## 2026-07-05 必填字典候选进入只读规则池 V2
 

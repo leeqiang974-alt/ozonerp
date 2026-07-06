@@ -1505,6 +1505,21 @@ export function variantOfferId(parentSku, variant = {}, index = 0) {
   return String(parentSku || "").trim() + "-" + variantRussianSuffix(variant.spec || variant.skuId || "", index);
 }
 
+function sourceVariantsForListing(parentSku, variants = []) {
+  return (Array.isArray(variants) ? variants : [])
+    .map(function(variant, index) {
+      const spec = String(variant?.spec || variant?.skuSpec || variant?.name || "").trim();
+      if (!spec) return null;
+      return {
+        offerId: variantOfferId(parentSku, variant, index),
+        spec,
+        image: variant?.image || variant?.imageUrl || "",
+        source: "1688_sku_variant",
+      };
+    })
+    .filter(Boolean);
+}
+
 export function dedupeSubmitItemsByOfferId(items = []) {
   var seen = new Set();
   return (items || []).filter(function(item) {
@@ -1919,6 +1934,9 @@ export function buildListingPayloadDraftFromJob(job = {}, options = {}) {
     })
     : [Object.assign({}, item, baseAttrs.length ? { attributes: baseAttrs } : {})];
   submitItems = dedupeSubmitItemsByOfferId(submitItems);
+  const submitOfferIds = new Set(submitItems.map(function(entry) { return String(entry?.offer_id || "").trim(); }).filter(Boolean));
+  const sourceVariants = sourceVariantsForListing(parentSku, variantsForListing)
+    .filter(function(entry) { return submitOfferIds.has(String(entry.offerId || "").trim()); });
   return {
     items: submitItems,
     summary: {
@@ -1933,6 +1951,7 @@ export function buildListingPayloadDraftFromJob(job = {}, options = {}) {
       requiredAttributeFillSummary,
       requiredAttributeManualBacklog,
       requiredAttributeRuleCandidateIndex,
+      sourceVariants,
     },
   };
 }
@@ -1967,7 +1986,10 @@ async function saveWorkflowPayloadDraftForListingJob(job = {}) {
     categoryCache: cache,
     parentSku,
   });
-  await savePayloadDraft(workflowRun.id, draft, { attrsMeta });
+  await savePayloadDraft(workflowRun.id, draft, {
+    attrsMeta,
+    sourceVariants: draft.summary?.sourceVariants || [],
+  });
   if (draft.summary?.pricingDiagnosis) {
     const pricingNode = workflowNodeFromAutoListingStage("matching", {
       bestMatch: job.bestMatch || {},

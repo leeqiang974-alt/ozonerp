@@ -384,9 +384,95 @@ function safeVariantNextAction(status = "", reasons = []) {
   return "变体配置暂未发现阻塞，继续查看预检总闸和人工确认。";
 }
 
+function normalizeVariantSpecText(value = "") {
+  return String(value || "")
+    .toLowerCase()
+    .replace(/ё/g, "е")
+    .replace(/[^\p{Script=Han}\p{Script=Cyrillic}a-z0-9]+/gu, " ")
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
+function sourceVariantForRow(sourceVariants = [], row = {}, index = 0, offerId = "") {
+  const variants = Array.isArray(sourceVariants) ? sourceVariants : [];
+  const normalizedOffer = String(offerId || row.offerId || "").trim();
+  const matched = normalizedOffer
+    ? variants.find((variant) => [
+      variant?.offerId,
+      variant?.offer_id,
+      variant?.skuOfferId,
+      variant?.sku_offer_id,
+    ].some((value) => String(value || "").trim() === normalizedOffer))
+    : null;
+  if (normalizedOffer && !matched) return null;
+  const variant = matched || variants[index] || null;
+  if (!variant) return null;
+  const spec = String(variant.spec || variant.skuSpec || variant.name || variant.label || "").trim();
+  if (!spec) return null;
+  return {
+    spec,
+    image: variant.image || variant.imageUrl || variant.skuImageUrl || "",
+    source: variant.source || "1688_sku_variant",
+  };
+}
+
+function sourceVariantTextAspectValue(meta = {}, sourceVariant = null) {
+  if (!sourceVariant) return "";
+  const text = normalizeVariantSpecText(sourceVariant.spec);
+  const metaText = normalizeVariantSpecText(`${meta.name || ""} ${meta.description || ""}`);
+  const colorRules = [
+    { pattern: /бел|\bwhite\b|白/, value: "белый" },
+    { pattern: /син|голуб|\bblue\b|蓝|藍/, value: "синий" },
+    { pattern: /черн|чёрн|\bblack\b|黑/, value: "черный" },
+    { pattern: /красн|\bred\b|红|紅/, value: "красный" },
+    { pattern: /желт|жёлт|\byellow\b|黄|黃/, value: "желтый" },
+    { pattern: /зелен|зелён|\bgreen\b|绿|綠/, value: "зеленый" },
+    { pattern: /розов|\bpink\b|粉/, value: "розовый" },
+    { pattern: /фиолет|\bpurple\b|紫/, value: "фиолетовый" },
+    { pattern: /оранж|\borange\b|橙/, value: "оранжевый" },
+    { pattern: /коричнев|\bbrown\b|棕|咖啡/, value: "коричневый" },
+    { pattern: /сер(ый|ая|ое|ые)|\bgray\b|\bgrey\b|灰/, value: "серый" },
+    { pattern: /беж|\bbeige\b|米色/, value: "бежевый" },
+  ];
+  if (/цвет|color|颜色|顏色|色彩|色号|色號/.test(metaText)) {
+    const match = colorRules.find((rule) => rule.pattern.test(text));
+    if (match) return match.value;
+  }
+  return sourceVariant.spec;
+}
+
+function sourceVariantAspectSuggestions({
+  row = {},
+  sourceVariant = null,
+  attrsMeta = [],
+} = {}) {
+  if (!sourceVariant) return [];
+  const existingAspectIds = new Set((row.aspects || []).map((aspect) => Number(aspect.id || 0)).filter(Boolean));
+  return (attrsMeta || [])
+    .filter((meta) => meta?.is_aspect && Number(meta?.id || 0) && !existingAspectIds.has(Number(meta.id || 0)))
+    .map((meta) => {
+      const value = sourceVariantTextAspectValue(meta, sourceVariant);
+      if (!value) return null;
+      return {
+        attributeId: Number(meta.id || 0),
+        attributeName: metaName(meta),
+        value,
+        source: "1688_sku_spec",
+        confidence: 0.72,
+        readOnly: true,
+        forbiddenEffects: ["payload_write", "ozon_submit", "rule_auto_enable"],
+      };
+    })
+    .filter(Boolean);
+}
+
 function variantRepairSuggestions(row = {}, reasons = [], skuImage = {}) {
   const suggestions = [];
-  const primaryAspect = (Array.isArray(row.aspects) ? row.aspects : []).find((aspect) => aspect?.id || aspect?.name) || null;
+  const primaryMissingAspect = (Array.isArray(row.missingAspects) ? row.missingAspects : []).find((aspect) => aspect?.id || aspect?.name) || null;
+  const primaryAspect = primaryMissingAspect
+    || (Array.isArray(row.aspects) ? row.aspects : []).find((aspect) => aspect?.id || aspect?.name)
+    || null;
+  const suggestedAspects = Array.isArray(row.suggestedAspects) ? row.suggestedAspects : [];
   const aspectLabel = String(primaryAspect?.name || (primaryAspect?.id ? `属性 ${primaryAspect.id}` : "Ozon 可变特性"));
   const reasonCodes = new Set((reasons || []).map((reason) => String(reason?.code || "")));
   if (reasonCodes.has("MISSING_ASPECT")) {
@@ -394,7 +480,10 @@ function variantRepairSuggestions(row = {}, reasons = [], skuImage = {}) {
       code: "MISSING_ASPECT",
       title: "补齐可变特性",
       action: `为该 SKU 补齐 ${aspectLabel}，确保同父 SKU 的颜色、尺码或容量可区分。`,
-      nextStep: "修改本地 Payload 草稿后重新预检；不会自动提交 Ozon。",
+      suggestedAspects,
+      nextStep: suggestedAspects.length
+        ? "可参考 1688 SKU 规格人工写入本地草稿并重新预检；本建议不会自动写 Payload 或提交 Ozon。"
+        : "修改本地 Payload 草稿后重新预检；不会自动提交 Ozon。",
     });
   }
   if (reasonCodes.has("DUPLICATE_ASPECT")) {
@@ -468,10 +557,16 @@ function variantCoverageSummary(rows = [], grouping = {}, differenceSuggestions 
   const duplicateAspectRowCount = rows.filter((row) => row.rowStatus === "duplicate_aspect").length;
   const missingAspectRowCount = rows.filter((row) => row.rowStatus === "missing_aspect").length;
   const pricingBlockedRowCount = rows.filter((row) => row.rowStatus === "pricing_blocked").length;
-  const aspectCoveredRowCount = rows.filter((row) => Array.isArray(row.aspects) && row.aspects.length > 0).length;
+  const aspectCoveredRowCount = rows.filter((row) => (
+    Array.isArray(row.aspects)
+    && row.aspects.length > 0
+    && (!Array.isArray(row.missingAspects) || row.missingAspects.length === 0)
+  )).length;
   const uniqueSkuImageRowCount = rows.filter((row) => row.skuImage?.status === "unique").length;
   const missingSkuImageRowCount = rows.filter((row) => row.skuImage?.status === "missing").length;
   const nonUniqueSkuImageRowCount = rows.filter((row) => row.skuImage?.status === "not_unique").length;
+  const suggestedAspectRowCount = rows.filter((row) => Array.isArray(row.suggestedAspects) && row.suggestedAspects.length).length;
+  const suggestedAspectCount = rows.reduce((count, row) => count + Number((row.suggestedAspects || []).length || 0), 0);
   const repairSuggestionCount = rows.reduce((sum, row) => sum + (Array.isArray(row.repairSuggestions) ? row.repairSuggestions.length : 0), 0);
   const differenceSuggestionCount = Array.isArray(differenceSuggestions) ? differenceSuggestions.length : 0;
   const readinessStatus = blockedRowCount ? "blocked" : imageWarningRowCount ? "warning" : "ready";
@@ -495,6 +590,8 @@ function variantCoverageSummary(rows = [], grouping = {}, differenceSuggestions 
     uniqueSkuImageRowCount,
     missingSkuImageRowCount,
     nonUniqueSkuImageRowCount,
+    suggestedAspectRowCount,
+    suggestedAspectCount,
     repairSuggestionCount,
     differenceSuggestionCount,
     readinessStatus,
@@ -781,11 +878,21 @@ export function buildVariantGroupingDiagnosis(input = {}) {
         signature: attributeValueSignature(attribute),
       }))
       .sort((left, right) => left.id - right.id);
+    const presentAspectIds = new Set(aspects.map((aspect) => Number(aspect.id || 0)).filter(Boolean));
+    const missingAspects = items.length > 1
+      ? aspectMeta
+        .filter((meta) => Number(meta?.id || 0) && !presentAspectIds.has(Number(meta.id || 0)))
+        .map((meta) => ({
+          id: Number(meta.id || 0),
+          name: String(meta.name || `属性 ${Number(meta.id || 0)}`),
+        }))
+      : [];
     return {
       itemIndex: index,
       offerId: String(item?.offer_id || ""),
       modelValue: modelValues.join(" / "),
       aspects,
+      missingAspects,
       aspectSignature: aspects.map((aspect) => `${aspect.id}:${aspect.signature}`).join("|"),
       duplicateGroup: "",
     };
@@ -816,6 +923,7 @@ export function buildVariantConfigurationSummary(input = {}) {
   const payload = input.payload || input.submitPayload || {};
   const items = payloadItems(payload);
   const attrsMeta = Array.isArray(input.attrsMeta) ? input.attrsMeta : [];
+  const sourceVariants = Array.isArray(input.sourceVariants) ? input.sourceVariants : [];
   const grouping = buildVariantGroupingDiagnosis({ items, attrsMeta });
   const duplicateOffers = new Set((grouping.duplicateGroups || []).flatMap((group) => group.offerIds || []));
   const firstImageCounts = new Map();
@@ -828,9 +936,16 @@ export function buildVariantConfigurationSummary(input = {}) {
   const rows = (grouping.rows || []).map((row, index) => {
     const item = items[index] || {};
     const offerId = String(item.offer_id || row.offerId || "");
+    const sourceVariant = sourceVariantForRow(sourceVariants, row, index, offerId);
+    const suggestedAspects = sourceVariantAspectSuggestions({
+      row,
+      sourceVariant,
+      attrsMeta,
+    });
     const firstImage = imageSignature((item.images || [])[0] || "");
     const reasons = [];
     let rowStatus = "valid";
+    const missingAspects = Array.isArray(row.missingAspects) ? row.missingAspects : [];
     const pricingRisk = pricingByOffer.get(offerId) || pricingByOffer.get("*") || null;
     if (pricingRisk) {
       rowStatus = "pricing_blocked";
@@ -839,9 +954,10 @@ export function buildVariantConfigurationSummary(input = {}) {
         message: pricingRisk.message || "该 SKU 存在定价阻塞，不能继续提交。",
       });
     }
-    if (!row.aspects?.length) {
+    if (missingAspects.length) {
       rowStatus = rowStatus === "valid" ? "missing_aspect" : rowStatus;
-      reasons.push({ code: "MISSING_ASPECT", message: "缺少 Ozon 可变特性，无法确认变体合并。" });
+      const missingLabel = missingAspects.map((aspect) => aspect.name || `属性 ${aspect.id || ""}`).filter(Boolean).join("、");
+      reasons.push({ code: "MISSING_ASPECT", message: `缺少 Ozon 可变特性${missingLabel ? `：${missingLabel}` : ""}，无法确认变体合并。` });
     }
     if (duplicateOffers.has(offerId)) {
       rowStatus = rowStatus === "pricing_blocked" ? rowStatus : "duplicate_aspect";
@@ -862,11 +978,14 @@ export function buildVariantConfigurationSummary(input = {}) {
       skuImage.message = "SKU 图未区分。";
       reasons.push({ code: "SKU_IMAGE_NOT_UNIQUE", message: "多个 SKU 使用相同首图，建议补区分图。" });
     }
-    const repairSuggestions = variantRepairSuggestions(row, reasons, skuImage);
+    const repairSuggestions = variantRepairSuggestions({ ...row, missingAspects, suggestedAspects }, reasons, skuImage);
     return {
       offerId,
       modelName: row.modelValue || "",
       aspects: row.aspects || [],
+      missingAspects,
+      sourceVariant: sourceVariant || undefined,
+      suggestedAspects,
       aspectSignature: row.aspectSignature || "",
       duplicateGroup: row.duplicateGroup || "",
       skuImage,
@@ -995,6 +1114,21 @@ function listingAttributeMatrixIssues(attributeMatrix = null) {
   return issues;
 }
 
+function variantConfigurationIssues(variantConfiguration = null) {
+  if (!variantConfiguration || typeof variantConfiguration !== "object") return [];
+  const rows = Array.isArray(variantConfiguration.rows) ? variantConfiguration.rows : [];
+  return rows
+    .filter((row) => row?.rowStatus === "missing_aspect")
+    .map((row) => ({
+      code: "MISSING_VARIANT_ASPECT",
+      message: "SKU 缺少 Ozon 可变特性，不能提交 Ozon。",
+      source: "variant_configuration",
+      offerId: row.offerId || "",
+      missingAspectIds: (row.missingAspects || []).map((aspect) => Number(aspect.id || 0)).filter(Boolean),
+      suggestedAspects: Array.isArray(row.suggestedAspects) ? row.suggestedAspects : [],
+    }));
+}
+
 function categoryMatchFromPayload(payload = {}) {
   const item = payloadItems(payload)[0] || {};
   return {
@@ -1071,10 +1205,12 @@ function buildPayloadDraftValidation(payload = {}, options = {}) {
     payload,
     attrsMeta: options.attrsMeta || [],
     pricing: options.pricing || null,
+    sourceVariants: options.sourceVariants || options.skuVariants || [],
   });
   const qualityIssues = listingQualityIssues(listingQuality);
   const matrixIssues = listingAttributeMatrixIssues(attributeMatrix);
-  const issues = [...(payloadValidation.issues || []), ...qualityIssues, ...matrixIssues];
+  const variantIssues = variantConfigurationIssues(variantConfiguration);
+  const issues = [...(payloadValidation.issues || []), ...qualityIssues, ...matrixIssues, ...variantIssues];
   const requiredAttributeFillPlan = buildRequiredAttributePlanForPayload(payload, options);
   const requiredAttributeFillSummary = summarizeRequiredAttributeFillPlan(requiredAttributeFillPlan);
   const requiredAttributeManualBacklog = buildRequiredAttributeManualBacklog(requiredAttributeFillPlan);
@@ -1151,9 +1287,11 @@ export function buildPreflightGateNode(input = {}) {
     payload: input.payload || {},
     attrsMeta: input.attrsMeta || [],
     pricing: input.pricing || null,
+    sourceVariants: input.sourceVariants || input.skuVariants || [],
   });
   issues.push(...listingQualityIssues(listingQuality));
   issues.push(...listingAttributeMatrixIssues(attributeMatrix));
+  issues.push(...variantConfigurationIssues(variantConfiguration));
   const duplicate = input.duplicate || null;
   if (duplicate?.duplicateJobId || duplicate?.duplicateSku) {
     issues.push({
@@ -1469,6 +1607,7 @@ export async function savePayloadDraft(runId, payloadDraft, options = {}) {
     ...run,
     payloadDraft,
     payloadDraftAttrsMeta: Array.isArray(options.attrsMeta) ? options.attrsMeta : (run.payloadDraftAttrsMeta || []),
+    payloadDraftSourceVariants: Array.isArray(options.sourceVariants) ? options.sourceVariants : (run.payloadDraftSourceVariants || []),
     payloadDraftValidation: null,
     locks: { ...(run.locks || {}), submitLocked: true },
   }));
@@ -1638,7 +1777,10 @@ export async function applyPayloadDraftAttributeRepair(runId, input = {}) {
       packageInfo: packageResult.packageInfo,
     };
   }
-  await savePayloadDraft(runId, payloadDraft, { attrsMeta: run.payloadDraftAttrsMeta || [] });
+  await savePayloadDraft(runId, payloadDraft, {
+    attrsMeta: run.payloadDraftAttrsMeta || [],
+    sourceVariants: run.payloadDraftSourceVariants || [],
+  });
   const validation = await validatePayloadDraft(runId);
   const updated = await updateRun(runId, (current) => ({
     ...current,
@@ -1678,6 +1820,7 @@ export async function validatePayloadDraft(runId) {
   const run = await updateRun(runId, (current) => {
     const validation = buildPayloadDraftValidation(current.payloadDraft || {}, {
       attrsMeta: current.payloadDraftAttrsMeta || [],
+      sourceVariants: current.payloadDraftSourceVariants || [],
       workflowRun: current,
       dictionaryValueCache: categoryCache.attributeValues || {},
     });
@@ -1715,6 +1858,7 @@ export async function submitPayloadDraftToOzon(runId, input = {}, deps = {}) {
   if (!items.length) {
     const validation = buildPayloadDraftValidation(payloadDraft, {
       attrsMeta: run.payloadDraftAttrsMeta || [],
+      sourceVariants: run.payloadDraftSourceVariants || [],
       workflowRun: run,
       dictionaryValueCache,
     });
@@ -1733,6 +1877,7 @@ export async function submitPayloadDraftToOzon(runId, input = {}, deps = {}) {
 
   const validation = buildPayloadDraftValidation(payloadDraft, {
     attrsMeta: run.payloadDraftAttrsMeta || [],
+    sourceVariants: run.payloadDraftSourceVariants || [],
     workflowRun: run,
     dictionaryValueCache,
   });
@@ -1740,6 +1885,7 @@ export async function submitPayloadDraftToOzon(runId, input = {}, deps = {}) {
     await upsertWorkflowNode(runId, buildPreflightGateNode({
       payload: payloadDraft,
       attrsMeta: run.payloadDraftAttrsMeta || [],
+      sourceVariants: run.payloadDraftSourceVariants || [],
       listingQuality: validation.listingQuality,
       attributeMatrix: validation.attributeMatrix,
       requiredAttributeFillPlan: validation.requiredAttributeFillPlan,
@@ -1755,6 +1901,7 @@ export async function submitPayloadDraftToOzon(runId, input = {}, deps = {}) {
   await upsertWorkflowNode(runId, buildPreflightGateNode({
     payload: payloadDraft,
     attrsMeta: run.payloadDraftAttrsMeta || [],
+    sourceVariants: run.payloadDraftSourceVariants || [],
     listingQuality: validation.listingQuality,
     attributeMatrix: validation.attributeMatrix,
     requiredAttributeFillPlan: validation.requiredAttributeFillPlan,

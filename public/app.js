@@ -7417,6 +7417,20 @@ function variantCoverageStatusText(readinessStatus = "") {
   return labels[readinessStatus] || "待预检";
 }
 
+function renderVariantSuggestedAspects(rowOrSuggestion = {}) {
+  const suggestedAspects = Array.isArray(rowOrSuggestion.suggestedAspects) ? rowOrSuggestion.suggestedAspects : [];
+  if (!suggestedAspects.length) return "";
+  return `
+    <div class="variant-suggested-aspects">
+      <strong>1688 规格候选</strong>
+      ${suggestedAspects.slice(0, 4).map((aspect) => `
+        <span>${escapeHtml(aspect.attributeName || `属性 ${aspect.attributeId || ""}`)}：${escapeHtml(aspect.value || "")}</span>
+      `).join("")}
+      <small>${escapeHtml(rowOrSuggestion.sourceVariant?.spec ? `来源规格：${rowOrSuggestion.sourceVariant.spec}` : "只读候选，人工确认后重新预检。")}</small>
+    </div>
+  `;
+}
+
 function renderVariantRepairSuggestions(row = {}) {
   const suggestions = Array.isArray(row.repairSuggestions) ? row.repairSuggestions : [];
   if (!suggestions.length) return "";
@@ -7425,6 +7439,7 @@ function renderVariantRepairSuggestions(row = {}) {
       <strong>只读修复建议</strong>
       ${suggestions.map((suggestion) => `
         <span>${escapeHtml(suggestion.title || suggestion.code || "修复建议")}：${escapeHtml(suggestion.action || "")}</span>
+        ${renderVariantSuggestedAspects(suggestion)}
         <small>${escapeHtml(suggestion.nextStep || "修复后重新预检；不会自动提交 Ozon。")}</small>
       `).join("")}
     </div>
@@ -7484,6 +7499,7 @@ function renderVariantConfigurationWorkbench(run = {}, node = {}) {
       <div class="workflow-variant-coverage-summary" aria-label="变体覆盖摘要">
         <strong>变体覆盖摘要：${escapeHtml(variantCoverageStatusText(summary.readinessStatus))}</strong>
         <span>属性覆盖 ${Number(summary.aspectCoveredRowCount || 0)}/${Number(summary.rowCount || rows.length)}，缺失 ${Number(summary.missingAspectRowCount || 0)}，重复 ${Number(summary.duplicateAspectRowCount || 0)}</span>
+        <span>1688 规格候选 ${Number(summary.suggestedAspectRowCount || 0)} 行 / ${Number(summary.suggestedAspectCount || 0)} 个值</span>
         <span>SKU 图区分 ${Number(summary.uniqueSkuImageRowCount || 0)}/${Number(summary.rowCount || rows.length)}，缺图 ${Number(summary.missingSkuImageRowCount || 0)}，未区分 ${Number(summary.nonUniqueSkuImageRowCount || 0)}</span>
         <small>${escapeHtml(summary.safeNextAction || "修复后重新预检；不会自动提交 Ozon。")}</small>
       </div>
@@ -7509,7 +7525,7 @@ function renderVariantConfigurationWorkbench(run = {}, node = {}) {
                 <td>${escapeHtml(row.modelName || "未读取")}</td>
                 <td>${(row.aspects || []).length
                   ? (row.aspects || []).map((aspect) => `<span>${escapeHtml(aspect.name || `属性 ${aspect.id || ""}`)}：${escapeHtml(aspect.value || "空")}</span>`).join("")
-                  : "缺少可变特性"}</td>
+                  : `缺少可变特性${renderVariantSuggestedAspects(row)}`}</td>
                 <td>
                   <span class="variant-workbench-image variant-workbench-image-${escapeHtml(row.skuImage?.status || "missing")}">${escapeHtml(variantWorkbenchImageText(row.skuImage?.status))}</span>
                   <small>${escapeHtml(row.skuImage?.message || "SKU 图待检查")}</small>

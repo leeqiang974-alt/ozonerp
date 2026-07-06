@@ -1824,6 +1824,7 @@ export function buildListingPayloadDraftFromJob(job = {}, options = {}) {
   const requiredAttributeRuleCandidateIndex = buildRequiredAttributeRuleCandidateIndex({
     categoryMatch,
     manualBacklog: requiredAttributeManualBacklog,
+    fillPlan: requiredAttributeFillPlan,
   });
   const baseAttrs = dedupeAttrs(highConfidenceRequiredAttributes(attrsMeta, attributeOptions)
     .concat(modelAttributesForMeta(modelName, attrsMeta))

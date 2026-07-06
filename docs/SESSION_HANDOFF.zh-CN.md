@@ -1,12 +1,43 @@
 # Ozon ERP 会话接管与恢复记录
 
-更新时间：2026-06-30
+更新时间：2026-07-05
 
 ## 项目根目录
 
 `C:\Users\Administrator\Documents\ozonerp`
 
 本轮 Codex 桌面环境以 `C:\Users\Administrator\Documents\ozonerp` 为实际项目根；继续开发前仍需先确认 `git status` 和最近提交，避免误入旧复制目录。
+
+## 2026-07-05 必填字典候选进入只读规则池 V2
+
+### 已完成
+
+- `requiredAttributeRuleCandidateIndex` 不再只接收人工缺规则 backlog；现在会读取当前商品 `requiredAttributeFillPlan` 中的 `suggest_dictionary` 行，把中置信 Ozon 字典候选也沉淀为只读规则候选。
+- 字典候选规则项会保留：
+  - 当前 `categoryKey/categoryPath`。
+  - `attributeId/attributeName`。
+  - 候选 `dictionaryValueId/value/confidence/source`。
+  - `requiresHumanApproval=true`。
+  - `forbiddenEffects=["payload_write","ozon_submit","rule_auto_enable"]`。
+- `requiredAttributeRuleCandidateHistory` 继续按 `categoryKey + attributeId` 聚合同类目样本，同时保留候选字典值和出现次数，方便后续人工审核判断“这个属性应不应该沉淀成规则、候选值是否稳定”。
+- 上架草稿生成和预检节点已把 `requiredAttributeFillPlan` 传入规则候选索引，因此真实 workflow/job/payload draft 的摘要可以看到这些候选，而不是只在测试工具里可见。
+- 上架中心“规则审查池”会只读展示候选字典值；跨多个 workflow summary 聚合时，候选值出现次数采用去重后的最大历史计数，避免同一份类目历史摘要在列表中重复展示时夸大稳定性。
+
+### 安全边界
+
+- 该规则池仍是只读沉淀，不持久化真实自动规则。
+- 字典候选不会直接写 Payload，不触发 Ozon submit，不绕过 Payload validation、preflight 或人工提交确认。
+- 品牌“无品牌”和原产国“中国”仍走当前类目字典的高置信自动填；制造商、危险品、成分等敏感字段仍不能猜填。
+
+### 已验证
+
+- TDD 红灯：
+  - `node --test test/ozon-required-attribute-analysis.test.js --test-name-pattern "dictionary suggestions"` 先因索引缺少字典候选失败。
+  - `node --test test/ozon-required-attribute-analysis.test.js --test-name-pattern "preserves dictionary candidate values"` 先因历史聚合丢失候选值失败。
+- 已转绿：
+  - `node --test test/ozon-required-attribute-analysis.test.js`，4/4 通过。
+  - `node --test test/auto-listing-payload-draft.test.js --test-name-pattern "RuleCandidate|rule candidates|dictionary"`，25/25 通过。
+  - `node --test test/frontend-static.test.js --test-name-pattern "occurrence counts deduplicated"`，85/85 通过，覆盖规则池候选值次数不重复膨胀。
 
 ## 2026-07-05 包装尺重证据写入本地草稿入口 V1
 

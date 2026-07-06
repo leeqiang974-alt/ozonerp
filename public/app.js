@@ -6956,10 +6956,26 @@ function renderRequiredAttributeRuleCandidateIndex(run = {}, node = {}) {
           <span>
             <b>${escapeHtml(candidate.attributeName || `属性 ${candidate.attributeId || ""}`)}</b>
             <small>${escapeHtml(candidate.ruleStatus || "candidate")} · ${escapeHtml(candidate.suggestedRuleKey || "")}</small>
+            ${renderRequiredAttributeRuleCandidateValues(candidate)}
           </span>
         `).join("")}
       </div>
     </div>
+  `;
+}
+
+function renderRequiredAttributeRuleCandidateValues(item = {}) {
+  const values = Array.isArray(item.candidateValues) ? item.candidateValues : [];
+  if (!values.length) return "";
+  return `
+    <small class="required-attribute-rule-candidate-values">
+      候选值 ${values.slice(0, 3).map((value) => {
+        const occurrence = Number(value.occurrenceCount || 0);
+        const countText = occurrence ? ` · ${occurrence} 次` : "";
+        const sourceText = value.source ? ` · ${value.source}` : "";
+        return `#${escapeHtml(value.dictionaryValueId || "")} ${escapeHtml(value.value || "")}${escapeHtml(sourceText)}${escapeHtml(countText)}`;
+      }).join(" / ")}
+    </small>
   `;
 }
 
@@ -6982,6 +6998,7 @@ function renderRequiredAttributeRuleCandidateHistory(run = {}, node = {}) {
           <span>
             <b>${escapeHtml(item.attributeName || `属性 ${item.attributeId || ""}`)}</b>
             <small>${escapeHtml(item.categoryKey || "")} · ${escapeHtml(item.ruleStatus || "collect_more_samples")} · ${Number(item.occurrenceCount || 0)} 次</small>
+            ${renderRequiredAttributeRuleCandidateValues(item)}
             <small>样本 ${Number((item.sampleProductIds || []).length || 0)} 个 · ${escapeHtml(item.safeNextStep || "人工审核前不生成规则。")}</small>
           </span>
         `).join("")}
@@ -7052,6 +7069,7 @@ function collectRequiredAttributeRulePool(runs = [], auditIntents = [], publishR
         sampleProductIds: new Set(),
         sampleRunIds: new Set(),
         sourceRunIds: new Set(),
+        candidateValueCounts: new Map(),
         safeNextStep: item.safeNextStep || "",
         approvalDraft: approvalDrafts.get(key) || null,
         approvalAuditIntents: approvalAuditIntents.get(strictRuleApprovalAuditCandidateKey(item)) || [],
@@ -7064,18 +7082,37 @@ function collectRequiredAttributeRulePool(runs = [], auditIntents = [], publishR
       if (item.ruleStatus === "ready_for_review") current.ruleStatus = "ready_for_review";
       if (!current.safeNextStep && item.safeNextStep) current.safeNextStep = item.safeNextStep;
       if (!current.approvalDraft && approvalDrafts.has(key)) current.approvalDraft = approvalDrafts.get(key);
+      (item.candidateValues || []).forEach((value) => {
+        const valueKey = [value.dictionaryValueId || "", value.value || "", value.source || ""].join(":");
+        if (!String(value.dictionaryValueId || "").trim() || !String(value.value || "").trim()) return;
+        const currentValue = current.candidateValueCounts.get(valueKey) || {
+          dictionaryValueId: value.dictionaryValueId,
+          value: value.value,
+          confidence: Number(value.confidence || 0),
+          source: value.source || "",
+          occurrenceCount: 0,
+        };
+        currentValue.occurrenceCount = Math.max(Number(currentValue.occurrenceCount || 0), Number(value.occurrenceCount || 1));
+        currentValue.confidence = Math.max(Number(currentValue.confidence || 0), Number(value.confidence || 0));
+        current.candidateValueCounts.set(valueKey, currentValue);
+      });
       pool.set(key, current);
     });
   });
   return [...pool.values()]
-    .map((item) => ({
-      ...item,
-      sampleProductIds: [...item.sampleProductIds],
-      sampleRunIds: [...item.sampleRunIds],
-      sourceRunIds: [...item.sourceRunIds],
-      latestApprovalAudit: item.approvalAuditIntents[0] || null,
-      latestPublishReview: item.publishReviewIntents[0] || null,
-    }))
+    .map((item) => {
+      const { candidateValueCounts, ...publicItem } = item;
+      return {
+        ...publicItem,
+        sampleProductIds: [...item.sampleProductIds],
+        sampleRunIds: [...item.sampleRunIds],
+        sourceRunIds: [...item.sourceRunIds],
+        candidateValues: [...candidateValueCounts.values()]
+          .sort((left, right) => Number(right.occurrenceCount || 0) - Number(left.occurrenceCount || 0) || String(left.value || "").localeCompare(String(right.value || ""))),
+        latestApprovalAudit: item.approvalAuditIntents[0] || null,
+        latestPublishReview: item.publishReviewIntents[0] || null,
+      };
+    })
     .sort((a, b) => Number(b.occurrenceCount || 0) - Number(a.occurrenceCount || 0));
 }
 
@@ -7268,6 +7305,7 @@ function renderListingRequiredAttributeRulePoolWorkbench() {
           <div>
             <span>${Number(item.occurrenceCount || 0)} 次出现</span>
             <small>样本 ${Number((item.sampleProductIds || []).length || 0)} 个 · workflow ${(item.sampleRunIds || item.sourceRunIds || []).slice(0, 3).map(escapeHtml).join("、") || "-"}</small>
+            ${renderRequiredAttributeRuleCandidateValues(item)}
           </div>
           <p>${escapeHtml(item.safeNextStep || "人工审核前不生成规则；确认后仍需独立测试和预检。")}</p>
           ${item.approvalDraft ? `

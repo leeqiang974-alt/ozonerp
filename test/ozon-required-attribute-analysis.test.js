@@ -3,6 +3,10 @@ import assert from "node:assert/strict";
 
 import {
   analyzeRequiredAttributes,
+  buildRequiredAttributeFillPlan,
+  buildRequiredAttributeManualBacklog,
+  buildRequiredAttributeRuleCandidateHistory,
+  buildRequiredAttributeRuleCandidateIndex,
   classifyAttributeFillStrategy,
 } from "../src/ozonRequiredAttributeAnalysis.js";
 
@@ -65,4 +69,81 @@ test("analyzeRequiredAttributes summarizes required fields from cached category 
   assert.equal(result.summary.dictionaryValuesCachedRows, 1);
   assert.equal(result.rows.find((row) => row.attributeId === 85).strategy, "fixed_no_brand");
   assert.equal(result.strategySummary.variant_aspect_from_sku, 1);
+});
+
+test("buildRequiredAttributeRuleCandidateIndex surfaces dictionary suggestions as read-only rule candidates", () => {
+  const categoryMatch = { description_category_id: 17028673, type_id: 95183, path: "Дом / Кухня" };
+  const fillPlan = buildRequiredAttributeFillPlan({
+    categoryMatch,
+    attrsMeta: [
+      { id: 85, name: "Бренд", is_required: true, dictionary_id: 100 },
+      { id: 777, name: "Материал", is_required: true, dictionary_id: 200 },
+      { id: 23487, name: "Производитель", is_required: true, dictionary_id: 300 },
+    ],
+    attributeValuesById: {
+      85: [{ id: 1001, value: "Нет бренда" }],
+      777: [{ id: 7771, value: "Пластик" }],
+    },
+    productText: "1688 ABS plastic kitchen organizer, no licensed brand.",
+  });
+  const manualBacklog = buildRequiredAttributeManualBacklog(fillPlan);
+  const index = buildRequiredAttributeRuleCandidateIndex({
+    categoryMatch,
+    manualBacklog,
+    fillPlan,
+  });
+
+  const materialCandidate = index.candidates.find((candidate) => candidate.attributeId === 777);
+  assert.equal(index.readOnly, true);
+  assert.equal(materialCandidate.source, "required_attribute_dictionary_candidate");
+  assert.equal(materialCandidate.action, "suggest_dictionary");
+  assert.equal(materialCandidate.ruleStatus, "candidate");
+  assert.equal(materialCandidate.requiresHumanApproval, true);
+  assert.equal(materialCandidate.readOnly, true);
+  assert.deepEqual(materialCandidate.forbiddenEffects, ["payload_write", "ozon_submit", "rule_auto_enable"]);
+  assert.match(materialCandidate.safeNextStep, /不会自动写 Payload/);
+  assert.deepEqual(materialCandidate.candidateValues, [{
+    dictionaryValueId: 7771,
+    value: "Пластик",
+    confidence: 0.72,
+    source: "material_synonym",
+  }]);
+  assert.equal(index.candidates.some((candidate) => candidate.attributeId === 85), false);
+  assert.equal(index.candidates.some((candidate) => candidate.attributeId === 23487 && candidate.action === "suggest_dictionary"), false);
+});
+
+test("buildRequiredAttributeRuleCandidateHistory preserves dictionary candidate values for review", () => {
+  const sampleIndex = {
+    categoryKey: "17028673:95183",
+    categoryPath: "Дом / Кухня",
+    candidates: [{
+      attributeId: 777,
+      attributeName: "Материал",
+      categoryKey: "17028673:95183",
+      source: "required_attribute_dictionary_candidate",
+      candidateValues: [{
+        dictionaryValueId: 7771,
+        value: "Пластик",
+        confidence: 0.72,
+        source: "material_synonym",
+      }],
+      readOnly: true,
+    }],
+  };
+
+  const history = buildRequiredAttributeRuleCandidateHistory([
+    { sourceProductId: "SKU-1", sourceRunId: "run-1", index: sampleIndex },
+    { sourceProductId: "SKU-2", sourceRunId: "run-2", index: sampleIndex },
+  ]);
+
+  const item = history.reviewQueue[0];
+  assert.equal(item.ruleStatus, "ready_for_review");
+  assert.deepEqual(item.candidateValues, [{
+    dictionaryValueId: 7771,
+    value: "Пластик",
+    confidence: 0.72,
+    source: "material_synonym",
+    occurrenceCount: 2,
+  }]);
+  assert.deepEqual(Object.keys(item).filter((key) => /payload|submit|action/i.test(key)), []);
 });

@@ -251,11 +251,12 @@ export function buildRequiredAttributeManualBacklog(plan = []) {
 export function buildRequiredAttributeRuleCandidateIndex({
   categoryMatch = {},
   manualBacklog = {},
+  fillPlan = [],
 } = {}) {
   const categoryKey = `${Number(categoryMatch.description_category_id || categoryMatch.descriptionCategoryId || 0)}:${Number(categoryMatch.type_id || categoryMatch.typeId || 0)}`;
   const ruleBucket = (Array.isArray(manualBacklog.buckets) ? manualBacklog.buckets : [])
     .find((bucket) => bucket.key === "rule_candidate") || {};
-  const candidates = (Array.isArray(ruleBucket.items) ? ruleBucket.items : []).map((item) => ({
+  const manualCandidates = (Array.isArray(ruleBucket.items) ? ruleBucket.items : []).map((item) => ({
     attributeId: Number(item.attributeId || 0),
     attributeName: item.attributeName || `属性 ${item.attributeId || ""}`,
     categoryKey,
@@ -268,6 +269,12 @@ export function buildRequiredAttributeRuleCandidateIndex({
     safeNextStep: "先人工填写本次商品；后续收集更多样本后再沉淀类目规则，不自动写 Payload。",
     readOnly: true,
   }));
+  const dictionaryCandidates = requiredAttributeDictionaryRuleCandidates({
+    categoryKey,
+    categoryPath: categoryMatch.path || categoryMatch.categoryPath || "",
+    fillPlan,
+  });
+  const candidates = manualCandidates.concat(dictionaryCandidates);
   return {
     categoryKey,
     categoryPath: categoryMatch.path || categoryMatch.categoryPath || "",
@@ -278,6 +285,48 @@ export function buildRequiredAttributeRuleCandidateIndex({
       : "当前没有可沉淀规则候选；继续按预检结果处理。",
     candidates,
   };
+}
+
+function requiredAttributeDictionaryRuleCandidates({
+  categoryKey = "",
+  categoryPath = "",
+  fillPlan = [],
+} = {}) {
+  return (Array.isArray(fillPlan) ? fillPlan : [])
+    .filter((row) => row?.action === "suggest_dictionary")
+    .filter((row) => Array.isArray(row.dictionaryCandidates) && row.dictionaryCandidates.length)
+    .map((row) => {
+      const attributeId = Number(row.attributeId || 0);
+      const candidateValues = row.dictionaryCandidates
+        .map((candidate) => ({
+          dictionaryValueId: dictionaryValueId(candidate),
+          value: String(candidate.value || candidate.name || "").trim(),
+          confidence: Number(candidate.confidence || 0),
+          source: candidate.source || "current_category_dictionary",
+        }))
+        .filter((candidate) => candidate.dictionaryValueId && candidate.value);
+      if (!attributeId || !candidateValues.length) return null;
+      return {
+        attributeId,
+        attributeName: row.name || `属性 ${attributeId}`,
+        categoryKey,
+        categoryPath,
+        ruleStatus: "candidate",
+        occurrenceCount: 1,
+        source: "required_attribute_dictionary_candidate",
+        suggestedRuleKey: `${categoryKey}:${attributeId}:dictionary_candidate`,
+        action: "suggest_dictionary",
+        strategy: row.strategy || "",
+        confidence: row.confidence || "medium",
+        candidateValues,
+        requiresHumanApproval: true,
+        forbiddenEffects: ["payload_write", "ozon_submit", "rule_auto_enable"],
+        reasonZh: row.reasonZh || "当前类目出现中置信字典候选，可作为后续规则沉淀样本。",
+        safeNextStep: "先人工确认当前商品候选并重新预检；收集多个样本和人工批准前不会自动写 Payload、提交 Ozon 或启用自动规则。",
+        readOnly: true,
+      };
+    })
+    .filter(Boolean);
 }
 
 export function buildRequiredAttributeRuleCandidateHistory(samples = []) {
@@ -303,6 +352,7 @@ export function buildRequiredAttributeRuleCandidateHistory(samples = []) {
         categoryPath: candidate.categoryPath || index?.categoryPath || "",
         attributeId,
         attributeName: candidate.attributeName || `属性 ${attributeId}`,
+        candidateValues: normalizeRuleCandidateValues(candidate.candidateValues),
         sampleProductId,
         sampleRunId,
       });
@@ -321,6 +371,7 @@ export function buildRequiredAttributeRuleCandidateHistory(samples = []) {
         occurrenceCount: 0,
         sampleProductIds: [],
         sampleRunIds: [],
+        candidateValueCounts: new Map(),
         readOnly: true,
       });
     }
@@ -333,16 +384,33 @@ export function buildRequiredAttributeRuleCandidateHistory(samples = []) {
     if (row.sampleRunId && !item.sampleRunIds.includes(row.sampleRunId)) {
       item.sampleRunIds.push(row.sampleRunId);
     }
+    for (const value of row.candidateValues || []) {
+      const valueKey = `${value.dictionaryValueId}:${value.value}:${value.source}`;
+      const current = item.candidateValueCounts.get(valueKey) || {
+        ...value,
+        confidence: Number(value.confidence || 0),
+        occurrenceCount: 0,
+      };
+      current.occurrenceCount += 1;
+      current.confidence = Math.max(Number(current.confidence || 0), Number(value.confidence || 0));
+      item.candidateValueCounts.set(valueKey, current);
+    }
   }
 
   const reviewQueue = [...grouped.values()]
-    .map((item) => ({
-      ...item,
-      ruleStatus: item.occurrenceCount >= 2 ? "ready_for_review" : "collect_more_samples",
-      safeNextStep: item.occurrenceCount >= 2
-        ? "已在多个样本出现，可进入人工审核规则池；审核通过前不会自动生成规则或写入草稿。"
-        : "继续收集同类目样本；本次商品仍需人工填写并重新预检。",
-    }))
+    .map((item) => {
+      const candidateValues = [...item.candidateValueCounts.values()]
+        .sort((a, b) => b.occurrenceCount - a.occurrenceCount || a.value.localeCompare(b.value));
+      const { candidateValueCounts, ...publicItem } = item;
+      return {
+        ...publicItem,
+        ...(candidateValues.length ? { candidateValues } : {}),
+        ruleStatus: item.occurrenceCount >= 2 ? "ready_for_review" : "collect_more_samples",
+        safeNextStep: item.occurrenceCount >= 2
+          ? "已在多个样本出现，可进入人工审核规则池；审核通过前不会自动生成规则或写入草稿。"
+          : "继续收集同类目样本；本次商品仍需人工填写并重新预检。",
+      };
+    })
     .sort((a, b) => b.occurrenceCount - a.occurrenceCount || a.categoryKey.localeCompare(b.categoryKey) || a.attributeId - b.attributeId);
 
   const categoryCount = new Set(reviewQueue.map((item) => item.categoryKey)).size;
@@ -357,6 +425,17 @@ export function buildRequiredAttributeRuleCandidateHistory(samples = []) {
       : "暂无可聚合的规则候选；继续按当前商品预检结果处理。",
     reviewQueue,
   };
+}
+
+function normalizeRuleCandidateValues(candidateValues = []) {
+  return (Array.isArray(candidateValues) ? candidateValues : [])
+    .map((candidate) => ({
+      dictionaryValueId: dictionaryValueId(candidate),
+      value: String(candidate.value || candidate.name || "").trim(),
+      confidence: Number(candidate.confidence || 0),
+      source: candidate.source || "current_category_dictionary",
+    }))
+    .filter((candidate) => candidate.dictionaryValueId && candidate.value);
 }
 
 export function buildRequiredAttributeApprovalDraftPreview(history = {}) {

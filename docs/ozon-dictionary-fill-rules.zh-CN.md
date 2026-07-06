@@ -1,6 +1,6 @@
 # Ozon 字典属性填写规则与技巧
 
-更新时间：2026-06-27
+更新时间：2026-07-05
 
 ## 来源
 
@@ -55,11 +55,11 @@ Ozon 字典不是“翻译文本后随便填”，而是“类目 + 商品类型
 
 低置信或暂未规则化的必填属性，不能因为当前商品缺值就直接生成自动规则。ERP 现在按三层只读结构沉淀：
 
-1. 当前商品 `requiredAttributeRuleCandidateIndex`：只说明这个类目有哪个属性值得后续规则化。
-2. 多商品 `requiredAttributeRuleCandidateHistory`：按 `categoryKey + attributeId` 聚合同类目样本，2 个及以上不同商品/run 出现后才进入 `ready_for_review`。
+1. 当前商品 `requiredAttributeRuleCandidateIndex`：说明这个类目有哪个属性值得后续规则化；如果当前商品已经出现 `suggest_dictionary` 候选，还会带上候选 `dictionaryValueId/value/confidence/source`。
+2. 多商品 `requiredAttributeRuleCandidateHistory`：按 `categoryKey + attributeId` 聚合同类目样本，保留候选字典值和出现次数；2 个及以上不同商品/run 出现后才进入 `ready_for_review`。
 3. 后续人工审核规则池：只有人工确认规则来源、适用品类、反例和安全边界后，才能进入真实自动填充规则。
 
-此阶段不会持久化规则，也不会把规则池草案默认写入草稿 summary 或 payloadDraftValidation；不会自动写 Payload、不会触发预检或提交。当前商品仍按预检结果人工补齐并重新校验。
+此阶段不会持久化规则，也不会把规则池草案默认写入草稿 summary 或 payloadDraftValidation；候选项明确标记 `forbiddenEffects=["payload_write","ozon_submit","rule_auto_enable"]`，不会自动写 Payload、不会触发预检或提交、不会自动启用规则。当前商品仍按预检结果人工补齐并重新校验。
 
 ### 1. 类型字段优先匹配“产品本体”
 

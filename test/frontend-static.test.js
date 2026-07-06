@@ -251,6 +251,9 @@ test("frontend renders required attribute fill plan groups", async () => {
   assert.match(js, /requiredAttributeRuleCandidateHistory/);
   assert.match(js, /summary\?\.requiredAttributeRuleCandidateHistory/);
   assert.match(js, /类目规则池草案/);
+  assert.match(js, /renderRequiredAttributeRuleCandidateValues/);
+  assert.match(js, /candidateValues/);
+  assert.match(js, /候选值/);
   assert.match(js, /可规则化/);
   assert.match(js, /建议换货源/);
   assert.match(js, /禁止猜测/);
@@ -1258,6 +1261,54 @@ test("listing center exposes read-only required attribute rule pool workbench", 
   assert.match(css, /rule-pool-publish-gate/);
   assert.match(css, /rule-pool-controls/);
   assert.match(css, /rule-pool-row/);
+});
+
+test("required attribute rule pool keeps dictionary candidate occurrence counts deduplicated", async () => {
+  const js = await readFile(new URL("../public/app.js", import.meta.url), "utf8");
+  const keySource = js.match(/function requiredAttributeRuleCandidateKey[\s\S]+?\n}\n(?=\nfunction strictRuleApprovalAuditCandidateKey)/)?.[0] || "";
+  const strictKeySource = js.match(/function strictRuleApprovalAuditCandidateKey[\s\S]+?\n}\n(?=\nfunction collectRuleApprovalAuditIntentsByCandidate)/)?.[0] || "";
+  const auditCollectorSource = js.match(/function collectRuleApprovalAuditIntentsByCandidate[\s\S]+?\n}\n(?=\nfunction collectRulePublishReviewIntentsByCandidate)/)?.[0] || "";
+  const publishReviewCollectorSource = js.match(/function collectRulePublishReviewIntentsByCandidate[\s\S]+?\n}\n(?=\nfunction collectRequiredAttributeRulePool)/)?.[0] || "";
+  const poolCollectorSource = js.match(/function collectRequiredAttributeRulePool[\s\S]+?\n}\n(?=\nfunction rulePoolItemMatchesFilter)/)?.[0] || "";
+  assert.ok(keySource);
+  assert.ok(strictKeySource);
+  assert.ok(auditCollectorSource);
+  assert.ok(publishReviewCollectorSource);
+  assert.ok(poolCollectorSource);
+  const collectRequiredAttributeRulePool = new Function(`${keySource}\n${strictKeySource}\n${auditCollectorSource}\n${publishReviewCollectorSource}\n${poolCollectorSource}\nreturn collectRequiredAttributeRulePool;`)();
+  const sharedHistory = {
+    reviewQueue: [{
+      categoryKey: "17028673:95183",
+      attributeId: 777,
+      attributeName: "Материал",
+      ruleStatus: "ready_for_review",
+      occurrenceCount: 2,
+      sampleProductIds: ["SKU-1", "SKU-2"],
+      sampleRunIds: ["run-1", "run-2"],
+      candidateValues: [{
+        dictionaryValueId: 7771,
+        value: "Пластик",
+        confidence: 0.72,
+        source: "material_synonym",
+        occurrenceCount: 2,
+      }],
+    }],
+  };
+  const pool = collectRequiredAttributeRulePool([
+    { id: "run-1", summary: { requiredAttributeRuleCandidateHistory: sharedHistory } },
+    { id: "run-2", summary: { requiredAttributeRuleCandidateHistory: sharedHistory } },
+  ]);
+
+  assert.equal(pool.length, 1);
+  assert.equal(pool[0].occurrenceCount, 2);
+  assert.deepEqual(pool[0].sampleProductIds, ["SKU-1", "SKU-2"]);
+  assert.deepEqual(pool[0].candidateValues, [{
+    dictionaryValueId: 7771,
+    value: "Пластик",
+    confidence: 0.72,
+    source: "material_synonym",
+    occurrenceCount: 2,
+  }]);
 });
 
 test("frontend exposes stale workflow governance action", async () => {

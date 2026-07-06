@@ -512,16 +512,34 @@ test("buildPreflightGateNode carries required attribute fill plan without unlock
   assert.equal(node.output.requiredAttributeManualBacklog.replaceSourceCount, 0);
   assert.match(node.output.requiredAttributeManualBacklog.safeNextAction, /人工/);
   assert.equal(node.output.requiredAttributeRuleCandidateIndex.categoryKey, "17028673:95183");
-  assert.equal(node.output.requiredAttributeRuleCandidateIndex.totalCount, 1);
+  assert.equal(node.output.requiredAttributeRuleCandidateIndex.totalCount, 2);
   assert.equal(node.output.requiredAttributeRuleCandidateIndex.readOnly, true);
-  assert.equal(node.output.requiredAttributeRuleCandidateIndex.candidates[0].attributeId, 1234);
-  assert.equal(node.output.requiredAttributeRuleCandidateIndex.candidates[0].ruleStatus, "candidate");
+  const manualRuleCandidate = node.output.requiredAttributeRuleCandidateIndex.candidates.find((candidate) => candidate.attributeId === 1234);
+  const dictionaryRuleCandidate = node.output.requiredAttributeRuleCandidateIndex.candidates.find((candidate) => candidate.attributeId === 777);
+  assert.equal(manualRuleCandidate.ruleStatus, "candidate");
+  assert.equal(dictionaryRuleCandidate.source, "required_attribute_dictionary_candidate");
+  assert.deepEqual(dictionaryRuleCandidate.candidateValues, [{
+    dictionaryValueId: 11,
+    value: "пластик",
+    confidence: 0.78,
+    source: "product_text",
+  }]);
+  assert.equal(node.output.requiredAttributeRuleCandidateIndex.candidates.some((candidate) => candidate.attributeId === 999), false);
   assert.equal(node.output.requiredAttributeRuleCandidateHistory.readOnly, true);
-  assert.equal(node.output.requiredAttributeRuleCandidateHistory.totalCount, 2);
+  assert.equal(node.output.requiredAttributeRuleCandidateHistory.totalCount, 3);
   assert.equal(node.output.requiredAttributeRuleCandidateHistory.readyForReviewCount, 1);
   assert.equal(node.output.requiredAttributeRuleCandidateHistory.reviewQueue[0].attributeId, 1234);
   assert.equal(node.output.requiredAttributeRuleCandidateHistory.reviewQueue[0].occurrenceCount, 2);
   assert.equal(node.output.requiredAttributeRuleCandidateHistory.reviewQueue[0].ruleStatus, "ready_for_review");
+  const materialHistoryCandidate = node.output.requiredAttributeRuleCandidateHistory.reviewQueue.find((candidate) => candidate.attributeId === 777);
+  assert.equal(materialHistoryCandidate.ruleStatus, "collect_more_samples");
+  assert.deepEqual(materialHistoryCandidate.candidateValues, [{
+    dictionaryValueId: 11,
+    value: "пластик",
+    confidence: 0.78,
+    source: "product_text",
+    occurrenceCount: 1,
+  }]);
   assert.deepEqual(Object.keys(node.output.requiredAttributeRuleCandidateHistory.reviewQueue[0]).filter((key) => /payload|submit|action/i.test(key)), []);
   assert.equal(node.output.requiredAttributeRuleCandidateHistory.approvalDraftQueue, undefined);
   assert.equal(node.output.requiredAttributeRuleCandidateHistory.approvalDraftCount, undefined);

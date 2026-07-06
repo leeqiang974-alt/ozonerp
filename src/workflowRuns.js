@@ -1081,6 +1081,7 @@ function buildPayloadDraftValidation(payload = {}, options = {}) {
   const requiredAttributeRuleCandidateIndex = buildRequiredAttributeRuleCandidateIndex({
     categoryMatch: options.categoryMatch || categoryMatchFromPayload(payload),
     manualBacklog: requiredAttributeManualBacklog,
+    fillPlan: requiredAttributeFillPlan,
   });
   return {
     ...payloadValidation,
@@ -1129,6 +1130,7 @@ export function buildPreflightGateNode(input = {}) {
   const requiredAttributeRuleCandidateIndex = input.requiredAttributeRuleCandidateIndex || buildRequiredAttributeRuleCandidateIndex({
     categoryMatch: input.category || categoryMatchFromPayload(input.payload || {}),
     manualBacklog: requiredAttributeManualBacklog,
+    fillPlan: requiredAttributeFillPlan,
   });
   const requiredAttributeRuleCandidateHistorySamples = Array.isArray(input.requiredAttributeRuleCandidateHistorySamples)
     ? input.requiredAttributeRuleCandidateHistorySamples

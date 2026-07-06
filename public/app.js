@@ -1138,6 +1138,9 @@ function listingFillTaskDictionaryRepairCandidates(run = currentListingWorkflowR
             attributeName: guidance.attributeName || row.name || "",
             dictionaryValueId: candidate.dictionary_value_id || candidate.dictionaryValueId || "",
             value: candidate.value || "",
+            sourceSuggestedAspect: candidate.source === "1688_sku_spec_dictionary_match",
+            sourceValue: candidate.sourceValue || "",
+            sourceVariantSpec: candidate.sourceVariantSpec || "",
           });
         });
       }
@@ -1583,6 +1586,9 @@ function renderListingFillTaskQueue(run = currentListingWorkflowRun()) {
                       data-repair-attribute-id="${escapeHtml(candidateItem.repairCandidate.attributeId)}"
                       data-repair-dictionary-value-id="${escapeHtml(candidateItem.repairCandidate.dictionaryValueId)}"
                       data-repair-value="${escapeHtml(candidateItem.repairCandidate.value)}"
+                      data-repair-source-suggested-aspect="${candidateItem.repairCandidate.sourceSuggestedAspect ? "true" : "false"}"
+                      data-repair-source-value="${escapeHtml(candidateItem.repairCandidate.sourceValue || "")}"
+                      data-repair-source-variant-spec="${escapeHtml(candidateItem.repairCandidate.sourceVariantSpec || "")}"
                       title="${escapeHtml(candidateItem.repairCandidate.attributeName || "字典属性")}"
                     >确认写入草稿并预检</button>` : ""}
                   </div>
@@ -6543,6 +6549,9 @@ function renderListingAttributeCellRepair(cell = {}, row = {}) {
                 data-repair-attribute-id="${escapeHtml(guidance.attributeId || row.attributeId || "")}"
                 data-repair-dictionary-value-id="${escapeHtml(candidate.dictionary_value_id || "")}"
                 data-repair-value="${escapeHtml(candidate.value || "")}"
+                data-repair-source-suggested-aspect="${candidate.source === "1688_sku_spec_dictionary_match" ? "true" : "false"}"
+                data-repair-source-value="${escapeHtml(candidate.sourceValue || "")}"
+                data-repair-source-variant-spec="${escapeHtml(candidate.sourceVariantSpec || "")}"
               >应用到草稿并预检</button>` : ""}
             </span>
           `).join("")}
@@ -8026,7 +8035,12 @@ async function handleWorkflowAction(action, button) {
         attributeId: Number(button?.dataset?.repairAttributeId || 0),
         dictionaryValueId: Number(button?.dataset?.repairDictionaryValueId || 0),
         value: button?.dataset?.repairValue || "",
-        note: "页面人工选择：属性矩阵字典值修复",
+        sourceSuggestedAspect: button?.dataset?.repairSourceSuggestedAspect === "true",
+        sourceValue: button?.dataset?.repairSourceValue || "",
+        sourceVariantSpec: button?.dataset?.repairSourceVariantSpec || "",
+        note: button?.dataset?.repairSourceSuggestedAspect === "true"
+          ? "页面人工确认：1688 SKU 规格匹配 Ozon 字典值"
+          : "页面人工选择：属性矩阵字典值修复",
       }),
     });
     toast(result.ok ? "本地草稿已写回并通过预检，不会提交 Ozon" : "本地草稿已写回，但预检仍有问题", result.ok ? "ok" : "error");

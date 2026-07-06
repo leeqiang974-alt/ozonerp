@@ -650,7 +650,7 @@ function dictionaryValueIdSet(values = []) {
   return new Set((values || []).map(dictionaryValueId).filter(Boolean));
 }
 
-function matrixDictionaryCandidates(values = []) {
+function matrixDictionaryCandidates(values = [], limit = 5) {
   return (values || [])
     .map((value) => ({
       dictionary_value_id: dictionaryValueId(value),
@@ -661,7 +661,24 @@ function matrixDictionaryCandidates(values = []) {
     .filter((value, index, valuesList) => (
       valuesList.findIndex((item) => item.dictionary_value_id === value.dictionary_value_id) === index
     ))
-    .slice(0, 5);
+    .slice(0, limit);
+}
+
+function matrixSourceSuggestedDictionaryCandidates(values = [], sourceSuggestedAspect = null) {
+  if (!sourceSuggestedAspect) return [];
+  const sourceValue = String(sourceSuggestedAspect.value || "").trim();
+  const normalizedSourceValue = normalizeVariantSpecText(sourceValue);
+  if (!normalizedSourceValue) return [];
+  return matrixDictionaryCandidates(values, Number.POSITIVE_INFINITY)
+    .filter((candidate) => normalizeVariantSpecText(candidate.value || "") === normalizedSourceValue)
+    .map((candidate) => ({
+      ...candidate,
+      source: "1688_sku_spec_dictionary_match",
+      sourceValue,
+      sourceVariantSpec: sourceSuggestedAspect.sourceVariantSpec || "",
+      confidence: Math.max(Number(sourceSuggestedAspect.confidence || 0), 0.86),
+    }))
+    .slice(0, 1);
 }
 
 function matrixOfferPayloadPath(offerId = "") {
@@ -676,7 +693,9 @@ function matrixCellRepairGuidance(input = {}) {
   const offerId = String(input.offerId || "").trim();
   const attributeLabel = `${row.name || `属性 ${row.attributeId || ""}`} #${row.attributeId || ""}`.trim();
   const payloadPath = matrixOfferPayloadPath(offerId);
-  const dictionaryCandidates = matrixDictionaryCandidates(input.legalValues || []);
+  const dictionaryCandidates = row.dictionary && row.aspect && input.sourceSuggestedAspect
+    ? matrixSourceSuggestedDictionaryCandidates(input.legalValues || [], input.sourceSuggestedAspect)
+    : matrixDictionaryCandidates(input.legalValues || []);
   const base = {
     humanRequired: true,
     offerId,
@@ -775,6 +794,21 @@ export function buildListingAttributeMatrix(input = {}) {
   const offers = items.map((item, index) => String(item?.offer_id || `item-${index + 1}`));
   const variantDiagnosis = buildVariantGroupingDiagnosis({ items, attrsMeta });
   const duplicateAspectOffers = new Set((variantDiagnosis.duplicateGroups || []).flatMap((group) => group.offerIds || []));
+  const sourceVariants = Array.isArray(input.sourceVariants) ? input.sourceVariants : (input.skuVariants || []);
+  const sourceSuggestedAspectByCell = new Map();
+  if (Array.isArray(sourceVariants) && sourceVariants.length) {
+    (variantDiagnosis.rows || []).forEach((variantRow, index) => {
+      const offerId = offers[index] || String(variantRow?.offerId || "");
+      const sourceVariant = sourceVariantForRow(sourceVariants, variantRow, index, offerId);
+      const suggestedAspects = sourceVariantAspectSuggestions({ row: variantRow, sourceVariant, attrsMeta });
+      for (const aspect of suggestedAspects) {
+        sourceSuggestedAspectByCell.set(`${offerId}:${Number(aspect.attributeId || 0)}`, {
+          ...aspect,
+          sourceVariantSpec: sourceVariant?.spec || "",
+        });
+      }
+    });
+  }
   const rows = matrixAttributeRows(attrsMeta).map((row) => {
     const cells = items.map((item, index) => {
       const offerId = offers[index];
@@ -801,6 +835,7 @@ export function buildListingAttributeMatrix(input = {}) {
         offerId,
         attribute,
         legalValues,
+        sourceSuggestedAspect: sourceSuggestedAspectByCell.get(`${offerId}:${row.attributeId}`),
       });
       return {
         offerId,
@@ -1191,6 +1226,7 @@ function buildPayloadDraftValidation(payload = {}, options = {}) {
     dictionaryValueCache: options.dictionaryValueCache || {},
     dictionaryLanguage: options.dictionaryLanguage || "ZH_HANS",
     dictionaryValuesByAttributeId: options.dictionaryValuesByAttributeId || {},
+    sourceVariants: options.sourceVariants || options.skuVariants || [],
   });
   const listingQuality = diagnoseListingQuality({
     payload,
@@ -1253,6 +1289,7 @@ export function buildPreflightGateNode(input = {}) {
     dictionaryValueCache: input.dictionaryValueCache || {},
     dictionaryLanguage: input.dictionaryLanguage || "ZH_HANS",
     dictionaryValuesByAttributeId: input.dictionaryValuesByAttributeId || {},
+    sourceVariants: input.sourceVariants || input.skuVariants || [],
   });
   const requiredAttributeFillPlan = input.requiredAttributeFillPlan || buildRequiredAttributePlanForPayload(input.payload || {}, {
     attrsMeta: input.attrsMeta || [],
@@ -1756,6 +1793,7 @@ export async function applyPayloadDraftAttributeRepair(runId, input = {}) {
     payload: run.payloadDraft || {},
     attrsMeta: run.payloadDraftAttrsMeta || [],
     dictionaryValueCache: categoryCache.attributeValues || {},
+    sourceVariants: run.payloadDraftSourceVariants || [],
   });
   const offerId = String(input.offerId || "").trim();
   const attributeId = Number(input.attributeId || 0);
@@ -1778,7 +1816,13 @@ export async function applyPayloadDraftAttributeRepair(runId, input = {}) {
       ...input,
       value: candidate.value || input.value || "",
     });
-    repairData = { dictionaryValueId };
+    const sourceSuggestedAspect = candidate.source === "1688_sku_spec_dictionary_match";
+    repairData = {
+      dictionaryValueId,
+      sourceSuggestedAspect,
+      sourceValue: sourceSuggestedAspect ? (candidate.sourceValue || "") : "",
+      sourceVariantSpec: sourceSuggestedAspect ? (candidate.sourceVariantSpec || "") : "",
+    };
   } else if (repairType === "text_value") {
     if (!row || !cell || cell.status !== "missing" || row.dictionary || row.aspect) {
       throw new Error("只能修复缺失的普通文本属性，字典和变体属性请人工处理。");

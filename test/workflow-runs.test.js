@@ -1434,6 +1434,116 @@ test("applyPayloadDraftAttributeRepair writes source-suggested variant text only
   assert.equal(updated.events.at(-1).data.value, "2 шт");
 });
 
+test("applyPayloadDraftAttributeRepair writes source-matched dictionary variant candidates only", async () => {
+  reset();
+  fs.writeFileSync(tmpCategoryCacheFile, JSON.stringify({
+    attributeValues: {
+      "17028673:95183:10097:ZH_HANS": {
+        values: [
+          { id: 901, value: "красный" },
+          { id: 902, value: "желтый" },
+          { id: 903, value: "зеленый" },
+          { id: 904, value: "розовый" },
+          { id: 905, value: "фиолетовый" },
+          { id: 111, value: "белый" },
+          { id: 222, value: "синий" },
+          { id: 333, value: "черный" },
+        ],
+      },
+    },
+  }, null, 2));
+  const run = await createWorkflowRun({
+    title: "来源规格字典变体修复",
+    status: "waiting_human",
+    currentNode: "preflight_check",
+    locks: { waitingHuman: true, submitLocked: true },
+  });
+  await savePayloadDraft(run.id, {
+    items: [
+      {
+        offer_id: "SKU-WHITE-DICT",
+        name: "Cat feeder",
+        description_category_id: 17028673,
+        type_id: 95183,
+        price: "1200",
+        images: ["1", "2", "3"],
+        attributes: [
+          { id: 85, values: [{ dictionary_value_id: 971082, value: "Нет бренда" }] },
+          { id: 9048, values: [{ value: "Cat feeder" }] },
+        ],
+      },
+      {
+        offer_id: "SKU-BLUE-DICT",
+        name: "Cat feeder",
+        description_category_id: 17028673,
+        type_id: 95183,
+        price: "1200",
+        images: ["4", "5", "6"],
+        attributes: [
+          { id: 85, values: [{ dictionary_value_id: 971082, value: "Нет бренда" }] },
+          { id: 9048, values: [{ value: "Cat feeder" }] },
+        ],
+      },
+    ],
+  }, {
+    attrsMeta: [
+      { id: 85, name: "Бренд", is_required: true, dictionary_id: 971082 },
+      { id: 9048, name: "Название модели (для объединения в одну карточку)", is_required: true },
+      { id: 10097, name: "Название цвета", is_aspect: true, dictionary_id: 10097 },
+    ],
+    sourceVariants: [
+      { offerId: "SKU-WHITE-DICT", spec: "白色" },
+      { offerId: "SKU-BLUE-DICT", spec: "蓝色" },
+    ],
+  });
+  const validation = await validatePayloadDraft(run.id);
+  const colorRow = validation.attributeMatrix.rows.find((row) => row.attributeId === 10097);
+  const whiteCell = colorRow.cells.find((cell) => cell.offerId === "SKU-WHITE-DICT");
+  const blueCell = colorRow.cells.find((cell) => cell.offerId === "SKU-BLUE-DICT");
+
+  assert.deepEqual(
+    whiteCell.repairGuidance.dictionaryCandidates.map((candidate) => candidate.dictionary_value_id),
+    [111],
+  );
+  assert.deepEqual(
+    blueCell.repairGuidance.dictionaryCandidates.map((candidate) => candidate.dictionary_value_id),
+    [222],
+  );
+  assert.equal(whiteCell.repairGuidance.dictionaryCandidates[0].source, "1688_sku_spec_dictionary_match");
+  assert.equal(whiteCell.repairGuidance.dictionaryCandidates[0].sourceVariantSpec, "白色");
+
+  await assert.rejects(
+    () => applyPayloadDraftAttributeRepair(run.id, {
+      confirmLocalDraftRepair: true,
+      repairType: "dictionary_value",
+      offerId: "SKU-WHITE-DICT",
+      attributeId: 10097,
+      dictionaryValueId: 222,
+      sourceSuggestedAspect: true,
+    }),
+    /字典值不在当前属性矩阵候选值内/,
+  );
+
+  const result = await applyPayloadDraftAttributeRepair(run.id, {
+    confirmLocalDraftRepair: true,
+    repairType: "dictionary_value",
+    offerId: "SKU-WHITE-DICT",
+    attributeId: 10097,
+    dictionaryValueId: 111,
+    sourceSuggestedAspect: true,
+    note: "人工确认 1688 SKU 规格匹配 Ozon 字典值",
+  });
+  const updated = await getWorkflowRun(run.id);
+  const repaired = updated.payloadDraft.items[0].attributes.find((attribute) => Number(attribute.id) === 10097);
+
+  assert.equal(result.submittedToOzon, false);
+  assert.equal(repaired.values[0].dictionary_value_id, 111);
+  assert.equal(repaired.values[0].value, "белый");
+  assert.equal(updated.locks.submitLocked, true);
+  assert.equal(updated.events.at(-1).data.sourceSuggestedAspect, true);
+  assert.equal(updated.events.at(-1).data.sourceVariantSpec, "白色");
+});
+
 test("applyPayloadDraftAttributeRepair rejects dictionary and duplicate variant aspect repairs", async () => {
   reset();
   const dictionaryRun = await createWorkflowRun({

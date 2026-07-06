@@ -8,6 +8,45 @@
 
 本轮 Codex 桌面环境以 `C:\Users\Administrator\Documents\ozonerp` 为实际项目根；继续开发前仍需先确认 `git status` 和最近提交，避免误入旧复制目录。
 
+## 2026-07-06 变体规则 V4：1688 规格匹配 Ozon 字典变体值
+
+### 已完成
+
+- 属性矩阵现在会读取当前 workflow/payload draft 保存的 `sourceVariants`，把同 SKU、同属性的 1688 规格候选用于字典型 `is_aspect` 属性匹配。
+- 对颜色等 Ozon 字典变体属性：
+  - 先用现有来源规格候选把 `白色/蓝色` 等规格映射为俄文字段候选。
+  - 再只从当前类目合法 `dictionary_value_id` 中选择与候选文本精确匹配的值。
+  - 例如 `白色 -> белый -> dictionary_value_id=111`，不会同时把同类目其他合法值 `синий/черный` 暴露为该 SKU 的可写候选。
+- 上架填报任务队列和属性矩阵按钮会保留来源上下文：
+  - `sourceSuggestedAspect=true`
+  - `sourceValue`
+  - `sourceVariantSpec`
+- 人工确认写回字典变体值后，事件审计会记录来源规格匹配上下文，便于后续排查“为什么这个 SKU 写了这个字典值”。
+
+### 安全边界
+
+- 该能力仍只写本地 Payload 草稿并重新预检，不提交 Ozon。
+- 写回必须满足 `waiting_human` 或 `locks.waitingHuman=true`，并且请求必须带 `confirmLocalDraftRepair=true`。
+- 字典型变体属性不能走文本写回；必须写当前类目合法 `dictionary_value_id`。
+- 来源规格只作为候选匹配线索，不自动启用规则、不解除 submit lock、不绕过预检。
+- 如果来源规格无法匹配当前类目合法字典值，则不生成可写候选，继续停在人工修复。
+
+### 已验证
+
+- TDD 红灯：
+  - `node --test --test-name-pattern "source-matched dictionary variant" test/workflow-runs.test.js` 先因白色 SKU 暴露 `[111,222,333]` 全部合法字典值失败。
+  - `node --test --test-name-pattern "source spec dictionary matches" test/frontend-static.test.js` 先因前端未保留来源规格匹配标记失败。
+- 已转绿：
+  - `node --test test/workflow-runs.test.js`，75/75 通过。
+  - `node --test test/frontend-static.test.js`，87/87 通过。
+  - `npm test`，360/360 通过。
+  - `npm run lint`，通过。
+
+### 下一步建议
+
+- 继续做“当前类目属性填报工作台 V5”：把来源规格匹配失败的字典 aspect 明确展示为“需人工选择 Ozon 合法字典值”，并支持按当前类目字典搜索/过滤，而不是只显示空阻塞。
+- 并行推进 SKU 图/详情图对商品分值的上架前检查：区分 SKU 首图、详情图数量、OCR 风险和 Ozon 分值项，但 GPT/Image 仍必须人工确认成本。
+
 ## 2026-07-06 变体规则 V3：1688 规格候选人工写回
 
 ### 已完成

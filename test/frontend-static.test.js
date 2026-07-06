@@ -745,6 +745,53 @@ test("listing fill task queue binds confirmation items to matching repair candid
   assert.equal(runningItems[0].repairStatusText, "暂不可直接写回");
 });
 
+test("listing fill dictionary repair candidates preserve source spec dictionary matches", async () => {
+  const js = await readFile(new URL("../public/app.js", import.meta.url), "utf8");
+  const repairSource = js.match(/function listingFillTaskDictionaryRepairCandidates[\s\S]+?\n}\n\nfunction listingFillTaskRepairCandidate/)?.[0]
+    .replace(/\nfunction listingFillTaskRepairCandidate$/, "");
+  assert.ok(repairSource);
+  const listingFillTaskDictionaryRepairCandidates = new Function(`${repairSource}\nreturn listingFillTaskDictionaryRepairCandidates;`)();
+
+  const candidates = listingFillTaskDictionaryRepairCandidates({
+    id: "wr_dict_variant",
+    status: "waiting_human",
+    locks: { waitingHuman: true },
+    nodes: [{ key: "preflight_check" }],
+    payloadDraftValidation: {
+      attributeMatrix: {
+        rows: [{
+          attributeId: 10097,
+          name: "Название цвета",
+          aspect: true,
+          dictionary: true,
+          cells: [{
+            offerId: "SKU-WHITE-DICT",
+            status: "missing",
+            repairGuidance: {
+              canApplyLocalDraftRepair: true,
+              offerId: "SKU-WHITE-DICT",
+              attributeId: 10097,
+              attributeName: "Название цвета",
+              dictionaryCandidates: [{
+                dictionary_value_id: 111,
+                value: "белый",
+                source: "1688_sku_spec_dictionary_match",
+                sourceValue: "белый",
+                sourceVariantSpec: "白色",
+              }],
+            },
+          }],
+        }],
+      },
+    },
+  });
+
+  assert.equal(candidates.length, 1);
+  assert.equal(candidates[0].sourceSuggestedAspect, true);
+  assert.equal(candidates[0].sourceVariantSpec, "白色");
+  assert.equal(candidates[0].sourceValue, "белый");
+});
+
 test("listing variant aspect suggestion carries SKU aspect repair context", async () => {
   const js = await readFile(new URL("../public/app.js", import.meta.url), "utf8");
   const contextSource = js.match(/function listingVariantAspectContext[\s\S]+?\n}\n\nfunction listingFillTaskVariantAspectSuggestion/)?.[0]

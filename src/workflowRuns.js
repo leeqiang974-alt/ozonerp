@@ -1717,6 +1717,29 @@ function applyPackageInfoValue(payload = {}, input = {}) {
   return { draft, packageInfo };
 }
 
+function assertSourceSuggestedVariantTextRepair(run = {}, input = {}) {
+  if (input.sourceSuggestedAspect !== true) return false;
+  const offerId = String(input.offerId || "").trim();
+  const attributeId = Number(input.attributeId || 0);
+  const value = String(input.value || "").trim();
+  const variantConfiguration = buildVariantConfigurationSummary({
+    payload: run.payloadDraft || {},
+    attrsMeta: run.payloadDraftAttrsMeta || [],
+    sourceVariants: run.payloadDraftSourceVariants || [],
+  });
+  const row = (variantConfiguration.rows || []).find((entry) => String(entry.offerId || "") === offerId);
+  const matched = (row?.suggestedAspects || []).find((aspect) => (
+    Number(aspect.attributeId || 0) === attributeId
+    && String(aspect.value || "").trim() === value
+    && aspect.readOnly === true
+    && aspect.source === "1688_sku_spec"
+  ));
+  if (!matched) {
+    throw new Error("变体文本值不匹配当前预检候选，请重新预检后再确认写回。");
+  }
+  return true;
+}
+
 export async function applyPayloadDraftAttributeRepair(runId, input = {}) {
   if (input.confirmLocalDraftRepair !== true) {
     throw new Error("需要人工确认后才能写回本地 Payload 草稿。");
@@ -1766,8 +1789,9 @@ export async function applyPayloadDraftAttributeRepair(runId, input = {}) {
     if (!row || !cell || cell.status !== "missing" || !row.aspect || row.dictionary) {
       throw new Error("只能修复缺失的非字典变体文本属性。");
     }
+    const sourceSuggestedAspect = assertSourceSuggestedVariantTextRepair(run, input);
     payloadDraft = applyAttributeTextValue(run.payloadDraft || {}, input);
-    repairData = { value: String(input.value || "").trim() };
+    repairData = { value: String(input.value || "").trim(), sourceSuggestedAspect };
   } else {
     const packageInfoSource = trustedPackageRepairSource(input);
     const packageResult = applyPackageInfoValue(run.payloadDraft || {}, input);

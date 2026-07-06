@@ -8,6 +8,37 @@
 
 本轮 Codex 桌面环境以 `C:\Users\Administrator\Documents\ozonerp` 为实际项目根；继续开发前仍需先确认 `git status` 和最近提交，避免误入旧复制目录。
 
+## 2026-07-06 变体规则 V3：1688 规格候选人工写回
+
+### 已完成
+
+- 上架填报任务队列现在会把 `variantConfiguration.suggestedAspects` 与属性矩阵中的缺失非字典变体属性对齐：
+  - 只在 workflow 处于 `waiting_human` 或 `locks.waitingHuman=true` 时显示写回入口。
+  - 只对 `canApplyVariantTextDraftRepair=true` 的非字典 `is_aspect` 属性提供按钮。
+  - 候选值来自当前预检中的同 SKU、同属性、同值 `1688_sku_spec` 建议。
+- 点击“确认写入 1688 规格候选并预检”时：
+  - 前端必须人工确认。
+  - 后端只写本地 Payload 草稿并重新预检。
+  - 不提交 Ozon，不解除 submit lock，不启用规则。
+- 后端新增 `sourceSuggestedAspect` 校验：
+  - 如果请求声称使用 1688 SKU 规格候选，必须匹配当前预检里的 `suggestedAspects`。
+  - 不匹配当前预检候选会拒绝，避免用户界面或旧页面把错误值写入草稿。
+
+### 安全边界
+
+- 字典型变体属性仍不能走文本写回；必须后续匹配当前 Ozon 类目合法 `dictionary_value_id`。
+- 该能力只推进“非字典变体文本”的人工确认写回，不覆盖重复变体、不自动修 SKU 图、不提交 Ozon。
+- 写回后仍通过 `validatePayloadDraft` 重新预检；如果其他 SKU 仍缺变体属性，整体仍保持阻塞。
+
+### 已验证
+
+- TDD 红灯：
+  - `node --test test/workflow-runs.test.js --test-name-pattern "source-suggested variant text"` 先因后端未校验候选值失败。
+  - `node --test test/frontend-static.test.js --test-name-pattern "source SKU spec suggestion|variant text aspect repair"` 先因前端没有传递候选值和 `sourceSuggestedAspect` 失败。
+- 已转绿：
+  - `node --test test/workflow-runs.test.js`，74/74 通过。
+  - `node --test test/frontend-static.test.js`，86/86 通过。
+
 ## 2026-07-06 1688 SKU 规格进入变体属性只读候选 V2
 
 ### 已完成

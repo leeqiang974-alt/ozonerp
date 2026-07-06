@@ -1185,17 +1185,33 @@ function listingFillTaskVariantTextRepairCandidate(run = currentListingWorkflowR
   if (!waitingHuman) return null;
   const preflightNode = (run.nodes || []).find((node) => node.key === "preflight_check") || {};
   const matrix = run.payloadDraftValidation?.attributeMatrix || preflightNode.output?.attributeMatrix || null;
+  const variantConfiguration = run.payloadDraftValidation?.variantConfiguration || preflightNode.output?.variantConfiguration || null;
+  const variantRows = Array.isArray(variantConfiguration?.rows) ? variantConfiguration.rows : [];
   const rows = Array.isArray(matrix?.rows) ? matrix.rows : [];
   for (const row of rows) {
     for (const cell of row.cells || []) {
       const guidance = cell.repairGuidance || {};
       if (guidance.canApplyVariantTextDraftRepair === true) {
+        const offerId = guidance.offerId || cell.offerId || "";
+        const attributeId = guidance.attributeId || row.attributeId || "";
+        const variantRow = variantRows.find((entry) => String(entry.offerId || "") === String(offerId || "")) || {};
+        const suggestedAspect = (variantRow.suggestedAspects || []).find((aspect) => (
+          String(aspect.attributeId || "") === String(attributeId || "")
+          && aspect.readOnly === true
+          && aspect.source === "1688_sku_spec"
+        )) || null;
         return {
           runId: run.id || "",
           nodeKey: preflightNode.key || "preflight_check",
-          offerId: guidance.offerId || cell.offerId || "",
-          attributeId: guidance.attributeId || row.attributeId || "",
+          offerId,
+          attributeId,
           attributeName: guidance.attributeName || row.name || "",
+          suggestedValue: suggestedAspect?.value || "",
+          sourceSuggestedAspect: Boolean(suggestedAspect?.value),
+          sourceVariantSpec: variantRow.sourceVariant?.spec || "",
+          safeNextStep: suggestedAspect?.value
+            ? "人工确认 1688 SKU 规格候选后，只写回本地草稿并重新预检；不会提交 Ozon。"
+            : "人工输入变体文本后，只写回本地草稿并重新预检；不会提交 Ozon。",
         };
       }
     }
@@ -1583,8 +1599,10 @@ function renderListingFillTaskQueue(run = currentListingWorkflowRun()) {
               data-workflow-node-key="${escapeHtml(item.variantTextRepairCandidate.nodeKey)}"
               data-repair-offer-id="${escapeHtml(item.variantTextRepairCandidate.offerId)}"
               data-repair-attribute-id="${escapeHtml(item.variantTextRepairCandidate.attributeId)}"
+              data-repair-value="${escapeHtml(item.variantTextRepairCandidate.suggestedValue || "")}"
+              data-repair-source-suggested-aspect="${item.variantTextRepairCandidate.sourceSuggestedAspect ? "true" : "false"}"
               title="${escapeHtml(item.variantTextRepairCandidate.attributeName || "变体文本属性")}"
-            >填写变体文本并预检</button>` : ""}
+            >${item.variantTextRepairCandidate.suggestedValue ? "确认写入 1688 规格候选并预检" : "填写变体文本并预检"}</button>` : ""}
             ${item.variantAspectSuggestion ? `
               <div class="listing-variant-suggestion">
                 <strong>变体属性修复建议</strong>
@@ -8036,8 +8054,15 @@ async function handleWorkflowAction(action, button) {
     return;
   }
   if (action === "apply-variant-text-repair") {
-    const value = window.prompt("请输入要写回本地 Payload 草稿的变体文本值。系统会重新预检，但不会提交 Ozon。", "");
-    if (value === null) return;
+    const suggestedValue = String(button?.dataset?.repairValue || "").trim();
+    let value = suggestedValue;
+    if (suggestedValue) {
+      const ok = window.confirm(`确认把 1688 SKU 规格候选「${suggestedValue}」写回本地 Payload 草稿？系统会重新预检，但不会提交 Ozon。`);
+      if (!ok) return;
+    } else {
+      value = window.prompt("请输入要写回本地 Payload 草稿的变体文本值。系统会重新预检，但不会提交 Ozon。", "");
+      if (value === null) return;
+    }
     const trimmed = String(value || "").trim();
     if (!trimmed) throw new Error("变体文本值不能为空");
     const result = await api(`/api/workflows/${encodeURIComponent(run.id)}/payload-draft/attribute-repair`, {
@@ -8048,7 +8073,8 @@ async function handleWorkflowAction(action, button) {
         offerId: button?.dataset?.repairOfferId || "",
         attributeId: Number(button?.dataset?.repairAttributeId || 0),
         value: trimmed,
-        note: "页面人工输入：变体文本属性修复",
+        sourceSuggestedAspect: button?.dataset?.repairSourceSuggestedAspect === "true",
+        note: suggestedValue ? "页面人工确认：1688 SKU 规格候选写回" : "页面人工输入：变体文本属性修复",
       }),
     });
     toast(result.ok ? "本地变体文本已写回并通过预检，不会提交 Ozon" : "本地变体文本已写回，但预检仍有问题", result.ok ? "ok" : "error");

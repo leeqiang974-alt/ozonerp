@@ -1353,6 +1353,87 @@ test("applyPayloadDraftAttributeRepair writes confirmed missing non-dictionary v
   assert.equal(updated.events.at(-1).data.submittedToOzon, false);
 });
 
+test("applyPayloadDraftAttributeRepair writes source-suggested variant text only when it matches current preflight", async () => {
+  reset();
+  const run = await createWorkflowRun({
+    title: "来源规格变体修复",
+    status: "waiting_human",
+    currentNode: "preflight_check",
+    locks: { waitingHuman: true, submitLocked: true },
+  });
+  await savePayloadDraft(run.id, {
+    items: [
+      {
+        offer_id: "SKU-WHITE-2",
+        name: "Cat feeder",
+        description_category_id: 17028673,
+        type_id: 95183,
+        price: "1200",
+        images: ["1", "2", "3"],
+        attributes: [
+          { id: 85, values: [{ dictionary_value_id: 971082, value: "Нет бренда" }] },
+          { id: 9048, values: [{ value: "Cat feeder" }] },
+        ],
+      },
+      {
+        offer_id: "SKU-BLUE-3",
+        name: "Cat feeder",
+        description_category_id: 17028673,
+        type_id: 95183,
+        price: "1200",
+        images: ["4", "5", "6"],
+        attributes: [
+          { id: 85, values: [{ dictionary_value_id: 971082, value: "Нет бренда" }] },
+          { id: 9048, values: [{ value: "Cat feeder" }] },
+        ],
+      },
+    ],
+  }, {
+    attrsMeta: [
+      { id: 85, name: "Бренд", is_required: true, dictionary_id: 971082 },
+      { id: 9048, name: "Название модели (для объединения в одну карточку)", is_required: true },
+      { id: 11001, name: "Количество в комплекте", is_aspect: true },
+    ],
+    sourceVariants: [
+      { offerId: "SKU-WHITE-2", spec: "2 шт" },
+      { offerId: "SKU-BLUE-3", spec: "3 шт" },
+    ],
+  });
+  const validation = await validatePayloadDraft(run.id);
+  assert.equal(validation.variantConfiguration.rows[0].suggestedAspects[0].value, "2 шт");
+
+  await assert.rejects(
+    () => applyPayloadDraftAttributeRepair(run.id, {
+      confirmLocalDraftRepair: true,
+      repairType: "variant_text_value",
+      offerId: "SKU-WHITE-2",
+      attributeId: 11001,
+      value: "999 шт",
+      sourceSuggestedAspect: true,
+    }),
+    /不匹配当前预检候选/,
+  );
+
+  const result = await applyPayloadDraftAttributeRepair(run.id, {
+    confirmLocalDraftRepair: true,
+    repairType: "variant_text_value",
+    offerId: "SKU-WHITE-2",
+    attributeId: 11001,
+    value: "2 шт",
+    sourceSuggestedAspect: true,
+    note: "人工确认 1688 SKU 规格候选",
+  });
+  const updated = await getWorkflowRun(run.id);
+  const repaired = updated.payloadDraft.items[0].attributes.find((attribute) => Number(attribute.id) === 11001);
+
+  assert.equal(result.submittedToOzon, false);
+  assert.equal(repaired.values[0].value, "2 шт");
+  assert.equal(updated.locks.submitLocked, true);
+  assert.equal(updated.payloadDraftValidation.ok, false);
+  assert.equal(updated.events.at(-1).data.sourceSuggestedAspect, true);
+  assert.equal(updated.events.at(-1).data.value, "2 шт");
+});
+
 test("applyPayloadDraftAttributeRepair rejects dictionary and duplicate variant aspect repairs", async () => {
   reset();
   const dictionaryRun = await createWorkflowRun({

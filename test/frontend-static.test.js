@@ -773,6 +773,99 @@ test("listing variant aspect suggestion carries SKU aspect repair context", asyn
   assert.match(suggestion.copyText, /重新预检/);
 });
 
+test("listing fill task variant text repair can use source SKU spec suggestion", async () => {
+  const js = await readFile(new URL("../public/app.js", import.meta.url), "utf8");
+  const candidateSource = js.match(/function listingFillTaskVariantTextRepairCandidate[\s\S]+?\n}\n\nfunction listingNormalizePackageRepairInfo/)?.[0]
+    .replace(/\nfunction listingNormalizePackageRepairInfo$/, "");
+  assert.ok(candidateSource);
+  const listingFillTaskVariantTextRepairCandidate = new Function(`${candidateSource}\nreturn listingFillTaskVariantTextRepairCandidate;`)();
+
+  const candidate = listingFillTaskVariantTextRepairCandidate({
+    id: "wr_variant_suggest",
+    status: "waiting_human",
+    locks: { waitingHuman: true },
+    nodes: [{ key: "preflight_check" }],
+    payloadDraftValidation: {
+      attributeMatrix: {
+        rows: [{
+          attributeId: 11001,
+          name: "Количество в комплекте",
+          aspect: true,
+          dictionary: false,
+          cells: [{
+            offerId: "SKU-WHITE-2",
+            status: "missing",
+            repairGuidance: {
+              canApplyVariantTextDraftRepair: true,
+              offerId: "SKU-WHITE-2",
+              attributeId: 11001,
+              attributeName: "Количество в комплекте",
+            },
+          }],
+        }],
+      },
+      variantConfiguration: {
+        rows: [{
+          offerId: "SKU-WHITE-2",
+          sourceVariant: { spec: "2 шт" },
+          suggestedAspects: [{
+            attributeId: 11001,
+            attributeName: "Количество в комплекте",
+            value: "2 шт",
+            source: "1688_sku_spec",
+            readOnly: true,
+          }],
+        }],
+      },
+    },
+  });
+
+  assert.equal(candidate.suggestedValue, "2 шт");
+  assert.equal(candidate.sourceSuggestedAspect, true);
+  assert.equal(candidate.sourceVariantSpec, "2 шт");
+  assert.match(candidate.safeNextStep, /人工确认/);
+
+  const dictionaryCandidate = listingFillTaskVariantTextRepairCandidate({
+    id: "wr_variant_dict",
+    status: "waiting_human",
+    locks: { waitingHuman: true },
+    nodes: [{ key: "preflight_check" }],
+    payloadDraftValidation: {
+      attributeMatrix: {
+        rows: [{
+          attributeId: 10097,
+          name: "Название цвета",
+          aspect: true,
+          dictionary: true,
+          cells: [{
+            offerId: "SKU-WHITE",
+            status: "missing",
+            repairGuidance: {
+              canApplyVariantTextDraftRepair: false,
+              offerId: "SKU-WHITE",
+              attributeId: 10097,
+              attributeName: "Название цвета",
+            },
+          }],
+        }],
+      },
+      variantConfiguration: {
+        rows: [{
+          offerId: "SKU-WHITE",
+          suggestedAspects: [{
+            attributeId: 10097,
+            value: "белый",
+            source: "1688_sku_spec",
+            readOnly: true,
+          }],
+        }],
+      },
+    },
+  });
+
+  assert.equal(dictionaryCandidate, null);
+});
+
 test("frontend renders read-only variant configuration workbench", async () => {
   const [js, css] = await Promise.all([
     readFile(new URL("../public/app.js", import.meta.url), "utf8"),
@@ -910,6 +1003,8 @@ test("frontend can prompt for a confirmed missing variant text aspect repair", a
   assert.match(js, /canApplyVariantTextDraftRepair/);
   assert.match(js, /repairType: "variant_text_value"/);
   assert.match(js, /listingFillTaskVariantTextRepairCandidate/);
+  assert.match(js, /sourceSuggestedAspect/);
+  assert.match(js, /data-repair-value/);
   assert.match(js, /填写变体文本/);
   assert.match(js, /不会提交 Ozon/);
 });

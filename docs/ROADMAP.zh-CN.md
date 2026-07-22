@@ -1,6 +1,8 @@
 # Ozon ERP 产品与交付路线图
 
-> 当前派工以 `docs/TOP-LEVEL-DEVELOPMENT-PLAN.zh-CN.md` 为准。本文件记录已交付内容和验证等级，不再从历史条目反向领取开发任务。当前唯一切片：G1-S1 手工采集输入契约与现状核对；G4 MVP 通过前冻结 FBS、活动、财务和售后扩建。
+> 当前派工以 `docs/TOP-LEVEL-DEVELOPMENT-PLAN.zh-CN.md` 为准。本文件记录已交付内容和验证等级，不再从历史条目反向领取开发任务。G1-S1 已完成；当前唯一切片：G1-S2 采集导入的卖家操作入口；G4 MVP 通过前冻结 FBS、活动、财务和售后扩建。
+
+> 2026-07-22 G1-S1 采集契约收口：两个 1688 详情扩展、crawler detail 回传和 `/api/1688/capture` 统一到 `manual_capture_v1`；旧扩展缺少版本号时兼容升级，未知版本在解析前阻断；回执同时保留脱敏身份、契约版本和同值快照 hash。定向采集/服务端/扩展 187/187，全量 `npm test` `1240/1240`、lint 75 files、offline acceptance 通过；未联网、未连接数据库、未执行 Ozon 写入。验证等级 `locally_tested`；仍缺一个真实商品回放，下一步进入 G1-S2。
 
 > 2026-07-22 P0 本机恢复后的服务启动收口：补齐 `autoListing.js` 的只读任务快照与媒体批准草稿/发布/回滚持久化契约，修正误放到 FBS 订单读取中的回滚回调，并新增服务导入符号的运行时契约测试。服务真实启动、healthz、前端 runtime smoke、`npm test` `1237/1237`、lint 75 files 和 offline acceptance 均通过；未联网、未连接数据库、未调用 Seller API、未执行 Ozon 写入。验证等级 `locally_tested`；P0 启动阻断已解除，下一步回到 A 线，以真实 1688 快照和受控四店铺 Seller API 只读回放推进黄金链路。
 

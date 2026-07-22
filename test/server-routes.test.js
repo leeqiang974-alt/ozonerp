@@ -13,6 +13,18 @@ test("server auto-listing imports resolve at runtime", async () => {
   for (const name of importedNames) assert.ok(name in autoListing, `autoListing.js must export ${name}`);
 });
 
+test("manual 1688 capture routes share the versioned input and receipt contract", async () => {
+  const source = await readFile(new URL("../src/server.js", import.meta.url), "utf8");
+  assert.match(source, /normalizeManualCapturePayload/);
+  assert.match(source, /contractVersion/);
+  const start = source.indexOf('app.post("/api/1688/capture"');
+  const end = source.indexOf('app.post("/api/pdd/capture"', start);
+  const route = source.slice(start, end);
+  assert.match(route, /normalizeManualCapturePayload\(body\)/);
+  assert.match(route, /captureInput\.hints/);
+  assert.doesNotMatch(route, /parsePddProduct/);
+});
+
 test("server does not register duplicate method and path combinations", async () => {
   const source = await readFile(new URL("../src/server.js", import.meta.url), "utf8");
   const routes = [...source.matchAll(/app\.(get|post|put|patch|delete)\("([^"]+)"/g)]

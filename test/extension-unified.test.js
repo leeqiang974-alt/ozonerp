@@ -69,6 +69,15 @@ test("1688 extensions surface the redacted capture receipt identity", async () =
   }
 });
 
+test("1688 detail extensions send the versioned manual capture contract", async () => {
+  const [collector, unified] = await Promise.all([
+    readFile(new URL("../browser-extension/1688-collector/content.js", import.meta.url), "utf8"),
+    readFile(new URL("../browser-extension/erp-collector-extension/content.js", import.meta.url), "utf8"),
+  ]);
+  assert.match(collector, /contractVersion:\s*["']manual_capture_v1["']/);
+  assert.match(unified, /contractVersion:\s*["']manual_capture_v1["']/);
+});
+
 test("1688 collector opens the exact captured item in the ERP sourcing box", async () => {
   for (const directory of ["../browser-extension/1688-collector/", "../browser-extension/erp-collector-extension/"]) {
     const popup = await readFile(new URL(`${directory}popup.js`, import.meta.url), "utf8");

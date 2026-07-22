@@ -2,7 +2,7 @@
 import path from "node:path";
 import iconv from "iconv-lite";
 import { addCollectionItem, getCollectionItem, updateCollectionItem } from "./collectionBox.js";
-import { fetch1688Html, normalize1688CaptureEnvelope, parse1688Product } from "./collector1688.js";
+import { fetch1688Html, normalizeManualCapturePayload, parse1688Product } from "./collector1688.js";
 import { build1688ReadPlan, build1688ReadReceipt, validate1688ReadPlan } from "./controlled1688Read.js";
 import { calculateOzonPrice, matchRmbShippingLevel } from "./pricing.js";
 import { callAiTask } from "./aiTaskRouter.js";
@@ -1211,18 +1211,12 @@ export async function completeCrawlerExtensionDetail(jobId, payload = {}, scope 
     return { job: jobs[index], candidate: null };
   }
   try {
-    const capture = normalize1688CaptureEnvelope({
-      ...payload,
-      // The extension used to call this field `sentAt`; normalize it at the
-      // task boundary so a stored capture can be resumed/replayed without
-      // depending on the browser worker's in-memory state.
-      collectedAt: payload.collectedAt || payload.sentAt,
-      captureMode: payload.captureMode || "extension_browser",
-    }, {
+    const captureInput = normalizeManualCapturePayload(payload, {
       taskId: job.taskId,
       url: job.url,
       captureMode: "extension_browser",
     });
+    const capture = captureInput.capture;
     // A browser worker can finish an old tab after the ERP has already
     // assigned it a different detail job.  Never persist that payload as a
     // candidate: the task identity is part of the resumable capture contract,
@@ -1241,11 +1235,10 @@ export async function completeCrawlerExtensionDetail(jobId, payload = {}, scope 
       return { job: jobs[index], candidate: null, reasonCode: "CAPTURE_TASK_ID_MISMATCH" };
     }
     const parsed = parse1688Product({
-      url: capture.url || job.url,
-      html: payload.html || "",
+      url: captureInput.url || job.url,
+      html: captureInput.html,
       hints: {
-        ...payload,
-        ...capture,
+        ...captureInput.hints,
         sourceType: "crawler1688",
         source: "crawler1688",
       },

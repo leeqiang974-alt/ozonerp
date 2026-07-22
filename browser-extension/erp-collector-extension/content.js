@@ -160,6 +160,7 @@ async function collectPage(options = {}) {
   const attributes = pickAttributes(contextData);
 
   return {
+    contractVersion: "manual_capture_v1",
     url: location.href,
     offerId: pickOfferId(contextData),
     title,

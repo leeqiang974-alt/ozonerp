@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 import fs from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
-import { build1688SourceEvidenceContract, normalize1688CaptureEnvelope, parse1688Product } from "../src/collector1688.js";
+import { build1688SourceEvidenceContract, normalize1688CaptureEnvelope, normalizeManualCapturePayload, parse1688Product } from "../src/collector1688.js";
 
 const FIXTURE_ROOT = path.join(path.dirname(fileURLToPath(import.meta.url)), "fixtures", "1688");
 
@@ -49,6 +49,7 @@ test("1688 capture envelope preserves task identity and normalizes extension sen
     captureMode: "extension_browser",
   });
   assert.deepEqual(capture, {
+    contractVersion: "manual_capture_v1",
     taskId: "task-from-extension",
     url: "https://detail.1688.com/offer/900000000099.html?spm=foo",
     offerId: "900000000099",
@@ -61,6 +62,25 @@ test("1688 capture envelope preserves task identity and normalizes extension sen
     hints: capture,
   });
   assert.deepEqual(parsed.capture, capture);
+});
+
+test("manual_capture_v1 normalizes old extension input and rejects unknown versions", () => {
+  const normalized = normalizeManualCapturePayload({
+    url: "https://detail.1688.com/offer/900000000099.html",
+    html: "<html><title>测试商品</title></html>",
+    taskId: "task-v1",
+    sentAt: "2026-07-17T00:00:00+08:00",
+    storeId: "store-a",
+  });
+  assert.equal(normalized.contractVersion, "manual_capture_v1");
+  assert.equal(normalized.capture.contractVersion, "manual_capture_v1");
+  assert.equal(normalized.offerId, "900000000099");
+  assert.equal(normalized.storeId, "store-a");
+  assert.equal(normalized.hints.contractVersion, "manual_capture_v1");
+  assert.throws(
+    () => normalizeManualCapturePayload({ contractVersion: "manual_capture_v2", url: normalized.url, html: normalized.html }),
+    (error) => error.reasonCode === "MANUAL_CAPTURE_CONTRACT_UNSUPPORTED" && error.status === 400,
+  );
 });
 
 test("1688 parser reads specList specItems as sku properties", () => {

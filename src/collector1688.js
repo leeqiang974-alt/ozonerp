@@ -2,6 +2,7 @@ import { createHash } from "node:crypto";
 import { buildMediaComplianceResult } from "./mediaCompliance.js";
 
 const IMAGE_RE = /https?:\\?\/\\?\/[^"'\\\s<>]+?(?:\.jpg|\.jpeg|\.png|\.webp)(?:[^"'\\\s<>]*)?/gi;
+export const MANUAL_CAPTURE_CONTRACT_VERSION = "manual_capture_v1";
 
 export async function fetch1688Html(url, options = {}) {
   if (!/^https?:\/\/.+1688\.com\//i.test(url)) {
@@ -111,22 +112,68 @@ export function parse1688Product({ url = "", html = "", hints = {} }) {
 export function normalize1688CaptureEnvelope(input = {}, context = {}) {
   const payload = input && typeof input === "object" ? input : {};
   const fallback = context && typeof context === "object" ? context : {};
-  const url = String(payload.url || fallback.url || "").trim();
+  const nestedCapture = payload.capture && typeof payload.capture === "object" ? payload.capture : {};
+  const url = String(payload.url || nestedCapture.url || fallback.url || "").trim();
   const offerId = String(
     payload.offerId
+      || nestedCapture.offerId
       || url.match(/(?:detail\.)?1688\.com\/offer\/(\d+)(?:\.html)?/i)?.[1]
       || url.match(/[?&]offerId=(\d+)/i)?.[1]
       || "",
   ).trim();
-  const rawCollectedAt = payload.collectedAt || payload.capturedAt || payload.sentAt || fallback.collectedAt;
+  const rawCollectedAt = payload.collectedAt || payload.capturedAt || payload.sentAt
+    || nestedCapture.collectedAt || fallback.collectedAt;
   const parsedDate = rawCollectedAt ? new Date(rawCollectedAt) : new Date();
   const collectedAt = Number.isNaN(parsedDate.getTime()) ? new Date().toISOString() : parsedDate.toISOString();
   return {
-    taskId: String(payload.taskId || fallback.taskId || "").trim(),
+    contractVersion: MANUAL_CAPTURE_CONTRACT_VERSION,
+    taskId: String(payload.taskId || nestedCapture.taskId || fallback.taskId || "").trim(),
     url,
     offerId,
     collectedAt,
-    captureMode: String(payload.captureMode || fallback.captureMode || "unknown").trim() || "unknown",
+    captureMode: String(payload.captureMode || nestedCapture.captureMode || fallback.captureMode || "unknown").trim() || "unknown",
+  };
+}
+
+/**
+ * Normalize the browser-to-ERP manual capture boundary. Older extensions may
+ * omit the version, so absence is upgraded to v1; an explicit unknown version
+ * is rejected before parsing or persistence. Raw HTML stays in the transient
+ * input only and is never included in the receipt contract.
+ */
+export function normalizeManualCapturePayload(input = {}, context = {}) {
+  const payload = input && typeof input === "object" ? input : {};
+  const fallback = context && typeof context === "object" ? context : {};
+  const requestedVersion = String(payload.contractVersion || payload.captureContractVersion || payload.capture?.contractVersion || "").trim();
+  if (requestedVersion && requestedVersion !== MANUAL_CAPTURE_CONTRACT_VERSION) {
+    const error = new Error(`不支持的 1688 采集契约版本：${requestedVersion}`);
+    error.status = 400;
+    error.reasonCode = "MANUAL_CAPTURE_CONTRACT_UNSUPPORTED";
+    throw error;
+  }
+  const capture = normalize1688CaptureEnvelope(payload, fallback);
+  const html = String(payload.html || "");
+  const normalizedPayload = {
+    ...payload,
+    ...capture,
+    source: "1688",
+    stage: String(payload.stage || fallback.stage || "detail").trim() || "detail",
+    contractVersion: MANUAL_CAPTURE_CONTRACT_VERSION,
+  };
+  return {
+    contractVersion: MANUAL_CAPTURE_CONTRACT_VERSION,
+    source: "1688",
+    stage: normalizedPayload.stage,
+    storeId: String(payload.storeId || fallback.storeId || "").trim(),
+    includeVideo: payload.includeVideo !== false,
+    url: capture.url,
+    offerId: capture.offerId,
+    taskId: capture.taskId,
+    collectedAt: capture.collectedAt,
+    captureMode: capture.captureMode,
+    capture,
+    html,
+    hints: normalizedPayload,
   };
 }
 

@@ -12,7 +12,7 @@ import { DEFAULT_API_FILE, getStore, loadStores, publicStore } from "./config.js
 import { calculateOzonPrice, RMB_SHIPPING_LEVELS } from "./pricing.js";
 import { buildActivityReadSellerResult, buildPromotionImpactPreview } from "./activityReadModel.js";
 import { buildFinanceDomainReadModel } from "./financeReadModel.js";
-import { fetch1688Html, parse1688Product } from "./collector1688.js";
+import { fetch1688Html, normalizeManualCapturePayload, parse1688Product } from "./collector1688.js";
 import { parsePddProduct } from "./collectorPdd.js";
 import {
   addCollectionItem,
@@ -1260,9 +1260,13 @@ let latest1688Capture = null;
 
 function buildCaptureResponseReceipt(item = {}, parsed = {}) {
   const captureIdentity = parsed?.captureIdentity || parsed?.sourceEvidence?.captureIdentity || {};
+  const contractVersion = String(parsed?.capture?.contractVersion || "manual_capture_v1");
+  const snapshotHash = String(parsed?.sourceEvidence?.snapshotHash || parsed?.snapshotHash || "");
   return {
+    contractVersion,
     storeId: String(item.storeId || ""),
     captureIdentity: {
+      contractVersion,
       taskId: String(captureIdentity.taskId || parsed?.taskId || ""),
       offerId: String(captureIdentity.offerId || parsed?.offerId || ""),
       canonicalUrl: String(captureIdentity.canonicalUrl || parsed?.url || ""),
@@ -1273,8 +1277,10 @@ function buildCaptureResponseReceipt(item = {}, parsed = {}) {
       canonicalUrl: String(captureIdentity.canonicalUrl || parsed?.url || ""),
       captureMode: String(captureIdentity.captureMode || parsed?.captureMode || ""),
       collectedAt: String(captureIdentity.collectedAt || parsed?.collectedAt || item.receivedAt || ""),
+      contractVersion,
     },
-    snapshotHash: String(parsed?.sourceEvidence?.snapshotHash || parsed?.snapshotHash || ""),
+    snapshotHash,
+    sourceEvidence: { snapshotHash },
     rawContentStored: false,
   };
 }
@@ -1777,19 +1783,18 @@ app.post("/api/erp/reserve-parent-skus", asyncRoute(async (req, res) => {
 
 app.post("/api/1688/capture", asyncRoute(async (req, res) => {
   const body = parseBody(req.body);
-  const captureStoreId = String(body.storeId || "").trim();
+  const captureInput = normalizeManualCapturePayload(body);
+  const captureStoreId = captureInput.storeId;
   if (req.authPrincipal?.storeIds?.length && !captureStoreId) {
     res.status(400).json({ ok: false, reasonCode: "CAPTURE_STORE_REQUIRED", error: "当前多店铺会话必须明确选择采集归属店铺。" });
     return;
   }
-  const url = String(body.url || "").trim();
-  const html = String(body.html || "").trim();
-  const parsed = parse1688Product({ url, html, hints: body });
-  if (body.includeVideo === false) parsed.video = null;
+  const parsed = parse1688Product({ url: captureInput.url, html: captureInput.html, hints: captureInput.hints });
+  if (!captureInput.includeVideo) parsed.video = null;
   const item = await addCollectionItem({
     parsed,
     storeId: captureStoreId,
-    includeVideo: body.includeVideo !== false,
+    includeVideo: captureInput.includeVideo,
   });
   latest1688Capture = {
     id: item.id,

@@ -153,6 +153,7 @@ async function collectPage(options = {}) {
   const attributes = pickAttributes(contextData);
 
   return {
+    contractVersion: "manual_capture_v1",
     taskId: String(options.taskId || "").trim(),
     url: location.href,
     offerId: pickOfferId(contextData),

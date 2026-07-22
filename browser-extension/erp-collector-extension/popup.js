@@ -46,8 +46,15 @@ async function openCurrentCapture(captureId = "") {
   showCaptureLink(captureId);
   if (!url) return false;
   if (globalThis.chrome?.tabs?.create) {
-    await chrome.tabs.create({ url });
-    return true;
+    try {
+      await chrome.tabs.create({ url });
+      return true;
+    } catch (error) {
+      // The capture is already persisted. Keep the manual link usable rather
+      // than turning a post-capture tab-opening failure into a false capture
+      // failure.
+      console.warn("自动打开 ERP 当前商品失败，保留手动链接", error?.message || error);
+    }
   }
   return false;
 }

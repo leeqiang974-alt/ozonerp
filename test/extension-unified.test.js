@@ -86,6 +86,7 @@ test("1688 collector opens the exact captured item in the ERP sourcing box", asy
     assert.match(popup, /showCaptureLink/);
     assert.match(popup, /openCurrentCapture/);
     assert.match(popup, /chrome\.tabs\.create/);
+    assert.match(popup, /保留手动链接/);
     assert.match(popup, /captureId=/);
     assert.match(popup, /ERP 已自动打开当前商品/);
   }

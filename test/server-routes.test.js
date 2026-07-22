@@ -2,6 +2,17 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
 
+test("server auto-listing imports resolve at runtime", async () => {
+  const source = await readFile(new URL("../src/server.js", import.meta.url), "utf8");
+  const autoListing = await import("../src/autoListing.js");
+  const importEnd = source.indexOf('} from "./autoListing.js";');
+  const importStart = source.lastIndexOf("import {", importEnd);
+  assert.ok(importStart >= 0 && importEnd > importStart, "server auto-listing import block should exist");
+  const importBlock = source.slice(importStart + "import {".length, importEnd);
+  const importedNames = importBlock.split(",").map((name) => name.trim()).filter(Boolean);
+  for (const name of importedNames) assert.ok(name in autoListing, `autoListing.js must export ${name}`);
+});
+
 test("server does not register duplicate method and path combinations", async () => {
   const source = await readFile(new URL("../src/server.js", import.meta.url), "utf8");
   const routes = [...source.matchAll(/app\.(get|post|put|patch|delete)\("([^"]+)"/g)]
@@ -2009,6 +2020,12 @@ test("server exposes an explicit local media approval publish route", async () =
   assert.match(source, /publishAutoListingMediaApproval/);
   assert.match(source, /rollbackAutoListingMediaApproval/);
   assert.match(source, /rollbackCandidateData/);
+  const publishStart = source.indexOf('app.post("/api/workflows/:id/media-approval-draft/publish"');
+  const publishEnd = source.indexOf('app.post("/api/workflows/:id/request-preflight-recheck"', publishStart);
+  assert.match(source.slice(publishStart, publishEnd), /rollbackCandidateData/);
+  const ordersStart = source.indexOf('app.get("/api/ozon/orders"');
+  const ordersEnd = source.indexOf("async function readFbsOrderDashboardSnapshot", ordersStart);
+  assert.doesNotMatch(source.slice(ordersStart, ordersEnd), /rollbackCandidateData|jobId/);
 });
 
 test("pipeline run refuses concurrent runs and unconfirmed local auto-list verification", async () => {

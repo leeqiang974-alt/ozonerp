@@ -2405,6 +2405,11 @@ app.post("/api/workflows/:id/media-approval-draft/publish", asyncRoute(async (re
       if (saved === null) throw new Error("自动上架候选不存在，无法发布媒体批准。");
       return saved !== false;
     },
+    rollbackCandidateData: async (binding) => {
+      const rolledBack = await rollbackAutoListingMediaApproval(jobId, binding || {});
+      if (rolledBack === null) throw new Error("自动上架候选不存在，无法回滚媒体批准。");
+      return rolledBack !== false;
+    },
   });
   if (!result.ok) {
     res.status(result.status || 400).json(result);
@@ -3850,11 +3855,6 @@ app.get("/api/ozon/orders", asyncRoute(async (req, res) => {
     sort_dir: String(req.query.sortDir || "DESC").toUpperCase() === "ASC" ? "ASC" : "DESC",
     filter,
     limit: Number(req.query.limit || 50),
-    rollbackCandidateData: async (binding) => {
-      const rolledBack = await rollbackAutoListingMediaApproval(jobId, binding || {});
-      if (rolledBack === null) throw new Error("自动上架候选不存在，无法回滚媒体批准。");
-      return rolledBack !== false;
-    },
   });
 
   res.json(data);

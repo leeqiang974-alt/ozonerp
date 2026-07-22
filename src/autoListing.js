@@ -3394,29 +3394,7 @@ async function failJob(id, reason) {
   });
 }
 
-export async function listAutoListingJobs() {
-  var jobs = await recoverStuckJobs();
-  return jobs
-    .map(function(job) {
-      var steps = Array.isArray(job.steps) ? job.steps : [];
-      var last = steps.length ? steps[steps.length - 1] : null;
-      var reasonCode = job.reasonCode || mapReasonCode(job.error || last?.detail || "");
-      var timeoutStage = reasonCode === "TIMEOUT" ? inferTimeoutStage(job) : "";
-      return Object.assign({
-        source: "auto_listing",
-        stage: job.stage || (last ? String(last.action || "") : String(job.status || "")),
-        reasonCode: reasonCode,
-        timeoutStage: timeoutStage,
-        updatedAt: job.updatedAt || job.createdAt || nowIso(),
-      }, job);
-    })
-    .sort(function(a, b) { return String(b.createdAt).localeCompare(String(a.createdAt)); });
-}
-
-export async function getAutoListingJob(id) {
-  var jobs = await recoverStuckJobs();
-  var job = jobs.find(function(j) { return j.id === id; }) || null;
-  if (!job) return null;
+function normalizeAutoListingJobSnapshot(job) {
   var steps = Array.isArray(job.steps) ? job.steps : [];
   var last = steps.length ? steps[steps.length - 1] : null;
   var reasonCode = job.reasonCode || mapReasonCode(job.error || last?.detail || "");
@@ -3428,6 +3406,136 @@ export async function getAutoListingJob(id) {
     timeoutStage: timeoutStage,
     updatedAt: job.updatedAt || job.createdAt || nowIso(),
   }, job);
+}
+
+export async function listAutoListingJobs() {
+  var jobs = await recoverStuckJobs();
+  return jobs
+    .map(normalizeAutoListingJobSnapshot)
+    .sort(function(a, b) { return String(b.createdAt).localeCompare(String(a.createdAt)); });
+}
+
+export async function getAutoListingJob(id) {
+  var jobs = await recoverStuckJobs();
+  var job = jobs.find(function(j) { return j.id === id; }) || null;
+  return job ? normalizeAutoListingJobSnapshot(job) : null;
+}
+
+// Visibility and readiness checks must not recover or rewrite stale jobs.
+export async function getAutoListingJobSnapshot(id) {
+  var jobs = await readJobs();
+  var job = jobs.find(function(j) { return j.id === id; }) || null;
+  return job ? normalizeAutoListingJobSnapshot(job) : null;
+}
+
+function normalizedMediaApprovalAssetIds(value) {
+  return [...new Set((Array.isArray(value) ? value : [])
+    .map(function(id) { return String(id || "").trim(); })
+    .filter(Boolean))].sort();
+}
+
+function sameMediaApprovalAssetIds(left, right) {
+  var a = normalizedMediaApprovalAssetIds(left);
+  var b = normalizedMediaApprovalAssetIds(right);
+  return a.length === b.length && a.every(function(value, index) { return value === b[index]; });
+}
+
+function mediaApprovalBindingMatches(binding, expectedDraftHash, expectedSourceHash, assetIds) {
+  return String(binding?.expectedDraftHash || "") === String(expectedDraftHash || "")
+    && String(binding?.expectedSourceHash || "") === String(expectedSourceHash || "")
+    && sameMediaApprovalAssetIds(binding?.assetIds, assetIds);
+}
+
+export async function saveAutoListingMediaApprovalDraft(jobId, candidateData = {}, expectedSourceHash = "") {
+  var result = null;
+  await mutateJobs(function(jobs) {
+    var idx = jobs.findIndex(function(job) { return job.id === jobId; });
+    if (idx === -1) return;
+    var currentHash = String(jobs[idx]?.candidateData?.sourceEvidence?.snapshotHash || "");
+    var nextHash = String(candidateData?.sourceEvidence?.snapshotHash || "");
+    if (!expectedSourceHash || currentHash !== expectedSourceHash || nextHash !== expectedSourceHash) {
+      result = false;
+      return;
+    }
+    jobs[idx] = Object.assign({}, jobs[idx], { candidateData, updatedAt: nowIso() });
+    result = true;
+  });
+  return result;
+}
+
+export async function publishAutoListingMediaApproval(jobId, candidateData = {}, binding = {}) {
+  var result = null;
+  await mutateJobs(function(jobs) {
+    var idx = jobs.findIndex(function(job) { return job.id === jobId; });
+    if (idx === -1) return;
+    var currentData = jobs[idx].candidateData || {};
+    var expectedDraftHash = String(binding.expectedDraftHash || "");
+    var expectedSourceHash = String(binding.expectedSourceHash || "");
+    var assetIds = normalizedMediaApprovalAssetIds(binding.assetIds);
+    var currentSourceHash = String(currentData?.sourceEvidence?.snapshotHash || "");
+    var nextSourceHash = String(candidateData?.sourceEvidence?.snapshotHash || "");
+    if (!expectedDraftHash || !expectedSourceHash || !assetIds.length
+      || currentSourceHash !== expectedSourceHash || nextSourceHash !== expectedSourceHash
+      || !mediaApprovalBindingMatches(currentData.mediaApprovalDraft, expectedDraftHash, expectedSourceHash, assetIds)
+      || !mediaApprovalBindingMatches(candidateData.mediaApprovalPublished, expectedDraftHash, expectedSourceHash, assetIds)) {
+      result = false;
+      return;
+    }
+    jobs[idx] = Object.assign({}, jobs[idx], { candidateData, updatedAt: nowIso() });
+    result = true;
+  });
+  return result;
+}
+
+export async function rollbackAutoListingMediaApproval(jobId, binding = {}) {
+  var result = null;
+  await mutateJobs(function(jobs) {
+    var idx = jobs.findIndex(function(job) { return job.id === jobId; });
+    if (idx === -1) return;
+    var currentData = jobs[idx].candidateData || {};
+    var expectedDraftHash = String(binding.expectedDraftHash || "");
+    var expectedSourceHash = String(binding.expectedSourceHash || "");
+    var assetIds = normalizedMediaApprovalAssetIds(binding.assetIds);
+    if (!expectedDraftHash || !expectedSourceHash || !assetIds.length
+      || String(currentData?.sourceEvidence?.snapshotHash || "") !== expectedSourceHash
+      || !mediaApprovalBindingMatches(currentData.mediaApprovalPublished, expectedDraftHash, expectedSourceHash, assetIds)) {
+      result = false;
+      return;
+    }
+    var staleAt = nowIso();
+    var staleReason = String(binding.reason || "workflow_changed_during_publish");
+    var selected = new Set(assetIds);
+    var staleBinding = {
+      ...(currentData.mediaApprovalPublished || {}),
+      status: "stale",
+      staleReason,
+      staleAt,
+    };
+    var nextCandidateData = {
+      ...currentData,
+      mediaApprovalDraft: staleBinding,
+      mediaApprovalPublished: staleBinding,
+      mediaAssets: (Array.isArray(currentData.mediaAssets) ? currentData.mediaAssets : []).map(function(asset) {
+        if (!selected.has(String(asset?.id || ""))) return asset;
+        return {
+          ...asset,
+          checks: {
+            ...(asset.checks || {}),
+            humanApproved: false,
+            approvalBinding: {
+              ...(asset?.checks?.approvalBinding || {}),
+              status: "stale",
+              staleReason,
+              staleAt,
+            },
+          },
+        };
+      }),
+    };
+    jobs[idx] = Object.assign({}, jobs[idx], { candidateData: nextCandidateData, updatedAt: staleAt });
+    result = true;
+  });
+  return result;
 }
 
 export async function backfillTimeoutStages(limit = 1000) {

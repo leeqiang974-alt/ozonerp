@@ -1,5 +1,14 @@
 # Ozon ERP 会话接管与恢复记录
 
+## 2026-07-22 P0 本机恢复后的服务启动收口
+
+- 修复 `server.js` 引用但 `autoListing.js` 未导出的只读任务快照和三项媒体批准持久化函数；服务不再因 ESM 缺失导出而在启动阶段退出。
+- `getAutoListingJobSnapshot` 只读取任务，不触发陈旧任务恢复或磁盘改写；店铺可见性、媒体批准和商品 readiness 查询保持只读。
+- 媒体批准草稿、发布和并发回滚均绑定当前来源快照、payload 草稿 hash 和精确媒体集合；发布期间 workflow 变化时，本地候选批准会标记 stale 并撤销 `humanApproved`。
+- 修复误落入 FBS 订单读取参数的媒体回滚回调，将补偿依赖放回媒体批准发布路由；订单读取不再携带未定义的 `jobId`。
+- 新增运行时导入契约测试，逐项核对服务从 `autoListing.js` 引入的所有符号，避免静态源码测试再次漏过启动故障。
+- 验证：服务在 `127.0.0.1:5189` 实际启动，healthz 与前端 runtime smoke（7 views、13 nav bindings、4 stores）通过；`npm test` 1237/1237，lint 75 文件，offline acceptance 全部通过。未联网、未连接数据库、未调用 Seller API、未执行 Ozon 写入。验证等级 `locally_tested`；真实四店铺读取与黄金链路实单回放仍未完成。
+
 ## 2026-07-20 C34 FBS 履约只读恢复收口
 
 - 订单续页读取失败时保留已读取订单，状态降为 partial，并提供按当前店铺/筛选/游标重试；首批失败仍清空旧订单，避免旧批次冒充当前证据。

@@ -1,5 +1,7 @@
 # Ozon ERP 产品与交付路线图
 
+> 2026-07-22 P0 本机恢复后的服务启动收口：补齐 `autoListing.js` 的只读任务快照与媒体批准草稿/发布/回滚持久化契约，修正误放到 FBS 订单读取中的回滚回调，并新增服务导入符号的运行时契约测试。服务真实启动、healthz、前端 runtime smoke、`npm test` `1237/1237`、lint 75 files 和 offline acceptance 均通过；未联网、未连接数据库、未调用 Seller API、未执行 Ozon 写入。验证等级 `locally_tested`；P0 启动阻断已解除，下一步回到 A 线，以真实 1688 快照和受控四店铺 Seller API 只读回放推进黄金链路。
+
 > 2026-07-20 C34 FBS 履约只读恢复收口：续页读取失败保留已读订单并标记 partial，允许按当前范围重试；争议筛选同时识别顶层 status/statusGroup 与 substatus 的 dispute 变体；订单权限/服务失败状态直接显示“重新读取当前范围”按钮；FBS 回执保存先经过签名 Seller 只读会话、principal 店铺范围和显式店铺校验，缺少范围不会读取或持久化回执。C 定向通过，前端静态 295/295，全量 `npm test` `1235/1235`，lint 75 files；离线验收检查通过但 git diff 检查受当前 worktree 元数据损坏影响；未联网、未连接数据库、未执行履约写入。验证等级 `locally_tested`；仍缺真实 FBS 订单/争议回放、履约写动作和写后回读。下一轮转 D。 
 
 > 2026-07-20 B35 商品与库存真实操作闭环收口：库存页“读取库存”按钮补齐受保护事件绑定；切换店铺立即失效商品请求、清空旧店铺 Offer/状态/分页证据，必须重新读取当前店铺；库存 dry-run 入口缺少店铺直接返回 `STOCK_DRY_RUN_STORE_REQUIRED`，不再返回无店铺阻断计划；目标库存与当前精确 tuple 无差异时返回 `DIRECT_WRITE_STOCK_NO_CHANGES`，不调用 Ozon 写接口。定向商品/库存/服务端回归通过，前端静态 291/291，全量 `npm test` `1231/1231`；未联网、未连接数据库、未执行 Ozon 写入。验证等级 `locally_tested`；仍缺四店铺真实 Seller API 商品/库存只读回放和真实写后回读。下一轮转 C。 
@@ -30,7 +32,7 @@
 
 > 2026-07-20 A34 强预检重复校验 1688 canonical 来源身份：卖家编辑草稿后再次预检时，不再仅按 URL 是否包含 `1688.com` 放行；每次都要求严格 `detail.1688.com/offer/<数字>` canonical URL，并核对 URL 中 Offer ID 与 `sourceEvidence.offerId` 一致，冲突返回 `SOURCE_OFFER_URL_MISMATCH`。新增后续预检身份回归；全量测试通过、lint `75 files`、offline acceptance 通过；未联网、未调用模型或执行 Ozon 写入。仍缺真实 1688 快照和 Seller API 类目/属性、提交/审核回读；下一轮转 B。
 
-更新日期：2026-07-20
+更新日期：2026-07-22
 
 > 2026-07-20 E33 生产预检、实例健康与观测一致性收口：`/api/system/deployment-preflight` 现在与 CLI 共用严格 `productionDeploymentDecision`，动态返回 checks/`ok`/`deploymentReady`，不再与命令行给出相反结论；实例健康拒绝超过 5 分钟的未来 heartbeat（`INSTANCE_HEARTBEAT_FUTURE`）；系统配置新增服务观测卡，区分未读取、读取失败、高等级告警和一般告警，并明确不等于 Seller API 或业务 readiness。定向 E 线通过，全量 `npm test` `1194/1194`、lint `75 files`、offline acceptance 通过；未联网、未连接数据库或执行写入。真实生产数据库/迁移/备份/认证和 Seller API 回放仍需外部条件；下一轮回到 A。
 

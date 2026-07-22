@@ -1092,9 +1092,11 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
         duplicate: Boolean(result.duplicate),
         message: result.duplicateMessage || "",
         id: result.id || "",
+        collectionId: result.id || "",
         title: result.title || payload.title || "",
         url: payload.url,
         receivedAt: result.receivedAt || "",
+        captureReceipt: result.captureReceipt || null,
       });
     } catch (error) {
       sendResponse({ ok: false, error: error.message });

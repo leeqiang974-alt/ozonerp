@@ -24,15 +24,32 @@ function setStatus(message, type = "") {
   statusEl.className = `status ${type}`.trim();
 }
 
+function captureErpUrl(captureId = "") {
+  const id = String(captureId || "").trim();
+  if (!id) return "";
+  return `${ERP_BASES[0]}/?view=sourcing&captureId=${encodeURIComponent(id)}`;
+}
+
 function showCaptureLink(captureId = "") {
   if (!openCaptureLink) return;
-  const id = String(captureId || "").trim();
-  if (!id) {
+  const url = captureErpUrl(captureId);
+  if (!url) {
     openCaptureLink.hidden = true;
     return;
   }
-  openCaptureLink.href = `${ERP_BASES[0]}/?view=sourcing&captureId=${encodeURIComponent(id)}`;
+  openCaptureLink.href = url;
   openCaptureLink.hidden = false;
+}
+
+async function openCurrentCapture(captureId = "") {
+  const url = captureErpUrl(captureId);
+  showCaptureLink(captureId);
+  if (!url) return false;
+  if (globalThis.chrome?.tabs?.create) {
+    await chrome.tabs.create({ url });
+    return true;
+  }
+  return false;
 }
 
 async function activeTab() {
@@ -82,13 +99,13 @@ async function collectCurrentProduct() {
       return;
     }
     pendingPayload = null;
+    const captureId = result.id || result.collectionId || result.captureReceipt?.collectionId;
+    await openCurrentCapture(captureId);
     if (result.duplicate) {
-      showCaptureLink(result.id || result.collectionId || result.captureReceipt?.collectionId);
-      setStatus(`已采集过：${result.title || "未命名商品"}\nERP 已保留原记录。`, "ok");
+      setStatus(`已采集过：${result.title || "未命名商品"}\nERP 已自动打开原记录，可继续补资料或预检。`, "ok");
       return;
     }
-    showCaptureLink(result.id || result.collectionId || result.captureReceipt?.collectionId);
-    setStatus(`采集成功：${result.title || "未命名商品"}\n点击下方按钮继续生成本地草稿。`, "ok");
+    setStatus(`采集成功：${result.title || "未命名商品"}\nERP 已自动打开当前商品，可继续生成本地草稿。`, "ok");
   } catch (error) {
     setStatus(error.message, "error");
   } finally {

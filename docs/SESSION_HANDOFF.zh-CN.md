@@ -15,6 +15,14 @@
 - 定向采集/服务端/扩展测试 187/187；全量 `npm test` 1240/1240，lint 75 文件，offline acceptance 通过。未联网、未连接数据库、未执行 Ozon 写入。验证等级 `locally_tested`。
 - G1-S1 已完成。当前唯一切片转为 G1-S2：采集导入的卖家操作入口；仍缺一个真实 1688 商品回放。
 
+## 2026-07-22 G1-S2 采集导入入口收口
+
+- 两个 1688 采集弹窗在新采集或重复采集后自动打开带 `captureId` 的 ERP 当前商品页；仍保留“重新打开当前采集”链接作为恢复入口。
+- 1688 详情扩展把 `collectionId` 和脱敏 `captureReceipt` 回传给弹窗；ERP 当前商品页显示来源身份、契约/快照、SKU/图片/采购/尺重覆盖、阻断项和卖家下一步。
+- 采集失败、缺尺重和人机验证仍停在人工恢复入口；本切片没有生成或提交 Ozon 草稿。
+- 验证：定向扩展/前端测试通过；全量 `npm test` 1240/1240、lint 75 文件、offline acceptance 通过。`networkAccessed=false`、`databaseObserved=false`、`writesExecuted=false`，验证等级 `locally_tested`。
+- G1-S2 已完成。当前唯一切片转为 G1-S3：使用首个真实 1688 商品完成采集、导入、重放和重复导入验证；不扩展边缘类目。
+
 ## 2026-07-22 P0 本机恢复后的服务启动收口
 
 - 修复 `server.js` 引用但 `autoListing.js` 未导出的只读任务快照和三项媒体批准持久化函数；服务不再因 ESM 缺失导出而在启动阶段退出。

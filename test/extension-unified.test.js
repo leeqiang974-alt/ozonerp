@@ -84,8 +84,10 @@ test("1688 collector opens the exact captured item in the ERP sourcing box", asy
     const html = await readFile(new URL(`${directory}popup.html`, import.meta.url), "utf8");
     assert.match(html, /id="openCaptureLink"/);
     assert.match(popup, /showCaptureLink/);
+    assert.match(popup, /openCurrentCapture/);
+    assert.match(popup, /chrome\.tabs\.create/);
     assert.match(popup, /captureId=/);
-    assert.match(popup, /点击下方按钮继续生成本地草稿/);
+    assert.match(popup, /ERP 已自动打开当前商品/);
   }
 });
 

@@ -1,6 +1,8 @@
 # Ozon ERP 产品与交付路线图
 
-> 当前派工以 `docs/TOP-LEVEL-DEVELOPMENT-PLAN.zh-CN.md` 为准。本文件记录已交付内容和验证等级，不再从历史条目反向领取开发任务。G1-S1 已完成；当前唯一切片：G1-S2 采集导入的卖家操作入口；G4 MVP 通过前冻结 FBS、活动、财务和售后扩建。
+> 当前派工以 `docs/TOP-LEVEL-DEVELOPMENT-PLAN.zh-CN.md` 为准。本文件记录已交付内容和验证等级，不再从历史条目反向领取开发任务。G1-S1、G1-S2 已完成；当前唯一切片：G1-S3 首个真实 1688 商品回放；G4 MVP 通过前冻结 FBS、活动、财务和售后扩建。
+
+> 2026-07-22 G1-S2 采集导入入口收口：两个 1688 采集弹窗在成功或重复采集后自动打开带 `captureId` 的 ERP 当前商品页，保留手动重开链接；详情扩展把 `collectionId` 与脱敏 `captureReceipt` 回传给弹窗。当前商品页继续显示来源身份、快照、SKU/采购/媒体覆盖、尺重与阻断动作，不生成或提交 Ozon 草稿。定向扩展/前端测试、全量 `npm test` `1240/1240`、lint 75 files、offline acceptance 通过；未联网、未连接数据库、未执行 Ozon 写入。验证等级 `locally_tested`；下一步只做首个真实 1688 商品回放。
 
 > 2026-07-22 G1-S1 采集契约收口：两个 1688 详情扩展、crawler detail 回传和 `/api/1688/capture` 统一到 `manual_capture_v1`；旧扩展缺少版本号时兼容升级，未知版本在解析前阻断；回执同时保留脱敏身份、契约版本和同值快照 hash。定向采集/服务端/扩展 187/187，全量 `npm test` `1240/1240`、lint 75 files、offline acceptance 通过；未联网、未连接数据库、未执行 Ozon 写入。验证等级 `locally_tested`；仍缺一个真实商品回放，下一步进入 G1-S2。
 

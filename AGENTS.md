@@ -82,6 +82,11 @@ Do not turn ordinary seller screens into developer logs, long unscannable forms,
 
 ## Claude-Guided Development
 
+### GitHub connector priority
+
+- When the Codex GitHub connector is connected and its publish capability is enabled, use the connector-first workflow for repository inspection and pull-request operations; do not block on installing `gh`.
+- Use `gh` only as a local CLI fallback when connector coverage is unavailable or cannot perform the required operation. Verify the resulting remote ref/PR after either path.
+
 When the user asks for Ozon ERP development to be guided by Claude Code:
 
 1. Ask Claude Code for a short implementation brief or review using `scripts/claude-ozon-review.ps1`.

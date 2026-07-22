@@ -44,15 +44,17 @@ test("unified extension supports external HTTPS ERP without persisting the sessi
   assert.deepEqual(manifest.optional_host_permissions, ["https://*/*"]);
 });
 
-test("collector popup blocks collection until a store is connected", async () => {
-  const popup = await readFile(new URL("popup.js", UNIFIED_DIR), "utf8");
-  const html = await readFile(new URL("popup.html", UNIFIED_DIR), "utf8");
-  assert.match(html, /id="collectButton"[^>]*disabled/);
-  assert.match(html, /请先连接 ERP 并选择归属店铺/);
-  assert.match(popup, /function updateCollectAvailability/);
-  assert.match(popup, /请先连接 ERP 并选择归属店铺，再采集商品/);
-  assert.match(popup, /button\.dataset\.collecting/);
-  assert.match(popup, /updateCollectAvailability\(\);/);
+test("collector popups block collection until a store is connected", async () => {
+  for (const directory of [EXT_DIR, UNIFIED_DIR]) {
+    const popup = await readFile(new URL("popup.js", directory), "utf8");
+    const html = await readFile(new URL("popup.html", directory), "utf8");
+    assert.match(html, /id="collectButton"[^>]*disabled/);
+    assert.match(html, /请先连接 ERP 并选择归属店铺/);
+    assert.match(popup, /function updateCollectAvailability/);
+    assert.match(popup, /请先连接 ERP 并选择归属店铺，再采集商品/);
+    assert.match(popup, /button\.dataset\.collecting/);
+    assert.match(popup, /updateCollectAvailability\(\);/);
+  }
 });
 
 test("1688 extensions surface the redacted capture receipt identity", async () => {

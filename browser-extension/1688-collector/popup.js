@@ -24,6 +24,13 @@ function setStatus(message, type = "") {
   statusEl.className = `status ${type}`.trim();
 }
 
+function updateCollectAvailability() {
+  if (button.dataset.collecting === "true") return;
+  const ready = Boolean(String(storeSelect?.value || "").trim());
+  button.disabled = !ready;
+  button.title = ready ? "" : "请先连接 ERP 并选择归属店铺";
+}
+
 function captureErpUrl(captureId = "") {
   const id = String(captureId || "").trim();
   if (!id) return "";
@@ -77,6 +84,12 @@ async function ensureContentScript(tabId) {
 }
 
 async function collectCurrentProduct() {
+  if (!String(storeSelect?.value || "").trim()) {
+    setStatus("请先连接 ERP 并选择归属店铺，再采集商品。", "error");
+    updateCollectAvailability();
+    return;
+  }
+  button.dataset.collecting = "true";
   button.disabled = true;
   button.textContent = pendingPayload ? "补齐后入箱..." : "采集中...";
   setStatus(pendingPayload ? "正在补齐尺重并发送到 ERP..." : "正在读取当前 1688 页面...");
@@ -116,7 +129,8 @@ async function collectCurrentProduct() {
   } catch (error) {
     setStatus(error.message, "error");
   } finally {
-    button.disabled = false;
+    button.dataset.collecting = "false";
+    updateCollectAvailability();
     button.textContent = pendingPayload ? "补齐后入箱" : "采集当前商品";
   }
 }
@@ -172,9 +186,11 @@ async function loadStores() {
       .map((store) => `<option value="${store.id}">${store.name} - ${store.clientId}</option>`)
       .join("");
     if (saved && [...storeSelect.options].some((option) => option.value === saved)) storeSelect.value = saved;
-    setStatus("等待采集");
+    updateCollectAvailability();
+    setStatus(storeSelect.value ? "等待采集" : "请先连接 ERP 并选择归属店铺");
   } catch (error) {
     storeSelect.innerHTML = `<option value="">请先打开本地 ERP</option>`;
+    updateCollectAvailability();
     setStatus(error.message, "error");
   }
 }
@@ -279,7 +295,10 @@ async function pollWorkerNow() {
   }
 }
 
-storeSelect.addEventListener("change", () => saveStoreId(storeSelect.value));
+storeSelect.addEventListener("change", () => {
+  saveStoreId(storeSelect.value);
+  updateCollectAvailability();
+});
 button.addEventListener("click", collectCurrentProduct);
 pollWorkerButton.addEventListener("click", pollWorkerNow);
 skuToggleButton.addEventListener("click", () => {

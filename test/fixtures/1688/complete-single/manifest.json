@@ -1,0 +1,12 @@
+{
+  "fixtureKind": "synthetic_redacted_replay",
+  "synthetic": true,
+  "redacted": true,
+  "url": "https://detail.1688.com/offer/900000000001.html?spm=fixture",
+  "hints": {
+    "capturedAt": "2026-07-12T08:00:00.000Z",
+    "captureMode": "fixture_replay"
+  },
+  "verificationLevel": "locally_tested_fixture",
+  "validationTargets": ["single_sku_source_capture", "block_missing_procurement_evidence"]
+}

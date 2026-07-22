@@ -12,15 +12,39 @@ const workerStatus = document.querySelector("#workerStatus");
 const pollWorkerButton = document.querySelector("#pollWorkerButton");
 const skuList = document.querySelector("#skuList");
 const skuToggleButton = document.querySelector("#skuToggleButton");
+const erpBaseUrl = document.querySelector("#erpBaseUrl");
+const erpSessionToken = document.querySelector("#erpSessionToken");
+const saveErpConfigButton = document.querySelector("#saveErpConfigButton");
+const clearErpConfigButton = document.querySelector("#clearErpConfigButton");
+const erpConfigStatus = document.querySelector("#erpConfigStatus");
+const openCaptureLink = document.querySelector("#openCaptureLink");
 let pendingPayload = null;
 let skuVariants = [];
 let selectedSkuKeys = new Set();
 let allSkuSelected = true;
-const ERP_BASES = ["http://127.0.0.1:5178", "http://localhost:5178"];
+
+function showCaptureLink(captureId = "") {
+  if (!openCaptureLink) return;
+  const id = String(captureId || "").trim();
+  if (!id) {
+    openCaptureLink.hidden = true;
+    return;
+  }
+  const base = String(erpBaseUrl?.value || "http://127.0.0.1:5178").trim().replace(/\/+$/, "");
+  openCaptureLink.href = `${base}/?view=sourcing&captureId=${encodeURIComponent(id)}`;
+  openCaptureLink.hidden = false;
+}
 
 function setStatus(message, type = "") {
   statusEl.textContent = message;
   statusEl.className = `status ${type}`.trim();
+}
+
+function updateCollectAvailability() {
+  if (button.dataset.collecting === "true") return;
+  const ready = Boolean(String(storeSelect?.value || "").trim());
+  button.disabled = !ready;
+  button.title = ready ? "" : "请先连接 ERP 并选择归属店铺";
 }
 
 async function activeTab() {
@@ -49,6 +73,12 @@ function isPddTab(tab) {
 }
 
 async function collectCurrentProduct() {
+  if (!String(storeSelect?.value || "").trim()) {
+    setStatus("请先连接 ERP 并选择归属店铺，再采集商品。", "error");
+    updateCollectAvailability();
+    return;
+  }
+  button.dataset.collecting = "true";
   button.disabled = true;
   button.textContent = pendingPayload ? "补齐后入箱..." : "采集中...";
   setStatus(pendingPayload ? "正在补齐尺重并发送到 ERP..." : "正在读取当前页面...");
@@ -66,7 +96,8 @@ async function collectCurrentProduct() {
   } catch (error) {
     setStatus(error.message, "error");
   } finally {
-    button.disabled = false;
+    button.dataset.collecting = "false";
+    updateCollectAvailability();
     button.textContent = pendingPayload ? "补齐后入箱" : "采集当前商品";
   }
 }
@@ -94,10 +125,12 @@ async function collect1688Product(tab) {
   }
   pendingPayload = null;
   if (result.duplicate) {
+    showCaptureLink(result.id || result.collectionId || result.captureReceipt?.collectionId);
     setStatus(`已采集过：${result.title || "未命名商品"}\nERP 已保留原记录。`, "ok");
     return;
   }
-  setStatus(`采集成功：${result.title || "未命名商品"}\n回到 ERP 点“读取助手结果”。`, "ok");
+  showCaptureLink(result.id || result.collectionId || result.captureReceipt?.collectionId);
+  setStatus(`采集成功：${result.title || "未命名商品"}\n点击下方按钮继续生成本地草稿。`, "ok");
 }
 
 async function collectPddProduct(tab) {
@@ -124,10 +157,12 @@ async function collectPddProduct(tab) {
   const data = await response.json().catch(() => ({}));
   if (!response.ok || !data.ok) throw new Error(data.error || "ERP 接收拼多多商品失败。");
   if (data.duplicate) {
+    showCaptureLink(data.id || data.collectionId || data.captureReceipt?.collectionId);
     setStatus(`已采集过：${data.title || "未命名商品"}\nERP 已保留原记录。`, "ok");
     return;
   }
-  setStatus(`拼多多采集成功：${data.title || "未命名商品"}\n回到 ERP 点“读取助手结果”。`, "ok");
+  showCaptureLink(data.id || data.collectionId || data.captureReceipt?.collectionId);
+  setStatus(`拼多多采集成功：${data.title || "未命名商品"}\n点击下方按钮继续生成本地草稿。`, "ok");
 }
 
 function getSavedStoreId() {
@@ -181,24 +216,68 @@ async function loadStores() {
       .map((store) => `<option value="${store.id}">${store.name} - ${store.clientId}</option>`)
       .join("");
     if (saved && [...storeSelect.options].some((option) => option.value === saved)) storeSelect.value = saved;
+    updateCollectAvailability();
     setStatus("等待采集");
   } catch (error) {
     storeSelect.innerHTML = `<option value="">请先打开本地 ERP</option>`;
+    updateCollectAvailability();
     setStatus(error.message, "error");
   }
 }
 
 async function fetchErp(path, options = {}) {
-  let lastError = null;
-  for (const base of ERP_BASES) {
-    try {
-      return await fetch(`${base}${path}`, options);
-    } catch (error) {
-      lastError = error;
-    }
-  }
-  throw lastError || new Error("ERP 未连接");
+  const body = options.body === undefined ? undefined : (() => {
+    try { return JSON.parse(options.body); } catch { return options.body; }
+  })();
+  const result = await chrome.runtime.sendMessage({
+    type: "OZON_ERP_API_REQUEST",
+    path,
+    method: options.method || "GET",
+    body,
+  });
+  if (!result?.ok && !result?.status) throw new Error(result?.error || "ERP 未连接");
+  return {
+    ok: Boolean(result.ok),
+    status: Number(result.status || 0),
+    json: async () => result.data || {},
+    text: async () => typeof result.data === "string" ? result.data : JSON.stringify(result.data || {}),
+  };
 }
+
+async function loadErpConfig() {
+  try {
+    const result = await chrome.runtime.sendMessage({ type: "OZON_ERP_CONFIG_STATUS" });
+    erpBaseUrl.value = result?.baseUrl || "http://127.0.0.1:5178";
+    erpConfigStatus.textContent = result?.tokenConfigured ? "已配置会话 Token（不会显示或持久化明文）" : "未配置 Token；本机 ERP 可直接使用";
+  } catch { erpConfigStatus.textContent = "后台配置读取失败"; }
+}
+
+saveErpConfigButton.addEventListener("click", async () => {
+  saveErpConfigButton.disabled = true;
+  try {
+    const configuredUrl = new URL(erpBaseUrl.value.trim());
+    const isLoopback = ["127.0.0.1", "localhost", "[::1]"].includes(configuredUrl.hostname);
+    if (configuredUrl.protocol === "https:" && !isLoopback && chrome.permissions?.request) {
+      const granted = await chrome.permissions.request({ origins: [`${configuredUrl.origin}/*`] });
+      if (!granted) throw new Error("未授予外部 ERP 地址访问权限");
+    }
+    const result = await chrome.runtime.sendMessage({ type: "OZON_ERP_CONFIG_SAVE", baseUrl: erpBaseUrl.value, sessionToken: erpSessionToken.value });
+    if (!result?.ok) throw new Error(result?.error || "连接配置无效");
+    erpSessionToken.value = "";
+    erpConfigStatus.textContent = result.tokenConfigured ? "已保存（Token 仅在当前浏览器会话有效）" : "已保存地址，未配置 Token";
+    setStatus("ERP 连接配置已更新", "ok");
+    loadStores();
+  } catch (error) { erpConfigStatus.textContent = error.message; }
+  finally { saveErpConfigButton.disabled = false; }
+});
+
+clearErpConfigButton.addEventListener("click", async () => {
+  await chrome.runtime.sendMessage({ type: "OZON_ERP_CONFIG_CLEAR" });
+  erpBaseUrl.value = "http://127.0.0.1:5178";
+  erpSessionToken.value = "";
+  erpConfigStatus.textContent = "已恢复本机默认，未配置 Token";
+  loadStores();
+});
 
 function skuKey(sku, index) {
   return String(sku?.skuId || sku?.spec || index);
@@ -292,7 +371,10 @@ async function pollWorkerNow() {
   }
 }
 
-storeSelect.addEventListener("change", () => saveStoreId(storeSelect.value));
+storeSelect.addEventListener("change", () => {
+  saveStoreId(storeSelect.value);
+  updateCollectAvailability();
+});
 button.addEventListener("click", collectCurrentProduct);
 pollWorkerButton.addEventListener("click", pollWorkerNow);
 skuToggleButton.addEventListener("click", () => {
@@ -302,5 +384,6 @@ skuToggleButton.addEventListener("click", () => {
   renderSkuSelector(skuVariants);
 });
 loadStores();
+loadErpConfig();
 refreshWorkerStatus();
 loadPageOptions();

@@ -1,5 +1,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
+import fs from "node:fs/promises";
+import path from "node:path";
 import {
   buildLazyContentAttributeValues,
   buildListingDescription,
@@ -13,14 +15,669 @@ import {
   modelAttributesForMeta,
   variantOfferId,
   dedupeSubmitItemsByOfferId,
+  generatedOfferIdCollisions,
   mergeVariantListingAttributes,
   mergeRetryModelAttributes,
   findDuplicateListingJob,
   importFeedbackState,
+  importReconcileState,
+  inspectAutoListingProductReadiness,
+  normalizeImportReadiness,
+  reconcileImportedProductReadiness,
+  normalizeOzonProductStatusProducts,
   shouldAutoRetryImport,
   splitImportWarningsAndErrors,
   selectPreparedOzonImages,
+  postSubmissionStockReadiness,
+  buildSubmittedReconciliationSellerResult,
+  waitForImportInfo,
 } from "../src/autoListing.js";
+import { buildListingContentEvidence } from "../src/llmListing.js";
+
+test("AI Russian content remains seller-reviewed when facts are not traceable to 1688 evidence", () => {
+  const result = buildListingContentEvidence({
+    title_ru: "Органайзер для кухни",
+    product_type_ru: "Органайзер",
+    description_ru: "Органайзер из нержавеющей стали для кухни.",
+    annotation_ru: "Удобный органайзер.",
+    attributes_hint: { brand: "Нет бренда", origin_country: "Китай", material: "нержавеющая сталь" },
+  }, {
+    title: "厨房收纳盒",
+    detailText: "塑料收纳盒，白色",
+    sourceEvidence: { snapshotHash: "sha256:fixture", verificationState: "ok" },
+  });
+
+  assert.equal(result.status, "blocked");
+  assert.ok(result.blockerCodes.includes("CONTENT_FACT_REVIEW_REQUIRED"));
+  assert.ok(result.unsupportedClaims.some((item) => item.field === "attributes_hint.material"));
+  assert.match(result.action, /逐字段核对/);
+  assert.match(result.sideEffect, /不会提交 Ozon、改价、写库存/);
+  assert.equal(result.verificationLevel, "locally_tested");
+});
+
+test("Russian content evidence can be reviewed but never upgrades to Ozon fact verification", () => {
+  const result = buildListingContentEvidence({
+    title_ru: "Органайзер",
+    product_type_ru: "Органайзер",
+    description_ru: "Органайзер для дома",
+    annotation_ru: "Органайзер",
+    attributes_hint: {},
+    humanConfirmed: true,
+  }, {
+    title: "Органайзер для дома",
+    detailText: "Органайзер для дома",
+    sourceEvidence: { snapshotHash: "sha256:fixture", verificationState: "ok" },
+  });
+  assert.equal(result.status, "reviewed");
+  assert.equal(result.verificationLevel, "locally_tested");
+  assert.match(result.result, /仍需通过预检/);
+});
+
+test("1688 content cannot use an unverified snapshot as a fact source", () => {
+  const result = buildListingContentEvidence({ title_ru: "Органайзер", description_ru: "Органайзер" }, {
+    source: "1688",
+    url: "https://detail.1688.com/offer/1.html",
+    title: "Органайзер",
+    sourceEvidence: { snapshotHash: "sha256:old", verificationState: "stale" },
+  });
+  assert.ok(result.blockerCodes.includes("CONTENT_SOURCE_EVIDENCE_UNVERIFIED"));
+  assert.equal(result.source.type, "provided_product_text");
+});
+
+test("submitted reconciliation exposes seller action, side effect, and result", () => {
+  const pending = buildSubmittedReconciliationSellerResult({ scanned: 2, updated: 1, pending: 1 });
+  assert.equal(pending.status, "pending_moderation");
+  assert.match(pending.action, /只读回查/);
+  assert.match(pending.sideEffect, /未提交商品/);
+  assert.match(pending.result, /1 个任务/);
+
+  const failed = buildSubmittedReconciliationSellerResult({ scanned: 1, failed: 1 });
+  assert.equal(failed.status, "needs_repair");
+  assert.match(failed.action, /重新预检/);
+});
+
+test("post-submit stock readiness blocks invented quantities until exact current evidence exists", () => {
+  const result = postSubmissionStockReadiness({
+    submitItems: [{ offer_id: "OFFER-1" }, { offer_id: "OFFER-2" }],
+    taskId: "task-1",
+    storeId: "store-1",
+  });
+  assert.equal(result.status, "blocked");
+  assert.equal(result.reasonCode, "STOCK_CURRENT_EVIDENCE_REQUIRED");
+  assert.deepEqual(result.offerIds, ["OFFER-1", "OFFER-2"]);
+  assert.equal(result.verificationLevel, "locally_tested");
+  assert.equal(Object.hasOwn(result, "stock"), false);
+});
+
+function pendingModerationJob() {
+  return {
+    id: "job-fixture-1",
+    status: "pending_moderation",
+    listingResult: {
+      storeId: "store-fixture",
+      taskId: 70010,
+      importInfo: {
+        result: {
+          task_id: 70010,
+          items: [{ offer_id: "FIXTURE-READY", product_id: 83001, status: "imported", errors: [] }],
+        },
+      },
+    },
+  };
+}
+
+test("reconcileImportedProductReadiness blocks a listing/result store mismatch before any read", async () => {
+  let reads = 0;
+  const result = await reconcileImportedProductReadiness({
+    ...pendingModerationJob(),
+    storeId: "store-other",
+  }, {
+    readProductStatus: async () => { reads += 1; return { products: [] }; },
+  });
+  assert.equal(result.patch.reasonCode, "READ_STORE_SCOPE_MISMATCH");
+  assert.equal(result.evidence.readStatus, "store_scope_mismatch");
+  assert.equal(result.evidence.live, false);
+  assert.equal(reads, 0);
+});
+
+test("reconcileImportedProductReadiness returns a ready patch only from explicit read evidence", async () => {
+  const result = await reconcileImportedProductReadiness(pendingModerationJob(), {
+    readProductStatus: async (request) => {
+      assert.deepEqual(request, {
+        storeId: "store-fixture",
+        taskId: 70010,
+        offers: [{ offerId: "FIXTURE-READY", productId: 83001 }],
+      });
+      return {
+        listResponse: { result: { items: [{ offer_id: "FIXTURE-READY", product_id: 83001 }] } },
+        detailResponse: { items: [{ offer_id: "FIXTURE-READY", id: 83001, status: { state: "selling" }, visible: true }] },
+        readAttempt: { checkedAt: new Date().toISOString(), endpointAttempts: ["/v3/product/list", "/v3/product/info/list"] },
+      };
+    },
+  });
+
+  assert.equal(result.patch.status, "ready_for_sale");
+  assert.equal(result.patch.stage, "ready_for_sale");
+  assert.equal(result.evidence.state, "ready_for_sale");
+  assert.equal(result.evidence.live, true);
+});
+
+test("reconcileImportedProductReadiness carries the controlled environment into the read adapter", async () => {
+  let captured;
+  const job = {
+    ...pendingModerationJob(),
+    listingResult: { ...pendingModerationJob().listingResult, environment: "staging" },
+  };
+  const result = await reconcileImportedProductReadiness(job, {
+    readProductStatus: async (request) => {
+      captured = request;
+      return {
+        listResponse: { result: { items: [{ offer_id: "FIXTURE-READY", product_id: 83001 }] } },
+        detailResponse: { items: [{ offer_id: "FIXTURE-READY", id: 83001, status: { state: "selling" }, visible: true }] },
+        readAttempt: { checkedAt: new Date().toISOString(), endpointAttempts: ["/v3/product/list", "/v3/product/info/list"] },
+      };
+    },
+  });
+  assert.equal(captured.environment, "staging");
+  assert.equal(result.patch.status, "ready_for_sale");
+  assert.equal(result.evidence.live, true);
+});
+
+test("reconcileImportedProductReadiness does not route hidden selling products into stock", async () => {
+  const result = await reconcileImportedProductReadiness(pendingModerationJob(), {
+    readProductStatus: async () => ({
+      products: [{ offer_id: "FIXTURE-READY", product_id: 83001, status: { state: "selling" }, visible: false }],
+      readAttempt: {
+        checkedAt: new Date().toISOString(),
+        requestedOfferCount: 1,
+        endpointAttempts: ["/v3/product/list", "/v3/product/info/list"],
+      },
+    }),
+  });
+
+  assert.equal(result.evidence.state, "ready_for_sale");
+  assert.equal(result.evidence.visibilityStatus, "hidden");
+  assert.equal(result.evidence.live, false);
+  assert.equal(result.patch.status, "pending_moderation");
+
+  const inspection = await inspectAutoListingProductReadiness(pendingModerationJob(), {
+    readProductStatus: async () => ({
+      products: [{ offer_id: "FIXTURE-READY", product_id: 83001, status: { state: "selling" }, visible: false }],
+      readAttempt: {
+        checkedAt: new Date().toISOString(),
+        requestedOfferCount: 1,
+        endpointAttempts: ["/v3/product/list", "/v3/product/info/list"],
+      },
+    }),
+  });
+  assert.match(inspection.sellerView.reason, /visible=false/);
+  assert.match(inspection.sellerView.nextAction, /visible=true/);
+});
+
+test("reconcileImportedProductReadiness keeps fixture status pending when Seller read metadata is omitted", async () => {
+  const result = await reconcileImportedProductReadiness(pendingModerationJob(), {
+    readProductStatus: async () => ({
+      products: [{ offer_id: "FIXTURE-READY", product_id: 83001, status: { state: "selling" }, visible: true }],
+    }),
+  });
+
+  assert.equal(result.evidence.state, "ready_for_sale");
+  assert.equal(result.evidence.live, false);
+  assert.equal(result.evidence.readStatus, "completed");
+  assert.equal(result.evidence.freshnessStatus, "unknown");
+  assert.equal(result.patch.status, "pending_moderation");
+});
+
+test("reconcileImportedProductReadiness blocks invalid or future read timestamps", async () => {
+  for (const checkedAt of ["not-a-date", new Date(Date.now() + 10 * 60 * 1000).toISOString()]) {
+    const result = await reconcileImportedProductReadiness(pendingModerationJob(), {
+      readProductStatus: async () => ({
+        products: [{ offer_id: "FIXTURE-READY", product_id: 83001, status: { state: "selling" }, visible: true }],
+        readAttempt: { checkedAt, requestedOfferCount: 1, endpointAttempts: ["/v3/product/list", "/v3/product/info/list"] },
+      }),
+    });
+    assert.equal(result.patch.status, "pending_moderation");
+    assert.equal(result.evidence.readStatus, "timestamp_invalid");
+    assert.equal(result.evidence.freshnessStatus, "invalid");
+    assert.equal(result.evidence.freshnessReasonCode, "READ_EVIDENCE_TIMESTAMP_INVALID");
+    assert.equal(result.evidence.live, false);
+  }
+});
+
+test("reconcileImportedProductReadiness preserves partial Seller API evidence without claiming ready", async () => {
+  const result = await reconcileImportedProductReadiness(pendingModerationJob(), {
+    readProductStatus: async () => ({
+      listResponse: { result: { items: [{ offer_id: "FIXTURE-READY", product_id: 83001 }] } },
+      detailResponse: null,
+      readAttempt: {
+        requestedOfferCount: 1,
+        endpointAttempts: ["/v3/product/list", "/v3/product/info/list"],
+        endpointFailures: [{ endpoint: "/v3/product/info/list", reasonCode: "READ_FAILED" }],
+      },
+    }),
+  });
+
+  assert.equal(result.patch.status, "pending_moderation");
+  assert.equal(result.evidence.readStatus, "partial");
+  assert.equal(result.evidence.live, false);
+  assert.equal(result.evidence.coverageComplete, true);
+  assert.deepEqual(result.evidence.endpointFailures, [{ endpoint: "/v3/product/info/list", reasonCode: "READ_FAILED" }]);
+
+  const inspection = await inspectAutoListingProductReadiness(pendingModerationJob(), {
+    readProductStatus: async () => ({
+      products: [{ offer_id: "FIXTURE-READY", product_id: 83001, status: { state: "pending" } }],
+      readAttempt: { endpointFailures: [{ endpoint: "/v3/product/info/list", reasonCode: "READ_FAILED" }] },
+    }),
+  });
+  assert.equal(inspection.sellerView.statusLabel, "状态部分读取");
+  assert.match(inspection.sellerView.nextAction, /完整回查/);
+});
+
+test("reconcileImportedProductReadiness blocks a successful response with missing Offer coverage", async () => {
+  const result = await reconcileImportedProductReadiness({
+    ...pendingModerationJob(),
+    listingResult: {
+      ...pendingModerationJob().listingResult,
+      importInfo: {
+        result: {
+          task_id: 70010,
+          items: [
+            { offer_id: "FIXTURE-READY", product_id: 83001, status: "imported", errors: [] },
+            { offer_id: "FIXTURE-MISSING", product_id: 83002, status: "imported", errors: [] },
+          ],
+        },
+      },
+    },
+  }, {
+    readProductStatus: async () => ({
+      products: [{ offer_id: "FIXTURE-READY", product_id: 83001, status: { state: "selling" }, visible: true }],
+      readAttempt: { checkedAt: new Date().toISOString(), endpointAttempts: ["/v3/product/list", "/v3/product/info/list"] },
+      readAttempt: {
+        requestedOfferCount: 2,
+        endpointAttempts: ["/v3/product/list", "/v3/product/info/list"],
+      },
+    }),
+  });
+
+  assert.equal(result.patch.status, "pending_moderation");
+  assert.equal(result.evidence.readStatus, "partial");
+  assert.equal(result.evidence.observedOfferCount, 1);
+  assert.equal(result.evidence.coverageComplete, false);
+  assert.equal(result.evidence.live, false);
+});
+
+test("reconcileImportedProductReadiness does not treat a bounded remote page as full multi-SKU coverage", async () => {
+  const job = {
+    ...pendingModerationJob(),
+    listingResult: {
+      ...pendingModerationJob().listingResult,
+      importInfo: {
+        result: {
+          task_id: 70010,
+          items: Array.from({ length: 101 }, (_, index) => ({
+            offer_id: `FIXTURE-${index}`,
+            product_id: 83001 + index,
+            status: "imported",
+            errors: [],
+          })),
+        },
+      },
+    },
+  };
+  const result = await reconcileImportedProductReadiness(job, {
+    readProductStatus: async () => ({
+      // The server adapter can only request one bounded page.
+      products: [{ offer_id: "FIXTURE-0", product_id: 83001, status: { state: "selling" }, visible: true }],
+      readAttempt: {
+        requestedOfferCount: 100,
+        endpointAttempts: ["/v3/product/list", "/v3/product/info/list"],
+      },
+    }),
+  });
+
+  assert.equal(result.patch.status, "pending_moderation");
+  assert.equal(result.evidence.requestedOfferCount, 101);
+  assert.equal(result.evidence.remoteRequestedOfferCount, 100);
+  assert.equal(result.evidence.coverageComplete, false);
+  assert.equal(result.evidence.live, false);
+});
+
+test("reconcileImportedProductReadiness rejects stale moderation evidence", async () => {
+  const result = await reconcileImportedProductReadiness({
+    ...pendingModerationJob(),
+    updatedAt: "2026-07-12T09:00:00.000Z",
+  }, {
+    readProductStatus: async () => ({
+      products: [{ offer_id: "FIXTURE-READY", product_id: 83001, status: { state: "selling" }, visible: true }],
+      readAttempt: {
+        checkedAt: "2026-07-12T08:59:00.000Z",
+        requestedOfferCount: 1,
+        endpointAttempts: ["/v3/product/list"],
+      },
+    }),
+  });
+
+  assert.equal(result.patch.status, "pending_moderation");
+  assert.equal(result.evidence.state, "ready_for_sale");
+  assert.equal(result.evidence.readStatus, "stale");
+  assert.equal(result.evidence.freshnessStatus, "stale");
+  assert.equal(result.evidence.freshnessReasonCode, "READ_EVIDENCE_STALE");
+  assert.equal(result.evidence.live, false);
+});
+
+test("stale moderation failure does not become a current repair task", async () => {
+  const result = await reconcileImportedProductReadiness({
+    ...pendingModerationJob(),
+    updatedAt: "2026-07-12T09:00:00.000Z",
+  }, {
+    readProductStatus: async () => ({
+      products: [{ offer_id: "FIXTURE-READY", product_id: 83001, status: { state: "failed" }, errors: [{ code: "OLD_FAILURE" }] }],
+      readAttempt: { checkedAt: "2026-07-12T08:59:00.000Z", requestedOfferCount: 1 },
+    }),
+  });
+  assert.equal(result.patch.status, "pending_moderation");
+  assert.equal(result.evidence.readStatus, "stale");
+  assert.equal(result.evidence.state, "moderation_failed");
+});
+
+test("reconcileImportedProductReadiness maps moderation failure to a review patch", async () => {
+  const result = await reconcileImportedProductReadiness(pendingModerationJob(), {
+    readProductStatus: async () => ({
+      products: [{ offer_id: "FIXTURE-READY", product_id: 83001, status: { state: "failed" }, errors: [{ code: "MODERATION_FAILED" }] }],
+    }),
+  });
+
+  assert.equal(result.patch.status, "needs_review");
+  assert.equal(result.patch.stage, "moderation_failed");
+  assert.equal(result.evidence.state, "moderation_failed");
+  assert.equal(result.evidence.live, false);
+});
+
+test("readiness inspection exposes bounded task/product/offer field repair tasks", async () => {
+  const job = pendingModerationJob();
+  job.listingResult.importInfo.result.items[0].product_id = 83001;
+  const result = await inspectAutoListingProductReadiness(job, {
+    readProductStatus: async () => ({
+      products: [{
+        offer_id: "FIXTURE-READY",
+        product_id: 83001,
+        status: { state: "failed" },
+        errors: [{ code: "MISSING_MODEL", attribute_id: 9048, message: "Укажите модель товара" }],
+      }],
+    }),
+  });
+  assert.equal(result.sellerView.repairTasks.length, 1);
+  assert.equal(result.sellerView.repairTasks[0].taskId, 70010);
+  assert.equal(result.sellerView.repairTasks[0].productId, 83001);
+  assert.equal(result.sellerView.repairTasks[0].offerId, "FIXTURE-READY");
+  assert.equal(result.sellerView.repairTasks[0].fieldPath, "items[offer_id=FIXTURE-READY].attributes[id=9048]");
+  assert.match(result.sellerView.repairTasks[0].action, /重新预检/);
+});
+
+test("readiness inspection keeps a generic repair task when moderation omits field errors", async () => {
+  const result = await inspectAutoListingProductReadiness(pendingModerationJob(), {
+    readProductStatus: async () => ({
+      products: [{ offer_id: "FIXTURE-READY", product_id: 83001, status: { state: "failed" } }],
+    }),
+  });
+  assert.equal(result.sellerView.repairTasks.length, 1);
+  assert.equal(result.sellerView.repairTasks[0].code, "MODERATION_FAILED");
+  assert.equal(result.sellerView.repairTasks[0].fieldPath, "items[offer_id=FIXTURE-READY].attributes");
+});
+
+test("reconcileImportedProductReadiness keeps unknown status and dependency failures pending", async () => {
+  const unknown = await reconcileImportedProductReadiness(pendingModerationJob(), {
+    readProductStatus: async () => ({ products: [{ offer_id: "FIXTURE-READY", product_id: 83001, status: { state: "unknown_new_state" } }] }),
+  });
+  assert.equal(unknown.patch.status, "pending_moderation");
+  assert.equal(unknown.evidence.live, false);
+
+  const failedDependency = await reconcileImportedProductReadiness(pendingModerationJob(), {
+    readProductStatus: async () => { throw new Error("fixture adapter unavailable"); },
+  });
+  assert.equal(failedDependency.patch.status, "pending_moderation");
+  assert.equal(failedDependency.evidence.live, false);
+  assert.equal(failedDependency.evidence.readError, "fixture adapter unavailable");
+
+  const missingDependency = await reconcileImportedProductReadiness(pendingModerationJob());
+  assert.equal(missingDependency.patch.status, "pending_moderation");
+  assert.equal(missingDependency.evidence.readStatus, "dependency_not_provided");
+  assert.equal(missingDependency.evidence.live, false);
+});
+
+test("readiness inspection with no offers makes no Ozon call and cannot report a completed read", async () => {
+  let calls = 0;
+  const job = pendingModerationJob();
+  job.listingResult.importInfo = { result: { task_id: 70010, items: [] } };
+  const result = await inspectAutoListingProductReadiness(job, {
+    readProductStatus: async () => {
+      calls += 1;
+      return { products: [] };
+    },
+  });
+
+  assert.equal(calls, 0);
+  assert.notEqual(result.evidenceSummary.readStatus, "completed");
+  assert.equal(result.evidenceSummary.endpointAttempted, false);
+  assert.equal(result.evidenceSummary.requestedOfferCount, 0);
+});
+
+test("single job readiness inspection is read-only and returns a seller-facing evidence view", async () => {
+  const job = pendingModerationJob();
+  const before = structuredClone(job);
+  const result = await inspectAutoListingProductReadiness(job, {
+    now: () => new Date("2026-07-12T08:30:00.000Z"),
+    readProductStatus: async () => ({
+      listResponse: { result: { items: [{ offer_id: "FIXTURE-READY", product_id: 83001 }] } },
+      detailResponse: { items: [{ offer_id: "FIXTURE-READY", id: 83001, status: { state: "moderating" }, visible: false }] },
+      readAttempt: { endpointAttempts: ["/v3/product/list", "/v3/product/info/list"], operationEvidence: [{ operationPath: "/v3/product/list", responseHash: `sha256:${"a".repeat(64)}`, verificationLevel: "server_observed" }] },
+    }),
+  });
+
+  assert.deepEqual(job, before);
+  assert.equal(result.readOnly, true);
+  assert.equal(result.sellerView.statusLabel, "Ozon 审核中");
+  assert.equal(result.sellerView.evidenceAt, "2026-07-12T08:30:00.000Z");
+  assert.match(result.sellerView.reason, /尚未明确可售/);
+  assert.match(result.sellerView.nextAction, /稍后重新回查/);
+  assert.equal(result.evidenceSummary.state, "pending_moderation");
+  assert.equal(result.evidenceSummary.operationEvidence.length, 1);
+  assert.equal(Object.hasOwn(result, "patch"), false);
+  assert.equal(Object.hasOwn(result, "evidence"), false);
+});
+
+test("single job readiness inspection only reports sale ready from explicit read evidence", async () => {
+  const result = await inspectAutoListingProductReadiness(pendingModerationJob(), {
+    now: () => new Date("2026-07-12T08:31:00.000Z"),
+    readProductStatus: async () => ({
+      products: [{ offer_id: "FIXTURE-READY", product_id: 83001, status: { state: "selling" }, visible: true }],
+      readAttempt: { checkedAt: "2026-07-12T08:31:00.000Z", endpointAttempts: ["/v3/product/list", "/v3/product/info/list"] },
+    }),
+  });
+
+  assert.equal(result.sellerView.statusLabel, "已明确可售");
+  assert.equal(result.evidenceSummary.live, true);
+  assert.equal(result.evidenceSummary.state, "ready_for_sale");
+  assert.match(result.sellerView.nextAction, /库存预演/);
+});
+
+test("single job readiness inspection hides adapter errors and limits seller offer evidence", async () => {
+  const failed = await inspectAutoListingProductReadiness(pendingModerationJob(), {
+    readProductStatus: async () => { throw new Error("API key=secret-value upstream body={private:true}"); },
+  });
+  const failedJson = JSON.stringify(failed);
+  assert.equal(failed.sellerView.statusLabel, "状态读取失败");
+  assert.match(failed.sellerView.reason, /只读回查失败/);
+  assert.doesNotMatch(failedJson, /secret-value|private:true|readError|"patch"|"evidence"/);
+
+  const manyOffers = Array.from({ length: 150 }, (_, index) => ({
+    offer_id: `SAFE-${index}`,
+    product_id: index + 1,
+    status: { state: "moderating" },
+  }));
+  const manyOfferJob = pendingModerationJob();
+  manyOfferJob.listingResult.importInfo.result.items = manyOffers.map((item) => ({
+    offer_id: item.offer_id,
+    product_id: item.product_id,
+    status: "imported",
+    errors: [],
+  }));
+  const limited = await inspectAutoListingProductReadiness(manyOfferJob, {
+    readProductStatus: async () => ({ products: manyOffers }),
+  });
+  assert.equal(limited.sellerView.offers.length, 100);
+  assert.equal(limited.evidenceSummary.offerCount, 150);
+  assert.equal(limited.evidenceSummary.offersTruncated, true);
+});
+
+test("product status adapter joins list and detail evidence without inventing sale readiness", () => {
+  const products = normalizeOzonProductStatusProducts({
+    listResponse: {
+      result: {
+        items: [
+          { offer_id: "SKU-PENDING", product_id: 9001 },
+          { offer_id: "SKU-READY", product_id: 9002 },
+        ],
+      },
+    },
+    detailResponse: {
+      items: [
+        { offer_id: "SKU-PENDING", id: 9001, status: { state: "moderating", state_name: "Moderating" }, visible: false },
+        { offer_id: "SKU-READY", id: 9002, status: { state: "selling", state_name: "For sale" }, visible: true },
+      ],
+    },
+  });
+
+  assert.deepEqual(products, [
+    { offer_id: "SKU-PENDING", product_id: 9001, status: { state: "moderating", state_name: "Moderating" }, status_group: "", status_name: "Moderating", visible: false, errors: [] },
+    { offer_id: "SKU-READY", product_id: 9002, status: { state: "selling", state_name: "For sale" }, status_group: "", status_name: "For sale", visible: true, errors: [] },
+  ]);
+});
+
+test("product status adapter keeps missing detail unknown and preserves errors", () => {
+  const products = normalizeOzonProductStatusProducts({
+    listResponse: { result: { items: [{ offer_id: "SKU-UNKNOWN", product_id: 9010 }] } },
+    detailResponse: { items: [] },
+    errorsByOffer: { "SKU-UNKNOWN": [{ code: "DETAIL_NOT_RETURNED" }] },
+  });
+
+  assert.deepEqual(products, [{
+    offer_id: "SKU-UNKNOWN",
+    product_id: 9010,
+    status: "",
+    status_group: "",
+    status_name: "",
+    visible: null,
+    errors: [{ code: "DETAIL_NOT_RETURNED" }],
+  }]);
+});
+
+test("normalizeImportReadiness preserves per-offer import evidence without promoting imported to live", () => {
+  const importInfo = {
+    result: {
+      task_id: 70001,
+      items: [
+        { offer_id: "FIXTURE-WHITE", product_id: 81001, status: "imported", errors: [] },
+        { offer_id: "FIXTURE-BLUE", product_id: 81002, status: "imported", errors: [{ code: "WARNING_IMAGE", level: "warning", message: "image queued" }] },
+      ],
+    },
+  };
+
+  const readiness = normalizeImportReadiness({ importInfo });
+  assert.equal(readiness.state, "imported");
+  assert.equal(readiness.live, false);
+  assert.equal(readiness.taskId, 70001);
+  assert.deepEqual(readiness.offers, [
+    { offerId: "FIXTURE-WHITE", productId: 81001, importStatus: "imported", moderationStatus: "unknown", errors: [], errorReasonCode: "" },
+    { offerId: "FIXTURE-BLUE", productId: 81002, importStatus: "imported", moderationStatus: "unknown", errors: [{ code: "WARNING_IMAGE", level: "warning", message: "image queued" }], errorReasonCode: "WARNING_IMAGE" },
+  ]);
+});
+
+test("product import info mocked fixtures cover pending/imported/error/partial/timeout without live claims", async () => {
+  const root = path.join(process.cwd(), "test", "fixtures", "ozon", "product-import-info");
+  const scenarios = ["pending", "imported", "error", "partial", "timeout"];
+  for (const scenario of scenarios) {
+    const fixture = JSON.parse(await fs.readFile(path.join(root, `${scenario}.mocked.json`), "utf8"));
+    assert.equal(fixture.fixtureKind, "mocked_redacted_product_import_info", scenario);
+    assert.equal(fixture.synthetic, true, scenario);
+    assert.equal(fixture.redacted, true, scenario);
+    assert.equal(fixture.verificationLevel, "mocked", scenario);
+    assert.equal(fixture.scenario, scenario);
+    assert.doesNotMatch(JSON.stringify(fixture), /api[_-]?key|client[_-]?secret|authorization|token/i, scenario);
+  }
+  const pending = JSON.parse(await fs.readFile(path.join(root, "pending.mocked.json"), "utf8"));
+  assert.equal(normalizeImportReadiness({ importInfo: pending }).state, "accepted");
+  const imported = JSON.parse(await fs.readFile(path.join(root, "imported.mocked.json"), "utf8"));
+  assert.equal(normalizeImportReadiness({ importInfo: imported }).state, "imported");
+  const partial = JSON.parse(await fs.readFile(path.join(root, "partial.mocked.json"), "utf8"));
+  assert.equal(partial.coverage.coverageComplete, false);
+  const timeout = JSON.parse(await fs.readFile(path.join(root, "timeout.mocked.json"), "utf8"));
+  assert.equal(timeout.transport.responseObserved, false);
+});
+
+test("import-info timeout is an unknown outcome and cannot be treated as a successful read", async () => {
+  const calls = [];
+  const timeout = JSON.parse(await fs.readFile(path.join(process.cwd(), "test", "fixtures", "ozon", "product-import-info", "timeout.mocked.json"), "utf8"));
+  const result = await waitForImportInfo({ id: "fixture-store" }, timeout.requestScope.task_id, 2, {
+    sleep: async () => {},
+    ozonRequest: async (_store, endpoint, body) => {
+      calls.push({ endpoint, body });
+      const error = new Error(timeout.transport.errorCode);
+      error.code = timeout.transport.errorCode;
+      throw error;
+    },
+  });
+  assert.equal(calls.length, 2);
+  assert.equal(result.__importInfoStatus, "unknown");
+  assert.match(result.error, /OZON_READ_TIMEOUT/);
+  assert.equal(Array.isArray(result?.result?.items), false);
+});
+
+test("normalizeImportReadiness distinguishes accepted, moderation pending, failed, and ready for sale", () => {
+  const accepted = normalizeImportReadiness({
+    importInfo: { result: { task_id: 70002, items: [{ offer_id: "FIXTURE-A", status: "accepted", errors: [] }] } },
+  });
+  assert.equal(accepted.state, "accepted");
+
+  const importedInfo = { result: { task_id: 70003, items: [{ offer_id: "FIXTURE-B", product_id: 82001, status: "imported", errors: [] }] } };
+  const pending = normalizeImportReadiness({
+    importInfo: importedInfo,
+    products: [{ offer_id: "FIXTURE-B", product_id: 82001, status: { state: "moderating" }, visible: false }],
+  });
+  assert.equal(pending.state, "pending_moderation");
+  assert.equal(pending.live, false);
+
+  const failed = normalizeImportReadiness({
+    importInfo: importedInfo,
+    products: [{ offer_id: "FIXTURE-B", product_id: 82001, status: { state: "failed", state_name: "Requires revision" }, errors: [{ code: "MODERATION_FAILED" }] }],
+  });
+  assert.equal(failed.state, "moderation_failed");
+  assert.deepEqual(failed.offers[0].errors, [{ code: "MODERATION_FAILED" }]);
+  assert.equal(failed.offers[0].errorReasonCode, "MODERATION_FAILED");
+
+  const ready = normalizeImportReadiness({
+    importInfo: importedInfo,
+    products: [{ offer_id: "FIXTURE-B", product_id: 82001, status: { state: "selling" }, visible: true }],
+  });
+  assert.equal(ready.state, "ready_for_sale");
+  assert.equal(ready.live, true);
+});
+
+test("import reconciliation never treats imported items as live or moderation-approved", () => {
+  assert.deepEqual(importReconcileState({ importedCount: 2, blockingErrors: [], listingDefects: [] }), {
+    status: "pending_moderation",
+    stage: "pending_moderation",
+    readiness: "imported",
+  });
+});
+
+test("import reconciliation keeps blocking errors failed", () => {
+  assert.deepEqual(importReconcileState({ importedCount: 1, blockingErrors: [{ code: "INVALID_ATTRIBUTE" }], listingDefects: [] }), {
+    status: "failed",
+    stage: "failed",
+    readiness: "import_failed",
+  });
+});
 
 test("modelAttributesForMeta uses only the category model attribute", () => {
   const attrs = modelAttributesForMeta("Брелок Котик", [
@@ -131,6 +788,19 @@ test("dedupeSubmitItemsByOfferId removes duplicate Ozon offer ids before stock q
   ];
 
   assert.deepEqual(dedupeSubmitItemsByOfferId(items).map((item) => item.name), ["glass red", "yellow"]);
+});
+
+test("generated Offer ID collisions retain every source SKU for a repair decision", () => {
+  const collisions = generatedOfferIdCollisions("PARENT-1", [
+    { skuId: "sku-white-long", spec: "白色" },
+    { skuId: "sku-white-short", spec: "白" },
+    { skuId: "sku-blue", spec: "蓝色" },
+  ]);
+
+  assert.equal(collisions.length, 1);
+  assert.equal(collisions[0].offerId, "PARENT-1-belyy");
+  assert.deepEqual(collisions[0].rows.map((row) => row.sourceSkuId), ["sku-white-long", "sku-white-short"]);
+  assert.deepEqual(collisions[0].rows.map((row) => row.spec), ["白色", "白"]);
 });
 
 test("variantAspectAttributes fills Ozon aspect attributes from 1688 SKU spec", () => {

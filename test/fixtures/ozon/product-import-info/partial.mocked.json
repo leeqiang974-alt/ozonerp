@@ -1,0 +1,16 @@
+{
+  "fixtureKind": "mocked_redacted_product_import_info",
+  "synthetic": true,
+  "redacted": true,
+  "verificationLevel": "mocked",
+  "endpoint": "/v1/product/import/info",
+  "scenario": "partial",
+  "requestScope": { "task_id": 700104 },
+  "coverage": { "requestedOfferCount": 2, "observedOfferCount": 1, "coverageComplete": false },
+  "result": {
+    "task_id": 700104,
+    "items": [
+      { "offer_id": "FIXTURE-PARTIAL-1", "product_id": 810104, "status": "imported", "errors": [] }
+    ]
+  }
+}

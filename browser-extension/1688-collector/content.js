@@ -153,6 +153,7 @@ async function collectPage(options = {}) {
   const attributes = pickAttributes(contextData);
 
   return {
+    taskId: String(options.taskId || "").trim(),
     url: location.href,
     offerId: pickOfferId(contextData),
     title,
@@ -167,7 +168,11 @@ async function collectPage(options = {}) {
     packageInfo,
     storeId: options.storeId || "",
     includeVideo: options.includeVideo !== false,
+    collectedAt: new Date().toISOString(),
+    // Keep the legacy field for older ERP versions while the server-side
+    // boundary normalizes both names into the resumable capture envelope.
     sentAt: new Date().toISOString(),
+    captureMode: options.captureMode || "extension_browser",
   };
 }
 
@@ -313,6 +318,11 @@ function mountFloatingCollector() {
         method: "POST",
         body: payload,
       });
+      const captureReceipt = result.captureReceipt || {};
+      const receiptIdentity = captureReceipt.captureIdentity || captureReceipt.identity || {};
+      const captureIdentity = receiptIdentity;
+      const snapshotHash = String(captureReceipt.snapshotHash || captureIdentity.snapshotHash || "");
+      const hashShort = snapshotHash ? `${snapshotHash.slice(0, 15)}…${snapshotHash.slice(-8)}` : "快照未回传";
       button.textContent = "采集到 ERP";
       if (result.duplicate) {
         status.textContent = `已采集过 ${result.id || ""}`;
@@ -322,6 +332,9 @@ function mountFloatingCollector() {
       status.textContent = sizeWeightStatus.ok
         ? `已入箱 ${result.id || ""}`
         : `已入箱，${sizeWeightStatus.message}`;
+      if (captureReceipt.snapshotHash || receiptIdentity.taskId) {
+        status.textContent += ` · ${receiptIdentity.taskId ? `任务 ${receiptIdentity.taskId}` : "任务未绑定"} · 快照 ${hashShort}`;
+      }
       status.style.color = sizeWeightStatus.ok ? "#667085" : "#b42318";
     } catch (error) {
       status.textContent = error.message || "失败";
@@ -1004,7 +1017,7 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
   if (message?.type === "COLLECT_1688_PRODUCT_RAW") {
     (async () => {
       try {
-        const payload = await collectPage({ includeVideo: message.includeVideo !== false, storeId: message.storeId || "" });
+        const payload = await collectPage({ includeVideo: message.includeVideo !== false, storeId: message.storeId || "", taskId: message.taskId || "", captureMode: "extension_browser" });
         sendResponse({ ok: true, payload, needsHuman: pageNeedsHumanCheck() });
       } catch (error) {
         sendResponse({ ok: false, error: error.message, needsHuman: pageNeedsHumanCheck() });

@@ -1,11 +1,32 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { evaluateSourcingCandidate, filterSourcingCandidates, localJudgeMatch, shouldUseAiMatch } from "../src/autoListing.js";
+import { readFile } from "node:fs/promises";
+import { fileURLToPath } from "node:url";
+import { buildProcurementEvidenceSummary, evaluateSourcingCandidate, filterSourcingCandidates, listingDraftStoreMatches, localJudgeMatch, shouldUseAiMatch } from "../src/autoListing.js";
 
 test("shouldUseAiMatch limits expensive per-candidate AI matching", () => {
   assert.equal(shouldUseAiMatch(0, 3), true);
   assert.equal(shouldUseAiMatch(2, 3), true);
   assert.equal(shouldUseAiMatch(3, 3), false);
+});
+
+test("listing draft reuse requires the requested store binding", () => {
+  assert.equal(listingDraftStoreMatches({ storeId: "store-a" }, "store-a"), true);
+  assert.equal(listingDraftStoreMatches({ storeId: "store-a" }, "store-b"), false);
+  assert.equal(listingDraftStoreMatches({}, "store-b"), false);
+  assert.equal(listingDraftStoreMatches({ storeId: "store-a" }, ""), true);
+});
+
+test("submitted reconciliation surfaces an unavailable store instead of leaving the job stuck", async () => {
+  const source = await readFile(fileURLToPath(new URL("../src/autoListing.js", import.meta.url)), "utf8");
+  const start = source.indexOf("export async function reconcileSubmittedJobs");
+  const end = source.indexOf("export async function", start + 30);
+  const body = source.slice(start, end > start ? end : start + 5000);
+  assert.match(body, /listingResult\?\.storeId \|\| job\?\.storeId/);
+  assert.match(body, /LISTING_STORE_UNAVAILABLE/);
+  assert.match(body, /提交结果无法回查/);
+  assert.match(body, /submitted task with a missing store/);
+  assert.doesNotMatch(body, /return Number\(j\?\.listingResult\?\.taskId \|\| 0\) > 0 && storeId;/);
 });
 
 test("localJudgeMatch identifies same-family pet products without LLM", () => {
@@ -71,4 +92,36 @@ test("filterSourcingCandidates returns accepted candidates and rejection reasons
   assert.equal(result.accepted[0].id, "ok");
   assert.equal(result.rejected.length, 1);
   assert.equal(result.rejected[0].gate.reasonCode, "WEIGHT_TOO_HEAVY");
+});
+
+test("sourcing gate keeps procurement evidence visible without rejecting the candidate", () => {
+  const result = evaluateSourcingCandidate({
+    parsed: {
+      sizeWeight: { weightG: 120, lengthMm: 100, widthMm: 80, heightMm: 40 },
+      skuVariants: [{ skuId: "1" }],
+    },
+  });
+  assert.equal(result.ok, true);
+  assert.equal(result.procurement.status, "unknown");
+  assert.equal(result.procurement.code, "PROCUREMENT_EVIDENCE_NOT_CAPTURED");
+  assert.match(result.procurement.nextAction, /MOQ/);
+});
+
+test("procurement summary distinguishes observed, manual review and missing evidence", () => {
+  const base = {
+    parsed: {
+      procurementEvidence: {
+        supplierName: { value: "供应商", source: "page_content" },
+        moq: { value: 2, source: "page_content" },
+        priceTiers: { values: [{ minQuantity: 2, unitPriceCny: 3 }], source: "page_content" },
+      },
+    },
+  };
+  assert.equal(buildProcurementEvidenceSummary(base).status, "observed");
+  assert.equal(buildProcurementEvidenceSummary({ parsed: { procurementEvidence: {
+    supplierName: { value: "手填", source: "manual_seller" },
+    moq: { value: 2, source: "manual_seller" },
+    priceTiers: { values: [{ minQuantity: 2, unitPriceCny: 3 }], source: "manual_seller" },
+  } } }).status, "needs_review");
+  assert.deepEqual(buildProcurementEvidenceSummary({ parsed: { procurementEvidence: {} } }).missing, ["supplier", "moq", "price_tiers"]);
 });

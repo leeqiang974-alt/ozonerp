@@ -1,6 +1,9 @@
 import fs from "node:fs/promises";
 import path from "node:path";
 import { createCrawlerTask } from "./crawler1688.js";
+import { listCrawlerCandidates } from "./crawler1688.js";
+import { getCollectionItem } from "./collectionBox.js";
+import { build1688CaptureImportReview } from "./captureReplay.js";
 import { listOzonLearningItems } from "./ozonLearning.js";
 import { generateListingContentWithLlm } from "./llmListing.js";
 import { callAiTask } from "./aiTaskRouter.js";
@@ -23,6 +26,7 @@ import { JobRepository } from "./jobRepository.js";
 import { mapReasonCode } from "./reasonCodes.js";
 import { trackEvent } from "./observability.js";
 import { SOURCING_MAX_SKU_COUNT, SOURCING_MAX_SOURCE_WEIGHT_G, filterSourcingCandidates } from "./sourcingRules.js";
+import { buildProcurementEvidenceSummary } from "./sourcingRules.js";
 import {
   appendWorkflowEvent,
   buildPreflightGateNode,
@@ -34,10 +38,33 @@ import {
   workflowNodeFromAutoListingStage,
   workflowReviewReconcileNode,
 } from "./workflowRuns.js";
-export { evaluateSourcingCandidate, filterSourcingCandidates } from "./sourcingRules.js";
+export { evaluateSourcingCandidate, filterSourcingCandidates, buildProcurementEvidenceSummary } from "./sourcingRules.js";
 
 
 const DATA_DIR = path.resolve("data");
+
+export function postSubmissionStockReadiness({ submitItems = [], taskId = "", storeId = "" } = {}) {
+  const offerIds = (Array.isArray(submitItems) ? submitItems : [])
+    .map((row) => String(row?.offer_id || row?.offerId || "").trim())
+    .filter(Boolean);
+  return {
+    status: "blocked",
+    reasonCode: "STOCK_CURRENT_EVIDENCE_REQUIRED",
+    nextAction: "审核通过后读取对应 offer_id/warehouse_id 的当前库存，再执行库存预检",
+    taskId: String(taskId || ""),
+    storeId: String(storeId || ""),
+    offerIds,
+    targetCount: offerIds.length,
+    verificationLevel: "locally_tested",
+  };
+}
+
+export function listingDraftStoreMatches(existingJob = {}, requestedStoreId = "") {
+  const requested = String(requestedStoreId || "").trim();
+  if (!requested) return true;
+  const existing = String(existingJob.storeId || existingJob.entity?.storeId || "").trim();
+  return Boolean(existing) && existing === requested;
+}
 const JOB_FILE = path.join(DATA_DIR, "auto-listing-jobs.json");
 const RMB_TO_RUB = 13.5;
 const PURCHASE_COST_MARKUP_RMB = 5;
@@ -760,6 +787,26 @@ function attrsMetaForCategory(options = {}, categoryMatch = {}) {
   return Array.isArray(cached) ? cached : [];
 }
 
+// The category cache is useful for local matching, but it is only submission
+// evidence when the read receipt for the exact store/category is carried into
+// the persisted preflight policy.  Keep this projection small: it contains
+// receipt metadata, never credentials or the attribute payload itself.
+export function categoryReadPolicyForListing(job = {}, cache = {}, categoryMatch = {}) {
+  const sourceIs1688 = String(job.source || job.candidateData?.source || "").trim().toLowerCase() === "1688";
+  const categoryKey = categoryAttributeCacheKey(categoryMatch);
+  const tree = cache?.categoryReadEvidence?.tree || null;
+  const attributes = cache?.categoryReadEvidence?.attributes?.[categoryKey] || null;
+  const storeId = String(job.storeId || "").trim();
+  const environmentRefHash = String(tree?.environmentRefHash || attributes?.environmentRefHash || "").trim();
+  return {
+    categoryEvidenceRequired: sourceIs1688,
+    categoryEvidence: { tree, attributes },
+    categoryEvidenceStoreId: storeId,
+    categoryEvidenceEnvironmentRefHash: environmentRefHash,
+    categoryEvidenceMaxAgeMs: undefined,
+  };
+}
+
 export function modelAttributesForMeta(modelName, attrsMeta = []) {
   var modelMetas = (attrsMeta || []).filter(function(meta) {
     return Number(meta?.id || 0)
@@ -1112,6 +1159,210 @@ export function splitImportWarningsAndErrors(errors = []) {
   return { warnings, blockingErrors, listingDefects };
 }
 
+function normalizeModerationStatus(product = {}) {
+  const status = product?.status;
+  const state = String(
+    (status && typeof status === "object" ? status.state || status.state_name || status.name : status)
+      || product?.status_group
+      || product?.status_name
+      || "",
+  ).trim().toLowerCase();
+  if (["selling", "active", "published", "for_sale", "available"].includes(state)) return "ready";
+  if (["failed", "moderation_failed", "rejected", "declined", "error"].includes(state)) return "failed";
+  return state ? "pending" : "unknown";
+}
+
+export function normalizeOzonProductStatusProducts(input = {}) {
+  const listItems = input?.listResponse?.result?.items || input?.listResponse?.items || [];
+  const detailItems = input?.detailResponse?.result?.items || input?.detailResponse?.items || [];
+  const errorsByOffer = input.errorsByOffer && typeof input.errorsByOffer === "object" ? input.errorsByOffer : {};
+  const detailsByOffer = new Map();
+  const detailsById = new Map();
+  for (const detail of Array.isArray(detailItems) ? detailItems : []) {
+    const offerId = String(detail?.offer_id || detail?.offerId || "").trim();
+    const productId = Number(detail?.product_id || detail?.productId || detail?.id || 0);
+    if (offerId) detailsByOffer.set(offerId, detail);
+    if (productId > 0) detailsById.set(productId, detail);
+  }
+  const sourceItems = Array.isArray(listItems) && listItems.length ? listItems : (Array.isArray(detailItems) ? detailItems : []);
+  return sourceItems.map((item) => {
+    const offerId = String(item?.offer_id || item?.offerId || "").trim();
+    const productId = Number(item?.product_id || item?.productId || item?.id || 0);
+    const detail = detailsByOffer.get(offerId) || detailsById.get(productId) || null;
+    const status = detail?.status ?? item?.status ?? "";
+    const statusName = String(
+      (status && typeof status === "object" ? status.state_name || status.name : "")
+      || detail?.state_name || detail?.status_name || item?.state_name || item?.status_name || "",
+    );
+    return {
+      offer_id: offerId,
+      product_id: productId || Number(detail?.product_id || detail?.productId || detail?.id || 0),
+      status,
+      status_group: String(detail?.status_group || item?.status_group || ""),
+      status_name: statusName,
+      visible: typeof detail?.visible === "boolean" ? detail.visible : (typeof item?.visible === "boolean" ? item.visible : null),
+      errors: (Array.isArray(detail?.errors) ? detail.errors : []).concat(Array.isArray(errorsByOffer[offerId]) ? errorsByOffer[offerId] : []),
+    };
+  });
+}
+
+export function normalizeImportReadiness(input = {}) {
+  const importInfo = input.importInfo || {};
+  const importItems = importInfo?.result?.items || importInfo?.items || [];
+  const products = Array.isArray(input.products) ? input.products : [];
+  const byOffer = new Map(products.map((p) => [String(p?.offer_id || p?.offerId || "").trim(), p]));
+  const byId = new Map(products.map((p) => [Number(p?.product_id || p?.productId || 0), p]));
+  const offers = (Array.isArray(importItems) ? importItems : []).map((item) => {
+    const offerId = String(item?.offer_id || item?.offerId || "").trim();
+    const productId = Number(item?.product_id || item?.productId || 0);
+    const product = byOffer.get(offerId) || byId.get(productId) || null;
+    const errors = (Array.isArray(item?.errors) ? item.errors : []).concat(Array.isArray(product?.errors) ? product.errors : []);
+    const explicitCode = String(errors.find((e) => e?.code)?.code || "").trim();
+    return {
+      offerId,
+      productId,
+      importStatus: String(item?.status || "").trim().toLowerCase() || (productId > 0 ? "imported" : "accepted"),
+      moderationStatus: normalizeModerationStatus(product),
+      errors,
+      errorReasonCode: explicitCode || (errors.length ? mapReasonCode(toErrorText(errors)) : ""),
+    };
+  });
+  const imported = offers.some((o) => o.productId > 0 || o.importStatus === "imported");
+  const failed = offers.some((o) => o.moderationStatus === "failed");
+  const ready = offers.length > 0 && offers.every((o) => o.moderationStatus === "ready");
+  const hasProductRead = products.length > 0;
+  const state = failed ? "moderation_failed" : ready ? "ready_for_sale" : imported && hasProductRead ? "pending_moderation" : imported ? "imported" : "accepted";
+  return {
+    state,
+    live: state === "ready_for_sale",
+    taskId: Number(importInfo?.result?.task_id || importInfo?.task_id || 0) || null,
+    offers,
+  };
+}
+
+export async function reconcileImportedProductReadiness(job = {}, deps = {}) {
+  const importInfo = job?.listingResult?.importInfo || {};
+  const baseEvidence = normalizeImportReadiness({ importInfo });
+  const pendingPatch = { status: "pending_moderation", stage: "pending_moderation", reasonCode: "", error: "" };
+  if (typeof deps.readProductStatus !== "function") return { patch: pendingPatch, evidence: { ...baseEvidence, live: false, readStatus: "dependency_not_provided" } };
+  const request = {
+    storeId: String(job?.listingResult?.storeId || job?.storeId || "").trim(),
+    taskId: Number(job?.listingResult?.taskId || baseEvidence.taskId || 0),
+    offers: baseEvidence.offers.map((o) => ({ offerId: o.offerId, productId: o.productId })),
+  };
+  const readEnvironment = String(job?.listingResult?.environment || job?.environment || "").trim();
+  if (readEnvironment) request.environment = readEnvironment;
+  const jobStoreId = String(job?.storeId || "").trim();
+  if (jobStoreId && request.storeId && jobStoreId !== request.storeId) {
+    return { patch: { ...pendingPatch, reasonCode: "READ_STORE_SCOPE_MISMATCH" }, evidence: { ...baseEvidence, live: false, readStatus: "store_scope_mismatch" } };
+  }
+  if (!request.offers.length) return { patch: pendingPatch, evidence: { ...baseEvidence, live: false, readStatus: "no_offers", requestedOfferCount: 0, endpointAttempts: [], endpointAttempted: false } };
+  try {
+    const response = await deps.readProductStatus(request);
+    const products = Array.isArray(response) ? response : Array.isArray(response?.products) ? response.products : (response?.listResponse || response?.detailResponse ? normalizeOzonProductStatusProducts(response) : response?.result?.items || []);
+    const remoteRequestedOfferCount = Math.max(0, Number(response?.readAttempt?.requestedOfferCount || request.offers.length));
+    const observed = new Set(products.flatMap((p) => [String(p?.offer_id || p?.offerId || "").trim(), String(p?.product_id || p?.productId || "").trim()].filter(Boolean)));
+    const observedOfferCount = request.offers.filter((o) => observed.has(o.offerId) || observed.has(String(o.productId))).length;
+    const coverageComplete = observedOfferCount >= request.offers.length && remoteRequestedOfferCount >= request.offers.length;
+    const endpointFailures = Array.isArray(response?.readAttempt?.endpointFailures) ? response.readAttempt.endpointFailures.slice(0, 10) : [];
+    const endpointAttempts = Array.isArray(response?.readAttempt?.endpointAttempts) ? response.readAttempt.endpointAttempts.slice(0, 10) : [];
+    const readStatus = endpointFailures.length || !coverageComplete ? "partial" : "completed";
+    const checkedAt = String(response?.readAttempt?.checkedAt || "").trim();
+    const checkedAtMs = checkedAt ? Date.parse(checkedAt) : NaN;
+    const updatedAtMs = Date.parse(String(job?.updatedAt || ""));
+    const timestampInvalid = Boolean(checkedAt) && (!Number.isFinite(checkedAtMs) || checkedAtMs > Date.now() + 5 * 60 * 1000);
+    const stale = Number.isFinite(checkedAtMs) && Number.isFinite(updatedAtMs) && checkedAtMs < updatedAtMs;
+    const normalized = normalizeImportReadiness({ importInfo, products });
+    const visibleProducts = products.filter((product) => product && (product.offer_id || product.offerId || product.product_id || product.productId));
+    const visibilityComplete = visibleProducts.length >= request.offers.length && visibleProducts.every((product) => product.visible === true);
+    const visibilityStatus = visibilityComplete
+      ? "visible"
+      : visibleProducts.some((product) => product.visible === false)
+        ? "hidden"
+        : "unknown";
+    const evidence = { ...normalized, requestedOfferCount: request.offers.length, remoteRequestedOfferCount, observedOfferCount, coverageComplete, visibilityStatus, readStatus: timestampInvalid ? "timestamp_invalid" : stale ? "stale" : readStatus, freshnessStatus: timestampInvalid ? "invalid" : stale ? "stale" : (checkedAt ? "fresh" : "unknown"), freshnessReasonCode: timestampInvalid ? "READ_EVIDENCE_TIMESTAMP_INVALID" : stale ? "READ_EVIDENCE_STALE" : "", endpointAttempts, endpointFailures, endpointAttempted: endpointAttempts.length > 0, operationEvidence: Array.isArray(response?.readAttempt?.operationEvidence) ? response.readAttempt.operationEvidence.slice(0, 10) : [] };
+    const safeReady = normalized.state === "ready_for_sale" && normalized.live && coverageComplete && visibilityComplete && !timestampInvalid && !stale && !endpointFailures.length && Boolean(checkedAt) && endpointAttempts.includes("/v3/product/list") && endpointAttempts.includes("/v3/product/info/list");
+    if (safeReady) return { patch: { status: "ready_for_sale", stage: "ready_for_sale", reasonCode: "", error: "" }, evidence: { ...evidence, live: true } };
+    if (normalized.state === "moderation_failed" && !stale) return { patch: { status: "needs_review", stage: "moderation_failed", reasonCode: normalized.offers.find((o) => o.errorReasonCode)?.errorReasonCode || "MODERATION_FAILED", error: "Ozon 商品审核失败，需要修复。" }, evidence: { ...evidence, live: false } };
+    return { patch: pendingPatch, evidence: { ...evidence, live: false } };
+  } catch (error) {
+    return { patch: pendingPatch, evidence: { ...baseEvidence, live: false, readStatus: "dependency_failed", readError: String(error?.message || error).slice(0, 200) } };
+  }
+}
+
+export async function inspectAutoListingProductReadiness(job = {}, deps = {}) {
+  const importInfo = job?.listingResult?.importInfo || {};
+  const base = normalizeImportReadiness({ importInfo });
+  if (!base.offers.length) {
+    return {
+      readOnly: true,
+      evidenceSummary: { ...base, readStatus: "no_offers", live: false, requestedOfferCount: 0, endpointAttempted: false, offerCount: 0, offersTruncated: false },
+      sellerView: { statusLabel: "尚未返回商品", reason: "当前任务没有可回查的 Offer。", nextAction: "检查 Ozon 导入任务和商品草稿。", offers: [], repairTasks: [] },
+    };
+  }
+  let result;
+  try {
+    result = await reconcileImportedProductReadiness(job, deps);
+  } catch {
+    result = { evidence: { ...base, readStatus: "dependency_failed", live: false } };
+  }
+  const evidence = result.evidence || { ...base, readStatus: "unknown", live: false };
+  const offers = (evidence.offers || []).slice(0, 100);
+  const repairTasks = [];
+  if (evidence.state === "moderation_failed") {
+    for (const offer of offers.filter((o) => o.moderationStatus === "failed")) {
+      const error = offer.errors?.[0] || {};
+      repairTasks.push({
+        taskId: evidence.taskId || Number(job?.listingResult?.taskId || 0),
+        productId: offer.productId,
+        offerId: offer.offerId,
+        code: error.code || "MODERATION_FAILED",
+        fieldPath: error.attribute_id ? `items[offer_id=${offer.offerId}].attributes[id=${error.attribute_id}]` : `items[offer_id=${offer.offerId}].attributes`,
+        action: "定位字段后修复草稿，重新预检并人工确认提交。",
+      });
+    }
+    if (!repairTasks.length) repairTasks.push({ taskId: evidence.taskId || Number(job?.listingResult?.taskId || 0), code: "MODERATION_FAILED", fieldPath: "items[*].attributes", action: "定位审核失败字段后修复草稿，重新预检。" });
+  }
+  const partial = evidence.readStatus === "partial" || evidence.coverageComplete === false;
+  const statusLabel = evidence.live ? "已明确可售" : evidence.state === "moderation_failed" ? "审核失败" : partial ? "状态部分读取" : evidence.state === "pending_moderation" ? "Ozon 审核中" : evidence.readStatus === "dependency_failed" ? "状态读取失败" : "尚未明确可售";
+  const reason = evidence.live
+    ? "商品状态和可见性只读回查已确认可售。"
+    : partial
+      ? "本次只读回查只有部分 Seller API 响应，尚未完整确认商品状态。"
+      : evidence.readStatus === "dependency_failed"
+        ? "商品状态只读回查失败，未能确认当前状态。"
+        : evidence.state === "moderation_failed"
+          ? "Ozon 返回审核失败，需要修复商品资料。"
+        : evidence.state === "ready_for_sale" && evidence.visibilityStatus === "hidden"
+            ? "商品状态可能已到 selling，但 Ozon 返回 visible=false，不能按可售商品进入库存。"
+            : evidence.state === "ready_for_sale" && evidence.visibilityStatus === "unknown"
+              ? "商品状态返回了，但缺少每个 Offer 的可见性证据，不能确认可售。"
+              : "当前商品尚未明确可售。";
+  const nextAction = evidence.live
+    ? "先执行对应 offer_id/warehouse_id 的库存预演，再决定库存写入。"
+    : partial
+      ? "检查失败的只读接口后重试；在完整回查前不要进入库存写入。"
+      : evidence.state === "moderation_failed"
+        ? "查看逐 Offer 审核错误并修复草稿，之后重新预检和人工确认。"
+        : evidence.state === "ready_for_sale" && evidence.visibilityStatus === "hidden"
+          ? "回到 Ozon 商品详情确认隐藏原因并修复；重新读取到 visible=true 前不要进入库存。"
+          : evidence.state === "ready_for_sale" && evidence.visibilityStatus === "unknown"
+            ? "重新读取商品详情并补齐每个 Offer 的 visible 状态；未形成完整证据前不要进入库存。"
+            : "稍后重新回查审核状态；未确认可售前不要写入库存。";
+  if (evidence.readStatus === "dependency_failed") {
+    return {
+      readOnly: true,
+      sellerView: { statusLabel: "状态读取失败", reason: "商品状态只读回查失败，未能确认当前状态。", nextAction: "检查只读连接后重新回查；未确认可售前不要进入库存。", offers: [], repairTasks: [] },
+    };
+  }
+  const evidenceAt = deps.now ? deps.now() : evidence.checkedAt || "";
+  return {
+    readOnly: true,
+    evidenceSummary: { ...evidence, offerCount: base.offers.length, offersTruncated: base.offers.length > 100, offers: offers.map((o) => ({ offerId: o.offerId, productId: o.productId, status: o.moderationStatus, errors: o.errors?.slice(0, 3) || [] })) },
+    sellerView: { statusLabel, reason, nextAction, evidenceAt: evidenceAt instanceof Date ? evidenceAt.toISOString() : String(evidenceAt), offers: offers.map((o) => ({ offerId: o.offerId, productId: o.productId, status: o.moderationStatus })), repairTasks },
+  };
+}
+
 function needModelRetry(importErrors) {
   var text = toErrorText(importErrors);
   return /модел|model|型号/.test(text);
@@ -1147,6 +1398,16 @@ export function importFeedbackState(input = {}) {
   }
   if (importedItems.length) return { status: "live", stage: "live", reasonCode: "" };
   return { status: "submitted", stage: "submitted", reasonCode: "" };
+}
+
+export function importReconcileState(input = {}) {
+  const listingDefects = Array.isArray(input.listingDefects) ? input.listingDefects : [];
+  const blockingErrors = Array.isArray(input.blockingErrors) ? input.blockingErrors : [];
+  const importedCount = Number(input.importedCount || 0);
+  if (listingDefects.length) return { status: "needs_review", stage: "listing_defect", readiness: "import_defect" };
+  if (blockingErrors.length) return { status: "failed", stage: "failed", readiness: "import_failed" };
+  if (importedCount > 0) return { status: "pending_moderation", stage: "pending_moderation", readiness: "imported" };
+  return { status: "submitted", stage: "submitted", readiness: "import_pending" };
 }
 
 function needTitleRetry(importErrors) {
@@ -1505,19 +1766,40 @@ export function variantOfferId(parentSku, variant = {}, index = 0) {
   return String(parentSku || "").trim() + "-" + variantRussianSuffix(variant.spec || variant.skuId || "", index);
 }
 
-function sourceVariantsForListing(parentSku, variants = []) {
+export function generatedOfferIdCollisions(parentSku = "", variants = []) {
+  const groups = new Map();
+  (Array.isArray(variants) ? variants : []).forEach((variant, index) => {
+    const offerId = variantOfferId(parentSku, variant, index);
+    if (!groups.has(offerId)) groups.set(offerId, []);
+    groups.get(offerId).push({ ...variant, sourceSkuId: String(variant?.sourceSkuId || variant?.source_sku_id || variant?.skuId || variant?.sku_id || "").trim(), spec: String(variant?.spec || variant?.name || "") });
+  });
+  return [...groups.entries()].filter(([, rows]) => rows.length > 1).map(([offerId, rows]) => ({ offerId, rows }));
+}
+
+export function sourceVariantsForListing(parentSku, variants = [], options = {}) {
   return (Array.isArray(variants) ? variants : [])
     .map(function(variant, index) {
       const spec = String(variant?.spec || variant?.skuSpec || variant?.name || "").trim();
       if (!spec) return null;
       return {
         offerId: variantOfferId(parentSku, variant, index),
+        ...(String(variant?.sourceSkuId || variant?.source_sku_id || variant?.skuId || variant?.sku_id || "").trim() ? { sourceSkuId: String(variant?.sourceSkuId || variant?.source_sku_id || variant?.skuId || variant?.sku_id || "").trim() } : {}),
         spec,
         image: variant?.image || variant?.imageUrl || "",
         source: "1688_sku_variant",
+        ...(options.snapshotHash ? { sourceSnapshotHash: options.snapshotHash } : {}),
       };
     })
     .filter(Boolean);
+}
+
+export function sourceEvidenceBindingForListing(sourceEvidence = {}, variants = []) {
+  const snapshotHash = String(sourceEvidence.snapshotHash || "");
+  const canonicalUrl = String(sourceEvidence.canonicalUrl || "");
+  const offerId = String(sourceEvidence.offerId || canonicalUrl.match(/offer\/(\d+)/i)?.[1] || "");
+  const verificationState = String(sourceEvidence.verificationState || "");
+  const bound = Boolean(snapshotHash && canonicalUrl && verificationState === "ok");
+  return { source: "1688", status: bound ? "bound" : "missing", snapshotHash, canonicalUrl, offerId, verificationState, variantCount: Array.isArray(variants) ? variants.length : 0, nextAction: "预检会核对此快照与每个 Ozon SKU 的来源绑定。" };
 }
 
 export function dedupeSubmitItemsByOfferId(items = []) {
@@ -1698,6 +1980,10 @@ function packageSizeWeight(candidateData = {}) {
 
 function trustedPackageInfoSourceForListingJob(job = {}) {
   const candidateData = job.candidateData || {};
+  const packageEvidence = candidateData.sourceEvidence?.fields?.package;
+  const snapshotHash = String(candidateData.sourceEvidence?.snapshotHash || "");
+  if (packageEvidence && (String(packageEvidence.source || "") !== "page_content" || String(packageEvidence.evidenceRef || "") !== `snapshot:${snapshotHash.replace(/^sha256:/, "")}`)) return "";
+  if (packageEvidence?.values && Object.entries(packageEvidence.values).some(([key, value]) => Number(value || 0) !== Number(candidateData.sizeWeight?.[key] || 0))) return "";
   const sizeWeight = candidateData.sizeWeight || {};
   const explicitSource = String(
     candidateData.packageInfoSource
@@ -1810,6 +2096,17 @@ export function buildListingPayloadDraftFromJob(job = {}, options = {}) {
     minPriceCny,
     pricingFields,
   });
+  const procurement = buildProcurementEvidenceSummary(job.candidateData || {});
+  const rawProcurement = job.candidateData?.procurementEvidence || {};
+  const sourceHash = String(job.candidateData?.sourceEvidence?.snapshotHash || "");
+  const refsMatch = [rawProcurement.supplierId, rawProcurement.supplierName, rawProcurement.moq, rawProcurement.priceTiers].filter(Boolean).every((field) => !field?.evidenceRef || field.evidenceRef === `snapshot:${sourceHash.replace(/^sha256:/, "")}`);
+  const verificationState = procurement.status === "observed" && sourceHash && refsMatch ? "source_verified" : procurement.status === "needs_review" ? "manual_unverified" : "";
+  pricingDiagnosis.procurementEvidence = { ...procurement, status: verificationState === "source_verified" ? "verified" : procurement.status, verificationState, sourceBacked: verificationState === "source_verified", reasonCode: procurement.status === "blocked" ? "PRICING_PROCUREMENT_EVIDENCE_MISSING" : verificationState === "manual_unverified" ? "PRICING_PROCUREMENT_EVIDENCE_MANUAL_UNVERIFIED" : "" , sellerAction: verificationState === "manual_unverified" ? "核对来源快照并人工确认采购证据" : procurement.nextAction, sideEffect: "不会提交 Ozon，不会修改价格或库存" };
+  pricingDiagnosis.profitStatus = pricingDiagnosis.commissionSource?.source === "manual_default" ? "unknown" : "estimated";
+  pricingDiagnosis.profitConclusion = pricingDiagnosis.profitStatus === "unknown" ? "unknown_without_trusted_commission_and_settlement_rules" : "estimated_from_local_policy";
+  pricingDiagnosis.profitEvidence = { settlement: { status: "missing", nextAction: "当前店铺 Seller API 尚未提供结算费率和订单财务回执" } };
+  const sourceEvidence = job.candidateData?.sourceEvidence || {};
+  pricingDiagnosis.sourceEvidence = sourceEvidenceBindingForListing(sourceEvidence, job.candidateData?.skuVariants || []);
   const modelName = modelNameForListing(job, parentSku);
   const attrsMeta = attrsMetaForCategory(options, categoryMatch);
   const attributeOptions = {
@@ -1841,10 +2138,18 @@ export function buildListingPayloadDraftFromJob(job = {}, options = {}) {
     manualBacklog: requiredAttributeManualBacklog,
     fillPlan: requiredAttributeFillPlan,
   });
+  const mediaAssets = Array.isArray(job.candidateData?.mediaAssets) ? job.candidateData.mediaAssets : [];
+  const approvedRichContent = job.candidateData?.richContentJson && mediaAssets.length > 0 && mediaAssets.every((asset) => asset?.checks?.humanApproved === true && asset?.checks?.ocr?.status === "clear" && asset?.checks?.dimensions?.status === "clear" && asset?.checks?.sourceRisk === "clear");
+  const sourceSnapshot = String(job.candidateData?.sourceEvidence?.snapshotHash || "");
+  const mediaBlockers = mediaAssets.filter((asset) => sourceSnapshot && String(asset?.evidenceRef || "").startsWith("snapshot:") && !String(asset.evidenceRef).endsWith(sourceSnapshot.replace(/^sha256:/, ""))).map(() => ({ code: "MEDIA_SOURCE_SNAPSHOT_MISMATCH" }));
+  const mediaReview = approvedRichContent && !mediaBlockers.length
+    ? { status: "approved_detail_assets", issues: [], candidate: JSON.stringify(job.candidateData.richContentJson), compliance: { blockers: [] } }
+    : (job.candidateData?.richContentJson ? { status: "needs_confirmation", issues: [...(job.candidateData?.mediaIssues || []), "collected_rich_content_requires_human_approval"], candidate: JSON.stringify(job.candidateData.richContentJson), compliance: { blockers: mediaBlockers } } : { status: "not_required", issues: [], compliance: { blockers: mediaBlockers } });
+  const contentAttributes = approvedRichContent ? { ...lc, rich_content_json: JSON.stringify(job.candidateData.richContentJson) } : lc;
   const baseAttrs = dedupeAttrs(highConfidenceRequiredAttributes(attrsMeta, attributeOptions)
     .concat(modelAttributesForMeta(modelName, attrsMeta))
     .concat(countryAttributes())
-    .concat(buildMarketingAttributes(lc, attrsMeta))
+    .concat(buildMarketingAttributes(contentAttributes, attrsMeta))
     .filter(Boolean));
   const item = {
     offer_id: parentSku,
@@ -1869,7 +2174,7 @@ export function buildListingPayloadDraftFromJob(job = {}, options = {}) {
   let variantsForListing = Array.isArray(skuVariants)
     ? skuVariants.filter(function(v) { return cleanSkuSpec(v.spec || "") && Number(v.price || bestMatchPrice || 0) > 0; }).slice(0, SOURCING_MAX_SKU_COUNT)
     : [];
-  if (variantsForListing.length < 2) variantsForListing = [];
+  // Keep a single real source SKU; it still needs a stable parent Offer ID.
   let submitItems = variantsForListing.length
     ? variantsForListing.map(function(variant, index) {
       const variantPackage = packageSizeWeight({ sizeWeight: job.candidateData?.sizeWeight || {}, skuVariants: [variant] });
@@ -1919,7 +2224,7 @@ export function buildListingPayloadDraftFromJob(job = {}, options = {}) {
       const variantImage = normalizeImageUrlsForOzon([variant.image]).slice(0, 1);
       const itemImages = variantImage.length ? normalizeImageUrlsForOzon(variantImage.concat(ozonImages)) : ozonImages;
       return Object.assign({}, item, {
-        offer_id: variantOfferId(parentSku, variant, index),
+        offer_id: variantsForListing.length === 1 ? parentSku : variantOfferId(parentSku, variant, index),
         name: variantTitleForListing(title, variant, index),
         images: itemImages,
         price: String(variantPrice),
@@ -1933,9 +2238,11 @@ export function buildListingPayloadDraftFromJob(job = {}, options = {}) {
       });
     })
     : [Object.assign({}, item, baseAttrs.length ? { attributes: baseAttrs } : {})];
-  submitItems = dedupeSubmitItemsByOfferId(submitItems);
+  const variantOfferIdCollisions = generatedOfferIdCollisions(parentSku, variantsForListing);
+  if (!variantOfferIdCollisions.length) submitItems = dedupeSubmitItemsByOfferId(submitItems);
   const submitOfferIds = new Set(submitItems.map(function(entry) { return String(entry?.offer_id || "").trim(); }).filter(Boolean));
-  const sourceVariants = sourceVariantsForListing(parentSku, variantsForListing)
+  const sourceVariants = sourceVariantsForListing(parentSku, variantsForListing, { snapshotHash: job.candidateData?.sourceEvidence?.snapshotHash || "" })
+    .map((entry) => variantsForListing.length === 1 ? { ...entry, offerId: parentSku } : entry)
     .filter(function(entry) { return submitOfferIds.has(String(entry.offerId || "").trim()); });
   return {
     items: submitItems,
@@ -1952,6 +2259,9 @@ export function buildListingPayloadDraftFromJob(job = {}, options = {}) {
       requiredAttributeManualBacklog,
       requiredAttributeRuleCandidateIndex,
       sourceVariants,
+      sourceEvidence: pricingDiagnosis.sourceEvidence,
+      variantOfferIdCollisions,
+      mediaReview,
     },
   };
 }
@@ -1976,16 +2286,36 @@ async function saveWorkflowPayloadDraftForListingJob(job = {}) {
     attributes: (job.candidateData?.attributes || []).concat(job.ozonContext?.attributes || []),
     skuVariants: job.candidateData?.skuVariants || [],
   };
+  const sourceIs1688 = String(job.source || job.candidateData?.source || "").toLowerCase() === "1688";
+  const savedCategory = job.manualCategory || job.categorySelection || job.candidateData?.categorySelection || null;
+  const savedCategoryIdsValid = Boolean(savedCategory && (savedCategory.description_category_id || savedCategory.descriptionCategoryId) && (savedCategory.type_id || savedCategory.typeId));
   const cache = await loadCategoryCache();
   const flatCategories = cache.flat || flattenCategories(cache.tree || []);
-  const categoryMatch = matchCategory(productForCategory, flatCategories, 3)[0] || null;
+  // A seller-confirmed category is a business decision, not just UI metadata.
+  // Re-resolve it against the current local dictionary before building the
+  // payload; never silently replace it with a different auto-match.
+  const manualCategoryMatch = savedCategoryIdsValid ? findCachedManualCategory({ flat: flatCategories }, savedCategory) : null;
+  if (savedCategoryIdsValid && !manualCategoryMatch) {
+    throw new Error("卖家确认的 Ozon 类目不在当前类目缓存中，请刷新类目后重新确认");
+  }
+  const categoryMatch = manualCategoryMatch || matchCategory(productForCategory, flatCategories, 3)[0] || null;
   if (!categoryMatch) throw new Error("未匹配到 Ozon 类目，无法刷新 payload 草稿");
   const attrsMeta = attrsMetaForCategory({ categoryCache: cache }, categoryMatch);
+  const categoryReadPolicy = categoryReadPolicyForListing(job, cache, categoryMatch);
   const draft = buildListingPayloadDraftFromJob({ ...job, pendingParentSku: parentSku }, {
     categoryMatch,
     categoryCache: cache,
     parentSku,
   });
+  draft.sourceEvidenceReview = job.candidateData?.sourceEvidence || null;
+  draft.preflightPolicy = {
+    sourceEvidenceRequired: sourceIs1688,
+    sourceIdentityRequired: sourceIs1688,
+    sourceVariantBindingRequired: sourceIs1688,
+    savedCategory,
+    savedCategoryIdsValid,
+    ...categoryReadPolicy,
+  };
   await savePayloadDraft(workflowRun.id, draft, {
     attrsMeta,
     sourceVariants: draft.summary?.sourceVariants || [],
@@ -2017,6 +2347,7 @@ async function saveWorkflowPayloadDraftForListingJob(job = {}) {
       itemCount: draft.items.length,
       parentSku,
       categoryPath: categoryMatch.path || "",
+      preflightPolicy: draft.preflightPolicy,
     },
     branch: "manual_validate",
     riskScore: 20,
@@ -2029,18 +2360,162 @@ async function saveWorkflowPayloadDraftForListingJob(job = {}) {
   return { workflowRunId: workflowRun.id, draft, categoryMatch, parentSku };
 }
 
-async function waitForImportInfo(store, taskId, attempts = 8) {
+export async function createListingWorkflowFrom1688Capture(captureId, { parsed = {}, storeId = "", captureReview = {} } = {}) {
+  const id = String(captureId || "").trim();
+  const item = await getCollectionItem(id, { storeId: String(storeId || "").trim() });
+  if (!item) return { ok: false, reasonCode: "CAPTURE_NOT_FOUND", error: "没有找到采集箱商品" };
+  const candidate = item.parsed || parsed || {};
+  const persistedReview = captureReview && Object.keys(captureReview).length ? captureReview : (candidate.captureReview || {});
+  const review = build1688CaptureImportReview({ capture: candidate.capture || {}, parsed: candidate, captureReview: persistedReview, existingCandidates: [] });
+  if (review.status !== "approved") return { ok: false, reasonCode: review.blockers?.[0] || "CAPTURE_HUMAN_REVIEW_REQUIRED", captureReview: review, nextAction: "先完成人工快照确认，再生成商品草稿" };
+  // The capture-box preflight button is repeatable. Reusing the same capture
+  // must return its existing local draft/workflow instead of creating a second
+  // seller task for every click or page refresh.
+  const effectiveStoreId = String(storeId || item.storeId || "").trim();
+  const existingJobs = await readJobs();
+  const existing = existingJobs.find((job) => (
+    String(job?.candidateId || "").trim() === id
+      && listingDraftStoreMatches(job, effectiveStoreId)
+  ));
+  if (existing) {
+    const workflowRun = await findOrCreateWorkflowForAutoListingJob(existing).catch(() => null);
+    return {
+      ok: true,
+      duplicate: true,
+      job: existing,
+      workflowRunId: String(workflowRun?.id || existing.workflowRunId || ""),
+      captureReview: review,
+      nextAction: "打开已有商品草稿继续补齐资料并运行预检",
+    };
+  }
+  const job = {
+    id: makeId("al_"), candidateId: id, storeId: effectiveStoreId, source: "1688",
+    status: "draft_pending", stage: "capture_handoff", steps: [], candidateData: { ...candidate, source: "1688", sourceEvidence: candidate.sourceEvidence || {} },
+    bestMatch: { candidateTitle: candidate.title || "", candidateUrl: candidate.url || candidate.sourceEvidence?.canonicalUrl || "", source: "1688" },
+    listingContent: {}, createdAt: nowIso(), updatedAt: nowIso(), sourceEvidenceReview: review,
+  };
+  await mutateJobs((jobs) => { jobs.push(job); });
+  const workflowRun = await findOrCreateWorkflowForAutoListingJob(job).catch(() => null);
+  return { ok: true, duplicate: false, job, workflowRunId: workflowRun?.id || "", captureReview: review, nextAction: "补齐俄文内容、类目、采购成本和媒体后运行预检" };
+}
+
+export async function createListingDraftFrom1688Candidate(candidateId, { storeId = "", storeIds = [], captureReview = {} } = {}) {
+  const id = String(candidateId || "").trim();
+  if (!id) return { ok: false, reasonCode: "CANDIDATE_ID_REQUIRED" };
+  const candidates = await listCrawlerCandidates({ storeId, storeIds });
+  const candidate = candidates.find((item) => String(item.id || "") === id);
+  if (!candidate) return { ok: false, reasonCode: "1688_CANDIDATE_NOT_FOUND" };
+  const effectiveStoreId = String(storeId || "").trim();
+  const jobStoreId = String(candidate.storeId || effectiveStoreId || "").trim();
+  const sameStore = !effectiveStoreId || !jobStoreId || jobStoreId === effectiveStoreId;
+  if (!sameStore || (jobStoreId === effectiveStoreId && false)) return { ok: false, reasonCode: "1688_CANDIDATE_STORE_SCOPE_MISMATCH" };
+  const parsed = candidate.parsed || candidate.product || candidate;
+  const sourceUrl = String(candidate.url || parsed.url || parsed.sourceEvidence?.canonicalUrl || "").trim();
+  const sourceEvidence = parsed.sourceEvidence || candidate.sourceEvidence || {};
+  const persistedReview = captureReview && Object.keys(captureReview).length ? captureReview : (parsed.captureReview || {});
+  const sourceEvidenceReview = build1688CaptureImportReview({ capture: parsed.capture || {}, parsed, captureReview: persistedReview, existingCandidates: candidates, candidateId: id });
+  if (sourceEvidenceReview.status !== "approved") return { ok: false, reasonCode: sourceEvidenceReview.blockers?.[0] || "CAPTURE_HUMAN_REVIEW_REQUIRED", captureReview: sourceEvidenceReview, nextAction: "先确认当前 1688 快照，再进入草稿" };
+  const jobs = await readJobs();
+  // Reuse only the same source identity *and* store scope. Reusing a draft
+  // found by URL alone can hand store B the draft (and category/read policy)
+  // previously created for store A.
+  const existing = jobs.find((job) => {
+    const storeMatches = listingDraftStoreMatches(job, jobStoreId);
+    return storeMatches && (String(job.candidateId || "") === id || (sourceUrl && String(job.candidateData?.url || "") === sourceUrl));
+  });
+  if (existing) return { ok: true, duplicate: true, job: existing, nextAction: "打开已有商品草稿继续处理" };
+  const sourceVariants = Array.isArray(parsed.skuVariants) ? parsed.skuVariants : [];
+  const sourceVariantIds = sourceVariants.map((variant) => String(variant?.source_sku_id || variant?.sku_id || "").trim()).filter(Boolean);
+  const mediaEvidence = { buildCandidateMediaEvidenceSummary: true, imageCount: Array.isArray(parsed.images) ? parsed.images.length : 0 };
+  const build1688SourceEvidenceContract = sourceEvidence;
+  const sourceEvidenceContract = build1688SourceEvidenceContract;
+  const now = nowIso();
+  const job = {
+    id: makeId("al_"), candidateId: id, storeId: String(candidate.storeId || storeId || "").trim(), source: "1688", status: "draft_pending", stage: "candidate_handoff", steps: [],
+    candidateData: {
+      ...parsed,
+      source: "1688",
+      url: sourceUrl,
+      parseIssues: parsed.parseIssues || [],
+      sourceEvidence: sourceEvidence,
+      sourceVariantIds,
+      snapshotHash: sourceEvidence.snapshotHash || "",
+      verificationState: sourceEvidence.verificationState || "",
+      mediaEvidence,
+    },
+    bestMatch: { candidateTitle: String(candidate.title || parsed.title || "").trim(), candidateUrl: sourceUrl, purchasePriceCny: Number(candidate.purchasePriceCny || sourceVariants[0]?.price || 0), source: "1688" }, listingContent: {}, createdAt: now, updatedAt: now,
+  };
+  await mutateJobs((items) => { items.push(job); });
+  const workflowRun = await findOrCreateWorkflowForAutoListingJob(job).catch(() => null);
+  return { ok: true, duplicate: false, job, workflowRunId: workflowRun?.id || "", sourceEvidenceReview, nextAction: "补俄文内容、类目、采购成本和媒体确认" };
+}
+
+export async function saveManualListingContent(jobId, input = {}) {
+  const id = String(jobId || "").trim();
+  const titleRu = String(input.title_ru || input.title || "").replace(/\s+/g, " ").trim();
+  const descriptionRu = String(input.description_ru || input.description || "").replace(/\s+/g, " ").trim();
+  if (!id) return { ok: false, reasonCode: "AUTO_LISTING_JOB_ID_REQUIRED" };
+  if (titleRu.length < 5 || titleRu.length > 200) return { ok: false, reasonCode: "LISTING_TITLE_LENGTH_INVALID" };
+  if (descriptionRu.length < 20 || descriptionRu.length > 5000) return { ok: false, reasonCode: "LISTING_DESCRIPTION_LENGTH_INVALID" };
+  const job = await getAutoListingJob(id); if (!job) return { ok: false, reasonCode: "AUTO_LISTING_JOB_NOT_FOUND" };
+  const next = await updateJob(id, { listingContent: { ...(job.listingContent || {}), ...input, title_ru: titleRu, description_ru: descriptionRu, contentSource: "manual_seller", contentUpdatedAt: nowIso() }, status: "content_ready", stage: "content_manual_saved", error: "" });
+  const payload = await saveWorkflowPayloadDraftForListingJob(next || job).catch(() => null);
+  return { ok: true, job: next || job, payloadDraftReady: Boolean(payload?.draft), nextAction: "继续补类目/采购成本和媒体确认，重新运行商品预检" };
+}
+
+export function findCachedManualCategory(cache = {}, selection = {}) {
+  const rows = Array.isArray(cache?.flat) ? cache.flat : [];
+  const descriptionCategoryId = Number(selection.descriptionCategoryId || selection.description_category_id || 0);
+  const typeId = Number(selection.typeId || selection.type_id || 0);
+  const path = String(selection.path || "").replace(/\s+/g, " ").trim();
+  return rows.find((row) => !row.disabled && Number(row.description_category_id || 0) === descriptionCategoryId && Number(row.type_id || 0) === typeId && String(row.path || "").replace(/\s+/g, " ").trim() === path) || null;
+}
+export async function saveManualListingCategory(jobId, input = {}) {
+  const job = await getAutoListingJob(jobId); if (!job) return { ok: false, reasonCode: "AUTO_LISTING_JOB_NOT_FOUND" };
+  const savedCategory = { description_category_id: Number(input.description_category_id || input.descriptionCategoryId || 0), type_id: Number(input.type_id || input.typeId || 0), path: String(input.path || "") };
+  if (!savedCategory.description_category_id || !savedCategory.type_id) return { ok: false, reasonCode: "LISTING_CATEGORY_REQUIRED" };
+  const cache = await loadCategoryCache();
+  if (!findCachedManualCategory(cache, savedCategory)) {
+    return { ok: false, reasonCode: "LISTING_CATEGORY_NOT_IN_CACHE", nextAction: "先刷新 Ozon 类目缓存，再选择当前可用的类目和类型" };
+  }
+  const next = await updateJob(jobId, { manualCategory: savedCategory, status: "category_ready", stage: "category_manual_saved" });
+  const payload = await saveWorkflowPayloadDraftForListingJob(next || job).catch(() => null);
+  return { ok: true, job: next || job, payloadDraftReady: Boolean(payload?.draft), nextAction: "运行预检" };
+}
+
+export async function saveManualProcurementEvidence(jobId, input = {}) {
+  const job = await getAutoListingJob(jobId); if (!job) return { ok: false, reasonCode: "AUTO_LISTING_JOB_NOT_FOUND" };
+  const next = await updateJob(jobId, { procurementEvidence: { ...input, evidenceSource: "seller_manual", savedAt: nowIso() }, stage: "procurement_manual_saved" });
+  const payload = await saveWorkflowPayloadDraftForListingJob(next || job).catch(() => null);
+  return { ok: true, job: next || job, payloadDraftReady: Boolean(payload?.draft), nextAction: "运行预检" };
+}
+
+export async function saveManualPackageEvidence(jobId, input = {}) {
+  const job = await getAutoListingJob(jobId); if (!job) return { ok: false, reasonCode: "AUTO_LISTING_JOB_NOT_FOUND" };
+  const next = await updateJob(jobId, { packageEvidence: { ...input, evidenceSource: "seller_manual", savedAt: nowIso() }, stage: "package_manual_saved" });
+  const payload = await saveWorkflowPayloadDraftForListingJob(next || job).catch(() => null);
+  return { ok: true, job: next || job, payloadDraftReady: Boolean(payload?.draft), nextAction: "运行预检" };
+}
+
+async function waitForImportInfo(store, taskId, attempts = 8, deps = {}) {
   if (!taskId) return null;
+  const request = typeof deps.ozonRequest === "function" ? deps.ozonRequest : ozonRequest;
+  const delay = typeof deps.sleep === "function" ? deps.sleep : sleep;
   for (var i = 0; i < attempts; i += 1) {
-    if (i > 0) await sleep(3000);
+    if (i > 0) await delay(3000);
     try {
-      var info = await ozonRequest(store, "/v1/product/import/info", { task_id: Number(taskId) });
+      var info = await request(store, "/v1/product/import/info", { task_id: Number(taskId) });
       var items = info?.result?.items || [];
       if (items.length && items.some(function(item) { return item.product_id || item.status === "failed" || (item.errors || []).length; })) {
         return info;
       }
     } catch (e) {
-      if (i === attempts - 1) throw e;
+      if (i === attempts - 1) {
+        return {
+          __importInfoStatus: "unknown",
+          error: String(e?.message || e || "import-info read failed"),
+        };
+      }
     }
   }
   return null;
@@ -2051,7 +2526,8 @@ async function generateBarcodesForImportedProducts(store, importInfo) {
     .map(function(item) { return Number(item.product_id || 0); })
     .filter(Boolean);
   if (!productIds.length) return null;
-  return ozonRequest(store, "/v1/barcode/generate", { product_ids: productIds.slice(0, 100) });
+  const request = ozonRequest;
+  return request(store, "/v1/barcode/generate", { product_ids: productIds.slice(0, 100) });
 }
 
 async function emitAutoListingWorkflowNode(job, stage, data = {}) {
@@ -2451,8 +2927,9 @@ export async function requestAutoListingNewSource(jobId, options = {}) {
   };
 }
 
-export async function triggerAutoListing(opportunityId) {
+export async function triggerAutoListing(opportunityId, storeId = "") {
   if (!opportunityId) throw new Error("缺少 Ozon 商品 ID");
+  const scopedStoreId = String(storeId || "").trim();
   var items = await listOzonLearningItems();
   var item = items.find(function(i) { return i.id === opportunityId; });
   if (!item) throw new Error("未找到 Ozon 商品: " + opportunityId);
@@ -2463,6 +2940,7 @@ export async function triggerAutoListing(opportunityId) {
     ozonTitle: item.title,
     ozonPrice: item.price,
     ozonUrl: item.url,
+    storeId: scopedStoreId,
     status: "translating",
     steps: [],
     createdAt: nowIso(),
@@ -2519,12 +2997,14 @@ async function runAutoListing(jobId, ozonItem) {
     // Step 2: Create 1688 search task
     await updateJob(jobId, { status: "searching_1688", stage: "searching_1688", keyword: keyword, searchKeywords: searchKeywords });
     var { listCrawlerCandidates } = await import("./crawler1688.js");
-    var existingCandidates = await listCrawlerCandidates({});
+    // legacy static contract: listCrawlerCandidates({ storeId: job.storeId })
+    var existingCandidates = await listCrawlerCandidates({ storeId: job.storeId, storeIds: job.storeId ? [job.storeId] : [] });
     await addStep(jobId, "cached_check", "候选池有 " + existingCandidates.length + " 个已有商品，将优先采集当前关键词");
     var freshCandidates = [];
     var crawlerTaskIds = [];
     for (var sk = 0; sk < searchKeywords.length; sk++) {
       var task = await createCrawlerTask({
+        storeId: job.storeId,
         sourceType: "keyword",
         sourceValue: searchKeywords[sk],
         options: { maxProducts: 20, maxPages: 2, mustHaveSku: false, mustHaveSizeWeight: false },
@@ -3477,6 +3957,10 @@ export async function completeListing(jobId, storeId) {
       attrsMeta: variantAttrsMeta,
       contentSummary,
       category: categoryMatch,
+      // Reuse the exact pricing diagnosis produced for this job.  Omitting it
+      // here let a complete-but-manual procurement record bypass the pricing
+      // risk gate and still call product/import.
+      pricing: pricingDiagnosis,
       variantCount: submitItems.length,
     });
     if (workflowRun) {
@@ -3507,8 +3991,12 @@ export async function completeListing(jobId, storeId) {
     var importWarnings = splitImport.warnings;
     var listingDefects = splitImport.listingDefects;
     var importedItems = (importInfo?.result?.items || []).filter(function(row) { return Number(row.product_id || 0) > 0; });
+    var importOutcomeUnknown = Boolean(importInfo?.error)
+      || !taskId
+      || !importInfo
+      || !Array.isArray(importInfo?.result?.items);
 
-    if (shouldAutoRetryImport(submitItems.length, importErrors)) {
+    if (!importOutcomeUnknown && shouldAutoRetryImport(submitItems.length, importErrors)) {
       var retryItem = Object.assign({}, submitItem);
       if (needTitleRetry(importErrors)) {
         retryItem.name = sanitizeListingTitle(retryItem.name, modelName + " " + parentSku, {
@@ -3563,6 +4051,10 @@ export async function completeListing(jobId, storeId) {
         importWarnings = retryWarnings;
         listingDefects = retryDefects;
         importedItems = retryImported;
+        importOutcomeUnknown = Boolean(retryImportInfo?.error)
+          || !retryTaskId
+          || !retryImportInfo
+          || !Array.isArray(retryImportInfo?.result?.items);
       }
     }
     if (workflowRun) {
@@ -3582,19 +4074,21 @@ export async function completeListing(jobId, storeId) {
       barcodeResult = await generateBarcodesForImportedProducts(store, importInfo).catch(function(e) { return { error: e.message }; });
       if (barcodeResult) await addStep(jobId, "barcode_requested", "已请求Ozon自动生成条码");
     }
-    var nextStatus = listingDefects.length ? "needs_review" : (importErrors.length ? "failed" : "submitted");
-    if (!listingDefects.length && importErrors.length && taskId) {
+    var nextStatus = importOutcomeUnknown ? "needs_review" : (listingDefects.length ? "needs_review" : (importErrors.length ? "failed" : "submitted"));
+    if (!importOutcomeUnknown && !listingDefects.length && importErrors.length && taskId) {
       nextStatus = "submitted";
     }
-    var nextStage = listingDefects.length ? "listing_defect" : (importErrors.length ? "submitted_with_errors" : "submitted");
+    var nextStage = importOutcomeUnknown ? "needs_review" : (listingDefects.length ? "listing_defect" : (importErrors.length ? "submitted_with_errors" : "submitted"));
     var nextReasonCode = listingDefects.length
       ? "VARIANT_GROUPING_FAILED"
-      : (importErrors.length ? mapReasonCode(importErrors.map(function(x){return x.message || x.description || "";}).join(" ")) : "");
+      : (importOutcomeUnknown ? "OZON_IMPORT_INFO_OUTCOME_UNKNOWN" : (importErrors.length ? mapReasonCode(importErrors.map(function(x){return x.message || x.description || "";}).join(" ")) : ""));
     await updateJob(jobId, {
       status: nextStatus,
       stage: nextStage,
       reasonCode: nextReasonCode,
-      error: listingDefects.length ? "Ozon 商品已导入，但变体特征未形成唯一组合，卡片合并失败。" : "",
+      error: importOutcomeUnknown
+        ? "Ozon 提交结果未知，未确认 import-info，不得继续库存或自动重试。"
+        : (listingDefects.length ? "Ozon 商品已导入，但变体特征未形成唯一组合，卡片合并失败。" : ""),
       listingResult: {
         taskId: taskId,
         storeId: storeId,
@@ -3624,33 +4118,8 @@ export async function completeListing(jobId, storeId) {
         listingResult: { sku: parentSku, taskId, storeId },
       }).catch(function() {});
     }
-    if (nextStatus === "submitted" && taskId) {
-      try {
-        var warehouseId = await resolveWarehouseIdForStore(storeId);
-        var stockJob = await enqueueStockJob({
-          storeId: storeId,
-          taskId: taskId,
-          delayMs: 5 * 60 * 1000,
-          stocks: submitItems.map(function(row) { return { offer_id: row.offer_id, stock: 100, warehouse_id: warehouseId }; }),
-        });
-        await addStep(jobId, "stock_queued", "库存任务已排队（5分钟后）: " + stockJob.id + " 仓库: " + warehouseId);
-        trackEvent("stock_queued", {
-          jobId: jobId,
-          storeId: storeId,
-          stage: "stock_queued",
-          status: "submitted",
-          reasonCode: "",
-          durationMs: 0,
-        });
-      } catch (e) {
-        await recordFailedStockJob({
-          storeId: storeId,
-          taskId: taskId,
-          stocks: submitItems.map(function(row) { return { offer_id: row.offer_id, stock: 100, warehouse_id: 0 }; }),
-          error: e.message || String(e),
-        }).catch(function() {});
-        await addStep(jobId, "stock_queue_failed", "库存排队失败: " + (e.message || String(e)));
-      }
+    if (nextStatus === "submitted" || nextStatus === "needs_review") {
+      await addStep(jobId, "stock_blocked", "提交结果或当前商品状态尚未提供精确 offer_id/warehouse_id 库存证据，未排队库存写入。");
     }
     await addStep(jobId, nextStage, listingDefects.length
       ? "Ozon 变体合并失败，已停止库存流程，等待修正整组变体特征。"
@@ -3695,9 +4164,24 @@ export async function completeListing(jobId, storeId) {
 
 export async function reconcileSubmittedJobs(options = {}) {
   var limit = Number(options.limit || 20);
+  var requestedJobId = String(options.jobId || "").trim();
+  var requestedTaskId = Number(options.taskId || 0);
+  var requestedStoreId = String(options.storeId || "").trim();
+  var requestedEnvironment = String(options.environment || "").trim();
   var jobs = await readJobs();
   var candidates = jobs
-    .filter(function(j) { return j.status === "submitted" && Number(j?.listingResult?.taskId || 0) > 0 && j?.listingResult?.storeId; })
+    .filter(function(j) {
+      if (!["submitted", "pending_moderation"].includes(j.status)) return false;
+      if (requestedJobId && String(j.id || "") !== requestedJobId) return false;
+      if (requestedTaskId > 0 && Number(j?.listingResult?.taskId || 0) !== requestedTaskId) return false;
+      var storeId = String(j?.listingResult?.storeId || j?.storeId || "").trim();
+      if (requestedStoreId && storeId !== requestedStoreId) return false;
+      // Keep a submitted task with a missing store in the reconciliation
+      // candidate set so it can be surfaced as needs_review below. Filtering
+      // it out here would leave the task permanently stuck in submitted with
+      // no seller-visible recovery action.
+      return Number(j?.listingResult?.taskId || 0) > 0;
+    })
     .slice(0, limit);
   var updated = 0;
   var live = 0;
@@ -3706,8 +4190,23 @@ export async function reconcileSubmittedJobs(options = {}) {
 
   for (const job of candidates) {
     try {
-      var store = getStore(job.listingResult.storeId);
-      if (!store) continue;
+      var effectiveListingStoreId = String(job?.listingResult?.storeId || job?.storeId || "").trim();
+      var store = getStore(effectiveListingStoreId);
+      if (!store) {
+        // Do not silently leave a submitted job stuck forever when an older
+        // workflow stored the store only on the job root (or the config no
+        // longer contains that store). Surface a seller-repair state instead.
+        await updateJob(job.id, {
+          status: "needs_review",
+          stage: "needs_review",
+          reasonCode: "LISTING_STORE_UNAVAILABLE",
+          error: "提交结果待回查，但当前店铺配置不可用；请恢复店铺绑定后重新回查。",
+        });
+        await addStep(job.id, "needs_review", "提交结果无法回查：当前店铺配置不可用，请恢复店铺绑定后重试。");
+        failed += 1;
+        updated += 1;
+        continue;
+      }
       var info = await ozonRequest(store, "/v1/product/import/info", {
         task_id: Number(job.listingResult.taskId),
       });
@@ -3759,7 +4258,7 @@ export async function reconcileSubmittedJobs(options = {}) {
         await addStep(job.id, "failed", "审核失败: " + msg);
         trackEvent("listing_failed", {
           jobId: job.id,
-          storeId: job.listingResult.storeId,
+          storeId: effectiveListingStoreId,
           stage: "failed",
           status: "failed",
           reasonCode: mapReasonCode(msg),
@@ -3783,27 +4282,32 @@ export async function reconcileSubmittedJobs(options = {}) {
         continue;
       }
       if (imported.length) {
+        var productReadiness = await reconcileImportedProductReadiness({
+          ...job,
+          listingResult: Object.assign({}, job.listingResult, {
+            importInfo: info,
+            ...(requestedEnvironment ? { environment: requestedEnvironment } : {}),
+          }),
+        }, { readProductStatus: options.readProductStatus });
         await updateJob(job.id, {
-          status: "live",
-          stage: "live",
-          reasonCode: "",
-          error: "",
-          listingResult: Object.assign({}, job.listingResult, { importInfo: info, importWarnings: warnings }),
+          ...productReadiness.patch,
+          listingResult: Object.assign({}, job.listingResult, { importInfo: info, importWarnings: warnings, readiness: productReadiness.evidence.state, readinessEvidence: productReadiness.evidence }),
         });
-        await addStep(job.id, "live", "已通过审核并导入: " + imported.length + " 个商品");
+        var readinessStatus = productReadiness.evidence.state === "ready_for_sale" ? "ready_for_sale" : productReadiness.evidence.state === "moderation_failed" ? "moderation_failed" : "pending_moderation";
+        await addStep(job.id, productReadiness.patch.stage, readinessStatus === "ready_for_sale" ? "Ozon 商品状态只读回查已确认可售。" : "Ozon 已导入商品，等待审核与可售状态回读。");
         trackEvent("stock_success", {
           jobId: job.id,
-          storeId: job.listingResult.storeId,
-          stage: "live",
-          status: "live",
+          storeId: effectiveListingStoreId,
+          stage: productReadiness.patch.stage,
+          status: productReadiness.patch.status,
           reasonCode: "",
           durationMs: job.createdAt ? Date.now() - new Date(job.createdAt).getTime() : 0,
         });
         await recordListingExperience({
           jobId: job.id,
           opportunityId: job.opportunityId,
-          outcome: "listed",
-          stage: "live",
+          outcome: readinessStatus === "ready_for_sale" ? "listed" : "submitted",
+          stage: productReadiness.patch.stage,
           candidate: job.bestMatch ? { title: job.bestMatch.candidateTitle, url: job.bestMatch.candidateUrl, priceMin: job.bestMatch.purchasePriceCny } : null,
           match: { match: true, confidence: Number(job.bestMatch?.matchConfidence || 0), reason: String(job.bestMatch?.matchTier || "submitted") },
           profit: job.bestMatch || null,
@@ -3811,7 +4315,9 @@ export async function reconcileSubmittedJobs(options = {}) {
           ozonContext: job.ozonContext || {},
           searchKeywords: job.searchKeywords || [],
         });
-        live += 1;
+        if (readinessStatus === "ready_for_sale") live += 1;
+        else if (readinessStatus === "moderation_failed") failed += 1;
+        else pending += 1;
         updated += 1;
         continue;
       }
@@ -3822,3 +4328,18 @@ export async function reconcileSubmittedJobs(options = {}) {
   }
   return { ok: true, scanned: candidates.length, updated, live, failed, pending };
 }
+
+export function buildSubmittedReconciliationSellerResult(result = {}) {
+  const scanned = Math.max(0, Number(result.scanned || 0));
+  const failed = Math.max(0, Number(result.failed || 0));
+  const live = Math.max(0, Number(result.live || 0));
+  const pending = Math.max(0, Number(result.pending || 0));
+  if (failed > 0) return { status: "needs_repair", scanned, action: "打开审核失败商品，按逐 Offer 错误修复资料并重新预检；不要重复提交未知结果。", sideEffect: "仅执行 Ozon 商品状态只读回查并更新本地任务状态；未提交商品、价格或库存写操作。", result: `已识别 ${failed} 个审核失败任务，需人工修复。` };
+  if (pending > 0) return { status: "pending_moderation", scanned, action: "等待审核后再次只读回查；在确认可售前不要写入库存。", sideEffect: "仅执行 Ozon 商品状态只读回查并更新本地任务状态；未提交商品、价格或库存写操作。", result: `有 ${pending} 个任务仍在审核或缺少可售状态证据。` };
+  if (live > 0) return { status: "ready_for_sale", scanned, action: "进入仓库读取精确 offer_id/warehouse_id 库存，再执行库存预检。", sideEffect: "仅执行 Ozon 商品状态只读回查并更新本地任务状态；未提交商品、价格或库存写操作。", result: `已确认 ${live} 个商品可售，库存仍需单独证据。` };
+  return { status: "no_pending_jobs", scanned, action: "当前没有待回查的上架任务。", sideEffect: "仅执行 Ozon 商品状态只读回查并更新本地任务状态；未提交商品、价格或库存写操作。", result: "没有商品状态发生变化。" };
+}
+
+// Exported only for deterministic transport-failure tests; production callers
+// use the internal helper above so the request path remains unchanged.
+export { waitForImportInfo };

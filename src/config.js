@@ -9,6 +9,10 @@ export const LEGACY_API_FILE = "D:\\Desktop\\ozonapi.txt";
 const uuidPattern =
   /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
+function isPrimaryStoreProfile(profile = "") {
+  return !["外部使用", "个人使用"].includes(String(profile || "").trim());
+}
+
 export function maskSecret(value = "") {
   if (!value) return "";
   if (value.length <= 10) return "***";
@@ -16,7 +20,11 @@ export function maskSecret(value = "") {
 }
 
 function resolveApiFile(filePath = process.env.OZON_API_FILE) {
-  const candidates = [filePath, LOCAL_API_FILE, DEFAULT_API_FILE, LEGACY_API_FILE].filter(Boolean);
+  // The Desktop API file is the canonical seller-owned source. A project-local
+  // copy is only a fallback, unless OZON_API_FILE explicitly selects it.
+  const candidates = filePath
+    ? [filePath]
+    : [DEFAULT_API_FILE, LOCAL_API_FILE, LEGACY_API_FILE];
   for (const candidate of candidates) {
     if (fs.existsSync(candidate)) return candidate;
   }
@@ -66,12 +74,12 @@ export function loadStores(filePath = process.env.OZON_API_FILE) {
     }
 
     if (keyMatch && pendingName && pendingClientId) {
-      stores.push({
-        id: `${pendingClientId}-${stores.length + 1}`,
-        name: pendingProfile ? `${pendingName}（${pendingProfile}）` : pendingName,
-        clientId: pendingClientId,
-        apiKey: keyMatch[1],
-      });
+      if (isPrimaryStoreProfile(pendingProfile)) stores.push({
+          id: `${pendingClientId}-${stores.length + 1}`,
+          name: pendingName,
+          clientId: pendingClientId,
+          apiKey: keyMatch[1],
+        });
       pendingName = "";
       pendingClientId = "";
       pendingProfile = "";
@@ -93,12 +101,12 @@ export function loadStores(filePath = process.env.OZON_API_FILE) {
     }
 
     if (uuid && pendingName && pendingClientId) {
-      stores.push({
-        id: `${pendingClientId}-${stores.length + 1}`,
-        name: pendingProfile ? `${pendingName}（${pendingProfile}）` : pendingName,
-        clientId: pendingClientId,
-        apiKey: uuid,
-      });
+      if (isPrimaryStoreProfile(pendingProfile)) stores.push({
+          id: `${pendingClientId}-${stores.length + 1}`,
+          name: pendingName,
+          clientId: pendingClientId,
+          apiKey: uuid,
+        });
       pendingName = "";
       pendingClientId = "";
       pendingProfile = "";
@@ -113,7 +121,6 @@ export function publicStore(store) {
     id: store.id,
     name: store.name,
     clientId: store.clientId,
-    apiKey: maskSecret(store.apiKey),
   };
 }
 

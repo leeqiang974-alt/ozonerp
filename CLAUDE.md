@@ -6,16 +6,19 @@ This project is a seller operating system for Ozon, not a generic admin demo or 
 
 Before proposing or changing anything, read these files:
 
+- `docs/ROADMAP.zh-CN.md` as the single current source for phase priority, verification level, and completion criteria; check `docs/plan-status-index.zh-CN.md` before resuming an older plan.
 - `docs/SESSION_HANDOFF.zh-CN.md`
 - `docs/erp-ui-information-architecture.zh-CN.md`
 - `docs/pricing-logic.zh-CN.md` when pricing, logistics, old_price, min_price, commission, or profit is involved.
 - `src/pricing.js`, `src/autoListing.js`, `src/workflowRuns.js`, `public/index.html`, `public/app.js`, `public/styles.css`, and the relevant tests for the feature area.
 
-Use the project root:
+Use the project root: `C:\Users\Administrator\Documents\ozonerp`.
 
-`C:\Users\Administrator\Documents\Codex\2026-05-27\c-users-administrator-documents-codex-2026\ozon-project-copy`
+店铺 API 的 canonical 本地来源是 `D:\Desktop\api\ozonapi.txt`，当前按 4 个主 API 记录识别店铺；`D:\Desktop\ozonseller api\Ozon Seller API 文件.html` 是 Seller API 接口事实的优先文档。外部使用/个人使用备注不重复计数，GitHub 只能作为工程参考。
 
 ## Operating Model
+
+开发按 `docs/DEVELOPMENT-FRAMEWORK.zh-CN.md` 的五条工作流轮转；同一工作流最多连续两个切片，完成后必须汇总并切换到其他最高优先级工作流。1688→Ozon 黄金链路是当前 P0 主线，FBS 只是 P1 支线。
 
 The ERP must be organized around seller decisions:
 
@@ -89,6 +92,8 @@ Use test-driven changes for behavior:
 4. Run `npm test`.
 5. Run `npm run lint`.
 6. Update `docs/SESSION_HANDOFF.zh-CN.md` after a completed stage.
+
+Never run `npm test` and `npm run offline-acceptance` concurrently. Both use shared local crawler/fixture directories; run them serially so test contention cannot be mistaken for a product regression.
 
 Useful commands:
 

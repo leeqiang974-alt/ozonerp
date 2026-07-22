@@ -1,10 +1,14 @@
 # Ozon Seller API 缺口开发清单
 
-更新时间：2026-06-11 +08:00
+更新时间：2026-07-17 +08:00
 
 ## 目标
 
 把 ERP 已有功能与 Ozon Seller API 的差距拆成可执行开发任务。优先补齐会影响“采集 → 分析 → 上架 → 审核回馈 → 库存”的闭环能力。
+
+## 2026-07-17 状态校正
+
+P0/P1 表中的部分安全闸、回执模型和只读 UI 已有本地实现与测试，但仍属于 `locally_tested`；没有受控店铺的服务端回执或真实写入对账时，不得把“代码已实现”改写成 Seller API 业务闭环完成。真实账号验证继续以 `docs/ROADMAP.zh-CN.md` 的验证等级和 `docs/SESSION_HANDOFF.zh-CN.md` 为准。
 
 ## 优先级规则
 
@@ -24,7 +28,7 @@
 
 | 缺口 | 所属 tab | API | 开发任务 | 验收 |
 | --- | --- | --- | --- | --- |
-| 订单履约动作 | 订单履约 | `/v3/posting/fbs/list`、`/v3/posting/fbs/unfulfilled/list` | 在现有订单看板基础上拆出待接入动作：打包、发运、取消、标签/条码 | 订单页能明确区分“已读能力”和“待接入动作” |
+| 订单履约动作 | 订单履约 | `/v4/posting/fbs/list`、`/v4/posting/fbs/unfulfilled/list`（旧 v3 仅兼容） | 先迁移订单看板的 cursor/sort_dir 覆盖模型，再拆出待接入动作：打包、发运、取消、标签/条码 | 订单页能明确区分“已读能力”和“待接入动作”，且不把旧 v3 看作当前契约 |
 | 商品资料维护 | 商品状态 | `/v3/product/info/list`、`/v1/product/import/prices`、`/v1/product/pictures/import` | 把改价、换图、异常状态修复合并到商品状态页的受控操作面板 | 商品页不再只是列表，能从异常状态进入修复 |
 | 营销活动闭环 | 营销活动 | `/v1/actions`、`/v1/actions/products`、`/v1/actions/candidates`、`/v1/actions/products/deactivate` | 补加入活动、活动价校验、移除后的回查刷新 | 活动页能完成“读活动 → 选商品 → 操作 → 回查” |
 

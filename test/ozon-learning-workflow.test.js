@@ -46,6 +46,22 @@ test("Ozon learning search task writes sampled workflow node", async () => {
   assert.equal(node.output.categoryCounts["Зоотовары"], 2);
 });
 
+test("Ozon learning extension workers stay bound to the task store", async () => {
+  await reset();
+  const suffix = Date.now() + "_worker_scope";
+  const ozonLearning = await import(`../src/ozonLearning.js?ozon_worker_scope_${suffix}`);
+  const created = await ozonLearning.createOzonLearningTask({
+    sourceType: "keyword", sourceValue: "店铺隔离学习", storeId: "store-a",
+  });
+  assert.equal(await ozonLearning.claimOzonLearningJob("worker-b", { storeId: "store-b" }), null);
+  const job = await ozonLearning.claimOzonLearningJob("worker-a", { storeId: "store-a" });
+  assert.equal(job.storeId, "store-a");
+  const denied = await ozonLearning.completeOzonSearchJob(job.id, { items: [] }, { storeId: "store-b" });
+  assert.equal(denied.scopeDenied, true);
+  assert.equal(denied.reasonCode, "WORKER_JOB_STORE_ACCESS_DENIED");
+  assert.equal(created.task.storeId, "store-a");
+});
+
 test("Ozon learning human verification marks workflow waiting human", async () => {
   await reset();
   const suffix = Date.now() + 1;

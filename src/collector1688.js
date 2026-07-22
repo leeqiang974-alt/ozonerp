@@ -1,3 +1,6 @@
+import { createHash } from "node:crypto";
+import { buildMediaComplianceResult } from "./mediaCompliance.js";
+
 const IMAGE_RE = /https?:\\?\/\\?\/[^"'\\\s<>]+?(?:\.jpg|\.jpeg|\.png|\.webp)(?:[^"'\\\s<>]*)?/gi;
 
 export async function fetch1688Html(url, options = {}) {
@@ -36,31 +39,444 @@ export function parse1688Product({ url = "", html = "", hints = {} }) {
   const title = pickTitle(cleanHtml, jsonObjects, hints);
   const description = pickDescription(cleanHtml, jsonObjects);
   const images = pickImages(cleanHtml, jsonObjects, hints);
+  const detailHtml = pickDetailHtml(cleanHtml, jsonObjects);
+  const detailImages = pickDetailImages(detailHtml, jsonObjects, hints);
   const attributes = normalizeAttributes(hints.attributes).length
     ? normalizeAttributes(hints.attributes)
     : pickAttributes(cleanHtml, jsonObjects);
   const skuProps = pickSkuProps(jsonObjects);
   const skuVariants = pickSkuVariants(jsonObjects, skuProps, attributes, hints);
+  const skuAxes = buildStructuredSkuModel(jsonObjects, skuVariants);
   const sizeWeight = pickSizeWeight(cleanHtml, jsonObjects, attributes, hints);
+  const procurement = buildProcurementEvidence(cleanHtml, jsonObjects, hints);
+  const media = buildMediaCandidates(cleanHtml, images, detailImages, skuVariants);
+  const mediaCompliance = buildMediaComplianceResult(media);
+  const parseIssues = buildParseIssues({ title, images, skuVariants, attributes, sizeWeight, ...procurement });
+  const sourceEvidence = buildSourceEvidence({
+    url,
+    html: cleanHtml,
+    hints,
+    title,
+    images,
+    skuVariants,
+    sizeWeight,
+    attributes,
+    procurement,
+    media,
+  });
 
   return {
     source: "1688",
+    // Keep the hand-off envelope explicit.  Browser captures historically
+    // used `sentAt` and relied on the crawler job for identity, which made a
+    // saved payload impossible to replay on its own.  The envelope is local
+    // metadata only; it contains no cookies or raw page content.
+    capture: normalize1688CaptureEnvelope({ url, ...hints }, {
+      taskId: hints.taskId,
+      url,
+      captureMode: hints.captureMode || hints.sourceType,
+    }),
+    sourceEvidence,
     url,
     title,
+    supplier: procurement.supplier,
+    procurementEvidence: procurement.procurementEvidence,
     skuProps,
+    skuAxes,
     skuVariants,
     images,
     detail: {
       text: description,
-      html: pickDetailHtml(cleanHtml),
+      html: detailHtml,
     },
     video: normalizeVideo(hints.video),
-    detailImages: (hints.detailImages || []).map(normalizeImage).filter(Boolean),
+    detailImages,
+    richContentJson: buildRichContent(detailImages),
+    mediaAssets: media.mediaAssets,
+    mediaIssues: media.mediaIssues,
+    mediaCompliance,
     attributes,
     sizeWeight,
+    parseIssues,
     ozonDraft: toOzonDraft({ title, images, attributes, skuVariants, sizeWeight }),
     warnings: buildWarnings({ title, images, skuVariants, attributes, sizeWeight }),
   };
+}
+
+/**
+ * Normalize the minimum resumable/idempotent capture identity required by
+ * the 1688 -> ERP hand-off.  This is deliberately pure so extension payloads
+ * and offline fixtures share the same contract.
+ */
+export function normalize1688CaptureEnvelope(input = {}, context = {}) {
+  const payload = input && typeof input === "object" ? input : {};
+  const fallback = context && typeof context === "object" ? context : {};
+  const url = String(payload.url || fallback.url || "").trim();
+  const offerId = String(
+    payload.offerId
+      || url.match(/(?:detail\.)?1688\.com\/offer\/(\d+)(?:\.html)?/i)?.[1]
+      || url.match(/[?&]offerId=(\d+)/i)?.[1]
+      || "",
+  ).trim();
+  const rawCollectedAt = payload.collectedAt || payload.capturedAt || payload.sentAt || fallback.collectedAt;
+  const parsedDate = rawCollectedAt ? new Date(rawCollectedAt) : new Date();
+  const collectedAt = Number.isNaN(parsedDate.getTime()) ? new Date().toISOString() : parsedDate.toISOString();
+  return {
+    taskId: String(payload.taskId || fallback.taskId || "").trim(),
+    url,
+    offerId,
+    collectedAt,
+    captureMode: String(payload.captureMode || fallback.captureMode || "unknown").trim() || "unknown",
+  };
+}
+
+/**
+ * Convert a 1688 source evidence envelope into the seller-facing contract used
+ * by collection/crawler screens.  This deliberately contains no raw HTML,
+ * cookies, or supplier secrets: the hash is the replay reference and the
+ * action tells the seller what can safely happen next.
+ */
+export function build1688SourceEvidenceContract(sourceEvidence = {}) {
+  const evidence = sourceEvidence && typeof sourceEvidence === "object" ? sourceEvidence : {};
+  const verificationState = String(evidence.verificationState || "unknown");
+  const verificationReason = String(evidence.verificationReason || "");
+  const fields = evidence.fields && typeof evidence.fields === "object" ? evidence.fields : {};
+  const missingFields = Object.entries(fields)
+    .filter(([, field]) => field?.source === "missing")
+    .map(([name]) => name);
+  const variantCount = Number(fields.variants?.count || 0);
+  const packageValues = fields.package?.values && typeof fields.package.values === "object"
+    ? fields.package.values
+    : {};
+  const packageComplete = ["weightG", "lengthMm", "widthMm", "heightMm"]
+    .every((key) => Number(packageValues[key] || 0) > 0);
+  const completenessGaps = [
+    variantCount < 1 ? "variants" : "",
+    !packageComplete ? "package" : "",
+  ].filter(Boolean);
+  const requiredFields = [...new Set([...missingFields, ...completenessGaps])];
+  const hasSnapshot = /^sha256:[a-f0-9]{64}$/i.test(String(evidence.snapshotHash || ""));
+  const waitingHuman = verificationState === "waiting_human";
+  const status = waitingHuman ? "waiting_human" : (verificationState === "ok" && hasSnapshot ? (requiredFields.length ? "needs_review" : "ready") : "unknown");
+  const reasonLabel = {
+    login_required: "1688 登录状态失效",
+    captcha: "检测到验证码或滑块",
+    access_rate_limited: "1688 访问频繁",
+    security_verification: "检测到 1688 安全验证",
+  }[verificationReason] || "1688 页面证据不可用";
+  const nextAction = waitingHuman
+    ? `请在浏览器完成${reasonLabel}，确认页面恢复后再点击“恢复采集”`
+    : status === "ready"
+      ? "来源证据已记录，可进入类目、属性、内容和定价预检"
+      : requiredFields.length
+        ? `补齐来源字段：${requiredFields.join("、")}，然后重新采集并预检`
+        : "重新打开 1688 商品详情页并采集有效页面快照";
+  return {
+    status,
+    verificationState,
+    verificationReason,
+    verificationLabel: waitingHuman ? reasonLabel : (status === "ready" ? "来源证据已验证" : "来源证据待补齐"),
+    snapshotHash: hasSnapshot ? String(evidence.snapshotHash) : "",
+    canonicalUrl: String(evidence.canonicalUrl || ""),
+    capturedAt: String(evidence.capturedAt || ""),
+    missingFields: requiredFields,
+    completenessGaps,
+    blocker: waitingHuman
+      ? `${reasonLabel}；自动化已暂停`
+      : status === "ready" ? "" : "缺少可安全使用的完整来源证据",
+    nextAction,
+    sideEffects: waitingHuman || status !== "ready"
+      ? ["不会提交 Ozon", "不会修改价格", "不会写入库存"]
+      : [],
+  };
+}
+
+function buildMediaCandidates(html, images, detailImages, skuVariants) {
+  if (hasVerificationChallenge(html)) return { mediaAssets: [], mediaIssues: [] };
+  const snapshotHash = createHash("sha256").update(String(html || ""), "utf8").digest("hex");
+  const evidenceRef = `snapshot:${snapshotHash}`;
+  const detailSet = new Set(detailImages || []);
+  const candidates = [];
+  for (const sourceUrl of images || []) {
+    if (!detailSet.has(sourceUrl)) candidates.push({ role: "main", sourceUrl, sourceSkuId: "" });
+  }
+  for (const variant of skuVariants || []) {
+    if (variant?.image) candidates.push({ role: "variant", sourceUrl: variant.image, sourceSkuId: variant.skuId || "" });
+  }
+  for (const sourceUrl of detailImages || []) candidates.push({ role: "detail", sourceUrl, sourceSkuId: "" });
+
+  const deduped = new Map();
+  for (const candidate of candidates) {
+    const key = `${candidate.role}:${candidate.sourceUrl}:${candidate.sourceSkuId}`;
+    if (deduped.has(key)) continue;
+    const urlHash = createHash("sha256").update(candidate.sourceUrl, "utf8").digest("hex");
+    const idHash = createHash("sha256").update(key, "utf8").digest("hex").slice(0, 16);
+    deduped.set(key, {
+      id: `media:${idHash}`,
+      role: candidate.role,
+      sourceUrl: candidate.sourceUrl,
+      sourceSkuId: candidate.sourceSkuId,
+      evidenceRef,
+      sourceHash: `url-sha256:${urlHash}`,
+      checks: { humanApproved: false },
+    });
+  }
+  return {
+    mediaAssets: [...deduped.values()],
+    mediaIssues: detailImages?.length ? ["detail_images_require_human_review_before_rich_content"] : [],
+  };
+}
+
+function buildProcurementEvidence(html, jsonObjects, hints = {}) {
+  const snapshotRef = `snapshot:${createHash("sha256").update(String(html || ""), "utf8").digest("hex")}`;
+  const verificationBlocked = hasVerificationChallenge(html);
+  const hintedSupplier = hints.supplier && typeof hints.supplier === "object" ? hints.supplier : {};
+  const supplierId = verificationBlocked ? "" : cleanupText(
+    hintedSupplier.id || hints.supplierId || findValuesByKey(jsonObjects, ["companyId", "supplierId", "sellerId"])[0] || "",
+  );
+  const supplierName = verificationBlocked ? "" : cleanupText(
+    hintedSupplier.name || hints.supplierName || findValuesByKey(jsonObjects, ["companyName", "supplierName", "sellerName"])[0] || "",
+  );
+  const priceTiers = verificationBlocked ? [] : pickProcurementPriceTiers(jsonObjects, hints);
+  const explicitMoq = verificationBlocked ? null : firstNumber(
+    hints.moq,
+    ...findValuesByKey(jsonObjects, ["beginAmount", "minOrderQuantity", "minimumOrderQuantity", "minOrder"]),
+  );
+  const moq = explicitMoq || priceTiers[0]?.minQuantity || null;
+  const field = (value, hinted = false) => ({
+    value,
+    source: value == null || value === "" || (Array.isArray(value) && !value.length)
+      ? "missing"
+      : (hinted ? "capture_hint" : "page_content"),
+    evidenceRef: value == null || value === "" || (Array.isArray(value) && !value.length) ? "" : snapshotRef,
+  });
+  return {
+    supplier: { id: supplierId, name: supplierName },
+    procurementEvidence: {
+      supplierId: field(supplierId, Boolean(hintedSupplier.id || hints.supplierId)),
+      supplierName: field(supplierName, Boolean(hintedSupplier.name || hints.supplierName)),
+      moq: field(moq, hints.moq != null),
+      priceTiers: {
+        values: priceTiers,
+        source: priceTiers.length ? (Array.isArray(hints.priceTiers) ? "capture_hint" : "page_content") : "missing",
+        evidenceRef: priceTiers.length ? snapshotRef : "",
+      },
+    },
+  };
+}
+
+function pickProcurementPriceTiers(jsonObjects, hints = {}) {
+  const tierArrays = [];
+  if (Array.isArray(hints.priceTiers)) tierArrays.push(hints.priceTiers);
+  for (const object of walkObjects(jsonObjects)) {
+    for (const key of ["priceRanges", "priceTiers", "rangePrices", "ladderPrices"]) {
+      if (Array.isArray(object?.[key])) tierArrays.push(object[key]);
+    }
+  }
+  const tiers = tierArrays.flatMap((items) => items.map((item) => {
+    const minQuantity = firstNumber(item?.minQuantity, item?.startQuantity, item?.beginAmount, item?.minAmount);
+    const unitPriceCny = firstNumber(item?.unitPriceCny, item?.price, item?.unitPrice);
+    const maxQuantity = firstNumber(item?.maxQuantity, item?.endQuantity, item?.maxAmount);
+    if (!minQuantity || !unitPriceCny) return null;
+    return { minQuantity, maxQuantity: maxQuantity || null, unitPriceCny };
+  }).filter(Boolean));
+  const deduped = new Map();
+  for (const tier of tiers) deduped.set(`${tier.minQuantity}:${tier.maxQuantity || ""}:${tier.unitPriceCny}`, tier);
+  return [...deduped.values()].sort((a, b) => a.minQuantity - b.minQuantity);
+}
+
+function buildStructuredSkuModel(jsonObjects, skuVariants) {
+  const axes = pickSourceSkuAxes(jsonObjects);
+  const axisByName = new Map(axes.map((axis) => [normalizedSkuKey(axis.name), axis]));
+
+  for (const variant of skuVariants) {
+    const pairs = parseVariantSpecPairs(variant.spec);
+    variant.specPairs = pairs.map(({ name, value }) => {
+      const axisKey = normalizedSkuKey(name);
+      let axis = axisByName.get(axisKey);
+      if (!axis) {
+        axis = {
+          name,
+          sourcePropId: derivedSourceId("prop", name),
+          sourceIdKind: "derived",
+          values: [],
+        };
+        axes.push(axis);
+        axisByName.set(axisKey, axis);
+      }
+      const valueKey = normalizedSkuKey(value);
+      let axisValue = axis.values.find((item) => normalizedSkuKey(item.name) === valueKey);
+      if (!axisValue) {
+        axisValue = {
+          name: value,
+          sourceValueId: derivedSourceId("value", `${axis.name}:${value}`),
+          sourceIdKind: "derived",
+        };
+        axis.values.push(axisValue);
+      }
+      const sourceIdKind = axis.sourceIdKind === "platform" && axisValue.sourceIdKind === "platform"
+        ? "platform"
+        : "derived";
+      return {
+        name,
+        value,
+        sourcePropId: axis.sourcePropId,
+        sourceValueId: axisValue.sourceValueId,
+        sourceIdKind,
+      };
+    });
+  }
+  return axes;
+}
+
+function pickSourceSkuAxes(jsonObjects) {
+  const axes = [];
+  for (const object of walkObjects(jsonObjects)) {
+    const name = cleanupText(object?.propName || object?.specName || object?.skuPropName || object?.attributeName || "");
+    const values = object?.valueList || object?.specItems || object?.skuPropertyValues;
+    if (!name || !Array.isArray(values) || !values.length) continue;
+    const rawPropId = scalarText(object.propId || object.specId || object.skuPropId || object.attributeId);
+    const sourcePropId = rawPropId || derivedSourceId("prop", name);
+    const sourceIdKind = rawPropId ? "platform" : "derived";
+    const normalizedValues = values.map((item) => {
+      const valueName = cleanupText(item?.name || item?.value || item?.specValue || item?.valueName || item?.propertyValueName || "");
+      const rawValueId = scalarText(item?.valueId || item?.specId || item?.skuValueId || item?.propertyValueId);
+      return valueName ? {
+        name: valueName,
+        sourceValueId: rawValueId || derivedSourceId("value", `${name}:${valueName}`),
+        sourceIdKind: rawValueId ? "platform" : "derived",
+      } : null;
+    }).filter(Boolean);
+    if (normalizedValues.length) axes.push({ name, sourcePropId, sourceIdKind, values: normalizedValues });
+  }
+  const deduped = new Map();
+  for (const axis of axes) if (!deduped.has(normalizedSkuKey(axis.name))) deduped.set(normalizedSkuKey(axis.name), axis);
+  return [...deduped.values()];
+}
+
+function parseVariantSpecPairs(spec = "") {
+  return cleanupText(spec).split(/[;；|]/).map((part) => {
+    const separator = part.search(/[:：]/);
+    if (separator < 0) return null;
+    const name = cleanupText(part.slice(0, separator));
+    const value = cleanupText(part.slice(separator + 1));
+    return name && value ? { name, value } : null;
+  }).filter(Boolean);
+}
+
+function derivedSourceId(kind, value) {
+  const digest = createHash("sha256").update(`${kind}:${normalizedSkuKey(value)}`, "utf8").digest("hex").slice(0, 12);
+  return `derived:${kind}:${digest}`;
+}
+
+function normalizedSkuKey(value) {
+  return cleanupText(value).toLocaleLowerCase("zh-CN");
+}
+
+function buildSourceEvidence({ url, html, hints, title, images, skuVariants, sizeWeight, attributes, procurement, media = {} }) {
+  const offerId = String(url || "").match(/detail\.1688\.com\/offer\/(\d+)\.html/i)?.[1] || "";
+  const verificationReason = classifyVerificationChallenge(html, url);
+  const verificationState = verificationReason ? "waiting_human" : "ok";
+  const packageValues = {
+    weightG: sizeWeight?.weightG || "",
+    lengthMm: sizeWeight?.lengthMm || "",
+    widthMm: sizeWeight?.widthMm || "",
+    heightMm: sizeWeight?.heightMm || "",
+  };
+  const packagePresent = Object.values(packageValues).some((value) => Number(value || 0) > 0);
+  const supplier = procurement?.supplier || {};
+  const procurementEvidence = procurement?.procurementEvidence || {};
+  const procurementPresent = Boolean(
+    procurementEvidence.moq?.value
+      && Array.isArray(procurementEvidence.priceTiers?.values)
+      && procurementEvidence.priceTiers.values.length,
+  );
+  const pageRef = `snapshot:${createHash("sha256").update(String(html || ""), "utf8").digest("hex")}`;
+  const field = (present, hinted, extra = {}) => ({
+    source: present && verificationState === "ok" ? (hinted ? "capture_hint" : "page_content") : "missing",
+    evidenceRef: present && verificationState === "ok" ? pageRef : "",
+    ...extra,
+  });
+
+  const evidence = {
+    platform: "1688",
+    offerId,
+    canonicalUrl: offerId ? `https://detail.1688.com/offer/${offerId}.html` : String(url || "").split(/[?#]/)[0],
+    capturedAt: normalizedCapturedAt(hints?.capturedAt),
+    captureMode: cleanupText(hints?.captureMode || hints?.sourceType || "direct_html"),
+    snapshotHash: pageRef.replace(/^snapshot:/, "sha256:"),
+    verificationState,
+    verificationReason,
+    // Keep only replay provenance metadata.  The manifest/page contents are
+    // parsed in memory and are never persisted in the collection box.
+    fixtureProvenance: normalizeFixtureProvenance(hints?.fixtureProvenance),
+    fields: {
+      title: field(Boolean(title), Boolean(hints?.title), { value: title || "" }),
+      images: field(Boolean(images?.length), Boolean(hints?.images?.length), { count: images?.length || 0, values: images || [] }),
+      variants: field(Boolean(skuVariants?.length), Boolean(hints?.skuVariants?.length), {
+        count: skuVariants?.length || 0,
+        skuIds: (skuVariants || []).map((item) => item.skuId || ""),
+      }),
+      package: field(packagePresent, Boolean(hints?.packageInfo), { values: packageValues }),
+      attributes: field(Boolean(attributes?.length), Boolean(hints?.attributes?.length), { count: attributes?.length || 0 }),
+      supplier: field(Boolean(supplier.id || supplier.name), Boolean(hints?.supplier || hints?.supplierId || hints?.supplierName), {
+        id: supplier.id || "",
+        name: supplier.name || "",
+      }),
+      procurement: field(procurementPresent, Boolean(hints?.moq != null || hints?.priceTiers), {
+        moq: procurementEvidence.moq?.value || null,
+        priceTierCount: procurementEvidence.priceTiers?.values?.length || 0,
+      }),
+      media: field(Boolean(media?.mediaAssets?.length), false, {
+        assetCount: Array.isArray(media?.mediaAssets) ? media.mediaAssets.length : 0,
+        mainCount: Array.isArray(media?.mediaAssets) ? media.mediaAssets.filter((asset) => asset?.role === "main").length : 0,
+        variantCount: Array.isArray(media?.mediaAssets) ? media.mediaAssets.filter((asset) => asset?.role === "variant").length : 0,
+        detailCount: Array.isArray(media?.mediaAssets) ? media.mediaAssets.filter((asset) => asset?.role === "detail").length : 0,
+        issueCount: Array.isArray(media?.mediaIssues) ? media.mediaIssues.length : 0,
+      }),
+    },
+  };
+  return { ...evidence, sellerFacing: build1688SourceEvidenceContract(evidence) };
+}
+
+function normalizeFixtureProvenance(value) {
+  if (!value || typeof value !== "object") return null;
+  const fixtureKind = cleanupText(value.fixtureKind);
+  const verificationLevel = cleanupText(value.verificationLevel);
+  const manifestHash = /^sha256:[a-f0-9]{64}$/i.test(String(value.manifestHash || ""))
+    ? String(value.manifestHash)
+    : "";
+  if (!fixtureKind && !manifestHash && !verificationLevel) return null;
+  return {
+    fixtureKind,
+    synthetic: typeof value.synthetic === "boolean" ? value.synthetic : null,
+    redacted: typeof value.redacted === "boolean" ? value.redacted : null,
+    verificationLevel,
+    manifestHash,
+    captureMode: cleanupText(value.captureMode),
+    capturedAt: cleanupText(value.capturedAt),
+    validationTargets: Array.isArray(value.validationTargets)
+      ? value.validationTargets.map((item) => cleanupText(item)).filter(Boolean).slice(0, 20)
+      : [],
+  };
+}
+
+function normalizedCapturedAt(value) {
+  const parsed = value ? new Date(value) : new Date();
+  return Number.isNaN(parsed.getTime()) ? new Date().toISOString() : parsed.toISOString();
+}
+
+function hasVerificationChallenge(html = "", url = "") {
+  return Boolean(classifyVerificationChallenge(html, url));
+}
+
+function classifyVerificationChallenge(html = "", url = "") {
+  const text = `${html} ${url}`;
+  if (/login\.1688|passport\.alibaba|登录|请先登录|登录后查看/i.test(text)) return "login_required";
+  if (/验证码|人机验证|滑块|captcha|please slide/i.test(text)) return "captcha";
+  if (/访问频繁|too\s*many\s*requests|频繁访问|rate.?limit/i.test(text)) return "access_rate_limited";
+  if (/安全验证|安全风险|security verification/i.test(text)) return "security_verification";
+  return "";
 }
 
 function pickTitle(html, jsonObjects, hints) {
@@ -326,6 +742,23 @@ function buildWarnings(result) {
   return warnings;
 }
 
+function buildParseIssues(result) {
+  const issues = [];
+  if (!result.title) issues.push("missing_title");
+  if (!result.images.length) issues.push("missing_images");
+  if (!result.skuVariants.length) issues.push("missing_sku_variants");
+  if (!result.attributes.length) issues.push("missing_attributes");
+  if (!result.sizeWeight.weightG) issues.push("missing_package_weight");
+  if (!result.sizeWeight.lengthMm || !result.sizeWeight.widthMm || !result.sizeWeight.heightMm) {
+    issues.push("missing_package_dimensions");
+  }
+  if (!result.supplier?.id) issues.push("missing_supplier_id");
+  if (!result.supplier?.name) issues.push("missing_supplier_name");
+  if (!result.procurementEvidence?.moq?.value) issues.push("missing_procurement_moq");
+  if (!result.procurementEvidence?.priceTiers?.values?.length) issues.push("missing_procurement_price_tiers");
+  return issues;
+}
+
 function missingSizeWeightFields(source = {}) {
   return [
     ["weightG", "重量"],
@@ -450,10 +883,12 @@ function normalizeImage(value) {
   if (!value || typeof value !== "string") return "";
   let image = value
     .replaceAll("\\/", "/")
+    .trim()
     .replace(/&quot;.*$/i, "")
     .replace(/\).*$/i, "")
     .replace(/^\/\//, "https://");
-  image = image.replace(/(?:_|\.)((?:\d+x\d+)|sum|search|summ|webp).*$/i, "");
+  image = image.replace(/[?#].*$/i, "");
+  image = image.replace(/(?:_|\.)(?:\d+x\d+|sum|search|summ)(?=\.(?:jpg|jpeg|png|webp)$)/i, "");
   if (image.startsWith("http") && /\.(jpg|jpeg|png|webp)/i.test(image)) return image;
   return "";
 }
@@ -598,9 +1033,35 @@ function dedupeVariants(items) {
   return [...map.values()];
 }
 
-function pickDetailHtml(html) {
+function pickDetailHtml(html, jsonObjects = []) {
+  const jsonDetail = findValuesByKey(jsonObjects, ["content", "detailHtml", "detailContent", "descHtml", "descriptionHtml"])
+    .find((value) => /<img\b|ant-descriptions|detail|desc/i.test(value));
+  if (jsonDetail) return jsonDetail;
   const candidate = match(html, /<div[^>]+(?:id|class)=["'][^"']*(?:desc|detail|description)[^"']*["'][^>]*>([\s\S]{100,20000}?)<\/div>/i);
   return candidate || "";
+}
+
+function pickDetailImages(detailHtml, jsonObjects, hints) {
+  const images = new Set();
+  for (const raw of hints.detailImages || []) addImage(images, raw);
+  for (const raw of String(detailHtml || "").match(IMAGE_RE) || []) addImage(images, raw);
+  for (const value of findValuesByKey(jsonObjects, ["detailImage", "detailImages", "detailImg", "descImage", "descImages"])) {
+    if (typeof value === "string") addImage(images, value);
+  }
+  return [...images].filter(isLikelyProductImage).slice(0, 60);
+}
+
+function buildRichContent(detailImages) {
+  const images = Array.isArray(detailImages) ? detailImages.filter(Boolean) : [];
+  if (!images.length) return null;
+  return {
+    content: images.map((image) => ({
+      widgetName: "raShowcase",
+      type: "billboard",
+      blocks: [{ img: { src: image, srcMobile: image, alt: "" } }],
+    })),
+    version: 0.3,
+  };
 }
 
 function escapeRegExp(value) {

@@ -16,6 +16,8 @@ test("calculateOzonPrice carries commission source metadata", () => {
       label: "同类已上架商品学习",
       confidence: "medium",
       categoryKey: "17028673:95183",
+      evidenceRef: "seller-read:receipt-42",
+      updatedAt: "2026-07-19T00:00:00Z",
     },
   });
 
@@ -25,7 +27,24 @@ test("calculateOzonPrice carries commission source metadata", () => {
     label: "同类已上架商品学习",
     confidence: "medium",
     categoryKey: "17028673:95183",
+    evidenceRef: "seller-read:receipt-42",
+    updatedAt: "2026-07-19T00:00:00Z",
   });
+});
+
+test("calculateOzonPrice labels default commission profit as unknown rather than determined", () => {
+  const result = calculateOzonPrice({
+    purchaseCost: 25,
+    weightG: 650,
+    lengthMm: 220,
+    widthMm: 160,
+    heightMm: 80,
+  });
+
+  assert.equal(result.commissionSource.source, "manual_default");
+  // The formula may return a numeric scenario, but settlement and current
+  // commission evidence are absent, so downstream UI must not call it profit.
+  assert.equal(result.commissionSource.confidence, "low");
 });
 
 test("derivePricingPolicyFields explains min price floor and old price strategy", () => {

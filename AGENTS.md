@@ -6,12 +6,48 @@ This file mirrors `CLAUDE.md` so Codex and Claude Code follow the same project r
 
 Read these before substantial Ozon ERP changes:
 
+- `docs/ROADMAP.zh-CN.md` as the single current source for phase priority, verification level, and completion criteria; use `docs/plan-status-index.zh-CN.md` before resuming an older implementation plan.
 - `docs/SESSION_HANDOFF.zh-CN.md`
 - `docs/erp-ui-information-architecture.zh-CN.md`
 - Relevant source and tests for the feature area.
 - `docs/pricing-logic.zh-CN.md` for any price, logistics, commission, `old_price`, `min_price`, or profit work.
+- `docs/external-evidence-driven-erp-roadmap.zh-CN.md` before adding a new ERP module, changing the 1688-to-Ozon main chain, or claiming a business workflow is complete.
+
+## External Evidence Gate
+
+- 店铺 API 的 canonical 本地来源是 `D:\Desktop\api\ozonapi.txt`；当前按 4 个主 API 记录识别店铺，不能把文件中的外部使用/个人使用备注重复计数为新店铺。Ozon Seller API 接口事实优先对照 `D:\Desktop\ozonseller api\Ozon Seller API 文件.html`，并记录文档版本/更新时间；GitHub 仅作工程参考。
+
+- Do not invent ERP behavior from the current UI or codebase alone. Every new business capability must cite at least one authoritative Ozon source or a verified real-account response, plus one runnable implementation/reference when available.
+- GitHub repositories are references, not truth. Verify source code, recent activity, tests, data model, API coverage, license, and whether the advertised workflow is actually implemented before borrowing it.
+- Distinguish `documented`, `mocked`, `locally tested`, `real-account read verified`, and `real-account write verified`. Do not label a feature complete without recording its verification level.
+- Prefer seller tasks and outcomes over technical surfaces. A normal screen should expose the business object, current state, blocker, recommended action, confirmation/side effect, and result; raw workflow nodes, JSON, prompts, and logs belong in advanced diagnostics.
+- For the 1688-to-Ozon chain, validate each stage with replayable product fixtures and controlled real listings: source evidence, SKU normalization, category/type decision, legal attributes, Russian content, media, package data, pricing, preflight, confirmed submission, moderation reconciliation, and stock readiness.
+- Tests for API clients must fail closed before the first red-light run: inject or globally stub network transport before invoking the subject. A planned dependency-injection test is not sufficient if the old implementation can ignore the injected dependency and fall through to real network access.
+- 1688 包装尺重只有在 `sourceEvidence.fields.package` 的 source/evidenceRef 与当前 snapshot 对齐时才能升级为 `1688_package`；孤立数值、URL 推断或缺失证据必须保持阻塞。无历史 evidence envelope 的旧内部 job 可暂留 legacy 路径，但新采集回执必须补齐该字段。
+- 包装尺重证据不仅要校验来源和 snapshot 引用，还必须逐字段匹配当前待提交的 `sizeWeight` 数值；快照之后被改过的数字即使沿用旧 evidenceRef 也必须阻断。
+- 媒体 `evidenceRef` 的 snapshot hash 必须严格等于当前 1688 `sourceEvidence.snapshotHash`；即使存在带 actor/时间戳的显式人工审批，跨快照媒体也必须保持 `needs_confirmation`。
+- `categoryEvidenceRequired` 时，tree/attributes 回执必须同时具备且严格匹配预期 `storeId` 与 `environmentRefHash`；attributes 还必须具备并匹配当前 category `cacheKey`，缺失字段不可按旧兼容路径放行。
+- 库存写入成功响应必须保留 server-observed 写后回查时间与精确 `(offer_id, warehouse_id)` scope；前端不能只显示“已接受/已触发回查”，必须显示 exact tuple 已核对的结果。
+- FBS 回执摘要查询必须同时绑定当前 `environment` 与 `storeId`；缺少任一范围时 fail-closed，不得跨 local/staging 或跨店铺返回最近回执。
+- 活动商品前端的“当前价”只能来自 `current_price/currentPrice/price`；`old_price` 是划线原价，缺失当前价时必须显示未知，不得用于活动降幅或经营结论。
+- 库存队列一旦发出 `/v2/products/stocks`，遇到网络超时或 5xx 必须进入 `needs_review`；未知写入结果只能先精确回查，不能落为可自动重放的 `failed`。
+- 库存聚合读取的 `/v4/product/info/stocks` 与 `/v2/warehouse/list` 必须消费有界 cursor/last_id 分页；保留 pageCount、paginationComplete 和重复游标信号，不能把第一页当成完整店铺证据，卖家界面要显示当前读取范围和重读动作。
+- 保存库存只读回执时不能丢弃分页范围：endpoint status 必须绑定 pageCount、paginationComplete 和重复游标标记，并纳入回执哈希/校验，避免回执看似完整却无法证明读取范围。
+- FBS cursor 只读回执的 scope hash 必须包含 cursor、sortDir 和 pagination；不同订单页不能因为日期/状态相同而复用同一页回执。
+- FBS 回执摘要查询也必须传递当前批次的 cursor、sortDir 和 pagination；持久化 scope 已精确绑定时，UI 不能用第一页参数查询第二页回执。
+- 活动商品接口的 `impactPreview` 只有在 Seller API 活动商品范围 `coverageComplete === true` 时才能返回；局部页的价格比较只能留在诊断层，不能作为 API 经营结论。
+- 活动价格比较的 current price 只接受明确的 current_price/currentPrice/price；Ozon `old_price` 是原价/划线价，不能作为当前成交价 fallback。
+- readiness evidence GET 必须同时绑定长度合规的 environment 和明确 storeId；禁止在同一环境下聚合不同店铺回执并升级为 real_read_verified。
+- When sanitizing controlled-read observations, normalize HTTP status from `statusCode`, `httpStatus`, or a numeric `status` before dropping raw fields; otherwise a persisted 401/403/429/5xx can lose its seller-recovery classification. Keep the normalized code in the bounded receipt and test the seller-facing recovery task.
+- Controlled-read plan matrices must expose per-store `storeRefHash`, `environmentRefHash`, `scopeRefHash`, endpoint scope, and `planBinding`, plus a seller-facing `nextAction` and an explicitly non-executed receipt expectation; these fields bind the later server receipt without claiming that a live read already happened.
 
 ## Product Principle
+
+## Development Governance
+
+- 按 `docs/DEVELOPMENT-FRAMEWORK.zh-CN.md` 的五条工作流轮转开发。不能围绕单个支线（例如 FBS）连续扩展到失去主线视角。
+- 同一工作流最多连续交付两个切片；每轮必须汇总代码、测试、验证等级、剩余缺口和下一轮轮转目标。
+- 1688→Ozon 黄金链路是当前 P0 主线；订单、活动和财务支线不能在主线存在阻塞时持续抢占开发重心。
 
 Ozon ERP is a seller operating workbench. UI and workflow changes must help the user answer:
 
@@ -30,6 +66,9 @@ Do not turn ordinary seller screens into developer logs, long unscannable forms,
 - Browser human verification must pause automation.
 - GPT/image generation requires user-confirmed action before cost.
 - Blocked pricing risk cannot be accepted as safe; fix it or replace the source.
+- Missing current stock for an `(offer_id, warehouse_id)` tuple is unknown evidence, never zero. Stock dry-run must block until the exact tuple is observed.
+- An Ozon write with an unknown outcome must remain `needs_review`. A different idempotency key must not bypass an unresolved command with the same store, scope, and payload hash.
+- Switching the active store must invalidate order list/detail requests, order pagination/coverage, and finance read-model evidence before reloading the active business view; stale cross-store order or finance evidence is never usable.
 
 ## Expected Implementation Flow
 
@@ -39,6 +78,8 @@ Do not turn ordinary seller screens into developer logs, long unscannable forms,
 4. Run targeted tests, then `npm test`, then `npm run lint`.
 5. Update `docs/SESSION_HANDOFF.zh-CN.md` when a stage is completed.
 
+- `npm test` and `npm run offline-acceptance` must run serially, not concurrently: crawler and fixture tests share local temporary directories and concurrent runs can corrupt the evidence and produce false failures.
+
 ## Claude-Guided Development
 
 When the user asks for Ozon ERP development to be guided by Claude Code:
@@ -47,6 +88,7 @@ When the user asks for Ozon ERP development to be guided by Claude Code:
 2. Treat the Claude output as architecture/product guidance, not as automatically trusted code.
 3. Codex implements the scoped change, runs verification, and reports the result.
 4. If Claude's guidance conflicts with tests, safety gates, or existing project rules, follow the project rules and explain the conflict.
+5. Use official Claude for repository-aware planning or review when available. Use Claude NVIDIA as a bounded second reviewer for evidence comparison, seller-language critique, test-case generation, and diff review; it must not be treated as an autonomous source of Ozon facts or allowed to approve production writes.
 
 ## Verification Commands
 

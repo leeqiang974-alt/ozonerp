@@ -7,6 +7,8 @@ test("PDD parser normalizes extension payload into ERP capture product", () => {
   const parsed = parsePddProduct({
     url: "https://mobile.yangkeduo.com/goods.html?goods_id=123456789",
     hints: {
+      taskId: "pdd-task-123",
+      collectedAt: "2026-07-16T10:20:30+08:00",
       title: "猫咪自动饮水机 静音循环过滤",
       price: "19.80",
       images: [
@@ -32,6 +34,17 @@ test("PDD parser normalizes extension payload into ERP capture product", () => {
   assert.equal(parsed.source, "pdd");
   assert.equal(parsed.sourcePlatform, "拼多多");
   assert.equal(parsed.goodsId, "123456789");
+  assert.deepEqual(parsed.capture, {
+    taskId: "pdd-task-123",
+    offerId: "123456789",
+    url: "https://mobile.yangkeduo.com/goods.html?goods_id=123456789",
+    collectedAt: "2026-07-16T02:20:30.000Z",
+    captureMode: "pdd_parser",
+  });
+  assert.equal(parsed.sourceEvidence.verificationState, "unknown");
+  assert.equal(parsed.sourceEvidence.sellerFacing.status, "unknown");
+  assert.deepEqual(parsed.sourceEvidence.sellerFacing.sideEffects, ["不会提交 Ozon", "不会修改价格", "不会写入库存"]);
+  assert.ok(Array.isArray(parsed.parseIssues));
   assert.equal(parsed.title, "猫咪自动饮水机 静音循环过滤");
   assert.equal(parsed.images.length, 1);
   assert.equal(parsed.skuVariants[0].price, 19.8);

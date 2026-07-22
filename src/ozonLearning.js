@@ -266,6 +266,7 @@ function jobForTask(task, type, url) {
     taskId: task.id,
     type: type || "ozon_search",
     url: url || sourceUrlForTask(task),
+    storeId: String(task.storeId || "").trim(),
     status: "queued",
     workerId: "",
     attempts: 0,
@@ -499,9 +500,9 @@ function refreshDerivedFields(item) {
   };
 }
 
-export async function createOzonLearningTask({ sourceType, sourceValue, maxProducts = 20, detailSampleSize = 5, mode = "manual" } = {}) {
+export async function createOzonLearningTask({ sourceType, sourceValue, maxProducts = 20, detailSampleSize = 5, mode = "manual", storeId = "" } = {}) {
   const id = makeId();
-  const task = { id, sourceType, sourceValue,
+  const task = { id, sourceType, sourceValue, storeId: String(storeId || "").trim(),
     maxProducts: Math.min(Number(maxProducts) || 20, 100),
     detailSampleSize: Math.min(Number(detailSampleSize) || 5, 20),
     mode, status: "created", totalFound: 0, detailQueued: 0,
@@ -517,14 +518,14 @@ export async function createOzonLearningTask({ sourceType, sourceValue, maxProdu
   return { ok: true, task, id };
 }
 
-export async function createOzonBlindSearchRun({ maxProducts = 20, detailSampleSize = 5, batchSize = 3 } = {}) {
+export async function createOzonBlindSearchRun({ maxProducts = 20, detailSampleSize = 5, batchSize = 3, storeId = "" } = {}) {
   const pool = [...BLIND_SEEDS];
   const shuffled = [...pool].sort(() => Math.random() - 0.5).slice(0, batchSize);
   const tasks = [];
   for (const seed of shuffled) {
     const data = await createOzonLearningTask({
       sourceType: "keyword", sourceValue: seed,
-      maxProducts, detailSampleSize, mode: "blind",
+      maxProducts, detailSampleSize, mode: "blind", storeId,
     });
     tasks.push(data.task);
   }
@@ -642,17 +643,40 @@ export async function deleteOzonLearningTask(id) {
   return task;
 }
 
-export async function claimOzonLearningJob(workerId = "") {
+function learningJobScopeDecision(job = {}, scope = {}) {
+  const requested = String(scope.storeId || "").trim();
+  const principalStores = Array.isArray(scope.storeIds)
+    ? scope.storeIds.map((value) => String(value || "").trim()).filter(Boolean)
+    : [];
+  const jobStore = String(job.storeId || "").trim();
+  if (!requested && !principalStores.length) return { allowed: true, reasonCode: "WORKER_SCOPE_UNSCOPED" };
+  if (!jobStore) return { allowed: false, reasonCode: "WORKER_JOB_STORE_SCOPE_MISSING" };
+  if (requested && requested !== jobStore) return { allowed: false, reasonCode: "WORKER_JOB_STORE_ACCESS_DENIED" };
+  if (principalStores.length && !principalStores.includes(jobStore)) return { allowed: false, reasonCode: "WORKER_PRINCIPAL_STORE_ACCESS_DENIED" };
+  return { allowed: true, reasonCode: "WORKER_STORE_SCOPE_OK" };
+}
+
+async function learningJobScope(jobId, scope = {}) {
+  const jobs = await readJobs();
+  const job = jobs.find((item) => item.id === jobId);
+  if (!job) return { job: null };
+  const decision = learningJobScopeDecision(job, scope);
+  return decision.allowed ? { job } : { job, scopeDenied: true, reasonCode: decision.reasonCode };
+}
+
+export async function claimOzonLearningJob(workerId = "", scope = {}) {
   const jobs = await readJobs();
   const tasks = await readJsonList(TASK_FILE);
   const taskById = new Map(tasks.map((task) => [task.id, task]));
   const now = Date.now();
   let picked = null;
   for (const job of jobs) {
-    if (job.status === "running" && now - Date.parse(job.updatedAt || job.createdAt || 0) > RUNNING_JOB_TIMEOUT_MS) {
+    if (job.status === "running" && learningJobScopeDecision(job, scope).allowed
+      && now - Date.parse(job.updatedAt || job.createdAt || 0) > RUNNING_JOB_TIMEOUT_MS) {
       job.status = "queued"; job.workerId = "";
     }
     if (!picked && job.status === "queued") {
+      if (!learningJobScopeDecision(job, scope).allowed) continue;
       const task = taskById.get(job.taskId);
       if (!task || ["stopped", "paused", "waiting_human", "failed", "finished"].includes(task.status)) continue;
       job.status = "running"; job.workerId = workerId;
@@ -665,7 +689,10 @@ export async function claimOzonLearningJob(workerId = "") {
   return picked;
 }
 
-export async function completeOzonSearchJob(jobId, result = {}) {
+export async function completeOzonSearchJob(jobId, result = {}, scope = {}) {
+  const scoped = await learningJobScope(jobId, scope);
+  if (!scoped.job) return null;
+  if (scoped.scopeDenied) return { job: scoped.job, scopeDenied: true, reasonCode: scoped.reasonCode };
   const jobs = await readJobs();
   const index = jobs.findIndex((job) => job.id === jobId);
   if (index === -1) return null;
@@ -722,7 +749,10 @@ export async function completeOzonSearchJob(jobId, result = {}) {
   return { job: jobs[index], items: rows };
 }
 
-export async function completeOzonDetailJob(jobId, result = {}) {
+export async function completeOzonDetailJob(jobId, result = {}, scope = {}) {
+  const scoped = await learningJobScope(jobId, scope);
+  if (!scoped.job) return null;
+  if (scoped.scopeDenied) return { job: scoped.job, scopeDenied: true, reasonCode: scoped.reasonCode };
   const jobs = await readJobs();
   const index = jobs.findIndex((job) => job.id === jobId);
   if (index === -1) return null;

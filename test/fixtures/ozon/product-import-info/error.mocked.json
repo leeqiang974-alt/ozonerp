@@ -1,0 +1,15 @@
+{
+  "fixtureKind": "mocked_redacted_product_import_info",
+  "synthetic": true,
+  "redacted": true,
+  "verificationLevel": "mocked",
+  "endpoint": "/v1/product/import/info",
+  "scenario": "error",
+  "requestScope": { "task_id": 700103 },
+  "result": {
+    "task_id": 700103,
+    "items": [
+      { "offer_id": "FIXTURE-ERROR", "status": "failed", "errors": [{ "code": "INVALID_ATTRIBUTE", "level": "error", "message": "Fixture attribute rejected" }] }
+    ]
+  }
+}

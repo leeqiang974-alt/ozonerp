@@ -3,6 +3,7 @@ const ERP_BASES = ["http://127.0.0.1:5178", "http://localhost:5178"];
 const WORKER_ID_KEY = "ozonErpCrawlerWorkerId";
 const HUMAN_CHECK_PAUSED_KEY = "ozonErpHumanCheckPaused";
 let busy = false;
+let humanResumeBusy = false;
 let lastWorkerState = {
   status: "idle",
   job: null,
@@ -97,6 +98,17 @@ async function fetchWithErpFallback(path, options = {}) {
 
 async function initializeCrawlerWorker() {
   ensureCrawlerAlarm();
+  const humanPause = await getHumanCheckPause();
+  if (humanPause?.paused) {
+    await setWorkerState({
+      status: "waiting_human",
+      job: humanPause.job || null,
+      message: "等待人工验证，自动采集已暂停。处理完验证后点“恢复采集”继续",
+      lastError: humanPause.message || "等待人工验证",
+      needsHuman: true,
+    });
+    return;
+  }
   await setWorkerState({ status: "idle", job: null, message: "插件后台已启动", lastError: "", needsHuman: false });
 }
 
@@ -227,6 +239,7 @@ async function runJob(job) {
       type: "COLLECT_1688_PRODUCT_RAW",
       includeVideo: true,
       storeId: job.storeId || "",
+      taskId: job.taskId || "",
     });
     if (result?.needsHuman) {
       humanCheckDetected = true;
@@ -299,13 +312,55 @@ async function clearHumanCheckPause() {
 }
 
 async function resumeAfterHumanCheck() {
-  const humanPause = await getHumanCheckPause();
-  await clearHumanCheckPause();
-  ensureCrawlerAlarm();
-  if (humanPause?.job?.taskId && !String(humanPause.job.kind || "").startsWith("ozon_")) {
-    await postJson(`/api/1688-crawler/tasks/${encodeURIComponent(humanPause.job.taskId)}/resume`, {});
+  // Two popup clicks or a repeated message must not submit the same ERP
+  // resume request twice. Keep the persisted pause until the single attempt
+  // finishes, then allow a deliberate retry after an error.
+  if (humanResumeBusy) return;
+  humanResumeBusy = true;
+  try {
+    await resumeAfterHumanCheckOnce();
+  } finally {
+    humanResumeBusy = false;
   }
-  await pollCrawlerJob({ resume: true });
+}
+
+async function resumeAfterHumanCheckOnce() {
+  const humanPause = await getHumanCheckPause();
+  if (!humanPause?.paused) {
+    ensureCrawlerAlarm();
+    await pollCrawlerJob({ resume: true });
+    return;
+  }
+  try {
+    // Keep the persisted pause until ERP accepts the resume request. If the
+    // subsequent poll cannot reach ERP, restore the pause instead of silently
+    // re-enabling automation.
+    if (humanPause.job?.taskId && !String(humanPause.job.kind || "").startsWith("ozon_")) {
+      await postJson(`/api/1688-crawler/tasks/${encodeURIComponent(humanPause.job.taskId)}/resume`, {});
+    }
+    await clearHumanCheckPause();
+    ensureCrawlerAlarm();
+    await pollCrawlerJob({ resume: true });
+    if (lastWorkerState.status === "error") {
+      await setHumanCheckPause(humanPause.job, "恢复后检查 ERP 任务失败");
+      await setWorkerState({
+        status: "waiting_human",
+        job: humanPause.job || lastWorkerState.job,
+        message: "恢复采集未完成，验证页仍保持暂停；请检查 ERP 连接后重试",
+        lastError: lastWorkerState.lastError || "恢复后检查失败",
+        needsHuman: true,
+      });
+    }
+  } catch (error) {
+    await setHumanCheckPause(humanPause.job, error.message || "恢复采集失败");
+    await setWorkerState({
+      status: "waiting_human",
+      job: humanPause.job || lastWorkerState.job,
+      message: "恢复采集未完成，验证页仍保持暂停；请检查 ERP 连接后重试",
+      lastError: error.message || "恢复采集失败",
+      needsHuman: true,
+    });
+  }
 }
 
 async function waitForTabLoad(tabId) {

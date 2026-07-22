@@ -1,0 +1,28 @@
+{
+  "fixtureKind": "mocked_redacted_category_read",
+  "synthetic": true,
+  "redacted": true,
+  "verificationLevel": "mocked",
+  "endpoint": "/v1/description-category/attribute",
+  "requestScope": {
+    "description_category_id": 17028673,
+    "type_id": 95183,
+    "language": "ZH_HANS"
+  },
+  "result": [
+    {
+      "id": 85,
+      "name": "Fixture brand",
+      "is_required": true,
+      "is_aspect": false,
+      "dictionary_id": 971082
+    },
+    {
+      "id": 9048,
+      "name": "Fixture color",
+      "is_required": false,
+      "is_aspect": true,
+      "dictionary_id": 120
+    }
+  ]
+}

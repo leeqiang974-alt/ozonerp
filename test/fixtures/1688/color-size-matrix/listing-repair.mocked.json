@@ -1,0 +1,52 @@
+{
+  "fixtureKind": "synthetic_redacted_listing_repair",
+  "synthetic": true,
+  "redacted": true,
+  "verificationLevel": "locally_tested_fixture",
+  "source": "1688",
+  "validationTargets": [
+    "preserve_multi_sku_variant_matrix",
+    "repair_one_sku_attribute_without_collapsing_other_skus",
+    "invalidate_old_draft_confirmation_hash",
+    "revalidate_before_submit"
+  ],
+  "payload": {
+    "items": [
+      {
+        "offer_id": "FIXTURE-PARENT-white-s",
+        "name": "Товар fixture белый S",
+        "description_category_id": 17028673,
+        "type_id": 95183,
+        "price": "100",
+        "images": ["https://example.com/redacted-white-1.jpg", "https://example.com/redacted-white-2.jpg", "https://example.com/redacted-white-3.jpg"],
+        "attributes": [
+          { "id": 85, "values": [{ "dictionary_value_id": 999999, "value": "Неверное значение" }] },
+          { "id": 9048, "values": [{ "value": "Fixture white S" }] },
+          { "id": 10097, "values": [{ "value": "Белый" }] }
+        ]
+      },
+      {
+        "offer_id": "FIXTURE-PARENT-blue-m",
+        "name": "Товар fixture синий M",
+        "description_category_id": 17028673,
+        "type_id": 95183,
+        "price": "105",
+        "images": ["https://example.com/redacted-blue-1.jpg", "https://example.com/redacted-blue-2.jpg", "https://example.com/redacted-blue-3.jpg"],
+        "attributes": [
+          { "id": 85, "values": [{ "dictionary_value_id": 971082, "value": "Нет бренда" }] },
+          { "id": 9048, "values": [{ "value": "Fixture blue M" }] },
+          { "id": 10097, "values": [{ "value": "Синий" }] }
+        ]
+      }
+    ]
+  },
+  "attrsMeta": [
+    { "id": 85, "name": "Бренд", "is_required": true, "dictionary_id": 971082 },
+    { "id": 9048, "name": "Название модели (для объединения в одну карточку)", "is_required": true },
+    { "id": 10097, "name": "Название цвета", "is_aspect": true }
+  ],
+  "sourceVariants": [
+    { "offerId": "FIXTURE-PARENT-white-s", "sourceSkuId": "fixture-white-s", "spec": "白色 / S" },
+    { "offerId": "FIXTURE-PARENT-blue-m", "sourceSkuId": "fixture-blue-m", "spec": "蓝色 / M" }
+  ]
+}

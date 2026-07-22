@@ -11,6 +11,21 @@ body {
   color: #eaf4ff;
 }
 
+.connection-box {
+  display: grid;
+  gap: 6px;
+  margin: 10px 0;
+  padding: 10px;
+  border: 1px solid #d8dee9;
+  border-radius: 8px;
+  background: #f8fafc;
+}
+
+.connection-box input { width: 100%; box-sizing: border-box; }
+.connection-actions { display: flex; gap: 6px; }
+.connection-actions button { flex: 1; }
+.connection-box small { color: #52606d; }
+
 main {
   padding: 18px;
   display: grid;

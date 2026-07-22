@@ -29,7 +29,7 @@
 | 上架/审核 | 部分对齐 | `/v3/product/import`、`/v1/product/import/info` | 提交和回执已接入；人工确认后的 payload-draft-submit 仍需最终安全闸口化 |
 | 商品/价格/图片 | 部分对齐 | `/v3/product/list`、`/v3/product/info/list`、`/v4/product/info/prices`、`/v1/product/import/prices`、`/v1/product/pictures/import` | 商品资料更新、归档/恢复等能力尚未系统化 |
 | 库存 | 已对齐 | `/v2/products/stocks`、`/v4/product/info/stocks` | 库存队列是本地增强；需继续补商品未就绪时的自动回查策略 |
-| 订单履约 | 部分对齐 | `/v3/posting/fbs/list`、`/v3/posting/fbs/unfulfilled/list` | 当前偏看板；打包、发运、取消、标签等履约动作未接齐 |
+| 订单履约 | 只读已迁移 | `/v4/posting/fbs/list`、`/v4/posting/fbs/unfulfilled/list`（当前契约；旧 v3 仅兼容） | 订单页已使用 cursor/sort_dir 和本批范围提示；仍缺真实店铺回放，打包、发运、取消、标签等履约动作未接齐 |
 | 营销活动 | 部分对齐 | `/v1/actions`、`/v1/actions/products`、`/v1/actions/candidates`、`/v1/actions/products/deactivate` | 已读活动和移除商品；加入活动、活动价策略仍未完整闭环 |
 | 采集/工作流/AI | 本地逻辑 | 1688 插件、`workflow_runs.json`、AI 内容/规则 | 不是 Ozon Seller API；必须保留安全边界，输出只能进入预检和人工闸口 |
 

@@ -11,13 +11,13 @@
 | `old_price` | 原价/划线价 | 默认兼容旧规则 `price * 2`；传入 `pricingPolicy` 时按策略倍率生成并记录来源 |
 | `min_price` | 最低价 | 默认兼容 `minPriceFromPrice(price)`；传入 `pricingPolicy` 时按最低利润底线生成 |
 | `logisticsFee` | 运费/物流成本 | 按重量、尺寸、售价匹配人民币物流等级后计算 |
-| `commission` | Ozon 佣金预估 | 默认 `price * 15%` |
+| `commission` | Ozon 佣金预估 | 必须绑定当前类目/商品的佣金证据；旧的 `15%` 仅作为兼容计算输入，命中 `manual_default` 时工作流阻塞，不得提交 |
 | `miscFee` | 杂费 | 默认 `price * 2% + 2 RMB` |
 | `profitRate` | 目标利润率 | 默认 `30%` |
 
 ## 2. 售价计算逻辑
 
-售价不是简单的“采购价 × 倍数”，而是一个迭代公式，因为 Ozon 佣金、杂费和仓库/运费等级都会随售价变化。
+售价不是简单的“采购价 × 倍数”，而是一个迭代公式，因为 Ozon 佣金、杂费和仓库/运费等级都会随售价变化。没有可信佣金来源时可以生成诊断草稿，但工作流必须阻塞，不能把默认比例当作真实利润结论。
 
 计算步骤：
 
@@ -140,6 +140,20 @@ variant.min_price = minPriceFromPrice(variantPrice) 或 pricingPolicy 利润底�
 4. 在工作流节点中输出完整价格诊断：采购价、加价、仓库等级、运费、佣金、杂费、利润、最低价原因。
 5. 对高风险商品阻塞上架：无尺重、无法匹配运费等级、计算不收敛、售价超过等级上限。
 
+### 可配置佣金与 realFBS 路由表演进
+
+`kennard520/ozon-helper` 对 Seller API 覆盖较完整，可作为后续维护佣金、类目费用和 realFBS 路由资料的参考；但不能直接搬运发布链路或弱预检逻辑。建议单独开 TDD 计划推进：
+
+1. 新增版本化价格资料源，至少包含 `source`、`effectiveFrom`、`categoryKey`、`rate`、`confidence`、`updatedAt`。
+2. 佣金率优先级：Ozon 官方/类目资料 > 同类已上架商品学习 > 人工维护类目表 > 当前 `15%` 默认兜底。
+3. realFBS/物流路由表应记录路由、重量/尺寸边界、费用公式、生效日期和禁用状态，不覆盖现有阻塞规则。
+4. `commissionSource` 和 `packageInfoSource` 必须继续写入 `pricingDiagnosis`，前端显示来源和可信度。
+5. 如果资料冲突、过期、缺失或导致 `min_price >= price`，必须保持 blocked/manual_review，不允许把风险当作安全价格。
+
+类目佣金的最低证据要求：当 `commissionSource.source = ozon_category` 时，诊断必须同时携带 `evidenceRef`（对应 Seller API 只读回执或官方资料快照）和 `updatedAt`。只有比例没有这两个字段时，使用 `PRICING_COMMISSION_EVIDENCE_UNTRACEABLE` 阻断；`learned_product` 仍只能标记为估算，不能解释为 Ozon 当前类目事实。
+
+实现边界：该演进只改变价格资料来源和诊断解释，不改变“预检 + 人工确认 + workflow lock”总闸；价格代码改动应另建测试文件，例如 `test/pricing-source.test.js`，先覆盖来源优先级、过期资料、冲突资料和 blocked 风险。
+
 ## 8. 工作流定价诊断接入
 
 当前已将定价诊断接入 `match_profit` 工作流节点。自动上架生成 Payload 草稿或真实流程计算价格后，会把以下结构写入节点输出的 `pricingDiagnosis`：
@@ -159,6 +173,9 @@ variant.min_price = minPriceFromPrice(variantPrice) 或 pricingPolicy 利润底�
 | `miscFee` | 杂费 |
 | `baseCost` | 采购成本 + 佣金 + 运费 + 杂费 |
 | `profit` | 预计利润 |
+| `profitStatus` | 利润证据状态：`unknown`（默认佣金或缺少结算规则）/ `estimate`（有佣金证据但仍未核对结算） |
+| `profitConclusion` | 面向卖家的结论；`unknown_without_trusted_commission_and_settlement_rules` 不得展示为确定利润 |
+| `profitEvidence` | 佣金、人民币物流假设和结算规则的来源/验证等级；当前结算规则未接入时明确为 `missing` |
 | `level` | 匹配到的运费等级 |
 | `package` | 计价使用的重量和长宽高 |
 | `steps` | 价格迭代过程，最多保留最近步骤 |
@@ -174,6 +191,8 @@ variant.min_price = minPriceFromPrice(variantPrice) 或 pricingPolicy 利润底�
 2. 如果没有可学习佣金，继续使用 `15%`，并标记为 `manual_default` / `手填/默认佣金率`。
 3. 预留 `ozon_category` 来源，用于后续接入 Ozon 当前开放的类目真实佣金或费率接口。
 
+无论公式返回了数值，当前尚未接入 Ozon 结算/费用明细时都只能称为“估算”；没有可信佣金时 `profitStatus` 为 `unknown`，工作流保持阻塞，不能把数字当成确定利润。
+
 注意：`learned_product` 是同类商品经验学习，不能等同于 Ozon 官方类目实时佣金；工作流会显示来源和可信度，避免把兜底值误当成真实值。
 
 安全边界：
@@ -188,6 +207,7 @@ variant.min_price = minPriceFromPrice(variantPrice) 或 pricingPolicy 利润底�
 
 | reasonCode | 分支 | 风险 | 触发条件 | 建议动作 |
 |---|---|---|---|---|
+| `PRICING_PROCUREMENT_EVIDENCE_MISSING` | `blocked` | high | 1688 采集已声明采购证据，但供应商、MOQ 或数量绑定阶梯价不完整 | 补充供应商与 MOQ，读取对应采购数量的阶梯价，人工核对采购成本快照 |
 | `PRICING_PACKAGE_MISSING` | `blocked` | high | 重量或长宽高不完整 | 补齐商品尺重，重新解析 1688 详情，重新生成 Payload 草稿 |
 | `PRICING_SHIPPING_LEVEL_MISSING` | `blocked` | high | 无法匹配 Extra Small / Budget / Small / Big 任一运费等级 | 检查尺重单位，调整售价或换货源，维护运费等级配置 |
 | `PRICING_NOT_CONVERGED` | `blocked` | high | 价格迭代未收敛 | 检查运费等级边界，人工指定售价，重新计算价格 |
@@ -200,6 +220,8 @@ variant.min_price = minPriceFromPrice(variantPrice) 或 pricingPolicy 利润底�
 - `blocked` 表示不能继续自动链路，应先修正基础数据。
 - `manual_review` 表示可人工判断是否接受风险，但系统不会无确认继续。
 - 这些规则不替代 Ozon Payload 预检；它们发生在更早的利润匹配/定价阶段。
+- 1688 页面上的 SKU 展示价不是单件可采购成本。只要采集结果带有 `procurementEvidence`，定价必须同时校验供应商、MOQ 和数量绑定阶梯价；证据缺失时保持 `blocked`。旧任务没有该字段时维持兼容，但不得据此升级为真实验证。
+- 手工保存采购资料会保留 `source: "manual_seller"`、`verificationState: "manual_unverified"` 和空 `evidenceRef`，定价诊断显示 `needs_review`，不能冒充 1688 页面事实。只有每个采购字段的 `evidenceRef` 与候选 `sourceEvidence.snapshotHash` 对齐时，才可标记 `source_verified/verified`。
 
 ## 10. 价格风险人工处理动作
 

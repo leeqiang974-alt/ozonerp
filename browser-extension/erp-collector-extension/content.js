@@ -415,14 +415,24 @@ function mountFloatingCollector() {
         body: payload,
       });
       button.textContent = "采集到 ERP";
+      const receipt = result.captureReceipt || {};
+      const identity = receipt.captureIdentity || {};
+      const snapshotHash = String(receipt.sourceEvidence?.snapshotHash || "").trim();
+      const hashShort = /^sha256:[a-f0-9]{64}$/i.test(snapshotHash)
+        ? `${snapshotHash.slice(0, 15)}…${snapshotHash.slice(-8)}` : "快照未回传";
+      const receiptLabel = [
+        identity.taskId ? `任务 ${identity.taskId}` : "任务未绑定",
+        identity.offerId ? `Offer ${identity.offerId}` : "Offer 未解析",
+        `快照 ${hashShort}`,
+      ].join(" · ");
       if (result.duplicate) {
-        status.textContent = `已采集过 ${result.id || ""}`;
+        status.textContent = `已采集过 ${result.id || ""} · ${receiptLabel}`;
         status.style.color = "#b54708";
         return;
       }
       status.textContent = sizeWeightStatus.ok
-        ? `已入箱 ${result.id || ""}`
-        : `已入箱，${sizeWeightStatus.message}`;
+        ? `已入箱 ${result.id || ""} · ${receiptLabel}`
+        : `已入箱，${sizeWeightStatus.message} · ${receiptLabel}`;
       status.style.color = sizeWeightStatus.ok ? "#667085" : "#b42318";
     } catch (error) {
       status.textContent = error.message || "失败";

@@ -193,18 +193,15 @@ async function main() {
         if (sid && successMap[sid] !== undefined) successMap[sid] += 1;
       }
 
-      // Submit all ready jobs immediately with least-loaded store.
+      // The old distributor submit path is intentionally disabled.  A ready
+      // job still needs seller-visible preflight/hash confirmation; automatic
+      // background submission would bypass that contract.
       const readyJobs = jobs.filter(isSafeAutoSubmitJob);
       if (AUTOMATION_ENABLED) {
         for (const job of readyJobs) {
           const store = chooseStore(usableStores, successMap);
           if (!store) break;
-          try {
-            const result = await http("POST", "/api/ozon-learning/complete-listing", { jobId: job.id, storeId: store.id });
-            console.log("[distributor] submitted", { jobId: job.id, storeId: store.id, sku: result?.sku, taskId: result?.taskId });
-          } catch (e) {
-            console.log("[distributor] submit-failed", { jobId: job.id, error: e.message });
-          }
+          console.log("[distributor] submit-blocked-human-confirmation-required", { jobId: job.id, storeId: store.id });
         }
       } else if (readyJobs.length) {
         console.log("[distributor] automation-disabled-ready-jobs", { count: readyJobs.length });

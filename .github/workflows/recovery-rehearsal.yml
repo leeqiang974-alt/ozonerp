@@ -1,0 +1,44 @@
+name: Recovery rehearsal
+
+on:
+  push:
+    paths:
+      - "scripts/recovery-rehearsal.mjs"
+      - "scripts/recovery-ci-gate.mjs"
+      - "src/migrationRecoveryRunner.js"
+      - "src/migrationCheck.js"
+      - "src/recoveryDrill.js"
+      - "supabase/migrations/**"
+      - "test/recovery-*.test.js"
+      - "package.json"
+      - "package-lock.json"
+      - ".github/workflows/recovery-rehearsal.yml"
+  pull_request:
+    paths:
+      - "scripts/recovery-rehearsal.mjs"
+      - "scripts/recovery-ci-gate.mjs"
+      - "src/migrationRecoveryRunner.js"
+      - "src/migrationCheck.js"
+      - "src/recoveryDrill.js"
+      - "supabase/migrations/**"
+      - "test/recovery-*.test.js"
+      - "package.json"
+      - "package-lock.json"
+      - ".github/workflows/recovery-rehearsal.yml"
+
+permissions:
+  contents: read
+
+jobs:
+  local-recovery:
+    runs-on: ubuntu-latest
+    env:
+      OZON_ERP_NETWORK_DISABLED: "1"
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+      - run: npm ci --ignore-scripts
+      - run: npm run recovery-ci-gate

@@ -1,0 +1,15 @@
+{
+  "fixtureKind": "mocked_redacted_category_read",
+  "synthetic": true,
+  "redacted": true,
+  "verificationLevel": "mocked",
+  "endpoint": "/v1/description-category/attribute/values",
+  "requestScope": {
+    "description_category_id": 17028673,
+    "type_id": 95183,
+    "attribute_id": 9048,
+    "language": "ZH_HANS"
+  },
+  "result": [],
+  "has_next": false
+}

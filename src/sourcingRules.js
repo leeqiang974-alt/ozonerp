@@ -19,6 +19,47 @@ function maxPositive(values = []) {
   return nums.length ? Math.max(...nums) : 0;
 }
 
+/**
+ * Summarize procurement facts without making them a hard sourcing filter.
+ * A candidate can still enter the review pool with missing supplier/MOQ/tier
+ * data, but the seller must see that it cannot safely enter pricing or upload
+ * until those facts are completed.
+ */
+export function buildProcurementEvidenceSummary(candidate = {}) {
+  const parsed = getCandidateParsed(candidate);
+  const evidence = parsed.procurementEvidence;
+  const missing = [];
+  if (!evidence || typeof evidence !== "object") {
+    return {
+      status: "unknown",
+      code: "PROCUREMENT_EVIDENCE_NOT_CAPTURED",
+      missing: ["supplier", "moq", "price_tiers"],
+      nextAction: "重新采集供应商、MOQ 和数量绑定阶梯价，再进入定价预检。",
+    };
+  }
+  if (!evidence.supplierId?.value && !evidence.supplierName?.value) missing.push("supplier");
+  if (!(Number(evidence.moq?.value || 0) > 0)) missing.push("moq");
+  const tiers = Array.isArray(evidence.priceTiers?.values) ? evidence.priceTiers.values : [];
+  if (!tiers.some((tier) => Number(tier?.minQuantity || 0) > 0 && Number(tier?.unitPriceCny || 0) > 0)) missing.push("price_tiers");
+  const complete = missing.length === 0;
+  const fields = [evidence.supplierId, evidence.supplierName, evidence.moq, evidence.priceTiers];
+  const manual = fields.some((field) => {
+    if (!field || field.source === "missing") return false;
+    return !["page_content", "1688_page"].includes(String(field.source || ""));
+  });
+  return {
+    status: complete ? (manual ? "needs_review" : "observed") : "blocked",
+    code: complete ? (manual ? "PROCUREMENT_EVIDENCE_REVIEW_REQUIRED" : "PROCUREMENT_EVIDENCE_OBSERVED") : "PROCUREMENT_EVIDENCE_MISSING",
+    missing,
+    supplierPresent: Boolean(evidence.supplierId?.value || evidence.supplierName?.value),
+    moq: Number(evidence.moq?.value || 0) || null,
+    priceTierCount: tiers.length,
+    nextAction: complete
+      ? (manual ? "核对手工/提示采购资料，并补充可回放来源快照后再定价。" : "采购证据可进入定价预检。")
+      : "补齐供应商、MOQ 和数量绑定阶梯价后再进入定价预检。",
+  };
+}
+
 export function evaluateSourcingCandidate(candidate = {}, options = {}) {
   const maxSkuCount = toNumber(options.maxSkuCount, SOURCING_MAX_SKU_COUNT);
   const maxWeightG = toNumber(options.maxWeightG, SOURCING_MAX_SOURCE_WEIGHT_G);
@@ -64,6 +105,7 @@ export function evaluateSourcingCandidate(candidate = {}, options = {}) {
     sourceHeight,
     paddedWeight,
     paddedSizeSum,
+    procurement: buildProcurementEvidenceSummary(candidate),
   };
 }
 

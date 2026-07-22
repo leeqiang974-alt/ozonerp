@@ -212,6 +212,89 @@ export function normalizeListingContent(content = {}, product = {}, options = {}
   };
 }
 
+// AI output is a suggestion, not a product-fact source.  Keep a small,
+// seller-facing evidence contract next to the generator so callers cannot
+// accidentally treat a generated title/description as verified facts.
+export function buildListingContentEvidence(listingContent = {}, product = {}, options = {}) {
+  const content = listingContent || {};
+  const sourceEvidence = product?.sourceEvidence || product?.source_evidence || {};
+  const sourceText = [
+    product?.title,
+    product?.detail?.text,
+    product?.detailText,
+    ...(Array.isArray(product?.attributes) ? product.attributes.flatMap((item) => [item?.name, item?.value, item?.text]) : []),
+    ...(Array.isArray(product?.skuVariants) ? product.skuVariants.flatMap((item) => [item?.spec, item?.name, item?.color, item?.size]) : []),
+    ...(Array.isArray(product?.sourceFacts) ? product.sourceFacts.flatMap((item) => [item?.name, item?.value, item?.text]) : []),
+  ].filter(Boolean).join(" ").trim();
+  const normalizedSource = normalizeFactText(sourceText);
+  const facts = [];
+  const unsupported = [];
+  const fields = [
+    ["title_ru", content.title_ru],
+    ["product_type_ru", content.product_type_ru],
+    ["description_ru", content.description_ru],
+    ["annotation_ru", content.annotation_ru],
+  ];
+  for (const [field, value] of fields) {
+    const text = String(value || "").trim();
+    if (!text) {
+      facts.push({ field, status: "missing", source: "none", reasonCode: "CONTENT_FIELD_MISSING" });
+      continue;
+    }
+    // Exact lexical support is intentionally conservative. Translation and
+    // semantic equivalence require a seller review rather than a guess.
+    const supported = Boolean(normalizedSource && hasSupportedToken(text, normalizedSource));
+    facts.push({ field, status: supported ? "source_supported" : "model_generated_unverified", source: supported ? "1688_text_snapshot" : "llm_or_manual", evidenceRef: sourceEvidence.snapshotHash || "" });
+    if (!supported) unsupported.push({ field, reasonCode: "CONTENT_FACT_NOT_LOCATED_IN_SOURCE", value: text.slice(0, 160) });
+  }
+  const hints = content.attributes_hint && typeof content.attributes_hint === "object" ? content.attributes_hint : {};
+  for (const field of ["brand", "origin_country", "material", "color", "purpose"]) {
+    const value = String(hints[field] || "").trim();
+    if (!value) continue;
+    // Brand "Нет бренда" is a deliberate neutral fallback, not an observed
+    // supplier fact; it still needs seller acknowledgement before submit.
+    const supported = field === "brand" && /^(нет бренда|no brand|без бренда)$/i.test(value)
+      ? false
+      : Boolean(normalizedSource && hasSupportedToken(value, normalizedSource));
+    facts.push({ field: `attributes_hint.${field}`, status: supported ? "source_supported" : "model_generated_unverified", source: supported ? "1688_text_snapshot" : "llm_or_default", evidenceRef: sourceEvidence.snapshotHash || "" });
+    if (!supported) unsupported.push({ field: `attributes_hint.${field}`, reasonCode: "CONTENT_ATTRIBUTE_NOT_SUPPORTED", value: value.slice(0, 120) });
+  }
+  const blockers = [];
+  const sourceKind = `${product?.source || product?.sourcePlatform || product?.sourceType || ""} ${product?.url || ""}`.toLowerCase();
+  const is1688Source = /1688|crawler_?1688/.test(sourceKind);
+  const hasVerifiedSnapshot = Boolean(sourceEvidence.snapshotHash && String(sourceEvidence.verificationState || "").toLowerCase() === "ok");
+  if (!normalizedSource && !sourceEvidence.snapshotHash) blockers.push("CONTENT_SOURCE_EVIDENCE_MISSING");
+  if (is1688Source && !hasVerifiedSnapshot) blockers.push(sourceEvidence.snapshotHash ? "CONTENT_SOURCE_EVIDENCE_UNVERIFIED" : "CONTENT_SOURCE_EVIDENCE_MISSING");
+  if (unsupported.length) blockers.push("CONTENT_FACT_REVIEW_REQUIRED");
+  if (/[㐀-鿿]/.test(fields.map(([, value]) => String(value || "")).join(" "))) blockers.push("CONTENT_CHINESE_REMAINS");
+  const humanConfirmed = options.humanConfirmed === true || content.humanConfirmed === true || content.contentReview?.status === "approved";
+  return {
+    status: blockers.length ? "blocked" : (humanConfirmed ? "reviewed" : "needs_review"),
+    verificationLevel: "locally_tested",
+    source: {
+      type: hasVerifiedSnapshot ? "1688_snapshot" : (normalizedSource ? "provided_product_text" : "none"),
+      snapshotHash: String(sourceEvidence.snapshotHash || ""),
+      verificationState: String(sourceEvidence.verificationState || "unknown"),
+    },
+    facts,
+    unsupportedClaims: unsupported,
+    blockerCodes: blockers,
+    action: blockers.length ? "补齐 1688 来源证据并逐字段核对俄文内容；确认后重新预检。" : (humanConfirmed ? "继续查看预检结果；提交仍需单独人工确认。" : "人工核对中俄事实对照和属性，再保存草稿并重新预检。"),
+    sideEffect: "仅生成或修改本地内容草稿；不会提交 Ozon、改价、写库存或调用付费生图。",
+    result: blockers.length ? "内容不能作为可提交事实，等待来源补证或人工修复。" : (humanConfirmed ? "内容已人工复核，仍需通过预检和提交确认。" : "内容为模型/规则建议，尚未获得人工事实确认。"),
+  };
+}
+
+function normalizeFactText(value = "") {
+  return String(value || "").toLowerCase().replace(/ё/g, "е").replace(/[^\p{L}\p{N}]+/gu, " ").replace(/\s+/g, " ").trim();
+}
+
+function hasSupportedToken(value, source) {
+  const tokens = normalizeFactText(value).split(" ").filter((token) => token.length >= 4);
+  if (!tokens.length) return false;
+  return tokens.some((token) => source.includes(token));
+}
+
 function fallbackListingContent(product = {}, options = {}) {
   const sourceTitle = String(options.ozonContext?.title || product.title || "").replace(/\s+/g, " ").trim();
   const title = sourceTitle.slice(0, 160) || "Товар для дома";

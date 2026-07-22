@@ -213,12 +213,15 @@ export function buildRequiredAttributeManualBacklog(plan = []) {
     bucket.items.push({
       attributeId: Number(row.attributeId || 0),
       attributeName: row.name || `属性 ${row.attributeId || ""}`,
+      fieldPath: row.fieldPath || attributeFieldPath(row.attributeId),
       strategy: row.strategy || "",
       action: row.action || "manual_required",
       safetyTier: row.safetyTier || "manual-required",
+      blockingReason: row.blockingReason || "ATTRIBUTE_MANUAL_REVIEW_REQUIRED",
       source: row.source || "",
       reasonZh: row.reasonZh || "需要人工确认属性值。",
       safeNextStep: manualBacklogNextStep(bucketKey),
+      sideEffect: row.sideEffect || attributeDraftSideEffect(),
       readOnly: true,
     });
   }
@@ -493,6 +496,8 @@ function fillPlanSafetyForAction(action = "") {
       safetyLabelZh: "可自动填",
       requiresHumanConfirmation: false,
       blocksAutomation: false,
+      blocksSubmission: false,
+      sellerAction: "检查自动填充值并继续运行 Payload 预检；提交仍需人工确认。",
       safeNextStep: "进入草稿前仍需经过 Payload validation 和预检校验；不会跳过人工提交确认。",
     };
   }
@@ -502,6 +507,8 @@ function fillPlanSafetyForAction(action = "") {
       safetyLabelZh: "候选需确认",
       requiresHumanConfirmation: true,
       blocksAutomation: false,
+      blocksSubmission: true,
+      sellerAction: "从当前类目候选中人工选择合法值，再写入本地草稿并重新预检。",
       safeNextStep: "人工确认后只能通过 waiting_human + confirmLocalDraftRepair 写本地草稿，然后重新预检；不会提交 Ozon。",
     };
   }
@@ -511,6 +518,8 @@ function fillPlanSafetyForAction(action = "") {
       safetyLabelZh: "禁止猜测",
       requiresHumanConfirmation: true,
       blocksAutomation: true,
+      blocksSubmission: true,
+      sellerAction: "人工核实真实合规资料或更换货源；不要猜测、提交或写库存。",
       safeNextStep: "必须人工核实真实属性或更换货源后重新预检；系统不能猜测或自动接受。",
     };
   }
@@ -519,6 +528,8 @@ function fillPlanSafetyForAction(action = "") {
     safetyLabelZh: "必须人工填",
     requiresHumanConfirmation: true,
     blocksAutomation: true,
+    blocksSubmission: true,
+    sellerAction: "人工填写真实属性后保存本地草稿并重新预检；不要提交 Ozon。",
     safeNextStep: "人工填写真实属性后重新预检；系统不会用低置信内容自动补齐。",
   };
 }
@@ -528,8 +539,22 @@ function withFillPlanSafety(row = {}) {
   return {
     ...row,
     ...safety,
+    fieldPath: row.fieldPath || attributeFieldPath(row.attributeId),
+    sideEffect: row.sideEffect || attributeDraftSideEffect(),
+    blockingReason: row.blockingReason || (row.action === "blocked_sensitive"
+      ? "SENSITIVE_COMPLIANCE_ATTRIBUTE"
+      : (row.action === "manual_required" ? "LOW_CONFIDENCE_ATTRIBUTE" : "")),
     safeNextStep: row.safeNextStep || safety.safeNextStep,
   };
+}
+
+function attributeFieldPath(attributeId = 0) {
+  const id = Number(attributeId || 0);
+  return id ? `items[*].attributes[id=${id}]` : "items[*].attributes[*]";
+}
+
+function attributeDraftSideEffect() {
+  return "仅生成/修改本地草稿并重新预检；不会写入 Ozon、提交、修改价格或库存。";
 }
 
 function manualBacklogBucketKey(row = {}) {

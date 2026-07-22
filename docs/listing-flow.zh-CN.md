@@ -17,7 +17,7 @@
 - 产品上架：负责商品基础资料、图片、类目、属性和导入任务。
 - 价格：独立使用 `/v1/product/import/prices`。
 - 仓库库存：独立使用 `/v2/products/stocks`。
-- FBS 订单：独立使用 `/v3/posting/fbs/list`。
+- FBS 订单：独立使用当前 Seller API `/v4/posting/fbs/list`（未履约读取使用 `/v4/posting/fbs/unfulfilled/list`）。订单看板已完成本地 cursor/sort_dir 迁移；真实只读回放前仍不得把本地测试写成店铺已验证，履约写动作继续关闭。
 
 ## 上架数据结构
 

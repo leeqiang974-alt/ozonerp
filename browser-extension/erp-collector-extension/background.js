@@ -1,5 +1,8 @@
-const ERP_BASE = "http://127.0.0.1:5178";
-const ERP_BASES = ["http://127.0.0.1:5178", "http://localhost:5178"];
+const DEFAULT_ERP_BASE = "http://127.0.0.1:5178";
+const LOOPBACK_ERP_BASES = ["http://127.0.0.1:5178", "http://localhost:5178"];
+const ERP_BASE_URL_KEY = "ozonErpBaseUrl";
+const ERP_SESSION_TOKEN_KEY = "ozonErpSessionToken";
+let memorySessionToken = "";
 const WORKER_ID_KEY = "ozonErpCrawlerWorkerId";
 const HUMAN_CHECK_PAUSED_KEY = "ozonErpHumanCheckPaused";
 let busy = false;
@@ -37,6 +40,18 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
     proxyErpRequest(message).then(sendResponse);
     return true;
   }
+  if (message?.type === "OZON_ERP_CONFIG_STATUS") {
+    getErpConfig().then((config) => sendResponse({ ok: true, baseUrl: config.base, tokenConfigured: Boolean(config.token) }));
+    return true;
+  }
+  if (message?.type === "OZON_ERP_CONFIG_SAVE") {
+    saveErpConfig(message).then((result) => sendResponse(result));
+    return true;
+  }
+  if (message?.type === "OZON_ERP_CONFIG_CLEAR") {
+    clearErpConfig().then((result) => sendResponse(result));
+    return true;
+  }
   if (message?.type === "OZON_ERP_CRAWLER_POLL_NOW") {
     pollCrawlerJob({ manual: true }).then(() => sendResponse({ ok: true, state: lastWorkerState }));
     return true;
@@ -56,9 +71,8 @@ async function proxyErpRequest(message) {
       method: String(message.method || "GET").toUpperCase(),
       headers: {
         "Content-Type": "application/json",
-        ...(message.headers || {}),
       },
-      body: message.body === undefined ? undefined : JSON.stringify(message.body),
+      body: message.body === undefined ? undefined : (typeof message.body === "string" ? message.body : JSON.stringify(message.body)),
     });
     const text = await response.text();
     let data = {};
@@ -83,16 +97,72 @@ async function proxyErpRequest(message) {
   }
 }
 
-async function fetchWithErpFallback(path, options = {}) {
-  let lastError = null;
-  for (const base of ERP_BASES) {
-    try {
-      return await fetch(`${base}${path}`, options);
-    } catch (error) {
-      lastError = error;
+function normalizeErpBase(value) {
+  const raw = String(value || "").trim().replace(/\/+$/, "");
+  if (!raw) return DEFAULT_ERP_BASE;
+  let parsed;
+  try { parsed = new URL(raw); } catch { throw new Error("ERP 地址格式不正确"); }
+  if (parsed.username || parsed.password || parsed.search || parsed.hash || !["http:", "https:"].includes(parsed.protocol)) {
+    throw new Error("ERP 地址只允许 HTTP(S) 主机地址");
+  }
+  const loopback = parsed.hostname === "127.0.0.1" || parsed.hostname === "localhost" || parsed.hostname === "::1";
+  if (parsed.protocol !== "https:" && !loopback) throw new Error("外部 ERP 必须使用 HTTPS");
+  return parsed.toString().replace(/\/+$/, "");
+}
+
+async function storageGet(area, keys) {
+  if (!area?.get) return {};
+  try { return await area.get(keys); } catch { return new Promise((resolve) => area.get(keys, resolve)); }
+}
+
+async function getErpConfig() {
+  const local = await storageGet(chrome.storage?.local, [ERP_BASE_URL_KEY]);
+  const session = await storageGet(chrome.storage?.session, [ERP_SESSION_TOKEN_KEY]);
+  const base = normalizeErpBase(local[ERP_BASE_URL_KEY] || DEFAULT_ERP_BASE);
+  const token = String(session[ERP_SESSION_TOKEN_KEY] || memorySessionToken || "").trim();
+  return { base, token };
+}
+
+async function saveErpConfig(message) {
+  try {
+    const base = normalizeErpBase(message.baseUrl);
+    await chrome.storage.local.set({ [ERP_BASE_URL_KEY]: base });
+    const token = String(message.sessionToken || "").trim();
+    if (token) {
+      memorySessionToken = token;
+      if (chrome.storage?.session?.set) await chrome.storage.session.set({ [ERP_SESSION_TOKEN_KEY]: token });
+    } else {
+      memorySessionToken = "";
+      if (chrome.storage?.session?.remove) await chrome.storage.session.remove(ERP_SESSION_TOKEN_KEY);
     }
+    return { ok: true, baseUrl: base, tokenConfigured: Boolean(token) };
+  } catch (error) { return { ok: false, error: error.message || "ERP 配置无效" }; }
+}
+
+async function clearErpConfig() {
+  await chrome.storage.local.remove(ERP_BASE_URL_KEY);
+  memorySessionToken = "";
+  if (chrome.storage?.session?.remove) await chrome.storage.session.remove(ERP_SESSION_TOKEN_KEY);
+  return { ok: true, baseUrl: DEFAULT_ERP_BASE, tokenConfigured: false };
+}
+
+async function erpRequest(path, options = {}) {
+  const config = await getErpConfig();
+  const headers = { ...(options.headers || {}) };
+  delete headers.Authorization;
+  delete headers.authorization;
+  if (config.token) headers.Authorization = `Bearer ${config.token}`;
+  const bases = config.base === DEFAULT_ERP_BASE ? LOOPBACK_ERP_BASES : [config.base];
+  let lastError = null;
+  for (const base of bases) {
+    try { return await fetch(`${base}${path}`, { ...options, headers }); }
+    catch (error) { lastError = error; }
   }
   throw lastError || new Error("ERP 连接失败");
+}
+
+async function fetchWithErpFallback(path, options = {}) {
+  return erpRequest(path, options);
 }
 
 async function initializeCrawlerWorker() {
@@ -121,14 +191,14 @@ async function pollCrawlerJob(options = {}) {
   await setWorkerState({ status: "checking", job: null, message: "正在检查 ERP 任务", lastError: "", needsHuman: false });
   try {
     const workerId = await getWorkerId();
-    const response = await fetch(`${ERP_BASE}/api/1688-crawler/extension/next?workerId=${encodeURIComponent(workerId)}`);
+    const response = await erpRequest(`/api/1688-crawler/extension/next?workerId=${encodeURIComponent(workerId)}`);
     if (!response.ok) {
       await setWorkerState({ status: "error", job: null, message: `ERP 返回 ${response.status}`, lastError: `ERP 返回 ${response.status}` });
       return;
     }
     const data = await response.json();
     if (!data.job) {
-      const ozonResponse = await fetch(`${ERP_BASE}/api/ozon-learning/extension/next?workerId=${encodeURIComponent(workerId)}`);
+      const ozonResponse = await erpRequest(`/api/ozon-learning/extension/next?workerId=${encodeURIComponent(workerId)}`);
       if (ozonResponse.ok) {
         const ozonData = await ozonResponse.json();
         if (ozonData.job) data.job = ozonData.job;
@@ -332,7 +402,7 @@ async function ensureContentScript(tabId) {
 }
 
 async function postJson(path, payload) {
-  await fetch(`${ERP_BASE}${path}`, {
+  await erpRequest(path, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify(payload),
@@ -353,12 +423,12 @@ async function sendHeartbeat() {
       needsHuman: Boolean(lastWorkerState.needsHuman),
       userAgent: navigator.userAgent,
     };
-    await fetch(`${ERP_BASE}/api/1688-crawler/extension/heartbeat`, {
+    await erpRequest("/api/1688-crawler/extension/heartbeat", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify(payload),
     });
-    await fetch(`${ERP_BASE}/api/ozon-learning/extension/heartbeat`, {
+    await erpRequest("/api/ozon-learning/extension/heartbeat", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify(payload),

@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { buildListingPayloadDraftFromJob } from "../src/autoListing.js";
+import { buildListingPayloadDraftFromJob, categoryReadPolicyForListing, sourceEvidenceBindingForListing, sourceVariantsForListing } from "../src/autoListing.js";
 import {
   buildRequiredAttributeManualBacklog,
   buildRequiredAttributeApprovalDraftPreview,
@@ -10,6 +10,132 @@ import {
   summarizeRequiredAttributeFillPlan,
 } from "../src/ozonRequiredAttributeAnalysis.js";
 import { validateSubmitPayload } from "../src/workflowRuns.js";
+
+test("1688 listing policy carries exact-store category read receipts into re-preflight", () => {
+  const evidence = {
+    checkedAt: new Date().toISOString(),
+    statusCode: 200,
+    verificationLevel: "server_observed",
+    responseHash: `sha256:${"a".repeat(64)}`,
+    storeId: "store-1",
+    environmentRefHash: `sha256:${"b".repeat(64)}`,
+  };
+  const policy = categoryReadPolicyForListing({ source: "1688", storeId: "store-1" }, {
+    categoryReadEvidence: {
+      tree: evidence,
+      attributes: { "10:20": { ...evidence, cacheKey: "10:20" } },
+    },
+  }, { description_category_id: 10, type_id: 20 });
+  assert.equal(policy.categoryEvidenceRequired, true);
+  assert.equal(policy.categoryEvidenceStoreId, "store-1");
+  assert.equal(policy.categoryEvidence.attributes.cacheKey, "10:20");
+  assert.equal(policy.categoryEvidenceEnvironmentRefHash, evidence.environmentRefHash);
+
+  const missing = categoryReadPolicyForListing({ source: "1688" }, {}, { description_category_id: 10, type_id: 20 });
+  assert.equal(missing.categoryEvidenceRequired, true);
+  assert.equal(missing.categoryEvidenceStoreId, "");
+  assert.equal(missing.categoryEvidence.tree, null);
+});
+
+test("sourceVariantsForListing preserves stable 1688 SKU ids for downstream binding", () => {
+  const variants = sourceVariantsForListing("PARENT-1", [
+    { skuId: "sku-white", spec: "白色", image: "https://example.com/white.jpg" },
+    { sourceSkuId: "sku-blue", spec: "蓝色", image: "https://example.com/blue.jpg" },
+  ]);
+  assert.equal(variants[0].sourceSkuId, "sku-white");
+  assert.equal(variants[1].sourceSkuId, "sku-blue");
+  assert.equal(variants[0].source, "1688_sku_variant");
+});
+
+test("sourceVariantsForListing binds every generated offer to the current source snapshot", () => {
+  const snapshotHash = `sha256:${"c".repeat(64)}`;
+  const variants = sourceVariantsForListing("PARENT-2", [
+    { skuId: "sku-white", spec: "白色", image: "https://example.com/white.jpg" },
+  ], { snapshotHash });
+  assert.equal(variants[0].offerId, "PARENT-2-belyy");
+  assert.equal(variants[0].sourceSkuId, "sku-white");
+  assert.equal(variants[0].sourceSnapshotHash, snapshotHash);
+});
+
+test("single-SKU payload binds the parent offer to its only 1688 source SKU", () => {
+  const snapshotHash = `sha256:${"e".repeat(64)}`;
+  const draft = buildListingPayloadDraftFromJob({
+    id: "single-source-binding",
+    source: "1688",
+    pendingParentSku: "PARENT-SINGLE",
+    listingContent: { title_ru: "Одно SKU", description_ru: "Описание" },
+    candidateData: {
+      title: "单 SKU 商品",
+      url: "https://detail.1688.com/offer/single.html",
+      sourceEvidence: { snapshotHash, canonicalUrl: "https://detail.1688.com/offer/single.html", verificationState: "ok" },
+      skuVariants: [{ skuId: "SOURCE-SINGLE", spec: "颜色: 白色", price: 12, image: "https://example.com/single.jpg" }],
+      images: ["https://example.com/main.jpg", "https://example.com/second.jpg"],
+      detailImages: ["https://example.com/detail.jpg"],
+      sizeWeight: { weightG: 400, lengthMm: 300, widthMm: 200, heightMm: 100 },
+      procurementEvidence: { priceTiers: { values: [{ minQuantity: 1, unitPriceCny: 12 }], source: "page_content", evidenceRef: `snapshot:${snapshotHash.slice(7)}` } },
+    },
+    bestMatch: { candidateTitle: "单 SKU 商品", candidateUrl: "https://detail.1688.com/offer/single.html", purchasePriceCny: 12 },
+  }, { categoryMatch: { description_category_id: 17028673, type_id: 95183, path: "fixture" }, parentSku: "PARENT-SINGLE", pricingPolicy: { commissionRate: 0.15, commissionSource: "controlled_fixture" } });
+  assert.equal(draft.items.length, 1);
+  assert.deepEqual(draft.summary.sourceVariants.map((row) => ({ offerId: row.offerId, sourceSkuId: row.sourceSkuId, spec: row.spec })), [{ offerId: "PARENT-SINGLE", sourceSkuId: "SOURCE-SINGLE", spec: "颜色: 白色" }]);
+  assert.equal(draft.summary.sourceVariants[0].sourceSnapshotHash, snapshotHash);
+});
+
+test("payload draft carries a compact source snapshot binding beside Ozon items", () => {
+  const snapshotHash = `sha256:${"d".repeat(64)}`;
+  const binding = sourceEvidenceBindingForListing({
+    snapshotHash,
+    canonicalUrl: "https://detail.1688.com/offer/fixture.html",
+    offerId: "fixture-offer",
+    verificationState: "ok",
+  }, [{ spec: "白色" }]);
+  assert.deepEqual(binding, {
+    source: "1688",
+    status: "bound",
+    snapshotHash,
+    canonicalUrl: "https://detail.1688.com/offer/fixture.html",
+    offerId: "fixture-offer",
+    verificationState: "ok",
+    variantCount: 1,
+    nextAction: "预检会核对此快照与每个 Ozon SKU 的来源绑定。",
+  });
+  const draft = buildListingPayloadDraftFromJob({
+    pendingParentSku: "SOURCE-BOUND-1",
+    listingContent: { title_ru: "Органайзер", description_ru: "Органайзер для дома и кухни." },
+    bestMatch: { candidateTitle: "收纳盒", purchasePriceCny: 12 },
+    candidateData: {
+      source: "1688",
+      sourceEvidence: { snapshotHash, canonicalUrl: "https://detail.1688.com/offer/fixture.html", verificationState: "ok" },
+      images: ["https://example.com/main.jpg"],
+      sizeWeight: { weightG: 200, lengthMm: 100, widthMm: 100, heightMm: 100 },
+      skuVariants: [{ skuId: "fixture-white", spec: "白色", price: 12 }],
+    },
+  }, { categoryMatch: { description_category_id: 1, type_id: 2, path: "Хранение" } });
+  assert.equal(draft.summary.sourceEvidence.status, "bound");
+  assert.equal(draft.summary.sourceEvidence.snapshotHash, snapshotHash);
+});
+
+test("payload draft does not silently drop source SKUs when generated Offer IDs collide", () => {
+  const draft = buildListingPayloadDraftFromJob({
+    pendingParentSku: "COLLISION-1",
+    listingContent: { title_ru: "Органайзер", description_ru: "Органайзер для дома." },
+    bestMatch: { candidateTitle: "收纳盒", purchasePriceCny: 12 },
+    candidateData: {
+      source: "1688",
+      images: ["https://example.com/main.jpg"],
+      sizeWeight: { weightG: 200, lengthMm: 100, widthMm: 100, heightMm: 100 },
+      skuVariants: [
+        { skuId: "sku-white-long", spec: "白色", price: 12 },
+        { skuId: "sku-white-short", spec: "白", price: 12 },
+      ],
+    },
+  }, { categoryMatch: { description_category_id: 1, type_id: 2, path: "Хранение" } });
+
+  assert.equal(draft.items.length, 2);
+  assert.equal(draft.items[0].offer_id, draft.items[1].offer_id);
+  assert.equal(draft.summary.variantOfferIdCollisions.length, 1);
+  assert.equal(draft.summary.variantOfferIdCollisions[0].rows.length, 2);
+});
 
 test("buildListingPayloadDraftFromJob creates workflow payload draft without Ozon submit", () => {
   const draft = buildListingPayloadDraftFromJob({
@@ -46,7 +172,262 @@ test("buildListingPayloadDraftFromJob creates workflow payload draft without Ozo
   assert.equal(draft.items[0].type_id, 95183);
   assert.ok(draft.items[0].attributes.some((attribute) => Number(attribute.id) === 9048));
   assert.equal(draft.summary.pricingDiagnosis.packageInfoSource, "1688_package");
+  assert.equal(draft.summary.pricingDiagnosis.profitStatus, "unknown");
+  assert.equal(draft.summary.pricingDiagnosis.profitConclusion, "unknown_without_trusted_commission_and_settlement_rules");
+  assert.equal(draft.summary.pricingDiagnosis.profitEvidence.settlement.status, "missing");
   assert.equal(validateSubmitPayload(draft).ok, true);
+});
+
+test("collected procurement evidence blocks trusted pricing when MOQ or tiers are missing", () => {
+  const draft = buildListingPayloadDraftFromJob({
+    pendingParentSku: "SKU-PROCUREMENT-RISK",
+    ozonTitle: "Органайзер",
+    listingContent: { title_ru: "Органайзер", description_ru: "Органайзер для дома." },
+    bestMatch: { candidateTitle: "收纳盒", purchasePriceCny: 12 },
+    candidateData: {
+      source: "1688",
+      url: "https://detail.1688.com/offer/123.html",
+      images: ["https://example.com/a.jpg"],
+      sizeWeight: { weightG: 200, lengthMm: 100, widthMm: 100, heightMm: 100 },
+      skuVariants: [],
+      procurementEvidence: {
+        supplierId: { value: "supplier-1", source: "page_content" },
+        supplierName: { value: "示例供应商", source: "page_content" },
+        moq: { value: null, source: "missing" },
+        priceTiers: { values: [], source: "missing" },
+      },
+    },
+  }, {
+    categoryMatch: { description_category_id: 1, type_id: 2, path: "Хранение" },
+  });
+
+  assert.equal(draft.summary.pricingDiagnosis.procurementEvidence.status, "blocked");
+  assert.equal(draft.summary.pricingDiagnosis.procurementEvidence.reasonCode, "PRICING_PROCUREMENT_EVIDENCE_MISSING");
+});
+
+test("manual procurement values remain needs_review instead of masquerading as source facts", () => {
+  const draft = buildListingPayloadDraftFromJob({
+    pendingParentSku: "SKU-PROCUREMENT-MANUAL",
+    ozonTitle: "Органайзер",
+    listingContent: { title_ru: "Органайзер", description_ru: "Органайзер для дома." },
+    bestMatch: { candidateTitle: "收纳盒", purchasePriceCny: 12 },
+    candidateData: {
+      source: "1688",
+      sourceEvidence: { snapshotHash: `sha256:${"a".repeat(64)}` },
+      sizeWeight: { weightG: 200, lengthMm: 100, widthMm: 100, heightMm: 100 },
+      procurementEvidence: {
+        verificationState: "manual_unverified",
+        supplierName: { value: "手填供应商", source: "manual_seller", evidenceRef: "" },
+        moq: { value: 5, source: "manual_seller", evidenceRef: "" },
+        priceTiers: { values: [{ minQuantity: 5, unitPriceCny: 12 }], source: "manual_seller", evidenceRef: "" },
+      },
+    },
+  }, { categoryMatch: { description_category_id: 1, type_id: 2, path: "Хранение" } });
+
+  const evidence = draft.summary.pricingDiagnosis.procurementEvidence;
+  assert.equal(evidence.status, "needs_review");
+  assert.equal(evidence.verificationState, "manual_unverified");
+  assert.equal(evidence.sourceBacked, false);
+  assert.equal(evidence.reasonCode, "PRICING_PROCUREMENT_EVIDENCE_MANUAL_UNVERIFIED");
+  assert.match(evidence.sellerAction, /来源快照|人工确认/);
+  assert.equal(evidence.sideEffect, "不会提交 Ozon，不会修改价格或库存");
+});
+
+test("procurement values are verified only when refs bind to the candidate snapshot", () => {
+  const hash = "b".repeat(64);
+  const evidenceRef = `snapshot:${hash}`;
+  const draft = buildListingPayloadDraftFromJob({
+    pendingParentSku: "SKU-PROCUREMENT-SOURCE",
+    ozonTitle: "Органайзер",
+    listingContent: { title_ru: "Органайзер", description_ru: "Органайзер для дома." },
+    bestMatch: { candidateTitle: "收纳盒", purchasePriceCny: 12 },
+    candidateData: {
+      source: "1688",
+      sourceEvidence: { snapshotHash: `sha256:${hash}` },
+      sizeWeight: { weightG: 200, lengthMm: 100, widthMm: 100, heightMm: 100 },
+      procurementEvidence: {
+        supplierName: { value: "页面供应商", source: "page_content", evidenceRef },
+        moq: { value: 5, source: "page_content", evidenceRef },
+        priceTiers: { values: [{ minQuantity: 5, unitPriceCny: 12 }], source: "page_content", evidenceRef },
+      },
+    },
+  }, { categoryMatch: { description_category_id: 1, type_id: 2, path: "Хранение" } });
+
+  const evidence = draft.summary.pricingDiagnosis.procurementEvidence;
+  assert.equal(evidence.status, "verified");
+  assert.equal(evidence.verificationState, "source_verified");
+  assert.equal(evidence.sourceBacked, true);
+  assert.equal(evidence.reasonCode, "");
+});
+
+test("capture hints remain unverified even when stored beside a snapshot", () => {
+  const hash = "c".repeat(64);
+  const evidenceRef = `snapshot:${hash}`;
+  const draft = buildListingPayloadDraftFromJob({
+    pendingParentSku: "SKU-PROCUREMENT-HINT",
+    ozonTitle: "Органайзер",
+    listingContent: { title_ru: "Органайзер", description_ru: "Органайзер для дома." },
+    bestMatch: { candidateTitle: "收纳盒", purchasePriceCny: 12 },
+    candidateData: {
+      source: "1688",
+      sourceEvidence: { snapshotHash: `sha256:${hash}` },
+      sizeWeight: { weightG: 200, lengthMm: 100, widthMm: 100, heightMm: 100 },
+      procurementEvidence: {
+        supplierName: { value: "提示供应商", source: "capture_hint", evidenceRef },
+        moq: { value: 5, source: "capture_hint", evidenceRef },
+        priceTiers: { values: [{ minQuantity: 5, unitPriceCny: 12 }], source: "capture_hint", evidenceRef },
+      },
+    },
+  }, { categoryMatch: { description_category_id: 1, type_id: 2, path: "Хранение" } });
+
+  const evidence = draft.summary.pricingDiagnosis.procurementEvidence;
+  assert.equal(evidence.status, "needs_review");
+  assert.equal(evidence.verificationState, "manual_unverified");
+});
+
+test("buildListingPayloadDraftFromJob submits collected rich content only after detail asset approval", () => {
+  const richContentJson = {
+    content: [
+      {
+        widgetName: "raShowcase",
+        type: "billboard",
+        blocks: [{ img: { src: "https://example.com/detail-a.jpg", srcMobile: "https://example.com/detail-a.jpg", alt: "" } }],
+      },
+    ],
+    version: 0.3,
+  };
+  const job = {
+    pendingParentSku: "SKUlq00997",
+    ozonTitle: "Органайзер для кухни",
+    listingContent: {
+      title_ru: "Органайзер для кухни",
+      description_ru: "Практичный органайзер для хранения.",
+    },
+    visualCard: { url: "https://example.com/cover.jpg" },
+    bestMatch: {
+      candidateTitle: "厨房收纳盒",
+      candidateUrl: "https://detail.1688.com/offer/9.html",
+      purchasePriceCny: 20,
+    },
+    candidateData: {
+      images: ["https://example.com/a.jpg", "https://example.com/b.jpg", "https://example.com/c.jpg"],
+      sizeWeight: { weightG: 700, lengthMm: 220, widthMm: 160, heightMm: 80 },
+      skuVariants: [],
+      richContentJson,
+      mediaAssets: [{
+        id: "media:detail-a",
+        role: "detail",
+        sourceUrl: "https://example.com/detail-a.jpg",
+        sourceHash: `url-sha256:${"c".repeat(64)}`,
+        evidenceRef: `snapshot:${"d".repeat(64)}`,
+        checks: {
+          humanApproved: true,
+          ocr: { status: "clear" },
+          dimensions: { status: "clear", width: 800, height: 800 },
+          sourceRisk: "clear",
+        },
+      }],
+      mediaIssues: [],
+    },
+  };
+  const options = {
+    categoryMatch: {
+      description_category_id: 17028673,
+      type_id: 95183,
+      path: "Дом / Кухня",
+    },
+  };
+  const draft = buildListingPayloadDraftFromJob(job, options);
+
+  const richContentAttribute = draft.items[0].attributes.find((attribute) => Number(attribute.id) === 11254);
+  assert.ok(richContentAttribute);
+  assert.equal(richContentAttribute.values[0].value, JSON.stringify(richContentJson));
+  assert.equal(draft.summary.mediaReview.status, "approved_detail_assets");
+  assert.equal(validateSubmitPayload(draft).ok, true);
+
+  const unapproved = buildListingPayloadDraftFromJob({
+    ...job,
+    candidateData: {
+      ...job.candidateData,
+      mediaAssets: job.candidateData.mediaAssets.map((asset) => ({ ...asset, checks: { humanApproved: false } })),
+      mediaIssues: ["detail_images_require_human_review_before_rich_content"],
+    },
+  }, options);
+  assert.equal(unapproved.items[0].attributes.some((attribute) => Number(attribute.id) === 11254), false);
+  assert.equal(unapproved.summary.mediaReview.status, "needs_confirmation");
+  assert.deepEqual(unapproved.summary.mediaReview.issues, [
+    "detail_images_require_human_review_before_rich_content",
+    "collected_rich_content_requires_human_approval",
+  ]);
+
+  const stalePublished = buildListingPayloadDraftFromJob({
+    ...job,
+    candidateData: {
+      ...job.candidateData,
+      sourceEvidence: { snapshotHash: `sha256:${"a".repeat(64)}` },
+      mediaApprovalPublished: {
+        status: "stale",
+        expectedDraftHash: `sha256:${"b".repeat(64)}`,
+        expectedSourceHash: `sha256:${"a".repeat(64)}`,
+      },
+      mediaAssets: job.candidateData.mediaAssets.map((asset) => ({
+        ...asset,
+        evidenceRef: `snapshot:${"a".repeat(64)}`,
+        checks: {
+          humanApproved: true,
+          approvalBinding: {
+            status: "published_local",
+            expectedDraftHash: `sha256:${"b".repeat(64)}`,
+            expectedSourceHash: `sha256:${"a".repeat(64)}`,
+          },
+        },
+      })),
+    },
+  }, options);
+  assert.equal(stalePublished.items[0].attributes.some((attribute) => Number(attribute.id) === 11254), false);
+  assert.equal(stalePublished.summary.mediaReview.status, "needs_confirmation");
+  assert.equal(unapproved.summary.mediaReview.candidate, JSON.stringify(richContentJson));
+
+  const explicitlyApproved = buildListingPayloadDraftFromJob({
+    ...job,
+    candidateData: {
+      ...job.candidateData,
+      mediaAssets: [],
+      mediaIssues: ["detail_images_require_human_review_before_rich_content"],
+      mediaApproval: {
+        confirmed: true,
+        confirmedAt: "2026-07-12T09:00:00.000Z",
+        actorId: "operator-fixture",
+      },
+    },
+  }, options);
+  assert.equal(explicitlyApproved.items[0].attributes.some((attribute) => Number(attribute.id) === 11254), false);
+  assert.equal(explicitlyApproved.summary.mediaReview.status, "needs_confirmation");
+
+  const staleExplicitApproval = buildListingPayloadDraftFromJob({
+    ...job,
+    candidateData: {
+      ...job.candidateData,
+      sourceEvidence: { snapshotHash: `sha256:${"a".repeat(64)}`, verificationState: "ok" },
+      mediaApproval: {
+        confirmed: true,
+        confirmedAt: "2026-07-12T09:00:00.000Z",
+        actorId: "operator-fixture",
+      },
+      mediaAssets: job.candidateData.mediaAssets.map((asset) => ({
+        ...asset,
+        evidenceRef: `snapshot:${"b".repeat(64)}`,
+        checks: {
+          ...asset.checks,
+          humanApproved: false,
+        },
+      })),
+      mediaIssues: [],
+    },
+  }, options);
+  assert.equal(staleExplicitApproval.items[0].attributes.some((attribute) => Number(attribute.id) === 11254), false);
+  assert.equal(staleExplicitApproval.summary.mediaReview.status, "needs_confirmation");
+  assert.ok(staleExplicitApproval.summary.mediaReview.compliance.blockers.some((blocker) => blocker.code === "MEDIA_SOURCE_SNAPSHOT_MISMATCH"));
 });
 
 test("buildListingPayloadDraftFromJob rejects PDD package evidence without trusted source", () => {
@@ -341,6 +722,9 @@ test("buildRequiredAttributeFillPlan keeps dictionary candidates in current cate
   assert.equal(dictionaryPlan.safetyTier, "candidate-needs-human-confirmation");
   assert.equal(dictionaryPlan.requiresHumanConfirmation, true);
   assert.equal(dictionaryPlan.blocksAutomation, false);
+  assert.equal(dictionaryPlan.blocksSubmission, true);
+  assert.equal(dictionaryPlan.fieldPath, "items[*].attributes[id=777]");
+  assert.match(dictionaryPlan.sideEffect, /不会写入 Ozon/);
   assert.equal(dictionaryPlan.dictionaryValueId, undefined);
   assert.deepEqual(dictionaryPlan.dictionaryCandidates.map((item) => item.dictionaryValueId), [11]);
 
@@ -356,10 +740,31 @@ test("buildRequiredAttributeFillPlan keeps dictionary candidates in current cate
   assert.equal(sensitivePlan.requiresHumanConfirmation, true);
   assert.equal(sensitivePlan.blocksAutomation, true);
   assert.equal(sensitivePlan.confidence, "low");
+  assert.equal(sensitivePlan.blockingReason, "SENSITIVE_COMPLIANCE_ATTRIBUTE");
+  assert.equal(sensitivePlan.fieldPath, "items[*].attributes[id=999]");
+  assert.match(sensitivePlan.sellerAction, /人工核实/);
 
   const manufacturerPlan = plan.find((row) => row.attributeId === 23487);
   assert.equal(manufacturerPlan.action, "blocked_sensitive");
   assert.equal(manufacturerPlan.strategy, "compliance_sensitive");
+});
+
+test("buildRequiredAttributeFillPlan exposes a blocking seller contract for low-confidence attributes", () => {
+  const plan = buildRequiredAttributeFillPlan({
+    categoryMatch: { description_category_id: 17028673, type_id: 95183 },
+    attrsMeta: [{ id: 7001, name: "未归纳的监管属性", is_required: true }],
+    productText: "普通收纳用品",
+  });
+  assert.equal(plan.length, 1);
+  const row = plan[0];
+  assert.equal(row.action, "manual_required");
+  assert.equal(row.confidence, "low");
+  assert.equal(row.blockingReason, "LOW_CONFIDENCE_ATTRIBUTE");
+  assert.equal(row.blocksAutomation, true);
+  assert.equal(row.blocksSubmission, true);
+  assert.equal(row.fieldPath, "items[*].attributes[id=7001]");
+  assert.match(row.sellerAction, /人工填写/);
+  assert.match(row.sideEffect, /不会写入 Ozon/);
 });
 
 test("buildRequiredAttributeFillPlan classifies every required row into one safety tier", () => {

@@ -2,18 +2,87 @@ const state = {
   stores: [],
   selectedStoreId: "",
   categoryTree: [],
+  categoryEvidence: { tree: null, attributes: null },
+  categoryAttributeRequestToken: 0,
   productStatus: "all",
   productRows: [],
+  productReadState: "idle",
+  // Stock values in the product ledger are only usable while the matching
+  // product read is a recent, complete evidence batch.  Keep the timestamp
+  // separate so a previously loaded positive value cannot survive a partial
+  // or expired refresh and look like current stock readiness.
+  productReadCheckedAt: "",
+  productNextAction: "先读取商品列表。",
+  productSellerResult: null,
+  productCounts: {},
+  productLastId: "",
+  productHasNext: false,
+  stockWarehouses: null,
+  stockSnapshotProducts: null,
+  stockSnapshot: null,
+  stockEvidence: null,
+  stockDryRun: null,
+  stockFocusOfferIds: [],
+  // Store changes and overlapping reads must invalidate all stock evidence;
+  // otherwise a late response can make another store look write-ready.
+  stockReadRequestToken: 0,
+  warehouseRequestToken: 0,
+  // Listing forms consume the same warehouse endpoint as the inventory
+  // workbench.  Keep their request generation separate so a late response
+  // from the previous store cannot repopulate a listing warehouse selector.
+  listingWarehouseRequestToken: 0,
+  stockEvidenceRequestToken: 0,
   listingAttributes: [],
   listingVariantAspects: [],
   generatedListingContent: null,
   orderStatus: "",
   orderRows: [],
+  orderBatch: { loaded: false, failed: false, partial: false, hasNext: false, syncedAt: "", sourceCount: 0 },
+  orderCoverage: { pageOffsets: [], pageCursors: [], orderKeys: [], observedCount: 0, hasNext: false },
+  // Finance is a read-only projection. Keep the server/model contract visible
+  // in the UI instead of deriving a profit number from cached orders.
+  financeReadModel: null,
+  readOperatorReceiptSummary: null,
+  readOperatorMatrix: null,
+  readOperatorMatrixEnvironment: "",
+  readOperatorExecutionSummary: null,
+  readOperatorExecutionRequestToken: 0,
+  sessionProofSummary: null,
+  runtimeSafetySnapshot: null,
+  observabilitySummary: null,
+  migrationStateAudit: null,
+  deploymentPreflight: null,
+  orderRequestToken: 0,
+  // A selected posting detail read must not paint after the seller changes
+  // store or refreshes the order batch.  Keep it separate from the list
+  // request token because detail reads are independently scoped.
+  orderDetailRequestToken: 0,
+  // Keep a read-only receipt summary bound to the order batch that requested it.
+  fbsReceiptRequestToken: 0,
+  orderPageOffset: 0,
+  orderCursor: "",
+  orderCursorHistory: [],
+  orderSortDir: "DESC",
+  productRequestToken: 0,
   promotionRows: [],
+  promotionRequestToken: 0,
+  promotionSellerResult: null,
   selectedPromotion: null,
   promotionProducts: [],
   promotionCandidates: [],
+  // Activity writes must be scoped to an explicit seller selection.  Keeping
+  // this separate from the read rows prevents the remove action from
+  // silently treating every participating product as the user's intent.
+  promotionSelectedProductIds: [],
+  promotionDetailSellerResult: { products: null, candidates: null },
+  promotionImpactPreview: null,
+  promotionDetailOffset: 0,
+  promotionDetailHasNext: false,
+  // Keep detail-read failures distinct from an activity that has zero items.
+  promotionDetailError: "",
   promotionProductKind: "products",
+  promotionMutationEvidence: null,
+  promotionDetailRequestToken: 0,
   collected1688: null,
   captureRows: [],
   currentCaptureId: "",
@@ -22,11 +91,14 @@ const state = {
   categorySearchLoading: false,
   attributeValueCache: {},
   listingWarehouses: [],
+  listingWarehouseReadIncomplete: false,
   variantGroups: [],
   selectedVariantGroup: 0,
   reservedParentSkus: [],
   crawlerTasks: [],
   crawlerCandidates: [],
+  crawlerCandidateRequestToken: 0,
+  listingHandoffNotice: "",
   crawlerWorkerStatus: null,
   open1688Status: null,
   selectedCrawlerTaskId: "",
@@ -40,6 +112,11 @@ const state = {
   ozonImage2Task: null,
   selectedOzonLearningTaskId: "",
   autoListJobs: [],
+  productReadinessByJobId: {},
+  // A product status reread must not repaint after the seller switches store
+  // or environment while the controlled Seller API request is in flight.
+  productReadinessRequestToken: 0,
+  directWriteKeysByScope: {},
   reverseGuidanceCards: [],
   workflowRuns: [],
   workflowSummary: null,
@@ -54,17 +131,23 @@ const state = {
   },
   selectedWorkflowRunId: "",
   selectedWorkflowNodeKey: "",
+  // Seller-facing preflight repair context.  Keep the exact issue while
+  // switching from the listing card to the workflow console so the console
+  // can focus the same field/SKU instead of making the seller search again.
+  selectedWorkflowPayloadIssue: null,
 };
 
 const PURCHASE_COST_MARKUP_RMB = 5;
 const PACKAGE_WEIGHT_PADDING_G = 50;
 const PACKAGE_SIZE_PADDING_MM = 20;
-const DEFAULT_LISTING_STOCK = 100;
+// A new seller row must not invent sellable inventory. Stock is only filled
+// after the seller observes the exact Offer×warehouse tuple.
+const DEFAULT_LISTING_STOCK = "";
 const ERP_NAVIGATION_GROUPS = [
   { key: "store-overview", label: "店铺总览", views: ["dashboard"] },
   { key: "product-management", label: "商品管理", views: ["products"] },
-  { key: "sourcing-procurement", label: "选品采购", views: ["sourcing", "research"] },
-  { key: "listing-center", label: "上架中心", views: ["listing", "workflow-console"] },
+  { key: "sourcing-procurement", label: "选品采集", views: ["sourcing", "research"] },
+  { key: "listing-center", label: "上传管理", views: ["listing", "workflow-console"] },
   { key: "order-fulfillment", label: "订单履约", views: ["orders"] },
   { key: "inventory-warehouse", label: "库存仓库", views: ["warehouse"] },
   { key: "marketing", label: "营销活动", views: ["promotions"] },
@@ -81,32 +164,32 @@ const ERP_VIEW_OWNERSHIP_CONTRACTS = {
     wrongPageHint: "如果你要编辑商品资料，去“上架中心”；如果要处理活动，去“营销活动”。",
   },
   sourcing: {
-    title: "1688 采集",
-    handles: "只处理 1688 货源采集、采集箱、候选解析和生成上架草稿。",
+    title: "选品采集",
+    handles: "只处理货源采集、候选池、采集质量和生成上传草稿。",
     excludes: "不处理 Ozon 活动、订单履约、库存提交和在售商品维护。",
     wrongPageHint: "看到活动或订单字段时说明页面串区；请切回对应运营 tab。",
   },
   listing: {
-    title: "上架草稿",
-    handles: "只处理 Ozon 上架草稿、类目属性、标题描述、图片、价格、预检和提交闸口。",
+    title: "上传队列",
+    handles: "只处理准备上传的商品草稿、上传状态、最少必要修复和人工确认上传。",
     excludes: "不处理 Ozon 营销活动、订单履约、库存队列和竞品样本采集。",
     wrongPageHint: "如果你只是处理活动商品，不应该出现在这里。",
   },
   "workflow-console": {
-    title: "节点诊断",
-    handles: "只处理商品流程卡点、错误原因、字段定位、重试、换货源和提交闸口。",
+    title: "自动化任务",
+    handles: "只处理自动化任务卡点、错误原因、字段定位、重试、换货源和提交闸口。",
     excludes: "不作为普通商品列表、不作为活动运营页、不承载完整上架表单。",
     wrongPageHint: "这里应该看到问题、原因、推荐动作，而不是完整商品编辑表。",
   },
   research: {
-    title: "Ozon 参照与图片",
-    handles: "只处理 Ozon 样本、同品参照、图片风格、文案指导和图片生成建议。",
+    title: "竞品素材",
+    handles: "只处理 Ozon 样本、同品参照、图片风格、文案指导和素材建议。",
     excludes: "不直接提交 Ozon、不处理订单、库存和营销活动。",
     wrongPageHint: "学习结果只反哺上架，不替代上架草稿。",
   },
   products: {
-    title: "商品状态",
-    handles: "只处理 Ozon 商品列表、状态分组、价格读取、在售/错误/待修改状态观察。",
+    title: "商品总览",
+    handles: "只处理店铺商品资产全览、在售、审核中、待修、缺库存、缺价格和下架归档。",
     excludes: "不采集 1688、不生成新商品草稿、不处理营销活动详情。",
     wrongPageHint: "要新增商品去“1688 采集”或“上架草稿”。",
   },
@@ -164,25 +247,25 @@ const ERP_TAB_TASK_CARDS = {
     ],
   },
   sourcing: {
-    title: "采一个 1688 商品",
-    primary: "这里先完成采集、候选解析和入草稿；高级队列、Cookie、人机状态默认收起。",
+    title: "找到可卖的新商品",
+    primary: "这里先看采集箱、候选池和采集质量，确认后再进入上传队列。",
     actions: [
       { label: "打开采集任务", view: "sourcing" },
-      { label: "去上架草稿", view: "listing" },
-      { label: "看节点诊断", view: "workflow-console" },
+      { label: "去上传队列", view: "listing" },
+      { label: "看自动化任务", view: "workflow-console" },
     ],
   },
   listing: {
-    title: "把一个商品变成 Ozon 草稿",
-    primary: "这里只处理类目、属性、文案、图片、定价、预检；提交 Ozon 必须人工确认。",
+    title: "处理待上传商品",
+    primary: "这里只看当前草稿能不能上传、缺什么最少资料、下一步点哪里。",
     actions: [
-      { label: "检查类目属性", view: "listing" },
-      { label: "查看定价诊断", view: "listing" },
-      { label: "提交前预检", view: "workflow-console" },
+      { label: "查看当前草稿", view: "listing" },
+      { label: "补必要资料", view: "listing" },
+      { label: "看自动化卡点", view: "workflow-console" },
     ],
   },
   "workflow-console": {
-    title: "修一个卡住的节点",
+    title: "处理卡住的自动化任务",
     primary: "这里不再说笼统人工干预，只看问题、原因、推荐动作、点了以后会发生什么。",
     actions: [
       { label: "查看失败原因", view: "workflow-console" },
@@ -191,8 +274,8 @@ const ERP_TAB_TASK_CARDS = {
     ],
   },
   research: {
-    title: "给上架做参考",
-    primary: "这里采 Ozon 同品、生成文案和图片指导；结果只反哺草稿，不直接上架。",
+    title: "准备竞品和素材参考",
+    primary: "这里只采 Ozon 同品、图片风格和文案建议；素材只反哺上传草稿。",
     actions: [
       { label: "打开参照学习", view: "research" },
       { label: "生成图片指导", view: "research" },
@@ -200,8 +283,8 @@ const ERP_TAB_TASK_CARDS = {
     ],
   },
   products: {
-    title: "看商品现在怎么样",
-    primary: "这里看商品是否在售、审核中、失败、缺价、缺库存；不新增商品。",
+    title: "管理店铺商品资产",
+    primary: "这里看全店商品、在售、审核中、待修、缺库存、缺价格和下架归档。",
     actions: [
       { label: "刷新商品状态", view: "products" },
       { label: "处理库存", view: "warehouse" },
@@ -272,6 +355,17 @@ const ERP_TAB_TASK_CARDS = {
     ],
   },
 };
+
+const BUSINESS_PRIMARY_PANEL_CLASSES = [
+  "business-primary-panel",
+  "product-asset-ledger",
+  "single-listing-outcome",
+  "listing-secondary-workflow",
+  "workflow-summary-cards",
+  "workflow-focus-bar",
+  "promotion-layout",
+  "erp-dashboard-grid",
+];
 const ERP_INFORMATION_ARCHITECTURE = [
   {
     area: "今日工作台",
@@ -476,9 +570,9 @@ const OZON_SELLER_API_ALIGNMENT = [
   },
   {
     area: "订单履约",
-    status: "部分对齐",
-    api: ["/v3/posting/fbs/list", "/v3/posting/fbs/unfulfilled/list"],
-    gap: "当前偏看板；打包、发运、取消、标签等履约动作未接齐。",
+    status: "迁移审计",
+    api: ["/v4/posting/fbs/list", "/v4/posting/fbs/unfulfilled/list", "/v3/posting/fbs/list（legacy）", "/v3/posting/fbs/unfulfilled/list（legacy）"],
+    gap: "Seller API 当前契约已是 v4 cursor；订单页已使用 cursor/sort_dir 只读模型，但完整覆盖和真实账号回放仍需确认。打包、发运、取消、标签等履约动作未接齐。",
   },
   {
     area: "营销活动",
@@ -522,9 +616,9 @@ const OZON_SELLER_API_GAP_BACKLOG = [
     priority: "P1",
     area: "订单履约动作",
     tab: "订单履约",
-    api: ["/v3/posting/fbs/list", "/v3/posting/fbs/unfulfilled/list"],
-    task: "在现有订单看板基础上拆出待接入动作：打包、发运、取消、标签/条码。",
-    reason: "目前订单偏只读，看板能看但不能形成履约操作闭环。",
+    api: ["/v4/posting/fbs/list", "/v4/posting/fbs/unfulfilled/list"],
+    task: "继续验证 cursor/sort_dir 的批次覆盖并完成真实只读回放，再拆出待接入动作：打包、发运、取消、标签/条码。",
+    reason: "v3 FBS 已停用；当前订单页是只读 v4 模型，完整覆盖和履约写动作仍未完成。",
   },
   {
     priority: "P1",
@@ -884,16 +978,92 @@ function showResponse(data) {
   $("#lastResponse").textContent = JSON.stringify(data, null, 2);
 }
 
+function updateDataFreshness(selector, stateName, message) {
+  const element = $(selector);
+  if (!element) return;
+  element.dataset.syncState = stateName;
+  element.textContent = message;
+}
+
+function renderAppBootstrapRecovery(error = {}) {
+  const target = $("#appBootstrapRecovery");
+  if (!target) return;
+  const status = Number(error?.httpStatus || error?.responseData?.status || 0);
+  const title = status === 401
+    ? "ERP 会话未授权"
+    : status === 403
+      ? "当前会话没有店铺访问权限"
+      : "ERP 数据初始化失败";
+  const nextAction = status === 401
+    ? "请重新登录 ERP 会话；如果仍失败，请让管理员确认当前用户已绑定店铺。"
+    : status === 403
+      ? "请切换到已授权店铺，或联系管理员补充当前用户的店铺权限。"
+      : "请检查 ERP 服务是否运行，然后点击“重新加载”再次读取；本次没有执行任何 Ozon 写入。";
+  target.hidden = false;
+  target.innerHTML = `<strong>${escapeHtml(title)}</strong><p>店铺和工作台尚未完成初始化，旧数据不会被当作当前店铺证据。</p><p>下一步：${escapeHtml(nextAction)}</p><button class="ghost" type="button" data-bootstrap-retry>重新加载</button>`;
+  target.querySelector("[data-bootstrap-retry]")?.addEventListener("click", () => window.location.reload());
+  updateDataFreshness("#erpDataFreshness", "error", "工作台未初始化；请先完成授权或重新加载。");
+}
+
+function synchronizedAt(label) {
+  return `${label}：${new Date().toLocaleString("zh-CN", { hour12: false })}`;
+}
+
 async function api(path, options = {}) {
+  const directWriteKey = String(options.headers?.["Idempotency-Key"] || "");
+  const readEnvironment = typeof currentSellerReadEnvironment === "function" ? currentSellerReadEnvironment() : "";
   const response = await fetch(path, {
-    headers: { "Content-Type": "application/json" },
     ...options,
+    headers: {
+      "Content-Type": "application/json",
+      ...(readEnvironment ? { "X-Ozon-ERP-Read-Environment": readEnvironment } : {}),
+      ...(options.headers || {}),
+    },
   });
   const data = await response.json();
   if (!response.ok) {
-    throw new Error(data.error || "请求失败");
+    const error = new Error(data.error || "请求失败");
+    // Keep the structured seller recovery contract available to the caller;
+    // generic Error.message alone would discard captureReview.nextAction.
+    error.responseData = data;
+    error.httpStatus = response.status;
+    error.reasonCode = String(data.reasonCode || "");
+    error.commandState = String(data.commandState || "");
+    error.idempotencyKey = String(data.idempotencyKey || directWriteKey);
+    if (error.reasonCode === "DIRECT_WRITE_UNKNOWN_OUTCOME" && error.idempotencyKey) {
+      const entry = Object.entries(state.directWriteKeysByScope).find(([, value]) => value?.key === error.idempotencyKey);
+      if (entry) state.directWriteKeysByScope[entry[0]] = { ...entry[1], status: "unknown_outcome" };
+      loadWriteCommandAttention().catch(() => {});
+    } else if (directWriteKey) {
+      const entry = Object.entries(state.directWriteKeysByScope).find(([, value]) => value?.key === directWriteKey);
+      if (entry) delete state.directWriteKeysByScope[entry[0]];
+    }
+    throw error;
+  }
+  if (directWriteKey) {
+    const entry = Object.entries(state.directWriteKeysByScope).find(([, value]) => value?.key === directWriteKey);
+    if (entry) delete state.directWriteKeysByScope[entry[0]];
   }
   return data;
+}
+
+function sellerReadAccessRecovery(error = {}, fallback = "检查店铺只读权限后重新读取。") {
+  const code = String(error?.reasonCode || error?.responseData?.reasonCode || "").toUpperCase();
+  if ([
+    "READ_OPERATOR_SESSION_REQUIRED",
+    "READ_OPERATOR_SIGNED_SESSION_REQUIRED",
+    "SESSION_PROOF_SIGNED_SESSION_REQUIRED",
+  ].includes(code)) {
+    return "请先在系统配置建立签名 ERP 会话，再重新读取；本次没有调用 Ozon。";
+  }
+  if (code === "READ_OPERATOR_SESSION_ENVIRONMENT_MISMATCH") {
+    return "当前只读环境与签名会话不一致；改为会话对应的环境后重新读取。";
+  }
+  if (["READ_OPERATOR_SESSION_SCOPE_REQUIRED", "READ_OPERATOR_SCOPE_REQUIRED"].includes(code)) {
+    return "当前签名会话没有覆盖所选店铺或读取范围；请让管理员补充店铺范围后重试。";
+  }
+  if (Number(error?.httpStatus || 0) === 403) return fallback;
+  return fallback;
 }
 
 function selectedStoreId() {
@@ -909,6 +1079,7 @@ async function loadStores() {
   const data = await api("/api/stores");
   state.stores = data.stores;
   $("#storeCount").textContent = data.stores.length;
+  if ($("#erpStoreCount")) $("#erpStoreCount").textContent = data.stores.length;
   $("#storeSelect").innerHTML = data.stores
     .map((store) => `<option value="${store.id}">${store.name} - ${store.clientId}</option>`)
     .join("");
@@ -925,9 +1096,31 @@ async function loadStores() {
 function updateStoreHint() {
   const store = state.stores.find((item) => item.id === selectedStoreId());
   $("#storeHint").textContent = store
-    ? `Client ID: ${store.clientId} / Key: ${store.apiKey}`
+    ? `Client ID: ${store.clientId} · Seller API 凭据已配置，尚未验证连通（密钥不会显示在浏览器）`
     : "未找到店铺";
   syncListingStore();
+}
+
+function directWriteRequest(payload, scope = "ozon-write") {
+  const retained = state.directWriteKeysByScope[scope];
+  if (retained?.status === "unknown_outcome") {
+    const error = new Error("该写操作结果未知，原幂等键已保留；请先到待复核区只读回查，不能换新键重试。");
+    error.reasonCode = "DIRECT_WRITE_UNKNOWN_OUTCOME";
+    throw error;
+  }
+  if (retained?.status === "pending") {
+    return {
+      headers: { "Idempotency-Key": retained.key },
+      body: JSON.stringify({ ...payload, confirmDirectWrite: true }),
+    };
+  }
+  const nonce = globalThis.crypto?.randomUUID?.() || `${Date.now()}-${Math.random().toString(16).slice(2)}`;
+  const key = `${scope}:${nonce}`;
+  state.directWriteKeysByScope[scope] = { key, status: "pending" };
+  return {
+    headers: { "Idempotency-Key": key },
+    body: JSON.stringify({ ...payload, confirmDirectWrite: true }),
+  };
 }
 
 function apiAlignmentClass(status = "") {
@@ -978,11 +1171,1578 @@ function renderSellerOperatingModel() {
 }
 
 function currentListingWorkflowRun() {
+  if (state.selectedWorkflowRunId === "__no_workflow__") return null;
   const runs = Array.isArray(state.workflowRuns) ? state.workflowRuns : [];
   if (!runs.length) return null;
   const selected = runs.find((run) => run.id === state.selectedWorkflowRunId);
   if (selected) return selected;
   return [...runs].sort((left, right) => String(right.updatedAt || right.createdAt || "").localeCompare(String(left.updatedAt || left.createdAt || "")))[0] || null;
+}
+
+function currentListingAutoListJob(run = null) {
+  const jobs = Array.isArray(state.autoListJobs) ? state.autoListJobs : [];
+  const linkedJobId = String(run?.entity?.autoListingJobId || run?.autoListingJobId || "").trim();
+  if (linkedJobId) return jobs.find((job) => String(job.id || "") === linkedJobId) || { id: linkedJobId };
+  if (run) return null;
+  return [...jobs].sort((left, right) => String(right.updatedAt || right.createdAt || "").localeCompare(String(left.updatedAt || left.createdAt || "")))[0] || null;
+}
+
+function sellerEvidenceVerification(evidence = {}) {
+  if (evidence.failed === true) return { level: "failed", label: "读取失败", explanation: "本次没有形成可用只读证据。" };
+  if (evidence.partial === true) return { level: "partial", label: "部分证据", explanation: "只读响应不完整，不能据此推进后续动作。" };
+  if (evidence.liveReadObserved === true || String(evidence.verificationLevel || "") === "server_observed") {
+    return { level: "server_observed", label: "服务端已观察真实只读响应", explanation: "仅证明服务端收到只读响应，不代表业务状态已安全。" };
+  }
+  if (String(evidence.verificationLevel || "") === "configuration_declared") {
+    return { level: "configuration_declared", label: "配置已声明", explanation: "仅证明配置或计划已声明，尚无真实账号读取证明。" };
+  }
+  return { level: "locally_tested", label: "本地测试", explanation: "本地契约已验证，尚无真实账号读取证明。" };
+}
+
+function productSellerResultFromRead(data = {}, evidence = {}) {
+  const supplied = data?.sellerResult && typeof data.sellerResult === "object"
+    ? data.sellerResult
+    : {};
+  const readStatus = String(supplied.status || supplied.readStatus || evidence.readStatus || "unknown");
+  const failed = supplied.failed === true || readStatus === "error" || readStatus === "failed";
+  const partial = supplied.partial === true || readStatus === "partial" || evidence.partial === true;
+  const status = failed ? "error" : partial ? "partial" : readStatus === "empty" ? "empty" : readStatus === "completed" || readStatus === "complete" ? "complete" : "unknown";
+  const labels = {
+    error: "商品读取失败",
+    partial: "商品证据不完整",
+    empty: "当前读取页没有商品",
+    unknown: "商品读取结果未知",
+    complete: "商品只读结果已形成",
+  };
+  return {
+    ...supplied,
+    status,
+    statusLabel: String(supplied.statusLabel || labels[status]),
+    reason: String(supplied.reason || supplied.summary || (status === "complete" ? "当前批商品列表和详情可供查看。" : "当前结果不能代表完整店铺商品状态。")),
+    nextAction: String(supplied.nextAction || evidence.nextAction || "重新读取商品并确认证据范围。"),
+    sideEffect: String(supplied.sideEffect || evidence.sideEffect || "仅读取商品列表和详情；不会修改商品、价格或库存。"),
+    sellerTasks: Array.isArray(supplied.sellerTasks)
+      ? supplied.sellerTasks
+      : (Array.isArray(evidence.sellerTasks) ? evidence.sellerTasks : []),
+    evidenceAt: String(supplied.evidenceAt || evidence.checkedAt || "尚无证据时间"),
+    partial,
+    failed,
+    liveReadObserved: supplied.liveReadObserved === true || evidence.operationEvidence?.some((item) => item?.verificationLevel === "server_observed") === true,
+    coverageComplete: supplied.coverageComplete === true || (status === "complete" && evidence.hasNext !== true),
+  };
+}
+
+function renderProductSellerResult() {
+  const container = $("#productSellerResult");
+  if (!container) return;
+  const result = state.productSellerResult || productSellerResultFromRead();
+  const status = String(result.status || "unknown");
+  const verification = sellerEvidenceVerification({
+    failed: result.failed === true || status === "error",
+    partial: result.partial === true || status === "partial" || status === "unknown" || status === "empty",
+    liveReadObserved: result.liveReadObserved === true,
+  });
+  const scope = Number(result.loadedProductCount ?? state.productRows.length);
+  const detailCount = Number(result.detailProductCount ?? 0);
+  const counts = result.counts && typeof result.counts === "object" ? result.counts : {};
+  const statusBreakdown = [
+    ["在售", counts.selling],
+    ["待修", counts.needFix],
+    ["错误", counts.error],
+    ["审核/待处理", counts.ready],
+  ].filter(([, count]) => Number(count || 0) > 0).map(([label, count]) => `${label} ${Number(count)}`).join(" · ");
+  container.innerHTML = `
+    <div class="product-read-seller-result ${escapeHtml(status)}" data-product-seller-status="${escapeHtml(status)}">
+      <div><strong>${escapeHtml(result.statusLabel || "商品读取结果未知")}</strong><small>证据时间：${escapeHtml(result.evidenceAt || "尚无证据时间")}</small></div>
+      <p><b>当前判断：</b>${escapeHtml(result.reason || "当前结果不能代表完整店铺商品状态。")}</p>
+      <div class="seller-evidence-verification" data-level="${escapeHtml(verification.level)}">
+        <span>验证等级：${escapeHtml(verification.label)}</span>
+        <span>已加载商品：${escapeHtml(String(scope))}${detailCount ? ` · 详情 ${escapeHtml(String(detailCount))}` : ""}${statusBreakdown ? ` · ${escapeHtml(statusBreakdown)}` : ""}</span>
+        <small>${escapeHtml(verification.explanation)} 不代表商品可售，也不代表库存已写入。</small>
+      </div>
+      <p><b>安全下一步：</b>${escapeHtml(result.nextAction || "重新读取商品并确认证据范围。")}</p>
+      ${Array.isArray(result.sellerTasks) && result.sellerTasks.length ? `<ul class="seller-task-list product-seller-task-list">${result.sellerTasks.slice(0, 4).map((task) => `<li data-task-code="${escapeHtml(task.code || "")}" data-task-priority="${escapeHtml(task.priority || "normal")}"><strong>${escapeHtml(task.label || "需人工处理")}</strong>${Number(task.count || 0) > 1 ? `（${Number(task.count)} 个）` : ""}：${escapeHtml(task.nextAction || "请重新读取商品详情")}</li>`).join("")}</ul>` : ""}
+      <small>${escapeHtml(result.sideEffect || "仅读取商品列表和详情；不会修改商品、价格或库存。")}</small>
+    </div>
+  `;
+}
+
+function renderListingProductReadiness(job = null) {
+  const jobId = String(job?.id || "").trim();
+  const result = jobId ? state.productReadinessByJobId[jobId] : null;
+  const sellerView = result?.sellerView || null;
+  const offers = Array.isArray(sellerView?.offers) ? sellerView.offers : [];
+  const allRepairTasks = Array.isArray(sellerView?.repairTasks) ? sellerView.repairTasks : [];
+  const repairTasks = allRepairTasks.slice(0, 100);
+  const repairTasksTruncated = allRepairTasks.length > repairTasks.length;
+  const verification = sellerEvidenceVerification({
+    failed: result?.failed === true,
+    partial: result?.partial === true,
+    liveReadObserved: result?.liveReadObserved === true,
+    verificationLevel: result?.verificationLevel,
+  });
+  const readinessClaim = sellerView?.statusLabel === "已明确可售";
+  const statusLabel = result?.loading
+    ? "正在只读回查"
+    : readinessClaim && verification.level !== "server_observed"
+      ? "本地就绪判断，待服务端回查"
+      : sellerView?.statusLabel || (result?.failed ? "状态读取失败" : "尚未回查");
+  const evidenceAt = sellerView?.evidenceAt || result?.evidenceAt || "尚无证据时间";
+  const reason = sellerView?.reason || result?.reason || (jobId ? "点击后只读取 Ozon 商品状态。" : "当前商品尚未关联自动上架任务，无法回查。");
+  const nextAction = sellerView?.nextAction || result?.nextAction || (jobId ? "执行只读回查，确认审核状态。" : "先生成或选择当前商品任务。");
+  const scopeText = result?.storeId
+    ? `店铺 ${result.storeId} · ${offers.length ? `${offers.length} 个 Offer` : `任务 ${jobId}`}`
+    : (jobId ? `任务 ${jobId}` : "尚未绑定范围");
+  const receiptEligible = Boolean(jobId && result?.failed !== true && result?.partial !== true
+    && result?.evidenceSummary?.readStatus === "completed"
+    && result?.evidenceSummary?.coverageComplete !== false
+    && Number(result?.evidenceSummary?.requestedOfferCount || 0) > 0);
+  const operationEvidenceCount = Array.isArray(result?.evidenceSummary?.operationEvidence) ? result.evidenceSummary.operationEvidence.length : 0;
+  const readinessCheckedAt = Date.parse(String(sellerView?.evidenceAt || result?.evidenceAt || ""));
+  const readinessFresh = Number.isFinite(readinessCheckedAt)
+    && readinessCheckedAt <= Date.now()
+    && Date.now() - readinessCheckedAt <= 30 * 60 * 1000;
+  const stockReady = readinessClaim && verification.level === "server_observed" && readinessFresh && offers.length > 0;
+  const stockReadyAction = stockReady
+    ? `<button class="primary" type="button" data-stock-readiness-ready="true" data-stock-readiness-fresh="true" data-stock-readiness-status="ready_for_sale" data-stock-readiness-verification="server_observed" data-stock-readiness-offers="${escapeHtml(offers.map((offer) => String(offer.offerId || "")).filter(Boolean).join(","))}" data-stock-readiness-store-id="${escapeHtml(String(result?.storeId || job?.storeId || ""))}">进入库存核对</button>`
+    : "";
+  return `
+    <section class="listing-product-readiness ${result?.failed ? "is-failed" : sellerView?.statusLabel === "已明确可售" ? "is-ready" : ""}" aria-label="商品状态只读证据">
+      <div>
+        <span>商品状态回查</span>
+        <strong>${escapeHtml(statusLabel)}</strong>
+        <small>证据时间：${escapeHtml(evidenceAt)}</small>
+      </div>
+      <p><b>原因：</b>${escapeHtml(reason)}</p>
+      <div class="seller-evidence-verification" data-level="${escapeHtml(verification.level)}">
+        <span>验证等级：${escapeHtml(verification.label)}</span>
+        <span>证据范围：${escapeHtml(scopeText)}</span>
+        <small>${escapeHtml(verification.explanation)} 不代表商品可售，也不代表库存已写入。</small>
+      </div>
+      <p><b>安全下一步：</b>${escapeHtml(nextAction)}</p>
+      ${stockReadyAction ? `<div class="listing-product-readiness-stock-next"><strong>商品已明确可售</strong><p>下一步只读取这些 Offer 对应的仓库和当前库存；不会自动写入。</p>${stockReadyAction}</div>` : ""}
+      <small>本次回查记录 ${operationEvidenceCount} 个只读接口证据${result?.evidenceSummary?.readStatus === "partial" ? "；存在接口失败或 Offer 覆盖不完整" : ""}；仅用于审计，不代表商品可售。</small>
+      ${offers.length ? `
+        <details>
+          <summary>逐 Offer 状态（${offers.length}）</summary>
+          <div class="listing-product-readiness-offers">
+            ${offers.map((offer) => `<span><b>${escapeHtml(offer.offerId || "-")}</b> · 商品 ${escapeHtml(offer.productId || "-")} · 导入 ${escapeHtml(offer.importStatus || "unknown")} · 审核 ${escapeHtml(offer.moderationStatus || "unknown")} · 错误 ${Number(offer.errorCount || 0)}${offer.errorReasonCode ? ` · 原因 ${escapeHtml(offer.errorReasonCode)}` : ""}</span>`).join("")}
+          </div>
+        </details>
+      ` : ""}
+      ${repairTasks.length ? `
+        <details class="listing-product-repair-tasks" open>
+          <summary>审核修复任务（${repairTasks.length}${repairTasksTruncated ? "+" : ""}）</summary>
+          <div class="listing-product-repair-task-list">
+            ${repairTasks.map((task) => `<div class="seller-task-row"><b>${escapeHtml(task.code || "MODERATION_FAILED")}</b> · 任务 ${escapeHtml(task.taskId || "-")} · 商品 ${escapeHtml(task.productId || "-")} · Offer ${escapeHtml(task.offerId || "-")}<br><small>字段：${escapeHtml(task.fieldPath || "products[*]")} · ${escapeHtml(task.message || "需要人工确认")}</small><br><span>下一步：${escapeHtml(task.action || "修复本地草稿后重新预检")}</span></div>`).join("")}
+          </div>
+        </details>
+      ` : ""}
+      <label>读取环境
+        <input type="text" data-product-readiness-environment value="${escapeHtml(result?.environment || "")}" placeholder="例如：production-readonly" />
+      </label>
+      <button class="ghost" type="button" data-product-readiness-job-id="${escapeHtml(jobId)}" ${!jobId || result?.loading ? "disabled" : ""}>只读回查商品状态</button>
+      <div class="readiness-evidence-receipt" data-readiness-receipt-eligible="${receiptEligible ? "true" : "false"}">
+        <strong>保存本地只读证据回执</strong>
+        <label>环境名
+          <input type="text" list="readinessReceiptEnvironmentOptions" data-readiness-receipt-environment placeholder="例如：production-readonly" ${receiptEligible ? "" : "disabled"} />
+          <datalist id="readinessReceiptEnvironmentOptions"><option value="local-dev-readonly"></option><option value="staging-readonly"></option><option value="production-readonly"></option></datalist>
+        </label>
+        <label><input type="checkbox" data-readiness-receipt-confirm ${receiptEligible ? "" : "disabled"} /> 我确认保存当前环境的一次只读证据回执</label>
+        <button type="button" class="ghost" data-save-readiness-evidence-receipt data-job-id="${escapeHtml(jobId)}" data-store-id="${escapeHtml(result?.storeId || "")}" disabled>保存本次只读回执</button>
+        <small>${receiptEligible ? "服务端会重新执行受限只读回查并仅保存脱敏摘要。" : "需先完成包含列表和详情的完整只读回查，失败或部分证据不能保存。"} 不会写 Ozon、不会修改草稿。</small>
+        <p class="readiness-evidence-receipt-response" aria-live="polite"></p>
+      </div>
+      <small>只读操作：不修改草稿、不写 Ozon、不自动进入库存。</small>
+    </section>
+  `;
+}
+
+function updateReadinessReceiptControl(container) {
+  if (!container) return;
+  const environment = container.querySelector("[data-readiness-receipt-environment]")?.value.trim() || "";
+  const confirmed = container.querySelector("[data-readiness-receipt-confirm]")?.checked === true;
+  const button = container.querySelector("[data-save-readiness-evidence-receipt]");
+  if (button) button.disabled = container.dataset.readinessReceiptEligible !== "true" || !environment || !confirmed;
+}
+
+async function saveReadinessEvidenceReceipt(button) {
+  const container = button.closest(".readiness-evidence-receipt");
+  const response = container?.querySelector(".readiness-evidence-receipt-response");
+  const environment = container?.querySelector("[data-readiness-receipt-environment]")?.value.trim() || "";
+  const storeId = button.dataset.storeId || "";
+  setBusy(button, true);
+  try {
+    const operatorPlan = {
+      store: { id: storeId },
+      environment,
+      scope: { name: "single_auto_listing_job", offerCount: 1 },
+      endpoints: ["/v3/product/list", "/v3/product/info/list"],
+      readOnly: true,
+      writeAttempted: false,
+      confirm: "I_CONFIRM_READ_ONLY",
+      maxAgeMs: 24 * 60 * 60 * 1000,
+    };
+    const planGate = await api("/api/ozon-learning/readiness-evidence-receipts/plan", {
+      method: "POST",
+      body: JSON.stringify({ plan: operatorPlan }),
+    });
+    if (!planGate?.ok || !planGate.planBinding) throw new Error("READ_OPERATOR_PLAN_BINDING_REQUIRED");
+    const data = await api("/api/ozon-learning/readiness-evidence-receipts", {
+      method: "POST",
+      body: JSON.stringify({ recordEvidence: true, environment, jobId: button.dataset.jobId, operatorPlan, planBinding: planGate.planBinding }),
+    });
+    if (response) {
+      const receipt = data.receipt || {};
+      const endpoints = Array.isArray(receipt.endpointAttempts) ? receipt.endpointAttempts : [];
+      const failure = String(receipt.failureScenario || "").trim();
+      const sellerTask = data.sellerTask || {};
+      response.textContent = `回执已保存 · ${escapeHtml(sellerTask.title || "只读证据已记录")} · ${escapeHtml(sellerTask.nextAction || "请查看证据范围后继续")} · 验证等级 ${escapeHtml(data.verification?.verificationLevel || "locally_tested")} · 证据时间 ${escapeHtml(receipt.checkedAt || "未返回")} · 端点 ${endpoints.length} 个${failure ? ` · 失败场景 ${escapeHtml(failure)}` : ""}。${escapeHtml(sellerTask.sideEffect || "不会写入 Ozon")}`;
+    }
+  } catch {
+    if (response) response.textContent = "只读回执保存未完成，请检查环境名和只读连接后重试。";
+  } finally {
+    setBusy(button, false);
+    updateReadinessReceiptControl(container);
+  }
+}
+
+async function loadListingProductReadiness(jobId) {
+  if (!jobId) return;
+  const requestToken = (state.productReadinessRequestToken = Number(state.productReadinessRequestToken || 0) + 1);
+  const requestStoreId = String(selectedStoreId() || "").trim();
+  const environmentInput = document.querySelector("[data-product-readiness-environment]");
+  const environmentCheck = validateReadOperatorEnvironment(environmentInput?.value || "");
+  if (!environmentCheck.ok) {
+    state.productReadinessByJobId[jobId] = {
+      failed: true,
+      evidenceAt: new Date().toISOString(),
+      reason: environmentCheck.message,
+      nextAction: "填写当前 ERP 部署的环境名后再执行只读回查；不会联网。",
+      reasonCode: environmentCheck.reasonCode,
+      environment: environmentInput?.value?.trim() || "",
+    };
+    renderListingSellerTaskSummary();
+    return;
+  }
+  const environment = environmentCheck.environment;
+  if (!requestStoreId) {
+    state.productReadinessByJobId[jobId] = {
+      failed: true,
+      evidenceAt: new Date().toISOString(),
+      reason: "当前没有选择商品所属店铺，系统不会使用无店铺范围的审核回执。",
+      nextAction: "先选择商品所属店铺，再重新回查商品状态。",
+      reasonCode: "READ_OPERATOR_STORE_SCOPE_REQUIRED",
+      environment,
+    };
+    renderListingSellerTaskSummary();
+    return;
+  }
+  state.productReadinessByJobId[jobId] = { loading: true };
+  renderListingSellerTaskSummary();
+  try {
+    const result = await api(`/api/ozon-learning/auto-list-jobs/${encodeURIComponent(jobId)}/product-readiness?environment=${encodeURIComponent(environment)}`);
+    if (requestToken !== state.productReadinessRequestToken
+      || String(selectedStoreId() || "").trim() !== requestStoreId
+      || String(currentSellerReadEnvironment() || "").trim() !== environment) {
+      return;
+    }
+    const resultStoreId = String(result?.storeId || "").trim();
+    const resultEnvironment = String(result?.environment || "").trim();
+    if (!resultStoreId || resultStoreId !== requestStoreId || resultEnvironment !== environment) {
+      state.productReadinessByJobId[jobId] = {
+        failed: true,
+        evidenceAt: new Date().toISOString(),
+        reason: "商品状态回执的店铺或环境与当前操作不一致，系统没有使用这份回执。",
+        nextAction: "确认当前店铺和读取环境后重新回查；不会使用跨店铺或跨环境的迟到回执。",
+        reasonCode: "READINESS_RECEIPT_SCOPE_MISMATCH",
+        environment,
+        storeId: resultStoreId,
+      };
+      renderListingSellerTaskSummary();
+      return;
+    }
+    result.environment = environment;
+    state.productReadinessByJobId[jobId] = result;
+  } catch (error) {
+    if (requestToken !== state.productReadinessRequestToken
+      || String(selectedStoreId() || "").trim() !== requestStoreId
+      || String(currentSellerReadEnvironment() || "").trim() !== environment) {
+      return;
+    }
+    const httpStatus = Number(error?.httpStatus || 0);
+    const accessDenied = httpStatus === 401 || httpStatus === 403;
+    const serverFailure = httpStatus >= 500;
+    state.productReadinessByJobId[jobId] = {
+      failed: true,
+      httpStatus,
+      evidenceAt: new Date().toISOString(),
+      reason: accessDenied
+        ? "当前会话或店铺权限不足，系统没有获得商品状态证据。"
+        : serverFailure
+          ? "ERP 服务暂时无法完成商品状态回查，系统没有使用旧状态替代本次结果。"
+          : "本次只读回查未完成，系统没有获得可用于判断商品状态的证据。",
+      nextAction: accessDenied
+        ? "重新建立 ERP 会话并检查店铺 Seller API 权限后再回查。"
+        : serverFailure
+          ? "稍后重试；若持续失败，检查服务日志和店铺只读连接。"
+          : "检查店铺只读 API 配置后重试；失败不会把商品改为可售。",
+      environment,
+    };
+  }
+  renderListingSellerTaskSummary();
+}
+
+const LISTING_SELLER_SUMMARY_STATUS_LABELS = {
+  no_product: "尚未开始",
+  waiting_human: "等待你确认",
+  reviewing: "Ozon 审核中",
+  review_failed: "审核未通过",
+  submission_needs_review: "提交结果待复核",
+  sale_pending_stock: "可售，待确认库存",
+  sale_ready: "商品已上架，库存已就绪",
+  listing_progress: "上架准备中",
+};
+
+function listingSellerTaskSummaryModel(run = null, context = {}) {
+  const nodes = Array.isArray(run?.nodes) ? run.nodes : [];
+  const task = run?.summary?.currentProductTask || null;
+  const reviewNode = nodes.find((node) => node.key === "review_reconcile") || null;
+  const handoffNode = nodes.find((node) => node.key === "candidate_handoff") || null;
+  const stockNode = nodes.find((node) => node.key === "stock_sync") || null;
+  const sourceEvidence = run?.sourceEvidence || run?.source?.sourceEvidence || context.sourceEvidence || null;
+  const procurementEvidence = run?.source?.procurementEvidence || context.procurementEvidence || null;
+  const mediaAssets = run?.source?.mediaAssets || context.mediaAssets || [];
+  const mediaIssues = Array.isArray(context.mediaIssues)
+    ? context.mediaIssues.filter(Boolean).map(String)
+    : (Array.isArray(run?.source?.mediaIssues) ? run.source.mediaIssues.filter(Boolean).map(String) : []);
+  const mediaBlocked = mediaIssues.length > 0;
+  const contentNode = nodes.find((node) => ["content_generation", "content_review"].includes(node.key));
+  const contentEvidence = run?.contentEvidence || contentNode?.output?.contentEvidence || null;
+  const contentSellerResult = run?.contentSellerResult || contentNode?.output?.sellerResult || null;
+  const pricingNode = nodes.find((node) => node.key === "match_profit") || null;
+  const pricingDiagnosis = run?.pricingDiagnosis || pricingNode?.output?.pricingDiagnosis || null;
+  const pricingDiagnosisResult = pricingNode?.output?.diagnosis || null;
+  const title = task?.productTitle || run?.source?.title || run?.payloadDraft?.items?.[0]?.name || context.title || "";
+  const skuCount = Array.isArray(run?.payloadDraft?.items) && run.payloadDraft.items.length
+    ? run.payloadDraft.items.length
+    : Number(sourceEvidence?.fields?.variants?.count || context.skuCount || 0);
+  const validation = run?.payloadDraftValidation || null;
+  const validationIssues = Array.isArray(validation?.issues) ? validation.issues.length : 0;
+  const firstPayloadItem = run?.payloadDraft?.items?.[0] || null;
+  const category = run?.categoryMatch || run?.source?.categoryMatch || context.categoryMatch || firstPayloadItem || null;
+  const categoryReady = Number(category?.description_category_id || 0) > 0 && Number(category?.type_id || 0) > 0;
+  const categoryText = categoryReady
+    ? String(category.path || `${category.description_category_id} / ${category.type_id}`)
+    : "尚未确认 Ozon 类目";
+  const attributeIssueCount = Array.isArray(validation?.issues)
+    ? validation.issues.filter((issue) => /ATTRIBUTE|属性|CATEGORY/i.test(String(issue?.code || issue?.message || ""))).length
+    : 0;
+  const attributeText = !categoryReady
+    ? "先确认类目后检查必填属性"
+    : !validation
+      ? "尚未运行属性预检"
+      : attributeIssueCount
+        ? `属性待修复（${attributeIssueCount} 项）`
+        : "属性预检未发现阻塞";
+  const contentStatus = contentSellerResult?.status || contentEvidence?.status || "needs_review";
+  const contentText = contentStatus === "blocked"
+    ? "俄文内容被来源事实阻塞"
+    : contentStatus === "reviewed"
+      ? "俄文内容已人工复核"
+      : "俄文内容待人工核对";
+  const packageInfo = pricingDiagnosis?.package || run?.source?.sizeWeight || context.sizeWeight || {};
+  const packageReady = [packageInfo.weightG, packageInfo.lengthMm, packageInfo.widthMm, packageInfo.heightMm]
+    .every((value) => Number(value || 0) > 0);
+  const packageText = packageReady
+    ? `包装 ${packageInfo.weightG}g / ${packageInfo.lengthMm}×${packageInfo.widthMm}×${packageInfo.heightMm}mm`
+    : "包装尺重证据待补齐";
+  const pricingBlocked = pricingNode?.status === "waiting_human"
+    || [pricingDiagnosisResult?.reasonCode, pricingDiagnosis?.reasonCode].some((code) => String(code || "").startsWith("PRICING_"));
+  const pricingProfitStatus = String(pricingDiagnosis?.profitStatus || "unknown");
+  const pricingText = !pricingDiagnosis
+    ? "尚未生成定价诊断"
+    : pricingBlocked
+      ? `定价风险阻塞${pricingDiagnosisResult?.messageZh ? `：${pricingDiagnosisResult.messageZh}` : ""}`
+      : pricingDiagnosis.priceCny
+        ? pricingProfitStatus === "observed"
+          ? `售价 ${pricingDiagnosis.priceCny} CNY；利润 ${pricingDiagnosis.profit || "待确认"}`
+          : pricingProfitStatus === "estimate"
+            ? `售价 ${pricingDiagnosis.priceCny} CNY；利润估算 ${pricingDiagnosis.profit || "待确认"}`
+            : `售价 ${pricingDiagnosis.priceCny} CNY；利润未知（佣金/结算证据不足）`
+        : "定价结果待人工核对";
+  // Keep the seller-facing chain explicit: source/draft evidence can exist
+  // while preflight has not run yet.  Without this field the summary only
+  // showed the generic “上架准备中”, which made a passed/blocked preflight
+  // indistinguishable from an unfinished draft.
+  const preflightStatus = !run?.payloadDraft
+    ? "尚未生成 Payload 草稿"
+    : !validation
+      ? "尚未预检"
+      : validation.ok
+        ? "预检通过，等待人工确认"
+        : `预检阻塞（${validationIssues} 项）`;
+  const preflightNextStep = !run?.payloadDraft
+    ? "先补齐来源、类目和商品字段"
+    : !validation
+      ? "运行本地预检；不会提交 Ozon"
+      : validation.ok
+        ? "检查媒体、价格和库存证据，再确认提交"
+        : "按字段和 SKU 修复问题后重新预检";
+  const reviewFailed = reviewNode && (["failed", "waiting_human"].includes(String(reviewNode.status || ""))
+    || Number(reviewNode.output?.errorCount || 0) > 0
+    || Number(reviewNode.output?.listingDefectCount || 0) > 0);
+  const reviewSucceeded = String(reviewNode?.status || "") === "success";
+  const submitted = nodes.some((node) => node.key === "ozon_submit" && ["success", "completed"].includes(String(node.status || "")));
+  const submissionNeedsReview = String(run?.submissionReservation?.state || "").trim() === "needs_review";
+  const stockSucceeded = ["success", "completed"].includes(String(stockNode?.status || ""));
+  // currentProductTask is normalized by the workflow summary layer and may
+  // use either the legacy seller label (`waiting`) or the canonical workflow
+  // state (`waiting_human`/`needs_confirmation`). Treat all three as the same
+  // seller gate so the primary action never falls back to generic draft work.
+  const waitingHuman = run?.status === "waiting_human"
+    || run?.locks?.waitingHuman === true
+    || ["waiting", "waiting_human", "needs_confirmation"].includes(String(task?.status || ""));
+
+  let stateName = "listing_progress";
+  if (!run && !title) stateName = "no_product";
+  else if (reviewFailed) stateName = "review_failed";
+  else if (submissionNeedsReview) stateName = "submission_needs_review";
+  else if (reviewSucceeded && !stockSucceeded) stateName = "sale_pending_stock";
+  else if (submitted && !reviewSucceeded) stateName = "reviewing";
+  else if (waitingHuman) stateName = "waiting_human";
+  else if (reviewSucceeded && stockSucceeded) stateName = "sale_ready";
+
+  const actions = {
+    no_product: { label: "去采集商品", view: "sourcing", effect: "打开采集页；不会创建或提交 Ozon 商品。" },
+    waiting_human: { label: "处理待确认项", view: task?.view || "listing", nodeKey: task?.nodeKey || "preflight_check", effect: "打开待确认项；确认前不会自动提交 Ozon。" },
+    reviewing: { label: "查看审核进度", view: "workflow-console", nodeKey: "review_reconcile", effect: "打开审核进度；只查看 Ozon 回执，不会重复提交。" },
+    review_failed: { label: "修复审核问题", view: "workflow-console", nodeKey: "review_reconcile", effect: "打开审核问题和字段定位；修复后仍需重新预检与确认。" },
+    submission_needs_review: { label: "回查提交结果", view: "workflow-console", nodeKey: "review_reconcile", effect: "打开提交结果和 task_id 回查；不会重复提交或自动重试。" },
+    sale_pending_stock: { label: "检查库存就绪", view: "warehouse", nodeKey: "stock_sync", effect: "打开库存页核对仓库和数量；不会自动写入库存。" },
+    sale_ready: { label: "查看商品运营", view: "products", nodeKey: "stock_sync", effect: "打开已上架商品状态；不会进入订单履约或执行写入。" },
+    listing_progress: { label: "继续完善商品", view: "listing", nodeKey: task?.nodeKey || "preflight_check", effect: "打开当前商品草稿；修改只保存在草稿，提交仍需预检和人工确认。" },
+  };
+  // The primary seller action follows the first business blocker in the
+  // golden path. It only routes the user to a repair/review surface; it
+  // never performs an Ozon write by itself.
+  let action = actions[stateName];
+  if (stateName === "listing_progress") {
+    const missingSourceDomains = Array.isArray(sourceEvidence?.missingDomains)
+      ? sourceEvidence.missingDomains.length
+      : 0;
+    const sourceReady = Boolean(
+      sourceEvidence?.snapshotHash
+      && sourceEvidence?.verificationState === "ok"
+      && missingSourceDomains === 0,
+    );
+    if (!sourceReady) {
+      action = {
+        label: "补齐来源证据",
+        view: "sourcing",
+        nodeKey: "candidate_parse",
+        effect: "打开来源采集与证据修复；不会提交 Ozon。",
+      };
+    } else if (!categoryReady) {
+      action = {
+        label: "确认 Ozon 类目",
+        view: "listing",
+        nodeKey: "category_match",
+        effect: "打开类目匹配与必填属性；不会提交 Ozon。",
+      };
+    } else if (contentStatus === "blocked") {
+      action = {
+        label: "核对俄文内容",
+        view: "listing",
+        nodeKey: "content_generation",
+        effect: "打开俄文内容和来源事实冲突；不会提交 Ozon。",
+      };
+    } else if (mediaBlocked) {
+      action = {
+        label: "处理媒体审查",
+        view: "listing",
+        nodeKey: "content_review",
+        effect: "打开媒体审查并处理图片风险；不会上传媒体或提交 Ozon。",
+      };
+    } else if (!packageReady && (pricingDiagnosis || run?.payloadDraft)) {
+      action = {
+        label: "补齐包装尺重",
+        view: "listing",
+        nodeKey: "match_profit",
+        effect: "打开包装尺重证据修复；不会提交 Ozon。",
+      };
+    } else if (pricingBlocked) {
+      action = {
+        label: "修复定价风险",
+        view: "listing",
+        nodeKey: "match_profit",
+        effect: "打开采购、运费和利润诊断；不会提交 Ozon。",
+      };
+    } else if (run?.payloadDraft && !validation) {
+      action = {
+        label: "运行提交前预检",
+        view: "listing",
+        nodeKey: "preflight_check",
+        effect: "运行本地预检；不会提交 Ozon。",
+      };
+    } else if (run?.payloadDraft && validation && !validation.ok) {
+      action = {
+        label: "回到草稿修复并重新预检",
+        view: "listing",
+        nodeKey: "preflight_check",
+        effect: "回到当前本地草稿修复问题；修复后重新预检，仍不会提交 Ozon。",
+      };
+    } else if (run?.payloadDraft && validation?.ok) {
+      // A passed preflight is a seller gate, not generic "continue editing".
+      // Route the primary action to the confirmation surface so the seller
+      // can see the exact payload/hash confirmation and side effect before
+      // any Ozon write. The click itself remains read-only.
+      action = {
+        label: "进入人工确认提交",
+        view: "workflow-console",
+        nodeKey: "ozon_submit",
+        effect: "打开提交确认和草稿 hash；再次确认前不会调用 Ozon。",
+      };
+    }
+  }
+  const sourceText = sourceEvidence?.verificationState === "waiting_human"
+    ? "来源页面等待人工验证"
+    : sourceEvidence?.snapshotHash && sourceEvidence?.verificationState === "ok"
+      ? "1688 页面证据已验证"
+      : sourceEvidence?.snapshotHash
+        ? "1688 页面证据已记录，待人工验证"
+      : (run?.source?.url || title)
+        ? "已有商品来源，页面证据待补齐"
+        : "来源证据未绑定";
+  const procurementText = procurementEvidence?.moq?.source && procurementEvidence.moq.source !== "missing"
+    ? `MOQ ${String(procurementEvidence.moq.value || "已记录")}；阶梯价 ${Number(procurementEvidence.priceTiers?.values?.length || 0)} 档`
+    : "采购 MOQ/阶梯价证据待补齐";
+  const mediaList = Array.isArray(mediaAssets) ? mediaAssets : [];
+  const approvedMediaCount = mediaList.filter((asset) => asset?.checks?.humanApproved === true).length;
+  const mediaText = mediaList.length
+    ? `${mediaList.length} 个媒体候选，人工批准 ${approvedMediaCount} 个`
+    : "媒体候选证据待补齐";
+  const defaultReasons = {
+    no_product: "还没有当前商品，无法开始 Ozon 上架检查。",
+    waiting_human: "当前步骤需要人工确认，系统不会自动越过。",
+    reviewing: "商品已提交，正在等待 Ozon 审核回执。",
+    review_failed: "Ozon 审核返回阻塞问题，需要按商品字段修复。",
+    submission_needs_review: "上一次提交结果未知，需要先按 task_id 回查，不能重复提交。",
+    sale_pending_stock: "审核已通过，确认仓库和库存后才能形成可售闭环。",
+    sale_ready: "商品审核和库存证据均已完成；后续进入商品运营，不自动进入 FBS 履约。",
+    listing_progress: validationIssues
+      ? `预检仍有 ${validationIssues} 个问题需要处理。`
+      : handoffNode
+        ? "1688 候选已进入草稿，但还没有可提交 Payload；先补俄文内容、类目、采购成本和媒体资料。"
+        : "商品仍在上架准备阶段。",
+  };
+  return {
+    state: stateName,
+    status: LISTING_SELLER_SUMMARY_STATUS_LABELS[stateName],
+    title: title || "还没有当前商品",
+    sourceText,
+    categoryText,
+    attributeText,
+    contentText,
+    packageText,
+    pricingText,
+    procurementText,
+    mediaText,
+    preflightStatus,
+    preflightNextStep,
+    validationIssueCount: validationIssues,
+    skuCount,
+    stage: task?.blockedAt || task?.stage || (stateName === "no_product" ? "选择货源" : "上架准备"),
+    reason: task?.reason || reviewNode?.reason || defaultReasons[stateName],
+    reviewStatus: reviewFailed ? "审核失败" : submissionNeedsReview ? "提交结果待复核" : reviewSucceeded ? "审核通过" : submitted ? "审核中" : "尚未提交",
+    stockStatus: stockSucceeded ? "库存已就绪" : reviewSucceeded ? "待确认库存" : "等待审核后处理",
+    action,
+    runId: run?.id || "",
+  };
+}
+
+// Keep the compact upload-queue card truthful to the same seller summary as
+// the detailed task panel.  The old HTML always said "确认上传", even when
+// there was no draft or the first blocker was source/category evidence.  A
+// seller must see the current gate and the first safe action, not an upload
+// affordance that cannot actually proceed.
+function renderListingUploadQueueSummary(summary = {}, run = null) {
+  const draft = document.querySelector("#listingCurrentDraftStatus");
+  const readiness = document.querySelector("#listingUploadReadiness");
+  const repairs = document.querySelector("#listingMinimalRepairCount");
+  const next = document.querySelector("#listingUploadNextAction");
+  if (!draft || !readiness || !repairs || !next) return;
+  draft.textContent = run?.payloadDraft
+    ? "草稿已绑定"
+    : summary.state === "no_product"
+      ? "未绑定商品"
+      : "待生成草稿";
+  const firstAction = state.listingHandoffNotice || summary.action?.label || "查看当前商品任务";
+  const actionIsListing = summary.action?.view === "listing";
+  readiness.textContent = summary.state === "no_product"
+    ? "未开始"
+    : summary.state === "waiting_human"
+      ? "等待人工确认"
+      : summary.state === "sale_ready"
+        ? "库存已就绪"
+      : summary.preflightStatus?.includes("阻塞")
+        ? "预检阻塞"
+        : !actionIsListing && summary.state === "listing_progress"
+          ? "资料待补齐"
+          : summary.preflightStatus?.includes("通过")
+            ? "预检通过，待确认"
+            : "待预检";
+  repairs.textContent = run
+    ? summary.validationIssueCount > 0
+      ? `${summary.validationIssueCount} 项`
+      : summary.preflightStatus === "尚未预检"
+        ? "待预检"
+        : "0 项"
+    : "-";
+  next.textContent = firstAction;
+}
+
+// Translate local media checks into the seller's decision language.  The
+// collector/preflight keeps the machine evidence in checks.*; this helper is
+// intentionally read-only and never starts OCR, downloads an image, uploads
+// media, or calls Ozon.
+function mediaSellerRiskItems(asset = {}) {
+  const checks = asset?.checks && typeof asset.checks === "object" ? asset.checks : {};
+  const risks = [];
+  const ocr = checks.ocr && typeof checks.ocr === "object" ? checks.ocr : {};
+  const ocrStatus = String(ocr.status || "unknown").toLowerCase();
+  const hasOcrRisk = ocrStatus === "blocked" || ocr.hasChinese === true || ocr.isFactoryIntro === true || ocr.hasOzonPolicyText === true;
+  if (hasOcrRisk) {
+    const reasons = [];
+    if (ocr.hasChinese === true) reasons.push("检测到中文文字");
+    if (ocr.isFactoryIntro === true) reasons.push("包含工厂/供应商介绍");
+    if (ocr.hasOzonPolicyText === true) reasons.push("包含平台政策文字");
+    risks.push({ code: "MEDIA_OCR_RISK", label: "图片文字需要处理", reason: `${reasons.join("、") || "OCR 标记为风险"}，不能直接用于 Ozon 商品媒体。`, next: "翻译并清理文字，或更换无风险图片，然后重新检查。", sideEffect: "当前只记录本地风险，不会上传图片或写入 Ozon。" });
+  } else if (ocrStatus !== "clear") {
+    risks.push({ code: "MEDIA_OCR_UNKNOWN", label: "图片文字尚未确认", reason: "还没有可核对的 OCR 结果，不能判断图片是否含违规文字。", next: "先完成人工看图或 OCR 检查，再决定保留、清理或换图。", sideEffect: "在检查完成前，富内容和提交仍保持锁定。" });
+  }
+  const sourceRisk = String(checks.sourceRisk?.status || checks.sourceRisk || "unknown").toLowerCase();
+  if (sourceRisk === "blocked") {
+    risks.push({ code: "MEDIA_SOURCE_RISK", label: "图片来源有风险", reason: "来源可能涉及版权或平台使用风险，不能把当前图片当作可发布素材。", next: "换用有来源证据的图片，并重新绑定当前 1688 快照。", sideEffect: "不会删除 1688 原始采集，只会阻止这张图片进入批准草稿。" });
+  } else if (sourceRisk !== "clear") {
+    risks.push({ code: "MEDIA_SOURCE_RISK_UNKNOWN", label: "图片来源尚未确认", reason: "缺少可核对的版权/来源判断，当前素材不应直接批准。", next: "核对来源证据或重新采集图片，再重新检查。", sideEffect: "当前只显示待核验状态，不会上传或写入 Ozon。" });
+  }
+  const dimensions = checks.dimensions && typeof checks.dimensions === "object" ? checks.dimensions : {};
+  const dimensionsStatus = String(dimensions.status || "unknown").toLowerCase();
+  if (dimensionsStatus === "blocked" || Number(dimensions.width) <= 0 || Number(dimensions.height) <= 0) {
+    risks.push({ code: "MEDIA_DIMENSIONS_INVALID", label: "图片尺寸不可用", reason: "图片尺寸无效，无法作为稳定的商品媒体。", next: "替换或重新获取原图，再重新检查像素尺寸。", sideEffect: "不会修改原图，也不会自动生成新图片。" });
+  } else if (dimensionsStatus !== "clear") {
+    risks.push({ code: "MEDIA_DIMENSIONS_UNKNOWN", label: "图片尺寸尚未确认", reason: "还没有可信的像素尺寸证据。", next: "查看原图尺寸或重新采集后再检查。", sideEffect: "尺寸确认前不会把它当作可提交媒体。" });
+  }
+  if (!/^https?:\/\/[^\s]+$/i.test(String(asset.sourceUrl || "").trim())) {
+    risks.push({ code: "MEDIA_SOURCE_URL_INVALID", label: "媒体来源链接无效", reason: "当前图片没有可追溯的来源链接。", next: "回到 1688 采集并保存来源链接。", sideEffect: "不会从不明来源补图或猜测来源。" });
+  }
+  const sourceHash = String(asset.sourceHash || "").trim();
+  if (!sourceHash) {
+    risks.push({ code: "MEDIA_SOURCE_HASH_MISSING", label: "缺少图片来源指纹", reason: "当前图片没有 URL 哈希，无法核对是否被替换。", next: "重新采集并保存媒体来源指纹。", sideEffect: "不会把没有指纹的图片标记为已批准。" });
+  } else if (!/^(?:(?:sha256|url-sha256):)?[a-f0-9]{64}$/i.test(sourceHash)) {
+    risks.push({ code: "MEDIA_SOURCE_HASH_INVALID", label: "图片来源指纹无效", reason: "当前来源指纹格式不正确，无法核对图片是否被替换。", next: "重新采集并生成来源指纹。", sideEffect: "不会用无效指纹放行媒体批准。" });
+  }
+  if (!/^snapshot:[a-f0-9]{64}$/i.test(String(asset.evidenceRef || "").trim())) {
+    risks.push({ code: "MEDIA_EVIDENCE_REF_INVALID", label: "缺少当前 1688 快照", reason: "图片没有绑定当前商品的页面快照证据。", next: "刷新 1688 采集结果，并重新绑定当前草稿。", sideEffect: "不会复用旧商品或其他店铺的媒体批准。" });
+  }
+  return risks;
+}
+
+function mediaIssueSellerDetail(issue = "") {
+  const code = String(issue || "").trim();
+  const map = {
+    detail_images_require_human_review_before_rich_content: { label: "详情图待人工审查", reason: "详情图还没有逐张确认，不能直接放入富内容。", next: "进入人工看图，选择要保留的详情图。", sideEffect: "只保存本地批准草稿，不会上传或写入 Ozon。" },
+    collected_rich_content_requires_human_approval: { label: "富内容待人工确认", reason: "采集到的富内容尚未得到人工批准。", next: "逐项核对图片和内容后保存批准草稿。", sideEffect: "确认前不会把富内容带入提交 Payload。" },
+    blocked_sensitive: { label: "合规敏感项阻断", reason: "该素材关联合规敏感信息，系统不能猜测或自动放行。", next: "核对真实来源和平台要求，必要时更换素材。", sideEffect: "不会自动填写敏感字段，也不会提交 Ozon。" },
+  };
+  return map[code] || { label: code || "媒体问题", reason: "媒体候选存在未解决问题。", next: "处理问题后重新进行媒体合规检查。", sideEffect: "当前只保留本地草稿，不会执行 Ozon 写入。" };
+}
+
+function renderListingMediaReview(mediaAssets = [], mediaIssues = [], approvalContext = {}) {
+  const assets = Array.isArray(mediaAssets) ? mediaAssets : [];
+  const issues = Array.isArray(mediaIssues) ? mediaIssues.filter(Boolean).map(String) : [];
+  const roleGroups = [
+    { key: "main", label: "主图" },
+    { key: "variant", label: "SKU 图" },
+    { key: "detail", label: "详情图" },
+  ];
+  const unapprovedCount = assets.filter((asset) => asset?.checks?.humanApproved !== true).length;
+  const sellerRiskItems = assets.flatMap((asset) => mediaSellerRiskItems(asset).map((risk) => ({ ...risk, assetId: asset?.id || "" })));
+  const issueRiskItems = issues.map((issue) => ({ ...mediaIssueSellerDetail(issue), code: issue, assetId: "" }));
+  const blockers = [...issueRiskItems.map((item) => item.reason), ...sellerRiskItems.map((item) => item.reason)];
+  if (unapprovedCount) blockers.push(`${unapprovedCount} 个媒体候选尚未确认`);
+  const run = approvalContext.run || null;
+  const expectedDraftHash = String(run?.payloadDraftHash || "").trim();
+  const expectedSourceHash = String(approvalContext.sourceEvidence?.snapshotHash || "").trim();
+  const waitingHuman = run?.status === "waiting_human" || run?.locks?.waitingHuman === true;
+  const baseEligible = Boolean(run?.id && expectedDraftHash && expectedSourceHash && waitingHuman && assets.length);
+  const approvalDraft = run?.mediaApprovalDraft || null;
+  const draftSaveEligible = baseEligible && !["approved_draft", "published_local"].includes(approvalDraft?.status);
+  const draftSaveHint = approvalDraft?.status === "approved_draft"
+    ? "已有批准草稿，不能重复保存第一阶段；请核对后进入第二阶段。"
+    : approvalDraft?.status === "published_local"
+      ? "本地媒体批准已发布，不能重新保存为草稿。"
+      : draftSaveEligible
+        ? "选择至少一个候选、填写操作者并勾选明确确认后才能保存。"
+        : "当前不可保存：需要等待人工状态、当前 Payload hash、1688 来源快照 hash 和媒体候选。";
+  const candidateApprovalDraft = approvalContext.candidateApprovalDraft || null;
+  const approvalAssetIds = Array.isArray(approvalDraft?.assetIds) ? [...new Set(approvalDraft.assetIds.map(String))].sort() : [];
+  const currentAssetIds = new Set(assets.map((asset) => String(asset?.id || "")));
+  const candidateAssetIds = Array.isArray(candidateApprovalDraft?.assetIds) ? [...new Set(candidateApprovalDraft.assetIds.map(String))].sort() : [];
+  const publishEligible = Boolean(
+    baseEligible
+    && approvalDraft?.status === "approved_draft"
+    && candidateApprovalDraft?.status === "approved_draft"
+    && approvalDraft.expectedDraftHash === expectedDraftHash
+    && approvalDraft.expectedSourceHash === expectedSourceHash
+    && candidateApprovalDraft.expectedDraftHash === expectedDraftHash
+    && candidateApprovalDraft.expectedSourceHash === expectedSourceHash
+    && approvalAssetIds.length
+    && approvalAssetIds.every((id) => currentAssetIds.has(id))
+    && approvalAssetIds.join("|") === candidateAssetIds.join("|")
+  );
+  return `
+    <section class="listing-media-review" aria-label="媒体候选只读审查">
+      <div class="listing-media-review-head">
+        <div>
+          <span>媒体审查工作台</span>
+          <strong>${assets.length} 个候选 · ${unapprovedCount ? `${unapprovedCount} 个待确认` : "均已有确认记录"}</strong>
+        </div>
+        <small>当前只能审查；未经确认不进入 rich content。${run?.id && unapprovedCount && !waitingHuman ? `<button class="small-blue" type="button" data-request-media-review data-media-review-run-id="${escapeHtml(run.id)}">进入人工看图</button>` : ""}</small>
+      </div>
+      <div class="listing-media-review-groups">
+        ${roleGroups.map((group) => {
+          const items = assets.filter((asset) => asset?.role === group.key);
+          const approvedCount = items.filter((asset) => asset?.checks?.humanApproved === true).length;
+          return `
+            <article>
+              <span>${group.label}</span>
+              <strong>候选 ${items.length} · 已确认 ${approvedCount}</strong>
+              <small>${items.length ? `待确认 ${items.length - approvedCount}` : "暂无候选"}</small>
+              ${items.length ? `
+                <details>
+                  <summary>查看证据引用</summary>
+                  <div class="listing-media-review-evidence">
+                    ${items.map((asset) => `
+                      <label>
+                        <input type="checkbox" data-media-approval-asset-id="${escapeHtml(asset.id || "")}" ${draftSaveEligible ? "" : "disabled"} />
+                        <b>${escapeHtml(asset.id || "未编号")}${asset.sourceSkuId ? ` · SKU ${escapeHtml(asset.sourceSkuId)}` : ""}</b>
+                        <small>批准状态：${asset?.checks?.humanApproved === true ? "已有确认记录" : "未确认"}</small>
+                        ${mediaSellerRiskItems(asset).length ? `<ul class="listing-media-risk-list">${mediaSellerRiskItems(asset).map((risk) => `<li><b>${escapeHtml(risk.label)}</b><span>原因：${escapeHtml(risk.reason)}</span><span>下一步：${escapeHtml(risk.next)}</span><small>不会发生：${escapeHtml(risk.sideEffect)}</small></li>`).join("")}</ul>` : `<small class="listing-media-clear">媒体检查已通过；仍需人工确认后才能进入批准草稿。</small>`}
+                        <code>${escapeHtml(asset.evidenceRef || "无页面快照引用")}</code>
+                        <code>${escapeHtml(asset.sourceHash || "无 URL 哈希")}</code>
+                      </label>
+                    `).join("")}
+                  </div>
+                </details>
+              ` : ""}
+            </article>
+          `;
+        }).join("")}
+      </div>
+      <p><b>阻断原因：</b>${escapeHtml(blockers.join("；") || "当前媒体证据无已知阻断；是否可提交仍以预检和人工确认为准。")}</p>
+      ${(issueRiskItems.length || sellerRiskItems.length) ? `<div class="listing-media-risk-summary"><strong>处理建议</strong>${[...issueRiskItems, ...sellerRiskItems].map((risk) => `<p><b>${escapeHtml(risk.label)}</b>：${escapeHtml(risk.next)} <small>不会发生：${escapeHtml(risk.sideEffect)}</small></p>`).join("")}</div>` : ""}
+      <div class="listing-media-approval-draft" data-media-approval-eligible="${draftSaveEligible ? "true" : "false"}">
+        <strong>本地批准草稿</strong>
+        <label>操作者（本机审计标识、未验证身份） <input type="text" maxlength="128" data-media-approval-actor placeholder="填写本机审计标识" ${draftSaveEligible ? "" : "disabled"} /></label>
+        <label><input type="checkbox" data-media-approval-confirm ${draftSaveEligible ? "" : "disabled"} /> 我已逐项审查所选媒体，并确认只保存本地批准草稿</label>
+        <button class="primary" type="button" data-save-media-approval-draft data-media-approval-run-id="${escapeHtml(run?.id || "")}" data-expected-draft-hash="${escapeHtml(expectedDraftHash)}" data-expected-source-hash="${escapeHtml(expectedSourceHash)}" disabled>保存批准草稿（仅本地）</button>
+        <small>${draftSaveHint}</small>
+        ${approvalDraft ? `<p class="media-approval-draft-status ${approvalDraft.status === "stale" ? "is-stale" : ""}">${approvalDraft.status === "stale" ? "批准草稿已陈旧：Payload 或来源证据发生变化，请重新审查。" : `当前草稿状态：${escapeHtml(approvalDraft.status || "unknown")} · 操作者 ${escapeHtml(approvalDraft.actorId || "未记录")} · ${escapeHtml(approvalDraft.confirmedAt || "时间未记录")}`}</p>` : ""}
+        <p class="media-approval-draft-response" aria-live="polite"></p>
+      </div>
+      ${approvalDraft?.status === "published_local" ? `
+        <div class="listing-media-approval-published">
+          <strong>本地媒体批准已发布</strong>
+          <span>详情媒体齐全：${approvalDraft.richContentDetailAssetsApproved === true ? "是" : "否，rich content 仍不能放行"}</span>
+          <small>不上传、不写 Ozon；提交仍锁定，后续仍需预检和人工确认。</small>
+          <button class="small-blue" type="button" data-request-preflight-recheck data-preflight-recheck-run-id="${escapeHtml(run?.id || "")}">重新运行商品预检</button>
+          <p>点击后只重新计算当前本地草稿的阻塞项，不会提交 Ozon。</p>
+        </div>
+      ` : `
+        <div class="listing-media-approval-publish" data-media-publish-eligible="${publishEligible ? "true" : "false"}" data-media-publish-original-actor="${escapeHtml(approvalDraft?.actorId || "")}">
+          <strong>第二阶段：发布本地媒体批准</strong>
+          <label>发布操作者（本机审计标识、未验证身份） <input type="text" maxlength="128" data-media-approval-publish-actor value="${escapeHtml(approvalDraft?.actorId || "")}" ${publishEligible ? "" : "disabled"} /></label>
+          <label><input type="checkbox" data-media-approval-publish-confirm ${publishEligible ? "" : "disabled"} /> 我确认发布当前本地批准绑定</label>
+          <label><input type="checkbox" data-media-approval-reconfirm-actor ${publishEligible ? "" : "disabled"} /> 若更换操作者，我再次确认身份标识变化</label>
+          <button class="primary" type="button" data-publish-media-approval data-media-approval-run-id="${escapeHtml(run?.id || "")}" data-expected-draft-hash="${escapeHtml(expectedDraftHash)}" data-expected-source-hash="${escapeHtml(expectedSourceHash)}" data-media-approval-asset-ids="${escapeHtml(approvalAssetIds.join(","))}" disabled>发布本地媒体批准</button>
+          <small>${publishEligible ? "勾选发布确认后可继续；更换操作者还必须再次确认。" : "当前批准草稿、hash、assetIds 或关联任务已变化，请先刷新并重新审查。"}</small>
+          <p class="media-approval-publish-response" aria-live="polite"></p>
+        </div>
+      `}
+      <small>保存只记录本地审查草稿；没有发布媒体，也没有写入 Ozon。</small>
+    </section>
+  `;
+}
+
+function updateMediaApprovalDraftControl(container) {
+  if (!container) return;
+  const review = container.closest(".listing-media-review") || container;
+  const button = container.querySelector("[data-save-media-approval-draft]");
+  const selected = review.querySelectorAll("[data-media-approval-asset-id]:checked");
+  const actor = container.querySelector("[data-media-approval-actor]")?.value.trim() || "";
+  const confirmed = container.querySelector("[data-media-approval-confirm]")?.checked === true;
+  if (button) button.disabled = container.dataset.mediaApprovalEligible !== "true" || !selected.length || !actor || !confirmed;
+}
+
+function updateMediaApprovalPublishControl(container) {
+  if (!container) return;
+  const button = container.querySelector("[data-publish-media-approval]");
+  const actor = container.querySelector("[data-media-approval-publish-actor]")?.value.trim() || "";
+  const publishConfirmed = container.querySelector("[data-media-approval-publish-confirm]")?.checked === true;
+  const actorChanged = actor !== String(container.dataset.mediaPublishOriginalActor || "");
+  const reconfirmed = container.querySelector("[data-media-approval-reconfirm-actor]")?.checked === true;
+  if (button) button.disabled = container.dataset.mediaPublishEligible !== "true" || !actor || !publishConfirmed || (actorChanged && !reconfirmed);
+}
+
+function mediaApprovalSellerError(reasonCode = "") {
+  const messages = {
+    MEDIA_APPROVAL_DRAFT_HASH_MISMATCH: "Payload 草稿已变化，请刷新当前商品并重新审查媒体。",
+    MEDIA_APPROVAL_SOURCE_HASH_MISMATCH: "1688 来源证据已变化，请刷新当前商品并重新审查媒体。",
+    MEDIA_APPROVAL_WAITING_HUMAN_REQUIRED: "当前任务不在等待人工状态，不能保存批准草稿。",
+    MEDIA_APPROVAL_CONFIRMATION_REQUIRED: "请填写本机审计标识并完成明确确认。",
+    MEDIA_APPROVAL_ASSET_IDS_INVALID: "请选择当前商品的至少一个媒体候选。",
+    MEDIA_APPROVAL_ASSET_NOT_FOUND: "所选媒体不属于当前商品，请刷新后重新选择。",
+    MEDIA_APPROVAL_ASSET_SOURCE_MISMATCH: "所选媒体与当前来源快照不一致，请刷新后重新审查。",
+    MEDIA_APPROVAL_PUBLISH_CONFIRMATION_REQUIRED: "请明确确认发布当前本地媒体批准。",
+    MEDIA_APPROVAL_ACTOR_MISMATCH: "发布操作者与批准草稿不同；更换操作者需要再次确认。",
+    MEDIA_APPROVAL_ASSET_SET_MISMATCH: "当前媒体集合与批准草稿不一致，请刷新并重新审查。",
+    MEDIA_APPROVAL_DRAFT_STALE: "批准草稿已陈旧，请刷新当前商品并重新创建批准草稿。",
+    MEDIA_APPROVAL_ROLLBACK_FAILED: "本地媒体批准状态需要人工复核，请停止继续操作并刷新。",
+  };
+  return messages[reasonCode] || "保存未完成，请刷新当前商品后重试。";
+}
+
+async function publishMediaApproval(button) {
+  const container = button.closest(".listing-media-approval-publish");
+  const response = container?.querySelector(".media-approval-publish-response");
+  const runId = String(button.dataset.mediaApprovalRunId || "");
+  const actorId = container.querySelector("[data-media-approval-publish-actor]")?.value.trim() || "";
+  const reconfirmActorChange = container.querySelector("[data-media-approval-reconfirm-actor]")?.checked === true;
+  const assetIds = String(button.dataset.mediaApprovalAssetIds || "").split(",").filter(Boolean);
+  setBusy(button, true);
+  try {
+    const result = await api(`/api/workflows/${encodeURIComponent(runId)}/media-approval-draft/publish`, {
+      method: "POST",
+      body: JSON.stringify({
+        publishConfirmed: true,
+        actorId,
+        reconfirmActorChange,
+        assetIds,
+        expectedDraftHash: button.dataset.expectedDraftHash,
+        expectedSourceHash: button.dataset.expectedSourceHash,
+      }),
+    });
+    if (response) response.textContent = result.richContentDetailAssetsApproved
+      ? "本地批准已发布，详情媒体齐全；不上传、不写 Ozon，提交仍锁定。"
+      : "本地批准已发布，但详情媒体不齐全；不上传、不写 Ozon，提交仍锁定。";
+    await loadWorkflowRuns();
+    await loadAutoListJobs();
+  } catch (error) {
+    if (response) response.textContent = mediaApprovalSellerError(error.reasonCode);
+  } finally {
+    setBusy(button, false);
+    updateMediaApprovalPublishControl(container);
+  }
+}
+
+async function saveMediaApprovalDraft(button) {
+  const container = button.closest(".listing-media-approval-draft");
+  const review = container?.closest(".listing-media-review") || container;
+  const response = container?.querySelector(".media-approval-draft-response");
+  const runId = String(button.dataset.mediaApprovalRunId || "");
+  const assetIds = [...review.querySelectorAll("[data-media-approval-asset-id]:checked")].map((input) => input.dataset.mediaApprovalAssetId);
+  const actorId = container.querySelector("[data-media-approval-actor]")?.value.trim() || "";
+  setBusy(button, true);
+  try {
+    const result = await api(`/api/workflows/${encodeURIComponent(runId)}/media-approval-draft`, {
+      method: "POST",
+      body: JSON.stringify({
+        assetIds,
+        actorId,
+        confirmed: true,
+        expectedDraftHash: button.dataset.expectedDraftHash,
+        expectedSourceHash: button.dataset.expectedSourceHash,
+      }),
+    });
+    if (response) {
+      response.className = `media-approval-draft-response ${result.status === "stale" ? "is-stale" : "is-saved"}`;
+      response.textContent = result.status === "stale"
+        ? "批准草稿已陈旧：请刷新当前商品并重新审查。"
+        : "本地批准草稿已保存；没有发布媒体，也没有写入 Ozon。";
+    }
+    try {
+      await loadWorkflowRuns();
+      await loadAutoListJobs();
+    } catch {
+      if (response) {
+        response.className = "media-approval-draft-response is-stale";
+        response.textContent = "本地批准草稿已保存，但页面刷新失败；请手动刷新后查看真实草稿状态。";
+      }
+    }
+  } catch (error) {
+    if (response) {
+      response.className = "media-approval-draft-response is-stale";
+      response.textContent = mediaApprovalSellerError(error.reasonCode);
+    }
+  } finally {
+    setBusy(button, false);
+    updateMediaApprovalDraftControl(container);
+  }
+}
+
+function renderListingSellerTaskSummary() {
+  const body = $("#listingSellerTaskSummaryBody");
+  if (!body) return;
+  const run = currentListingWorkflowRun();
+  const autoListJob = currentListingAutoListJob(run);
+  const linkedCandidate = autoListJob?.candidateData || null;
+  const mediaAssets = run
+    ? (linkedCandidate?.mediaAssets || run.source?.mediaAssets || [])
+    : (state.collected1688?.mediaAssets || state.currentCaptureDraft?.mediaAssets || []);
+  const mediaIssues = run
+    ? (linkedCandidate?.mediaIssues || run.source?.mediaIssues || [])
+    : (state.collected1688?.mediaIssues || state.currentCaptureDraft?.mediaIssues || []);
+  const summary = listingSellerTaskSummaryModel(run, {
+    title: state.collected1688?.title || state.currentCaptureDraft?.title || "",
+    sourceEvidence: state.collected1688?.sourceEvidence || state.currentCaptureDraft?.sourceEvidence || null,
+    procurementEvidence: state.collected1688?.procurementEvidence || state.currentCaptureDraft?.procurementEvidence || null,
+    mediaAssets: state.collected1688?.mediaAssets || state.currentCaptureDraft?.mediaAssets || [],
+    mediaIssues,
+    skuCount: state.collected1688?.skuVariants?.length || state.currentCaptureDraft?.skuVariants?.length || 0,
+  });
+  renderListingUploadQueueSummary(summary, run);
+  body.innerHTML = `
+    <article><span>当前商品</span><strong>${escapeHtml(summary.title)}</strong><small>${escapeHtml(summary.status)}</small></article>
+    <article><span>来源证据</span><strong>${escapeHtml(summary.sourceText)}</strong><small>SKU ${escapeHtml(summary.skuCount || "-")} 个</small></article>
+    <article><span>Ozon 类目</span><strong>${escapeHtml(summary.categoryText)}</strong><small>${escapeHtml(summary.categoryText === "尚未确认 Ozon 类目" ? "需从当前类目缓存中选择有效 type" : "类目/type 已绑定当前草稿")}</small></article>
+    <article><span>必填属性</span><strong>${escapeHtml(summary.attributeText)}</strong><small>字典值和敏感属性仍需按字段确认</small></article>
+     <article><span>俄文内容</span><strong>${escapeHtml(summary.contentText)}</strong><small>模型建议不能替代来源事实或人工确认</small></article>
+     <article><span>采购证据</span><strong>${escapeHtml(summary.procurementText)}</strong><small>展示价不能替代真实采购阶梯价</small></article>
+     <article><span>包装尺重</span><strong>${escapeHtml(summary.packageText)}</strong><small>缺少可信尺重时不能确认运费和利润</small></article>
+     <article><span>定价与利润</span><strong>${escapeHtml(summary.pricingText)}</strong><small>风险状态不会绕过预检或人工确认</small></article>
+     <article><span>媒体候选</span><strong>${escapeHtml(summary.mediaText)}</strong><small>未经人工批准不能作为可提交富内容</small></article>
+    <article><span>提交前预检</span><strong>${escapeHtml(summary.preflightStatus)}</strong><small>${escapeHtml(summary.preflightNextStep)}</small></article>
+    <article><span>当前阶段</span><strong>${escapeHtml(summary.stage)}</strong><small>${escapeHtml(summary.reason)}</small></article>
+    <article><span>审核状态</span><strong>${escapeHtml(summary.reviewStatus)}</strong><small>库存就绪：${escapeHtml(summary.stockStatus)}</small></article>
+    <article>
+      <span>安全下一步</span>
+      <strong>${escapeHtml(summary.action.label)}</strong>
+      <button class="primary" type="button" data-listing-seller-primary-view="${escapeHtml(summary.action.view)}" data-listing-seller-run-id="${escapeHtml(summary.runId)}" data-listing-seller-node-key="${escapeHtml(summary.action.nodeKey || "")}">${escapeHtml(summary.action.label)}</button>
+      <small>点击后：${escapeHtml(summary.action.effect)}</small>
+    </article>
+    ${renderListingSellerPayloadValidation(run)}
+    ${renderListingSellerContentEvidence(run)}
+    ${renderListingSellerPreflightResult(run)}
+    ${renderListingSellerPayloadIssues(run)}
+    ${renderListingSellerSourceBinding(run)}
+    ${renderListingSellerEvidenceActions(run, autoListJob)}
+    ${renderListingMediaReview(mediaAssets, mediaIssues, { run, sourceEvidence: linkedCandidate?.sourceEvidence || null, candidateApprovalDraft: linkedCandidate?.mediaApprovalDraft || null })}
+    ${renderListingProductReadiness(autoListJob)}
+    ${renderManualListingContentForm(autoListJob)}
+    ${renderManualProcurementForm(autoListJob)}
+    ${renderManualPackageForm(autoListJob)}
+  `;
+  body.querySelector("[data-manual-content-save]")?.addEventListener("click", () => saveManualListingContentFromUi(autoListJob));
+  body.querySelector("[data-manual-procurement-save]")?.addEventListener("click", () => saveManualProcurementFromUi(autoListJob));
+  body.querySelector("[data-manual-package-save]")?.addEventListener("click", () => saveManualPackageFromUi(autoListJob));
+  body.querySelector("[data-seller-validate-payload]")?.addEventListener("click", () => validateListingSellerPayload(body.querySelector("[data-seller-validate-payload]").dataset.runId));
+  body.querySelectorAll("[data-seller-payload-issue]").forEach((button) => {
+    button.addEventListener("click", () => openSellerPayloadIssue(button.dataset.runId, button));
+  });
+  body.querySelector("[data-seller-source-task]")?.addEventListener("click", () => openSellerSourceTask());
+  body.querySelector("[data-seller-category-task]")?.addEventListener("click", () => openSellerCategoryTask(run));
+  body.querySelector("[data-seller-source-binding]")?.addEventListener("click", () => openSellerPayloadIssue(run?.id));
+  body.querySelector("[data-seller-task-readback]")?.addEventListener("click", (event) => openListingTaskReadback(event.currentTarget));
+  body.querySelector("[data-request-media-review]")?.addEventListener("click", () => requestListingMediaReview(body.querySelector("[data-request-media-review]").dataset.mediaReviewRunId));
+  body.querySelector("[data-request-preflight-recheck]")?.addEventListener("click", () => requestListingPreflightRecheck(body.querySelector("[data-request-preflight-recheck]").dataset.preflightRecheckRunId));
+  body.querySelector("[data-seller-preflight-return]")?.addEventListener("click", () => {
+    state.selectedWorkflowRunId = body.querySelector("[data-seller-preflight-return]").dataset.runId || state.selectedWorkflowRunId;
+    state.selectedWorkflowNodeKey = "preflight_check";
+    setListingStage("current-product");
+    document.querySelector("#listingCurrentDraftStatus")?.scrollIntoView({ behavior: "smooth", block: "center" });
+    toast("已回到当前本地草稿；修复后点击重新校验 Payload", "ok");
+  });
+}
+
+function renderListingSellerContentEvidence(run = null) {
+  if (!run) return "";
+  const contentNode = (run.nodes || []).find((node) => ["content_generation", "content_review"].includes(node.key));
+  const evidence = run.contentEvidence || contentNode?.output?.contentEvidence || null;
+  const sellerResult = run.contentSellerResult || contentNode?.output?.sellerResult || null;
+  if (!evidence && !sellerResult) return "";
+  const source = evidence?.source || sellerResult?.source || {};
+  const facts = evidence?.facts || [];
+  const counts = sellerResult?.factSummary || {
+    total: facts.length,
+    sourceSupported: facts.filter((fact) => fact.status === "source_supported").length,
+    needsReview: facts.filter((fact) => fact.status === "model_generated_unverified").length,
+    missing: facts.filter((fact) => fact.status === "missing").length,
+  };
+  const status = sellerResult?.status || evidence?.status || "needs_review";
+  return `<article class="listing-seller-content-evidence" aria-label="俄文内容证据">
+    <span>俄文内容证据</span><strong>${escapeHtml(status === "blocked" ? "来源/事实需修复" : status === "reviewed" ? "已人工复核" : "待人工核对")}</strong>
+    <small>来源：${escapeHtml(source.type || "none")} · 支持 ${escapeHtml(counts.sourceSupported || 0)} · 待核对 ${escapeHtml(counts.needsReview || 0)} · 缺失 ${escapeHtml(counts.missing || 0)}</small>
+    <small>${escapeHtml(sellerResult?.action || evidence?.action || "逐字段核对中俄事实后重新预检")}</small>
+    <small>不会把模型建议当作 Ozon 已验证事实，也不会自动提交。</small>
+  </article>`;
+}
+
+function renderListingSellerPayloadValidation(run = null) {
+  if (!run?.id || !run.payloadDraft) return "";
+  const validation = run.payloadDraftValidation || null;
+  const issueCount = Number(validation?.issues?.length || validation?.errors?.length || 0);
+  const status = validation
+    ? (validation.ok ? "预检通过" : `预检阻塞（${issueCount} 项）`)
+    : "尚未校验";
+  const next = validation?.ok
+    ? "可以继续人工检查媒体、价格和提交安全门"
+    : (validation ? "按问题定位修复本地草稿，再重新校验" : "点击校验当前本地 Payload");
+  return `<article class="listing-seller-payload-validation" aria-label="卖家商品预检">
+    <span>提交前检查</span><strong>${escapeHtml(status)}</strong>
+    <small>${escapeHtml(next)}；只校验本地草稿，不提交 Ozon。</small>
+    ${!validation ? `<small class="listing-seller-preflight-stale-hint">当前草稿没有有效预检版本；如之前有人工确认，旧确认不可复用。</small>` : ""}
+    <button class="primary" type="button" data-seller-validate-payload data-run-id="${escapeHtml(run.id)}">${validation ? "重新校验 Payload" : "校验 Payload"}</button>
+  </article>`;
+}
+
+// Render the business contract first; raw Payload diagnostics stay behind the
+// existing locator/details action.  A seller should see what is blocked, what
+// to do next, what will (and will not) happen, and the expected result without
+// reading workflow nodes or JSON.
+function listingPreflightMediaEvidence(run = null) {
+  const job = currentListingAutoListJob(run);
+  const candidate = job?.candidateData || null;
+  const assets = Array.isArray(candidate?.mediaAssets)
+    ? candidate.mediaAssets
+    : (Array.isArray(run?.source?.mediaAssets) ? run.source.mediaAssets : []);
+  const issues = Array.isArray(candidate?.mediaIssues)
+    ? candidate.mediaIssues.filter(Boolean).map(String)
+    : (Array.isArray(run?.source?.mediaIssues) ? run.source.mediaIssues.filter(Boolean).map(String) : []);
+  const approval = run?.mediaApprovalDraft || candidate?.mediaApprovalDraft || null;
+  if (!assets.length && !issues.length) {
+    return { status: "not_required", nextAction: "当前商品没有媒体候选；不会上传媒体或提交 Ozon。" };
+  }
+  if (issues.length) {
+    return { status: "blocked", nextAction: `先处理 ${issues.length} 个媒体证据问题，再重新预检；不会上传媒体或提交 Ozon。` };
+  }
+  if (approval?.status === "published_local" && approval.richContentDetailAssetsApproved === true) {
+    return { status: "verified", nextAction: "媒体批准已在本地发布；仍需人工确认提交安全门，不会自动上传或提交 Ozon。" };
+  }
+  return { status: "needs_review", nextAction: "逐项检查并发布本地媒体批准后再重新预检；不会上传媒体或提交 Ozon。" };
+}
+
+function renderListingSellerPreflightResult(run = null) {
+  if (!run?.id) return "";
+  const nodeResult = (run.nodes || []).find((node) => node.key === "preflight_check")?.output?.sellerResult || null;
+  const result = run.payloadDraftValidation?.sellerResult || nodeResult;
+  if (!result || typeof result !== "object") return "";
+  const repairs = Array.isArray(result.repairs) ? result.repairs : [];
+  const blocked = result.status === "blocked" || result.outcome === "submission_not_started";
+  const submission = run.submissionReservation || {};
+  const submittedTaskId = String(submission.taskId || result.taskId || "").trim();
+  const submissionCompleted = submission.state === "completed" && submittedTaskId;
+  const title = blocked ? "预检阻塞，暂不能提交" : "预检通过，等待人工确认";
+  const summary = blocked ? `${Number(result.blockerCount || repairs.length || 0)} 个问题需要处理` : "当前本地草稿可以进入提交确认";
+  const evidenceSummary = result.evidenceSummary && typeof result.evidenceSummary === "object" ? result.evidenceSummary : {};
+  const evidenceSummaryWithMedia = evidenceSummary.media ? evidenceSummary : { ...evidenceSummary, media: listingPreflightMediaEvidence(run) };
+  const evidenceLabels = { source: "1688 来源", content: "俄文内容", category: "Ozon 类目", sku: "SKU 绑定", media: "媒体" };
+  const evidenceStatusLabels = { verified: "已验证", needs_review: "待人工核对", missing: "缺失", blocked: "阻塞", not_required: "未要求", single_sku: "单 SKU" };
+  const evidenceEntries = Object.entries(evidenceLabels).map(([key, label]) => {
+    const evidence = evidenceSummaryWithMedia[key];
+    if (!evidence || typeof evidence !== "object") return "";
+    const status = String(evidence.status || "unknown");
+    return `<div class="listing-seller-evidence-item" data-evidence-status="${escapeHtml(status)}"><b>${escapeHtml(label)}</b><span>${escapeHtml(evidenceStatusLabels[status] || status)}</span><small>${escapeHtml(evidence.nextAction || "暂无下一步")}</small></div>`;
+  }).filter(Boolean).join("");
+  return `<article class="listing-seller-preflight-result ${blocked ? "is-blocked" : "is-ready"}" aria-label="卖家预检结果">
+    <span>卖家下一步</span><strong>${escapeHtml(title)}</strong>
+    <small>${escapeHtml(summary)}；${escapeHtml(result.nextAction || "请查看当前草稿并按提示继续")}</small>
+    ${blocked ? `<button class="primary" type="button" data-seller-preflight-return data-run-id="${escapeHtml(run.id)}">回到草稿修复并重新预检</button>` : ""}
+    ${submissionCompleted ? `<button class="primary" type="button" data-seller-task-readback data-run-id="${escapeHtml(run.id)}" data-task-id="${escapeHtml(submittedTaskId)}">回查 Ozon 审核状态</button>` : ""}
+    <div class="listing-seller-preflight-contract">
+      <div><b>点击后会发生什么</b><span>${escapeHtml(result.sideEffect || "仅更新本地预检状态，不会自动提交")}</span></div>
+      <div><b>本次结果</b><span>${escapeHtml(result.result || "请以新的预检结果为准")}</span></div>
+    </div>
+    ${evidenceEntries ? `<div class="listing-seller-evidence-summary" aria-label="提交前证据摘要"><strong>提交前证据</strong>${evidenceEntries}</div>` : ""}
+    ${repairs.length ? `<div class="listing-seller-preflight-repairs">
+      ${repairs.slice(0, 6).map((repair) => `<div class="listing-seller-preflight-repair">
+      <div><strong>${escapeHtml(repair.message || "需要修复的商品资料")}</strong><small>字段：${escapeHtml(repair.fieldPath || "当前商品草稿")}${repair.offerId ? ` · SKU：${escapeHtml(repair.offerId)}` : ""}</small></div>
+        <small>建议：${escapeHtml(repair.action || "修复后重新预检")}；${escapeHtml(repair.sideEffect || result.sideEffect || "仅本地处理，不提交 Ozon")}</small>
+        <small>结果：${escapeHtml(repair.result || result.result || "修复后生成新的预检结果")}</small>
+        <button class="ghost" type="button" data-seller-payload-issue data-run-id="${escapeHtml(run.id)}" data-issue-code="${escapeHtml(repair.code || "")}" data-issue-field-path="${escapeHtml(workflowPayloadLocationForIssue(repair).path)}" data-issue-label="${escapeHtml(workflowPayloadLocationForIssue(repair).label)}" data-issue-offer-id="${escapeHtml(repair.offerId || "")}" data-issue-attribute-id="${escapeHtml(repair.attributeId || repair.attribute_id || "")}">查看并定位</button>
+      </div>`).join("")}
+      ${repairs.length > 6 ? `<small>还有 ${repairs.length - 6} 项，请进入预检详情查看。</small>` : ""}
+    </div>` : ""}
+  </article>`;
+}
+
+function openListingTaskReadback(button) {
+  const taskId = String(button?.dataset?.taskId || "").trim();
+  if (!/^\d+$/.test(taskId)) {
+    toast("当前提交没有可用 Task ID，请到工作流详情查看回执。", "error");
+    return;
+  }
+  state.selectedWorkflowRunId = button.dataset.runId || state.selectedWorkflowRunId;
+  activateErpView("listing");
+  setListingStage("current-product");
+  window.setTimeout(() => {
+    const input = $("#listingTaskId");
+    if (!input) {
+      toast("当前页面没有任务回查输入框，请打开上架详情后重试。", "error");
+      return;
+    }
+    input.value = taskId;
+    input.scrollIntoView({ behavior: "smooth", block: "center" });
+    input.focus();
+  }, 0);
+  toast(`已填入 Task ID ${taskId}；点击“读取任务结果”只回查 Ozon，不会重复提交。`);
+}
+
+function renderListingSellerPayloadIssues(run = null) {
+  const validation = run?.payloadDraftValidation || null;
+  const issues = Array.isArray(validation?.issues) ? validation.issues : [];
+  if (!run?.id || !validation || !issues.length) return "";
+  const visibleIssues = issues.slice(0, 6);
+  return `<article class="listing-seller-payload-issues" aria-label="商品预检问题">
+    <span>需要处理的商品问题</span>
+    <strong>${issues.length} 项，按字段和 SKU 定位</strong>
+    <div class="listing-seller-payload-issue-list">
+      ${visibleIssues.map((issue, index) => {
+        const location = workflowPayloadLocationForIssue(issue);
+        const offer = String(issue.offerId || issue.offer_id || "").trim();
+        const attribute = Number(issue.attributeId || issue.attribute_id || 0);
+        return `<div class="listing-seller-payload-issue">
+          <div><strong>${escapeHtml(issue.code || "UNKNOWN")}</strong><small>${escapeHtml(issue.message || "需要修复本地 Payload")}</small></div>
+          <small>${offer ? `SKU：${escapeHtml(offer)} · ` : ""}${attribute ? `属性：${attribute} · ` : ""}字段：${escapeHtml(location.label)}</small>
+          <button class="ghost" type="button" data-seller-payload-issue data-run-id="${escapeHtml(run.id)}" data-issue-code="${escapeHtml(issue.code || "")}" data-issue-field-path="${escapeHtml(location.path)}" data-issue-label="${escapeHtml(location.label)}" data-issue-offer-id="${escapeHtml(offer)}" data-issue-attribute-id="${escapeHtml(attribute || "")}">查看并定位</button>
+        </div>`;
+      }).join("")}
+    </div>
+    ${issues.length > visibleIssues.length ? `<small>还有 ${issues.length - visibleIssues.length} 项，请进入预检详情查看全部。</small>` : ""}
+  </article>`;
+}
+
+function renderListingSellerSourceBinding(run = null) {
+  if (!run?.payloadDraft) return "";
+  // Prefer the compact source binding persisted beside the local Payload
+  // summary.  It is deliberately not the raw 1688 capture: only the
+  // verification state, a short hash, and counts are seller-facing here.
+  const payloadSummary = run.payloadDraft.summary || {};
+  const payloadBinding = payloadSummary.sourceEvidence || null;
+  const validation = run.payloadDraftValidation || {};
+  const preflight = (run.nodes || []).find((node) => node.key === "preflight_check")?.output || {};
+  const variantBinding = validation.variantConfiguration?.sourceVariantBinding
+    || preflight.variantConfiguration?.sourceVariantBinding
+    || null;
+  const summary = variantBinding?.summary || null;
+  if (!payloadBinding && (!summary || Number(summary.itemCount || 0) < 2)) return "";
+
+  if (payloadBinding) {
+    const snapshotHash = String(payloadBinding.snapshotHash || "").trim();
+    const hashShort = /^sha256:[a-f0-9]{64}$/i.test(snapshotHash)
+      ? `${snapshotHash.slice(0, 15)}…${snapshotHash.slice(-8)}`
+      : "未生成快照 hash";
+    const verificationState = String(payloadBinding.verificationState || "unknown").trim().toLowerCase();
+    const status = payloadBinding.status === "bound" && verificationState === "ok"
+      ? "已验证"
+      : verificationState === "waiting_human"
+        ? "等待人工确认"
+        : snapshotHash
+          ? "已记录，待人工验证"
+          : "来源证据缺失";
+    const offerCount = Number(payloadSummary.itemCount || run.payloadDraft.items?.length || 0);
+    const sourceSkuCount = Number(payloadBinding.variantCount || payloadSummary.variantCount || 0);
+    const nextAction = String(payloadBinding.nextAction || (snapshotHash
+      ? "人工确认来源快照后再运行预检。"
+      : "重新采集并人工确认 1688 来源快照后再预检。")).trim();
+    const needsSourceAction = status !== "已验证";
+    return `<article class="listing-seller-source-binding" aria-label="1688 来源快照证据">
+      <span>1688 来源证据</span><strong>${escapeHtml(status)}</strong>
+      <small>快照：${escapeHtml(hashShort)} · Offer ${escapeHtml(offerCount || "-")} 个 · 来源 SKU ${escapeHtml(sourceSkuCount || "-")} 个</small>
+      <small>下一步：${escapeHtml(nextAction)}</small>
+      ${needsSourceAction ? `<button class="ghost" type="button" data-seller-source-task>回到 1688 采集并确认来源</button>` : ""}
+    </article>`;
+  }
+
+  const bound = Number(summary.boundCount || 0);
+  const total = Number(summary.itemCount || 0);
+  const missing = Number(summary.missingCount || 0);
+  const duplicate = Number(summary.duplicateCount || 0);
+  const ready = summary.ready === true;
+  return `<article class="listing-seller-source-binding" aria-label="1688 来源 SKU 绑定">
+    <span>1688 来源 SKU 绑定</span><strong>${ready ? `已绑定 ${bound}/${total}` : `阻塞：已绑定 ${bound}/${total}`}</strong>
+    <small>${ready ? "每个 Ozon offer 都能回指来源 SKU。" : `缺失 ${missing}，重复 ${duplicate}；多 SKU 不能在来源不明确时提交。`}</small>
+    ${ready ? "" : `<button class="ghost" type="button" data-seller-source-binding>查看 SKU 绑定详情</button>`}
+  </article>`;
+}
+
+function renderListingSellerEvidenceActions(run = null, job = null) {
+  if (!run && !job) return "";
+  const candidate = job?.candidateData || run?.source || {};
+  const sourceEvidence = candidate.sourceEvidence || run?.sourceEvidence || null;
+  const sourceReady = Boolean(
+    sourceEvidence?.snapshotHash
+      && sourceEvidence?.canonicalUrl
+      && sourceEvidence?.verificationState === "ok",
+  );
+  const category = job?.categoryMatch || run?.source?.categoryMatch || null;
+  const categoryReady = Number(category?.description_category_id || 0) > 0 && Number(category?.type_id || 0) > 0;
+  if (sourceReady && categoryReady) return "";
+  return `<article class="listing-seller-evidence-actions" aria-label="前置证据任务">
+    <span>上架前置资料</span><strong>${sourceReady ? "来源已记录" : "来源证据待补齐"} · ${categoryReady ? "类目已确认" : "类目待确认"}</strong>
+    <small>先补齐真实来源和当前店铺类目，系统不会根据标题猜测或把页面状态当成证据。</small>
+    <div class="listing-seller-evidence-buttons">
+      ${sourceReady ? "" : `<button class="ghost" type="button" data-seller-source-task>回到 1688 采集</button>`}
+      ${categoryReady ? "" : `<button class="primary" type="button" data-seller-category-task>选择 Ozon 类目</button>`}
+    </div>
+  </article>`;
+}
+
+function openSellerSourceTask() {
+  document.querySelector('[data-view="sourcing"]')?.click();
+  toast("已打开 1688 采集入口，请补齐来源快照和页面证据");
+}
+
+function openVariantSourceTask(button = null) {
+  const runId = String(button?.dataset?.runId || "").trim();
+  if (runId) state.selectedWorkflowRunId = runId;
+  activateErpView("sourcing");
+  toast("已打开 1688 来源入口；补齐来源变体后重新生成 Payload 并预检，不会自动提交 Ozon。", "ok");
+}
+
+function openSellerCategoryTask(run = null) {
+  state.selectedWorkflowRunId = run?.id || state.selectedWorkflowRunId;
+  document.querySelector('[data-view="listing"]')?.click();
+  window.setTimeout(() => {
+    const field = $("#categoryKeyword") || $("#listingCategoryId");
+    field?.scrollIntoView({ behavior: "smooth", block: "center" });
+    field?.focus();
+  }, 0);
+  toast("已定位类目选择；请选择当前店铺类目后保存到草稿");
+}
+
+function stockReadinessClaimFromDataset(button = {}) {
+  const status = String(button?.dataset?.stockReadinessStatus || "").trim().toLowerCase();
+  const verification = String(button?.dataset?.stockReadinessVerification || "").trim().toLowerCase();
+  return status === "ready_for_sale"
+    && verification === "server_observed"
+    && button?.dataset?.stockReadinessFresh === "true";
+}
+
+async function openStockReadinessTask(button) {
+  if (!stockReadinessClaimFromDataset(button)) {
+    toast("当前商品尚未形成新鲜的服务端可售证据，请先回查商品状态。库存核对未打开。", "warning");
+    return;
+  }
+  const offerIds = String(button?.dataset.stockReadinessOffers || "")
+    .split(",")
+    .map((offerId) => offerId.trim())
+    .filter(Boolean);
+  if (!offerIds.length) {
+    toast("未找到可核对的 Offer，请先重新读取商品状态。", "error");
+    return;
+  }
+  const targetStoreId = String(button?.dataset.stockReadinessStoreId || "").trim();
+  const currentStoreId = String(selectedStoreId() || "").trim();
+  if (targetStoreId && targetStoreId !== currentStoreId) {
+    try {
+      await switchStoreContext(targetStoreId);
+    } catch (error) {
+      toast(error.message || "无法切换到商品所属店铺，未打开库存核对", "error");
+      return;
+    }
+  }
+  state.stockFocusOfferIds = offerIds;
+  state.stockEvidence = null;
+  state.stockDryRun = null;
+  state.stockSnapshotProducts = null;
+  state.stockSnapshot = null;
+  state.stockWarehouses = null;
+  const handoffEnvironment = String(currentSellerReadEnvironment() || "").trim();
+  const handoffStoreId = String(selectedStoreId() || targetStoreId || "").trim();
+  const offerInput = $("#stockOfferId");
+  if (offerInput) offerInput.value = offerIds.join(", ");
+  const stockJson = $("#stockJson");
+  if (stockJson) {
+    let existing = [];
+    try {
+      const parsed = JSON.parse(stockJson.value || "[]");
+      existing = Array.isArray(parsed) ? parsed : [];
+    } catch {
+      existing = [];
+    }
+    const existingByOffer = new Map(existing.map((row) => [String(row?.offer_id || row?.offerId || "").trim(), row]));
+    stockJson.value = JSON.stringify(offerIds.map((offerId) => {
+      const row = existingByOffer.get(offerId) || {};
+      return { offer_id: offerId, stock: row.stock ?? "", warehouse_id: row.warehouse_id ?? "" };
+    }), null, 2);
+  }
+  activateErpView("warehouse");
+  const evidence = $("#stockEvidenceResult");
+  if (evidence) {
+    evidence.innerHTML = `
+      <div class="stock-evidence-summary is-partial" data-stock-readiness-focus="true">
+        <strong>商品已形成服务端可售证据，当前库存尚未读取</strong>
+        <p>已定位 ${offerIds.length} 个 Offer：${offerIds.map(escapeHtml).join("、")}。</p>
+        <p><b>读取范围：</b>店铺 ${escapeHtml(handoffStoreId || "未绑定")} · 环境 ${escapeHtml(handoffEnvironment || "未填写")}。</p>
+        <p><b>当前状态：</b>库存证据尚未读取，不能判断缺货，也不能把空白数量当作 0。</p>
+        <p><b>下一步：</b>先补齐目标仓库和数量，然后读取当前库存；再核对对应 Offer。本次不会自动写入。</p>
+        <small>商品审核状态来自只读回查；可售不等于库存已就绪。</small>
+      </div>
+    `;
+  }
+  syncStockActionButtons();
+  toast("已打开库存核对，请先补齐目标仓库和数量");
+}
+
+function openSellerPayloadIssue(runId = "", issueButton = null) {
+  const id = String(runId || "").trim();
+  if (!id) return;
+  state.selectedWorkflowRunId = id;
+  state.selectedWorkflowNodeKey = "preflight_check";
+  state.selectedWorkflowPayloadIssue = issueButton ? {
+    code: String(issueButton.dataset.issueCode || "").trim(),
+    fieldPath: String(issueButton.dataset.issueFieldPath || "").trim(),
+    label: String(issueButton.dataset.issueLabel || issueButton.dataset.issueFieldPath || "").trim(),
+    offerId: String(issueButton.dataset.issueOfferId || "").trim(),
+    attributeId: String(issueButton.dataset.issueAttributeId || "").trim(),
+  } : null;
+  activateErpView("workflow-console");
+  renderWorkflowConsole();
+  const issue = state.selectedWorkflowPayloadIssue;
+  if (issue?.fieldPath || issue?.offerId || issue?.attributeId) {
+    window.setTimeout(() => {
+      const locator = [...document.querySelectorAll("#workflowNodeDetail [data-payload-path]")].find((candidate) => {
+        const pathMatches = !issue.fieldPath || candidate.dataset.payloadPath === issue.fieldPath;
+        const offerMatches = !issue.offerId || candidate.dataset.payloadOfferId === issue.offerId;
+        const attributeMatches = !issue.attributeId || candidate.dataset.payloadAttributeId === issue.attributeId;
+        return pathMatches && offerMatches && attributeMatches;
+      });
+      if (locator) focusWorkflowPayloadIssue(locator);
+      else toast(`已打开预检详情：${issue.label || issue.code || "请查看问题"}`);
+    }, 0);
+  } else {
+    toast("已打开预检详情，可按字段定位 Payload");
+  }
+}
+
+async function validateListingSellerPayload(runId = "") {
+  const id = String(runId || "").trim();
+  if (!id) return;
+  const button = document.querySelector(`[data-seller-validate-payload][data-run-id="${CSS.escape(id)}"]`);
+  setBusy(button, true);
+  try {
+    const result = await api(`/api/workflows/${encodeURIComponent(id)}/payload-draft/validate`, {
+      method: "POST",
+      body: "{}",
+    });
+    showResponse(result);
+    toast(result.ok ? "Payload 预检通过" : `Payload 仍有 ${result.issues?.length || result.errors?.length || 0} 项问题`, result.ok ? "ok" : "error");
+    await loadWorkflowRuns();
+  } catch (error) {
+    toast(error.message || "Payload 校验失败", "error");
+  } finally {
+    setBusy(button, false);
+  }
+}
+
+async function requestListingMediaReview(runId) {
+  try {
+    const data = await api(`/api/workflows/${encodeURIComponent(runId)}/request-media-review`, { method: "POST" });
+    showResponse(data);
+    toast("已进入人工看图，请逐项确认媒体候选");
+    await loadWorkflowRuns();
+  } catch (error) {
+    toast(error.message || "进入人工看图失败", "error");
+  }
+}
+
+async function requestListingPreflightRecheck(runId) {
+  try {
+    const data = await api(`/api/workflows/${encodeURIComponent(runId)}/request-preflight-recheck`, {
+      method: "POST",
+      body: JSON.stringify({ note: "媒体批准发布后，卖家明确请求重新运行商品预检" }),
+    });
+    showResponse(data);
+    toast("商品预检已重新运行");
+    await loadWorkflowRuns();
+  } catch (error) {
+    toast(error.message || "重新运行商品预检失败", "error");
+  }
+}
+
+function renderManualListingContentForm(job = null) {
+  if (!job?.id) return "";
+  const content = job.listingContent || {};
+  const ready = String(content.title_ru || "").trim() && String(content.description_ru || "").trim();
+  if (ready && !["draft_pending", "content_ready"].includes(String(job.status || ""))) return "";
+  return `<article class="listing-manual-content-form" aria-label="人工填写俄文内容">
+    <span>先完成商品内容</span>
+    <strong>人工填写俄文标题和描述</strong>
+    <small>只保存本地草稿，不调用 AI、不提交 Ozon；保存后继续补类目和采购证据。</small>
+    <label>俄文标题<input data-manual-content-title value="${escapeHtml(content.title_ru || "")}" maxlength="200" placeholder="例如：Органайзер для хранения" /></label>
+    <label>俄文描述<textarea data-manual-content-description maxlength="5000" placeholder="填写至少 20 个字符的俄文商品描述">${escapeHtml(content.description_ru || "")}</textarea></label>
+    <label>俄文短卖点（可选）<input data-manual-content-annotation value="${escapeHtml(content.annotation_ru || "")}" maxlength="500" /></label>
+    <button class="primary" type="button" data-manual-content-save>保存并重新预检</button>
+  </article>`;
+}
+
+async function saveManualListingContentFromUi(job = null) {
+  if (!job?.id) return;
+  const body = document.querySelector("#listingSellerTaskSummaryBody");
+  const button = body?.querySelector("[data-manual-content-save]");
+  setBusy(button, true);
+  try {
+    const data = await api(`/api/ozon-learning/auto-list-jobs/${encodeURIComponent(job.id)}/manual-content`, {
+      method: "POST",
+      body: JSON.stringify({
+        title_ru: body.querySelector("[data-manual-content-title]")?.value || "",
+        description_ru: body.querySelector("[data-manual-content-description]")?.value || "",
+        annotation_ru: body.querySelector("[data-manual-content-annotation]")?.value || "",
+      }),
+    });
+    showResponse(data);
+    toast("俄文内容已保存，正在重新预检");
+    await loadAutoListJobs();
+    await loadWorkflowRuns();
+    await recheckListingAfterEvidenceSave(job, data);
+  } catch (error) {
+    toast(error.message || "保存内容失败", "error");
+  } finally {
+    setBusy(button, false);
+  }
+}
+
+function renderManualProcurementForm(job = null) {
+  if (!job?.id) return "";
+  const evidence = job.candidateData?.procurementEvidence || {};
+  const tiers = Array.isArray(evidence.priceTiers?.values) ? evidence.priceTiers.values : [];
+  const verified = evidence.moq?.source && evidence.moq.source !== "missing" && tiers.length;
+  if (verified && !["draft_pending", "content_ready", "category_manual_saved", "procurement_manual_saved"].includes(String(job.status || ""))) return "";
+  const tierRows = [0, 1, 2].map((index) => {
+    const tier = tiers[index] || {};
+    return `<div class="erp-inline"><input data-procurement-min="${index}" type="number" min="1" value="${escapeHtml(tier.minQuantity || "")}" placeholder="第 ${index + 1} 档起订量" /><input data-procurement-price="${index}" type="number" min="0.01" step="0.01" value="${escapeHtml(tier.unitPriceCny || "")}" placeholder="采购单价 RMB" /></div>`;
+  }).join("");
+  return `<article class="listing-manual-procurement-form" aria-label="人工填写采购证据">
+    <span>补齐采购成本</span><strong>MOQ 与阶梯价</strong>
+    <small>这些数据用于成本和利润诊断；手填来源会保留为 manual_seller，不会伪装成官方实时费率。</small>
+    <label>供应商 ID（可选）<input data-procurement-supplier-id value="${escapeHtml(evidence.supplierId?.value || "")}" /></label>
+    <label>供应商名称（至少填一个）<input data-procurement-supplier-name value="${escapeHtml(evidence.supplierName?.value || "")}" /></label>
+    <label>MOQ<input data-procurement-moq type="number" min="1" value="${escapeHtml(evidence.moq?.value || "")}" /></label>
+    <label>采购阶梯（数量递增）${tierRows}</label>
+    <button class="primary" type="button" data-manual-procurement-save>保存并重新预检</button>
+  </article>`;
+}
+
+async function saveManualProcurementFromUi(job = null) {
+  if (!job?.id) return;
+  const body = document.querySelector("#listingSellerTaskSummaryBody");
+  const button = body?.querySelector("[data-manual-procurement-save]");
+  const priceTiers = [0, 1, 2].map((index) => ({
+    minQuantity: Number(body.querySelector(`[data-procurement-min="${index}"]`)?.value || 0),
+    unitPriceCny: Number(body.querySelector(`[data-procurement-price="${index}"]`)?.value || 0),
+  })).filter((tier) => tier.minQuantity > 0 || tier.unitPriceCny > 0);
+  setBusy(button, true);
+  try {
+    const data = await api(`/api/ozon-learning/auto-list-jobs/${encodeURIComponent(job.id)}/manual-procurement`, {
+      method: "POST",
+      body: JSON.stringify({
+        supplierId: body.querySelector("[data-procurement-supplier-id]")?.value || "",
+        supplierName: body.querySelector("[data-procurement-supplier-name]")?.value || "",
+        moq: Number(body.querySelector("[data-procurement-moq]")?.value || 0),
+        priceTiers,
+      }),
+    });
+    showResponse(data);
+    toast(data.payloadDraftReady ? "采购已保存，正在重新预检" : "采购证据已保存到本地草稿");
+    await loadAutoListJobs();
+    await loadWorkflowRuns();
+    await recheckListingAfterEvidenceSave(job, data);
+  } catch (error) {
+    toast(error.message || "保存采购证据失败", "error");
+  } finally {
+    setBusy(button, false);
+  }
+}
+
+function renderManualPackageForm(job = null) {
+  if (!job?.id) return "";
+  const sizeWeight = job.candidateData?.sizeWeight || {};
+  const valuesReady = [sizeWeight.weightG, sizeWeight.lengthMm, sizeWeight.widthMm, sizeWeight.heightMm]
+    .every((value) => Number(value) > 0);
+  const lockedStatuses = ["submitted", "live", "listing"];
+  if (valuesReady && !["draft_pending", "content_ready", "category_manual_saved", "procurement_manual_saved", "package_manual_saved"].includes(String(job.status || ""))) return "";
+  if (lockedStatuses.includes(String(job.status || ""))) return "";
+  const source = ["manual_measurement", "supplier_package"].includes(String(sizeWeight.source || ""))
+    ? sizeWeight.source
+    : "manual_measurement";
+  return `<article class="listing-manual-package-form" aria-label="人工填写包装尺重证据">
+    <span>补齐物流资料</span><strong>包装重量和长宽高</strong>
+    <small>只能填写人工实测或供应商包装资料；单位固定为克和毫米，保存后只更新本地草稿并重新预检。</small>
+    <label>证据来源<select data-package-source><option value="manual_measurement" ${source === "manual_measurement" ? "selected" : ""}>人工实测</option><option value="supplier_package" ${source === "supplier_package" ? "selected" : ""}>供应商包装资料</option></select></label>
+    <div class="erp-inline"><label>重量（克）<input data-package-weight type="number" min="1" max="100000" value="${escapeHtml(sizeWeight.weightG || "")}" /></label><label>长度（毫米）<input data-package-length type="number" min="1" max="2000" value="${escapeHtml(sizeWeight.lengthMm || "")}" /></label></div>
+    <div class="erp-inline"><label>宽度（毫米）<input data-package-width type="number" min="1" max="2000" value="${escapeHtml(sizeWeight.widthMm || "")}" /></label><label>高度（毫米）<input data-package-height type="number" min="1" max="2000" value="${escapeHtml(sizeWeight.heightMm || "")}" /></label></div>
+    <label>测量备注（可选）<input data-package-note maxlength="500" value="${escapeHtml(sizeWeight.evidenceNote || "")}" placeholder="例如：含外包装，供应商 2026-07-16 提供" /></label>
+    <button class="primary" type="button" data-manual-package-save>保存尺重证据并重新预检</button>
+  </article>`;
+}
+
+async function saveManualPackageFromUi(job = null) {
+  if (!job?.id) return;
+  const body = document.querySelector("#listingSellerTaskSummaryBody");
+  const button = body?.querySelector("[data-manual-package-save]");
+  setBusy(button, true);
+  try {
+    const data = await api(`/api/ozon-learning/auto-list-jobs/${encodeURIComponent(job.id)}/manual-package`, {
+      method: "POST",
+      body: JSON.stringify({
+        source: body.querySelector("[data-package-source]")?.value || "",
+        weightG: Number(body.querySelector("[data-package-weight]")?.value || 0),
+        lengthMm: Number(body.querySelector("[data-package-length]")?.value || 0),
+        widthMm: Number(body.querySelector("[data-package-width]")?.value || 0),
+        heightMm: Number(body.querySelector("[data-package-height]")?.value || 0),
+        note: body.querySelector("[data-package-note]")?.value || "",
+      }),
+    });
+    showResponse(data);
+    toast(data.payloadDraftReady ? "尺重已保存，本地 Payload 已刷新，请继续校验" : "尺重证据已保存到本地草稿");
+    await loadAutoListJobs();
+    await loadWorkflowRuns();
+    await recheckListingAfterEvidenceSave(job, data);
+  } catch (error) {
+    toast(error.message || "保存尺重证据失败", "error");
+  } finally {
+    setBusy(button, false);
+  }
+}
+
+async function recheckListingAfterEvidenceSave(previousJob = null, saveResult = {}) {
+  const runId = String(
+    saveResult.workflowRunId
+      || previousJob?.workflowRunId
+      || currentListingWorkflowRun()?.id
+      || "",
+  ).trim();
+  if (!runId) {
+    state.listingHandoffNotice = "资料已保存，但商品工作流未绑定；请重新交接后才能运行预检。";
+    renderListingSellerTaskSummary();
+    toast(state.listingHandoffNotice, "warning");
+    return;
+  }
+  try {
+    const result = await api(`/api/workflows/${encodeURIComponent(runId)}/payload-draft/validate`, {
+      method: "POST",
+      body: "{}",
+    });
+    showResponse(result);
+    toast(result.ok
+      ? "资料已保存，预检通过；仍需人工确认后才能提交"
+      : `资料已保存，预检仍有 ${result.issues?.length || result.errors?.length || 0} 项待处理`, result.ok ? "ok" : "error");
+    await loadWorkflowRuns();
+  } catch (error) {
+    toast(error.message || "资料已保存，但重新预检失败，请手动点击预检", "error");
+  }
 }
 
 function summarizePipelineHistory(currentRun) {
@@ -1429,10 +3189,17 @@ function listingRequiredAttributeConfirmationItems(requiredAttributeFillPlan = [
         .map((candidate) => candidate.dictionaryValueId || candidate.dictionary_value_id || candidate.id || "")
         .filter(Boolean)
         .map(String);
-      const repairCandidate = (Array.isArray(repairCandidates) ? repairCandidates : []).find((candidate) => (
+      const rowOfferId = String(row.offerId || row.offer_id || "").trim();
+      const candidateMatchesField = (candidate) => (
         String(candidate.attributeId || "") === String(attributeId || "")
         && dictionaryValueIds.includes(String(candidate.dictionaryValueId || ""))
-      )) || null;
+      );
+      const scopedRepairCandidates = (Array.isArray(repairCandidates) ? repairCandidates : []).filter(candidateMatchesField);
+      // A dictionary value can be legal for several variants. If the plan
+      // carries an offer id, never fall back to another SKU's candidate.
+      const repairCandidate = (rowOfferId
+        ? scopedRepairCandidates.find((candidate) => String(candidate.offerId || "").trim() === rowOfferId)
+        : scopedRepairCandidates[0]) || null;
       const repairStatusText = repairCandidate ? "可安全写回" : "暂不可直接写回";
       const safeNextStep = repairCandidate
         ? `当前 workflow 已等待人工，可确认后写回 SKU ${repairCandidate.offerId || "-"} 的属性 ${attributeName}，系统只改本地草稿并重新预检；不会提交 Ozon。`
@@ -1739,7 +3506,10 @@ function singleListingOutcomeState() {
     return {
       status: currentProductTask.status === "blocked" ? "卡住" : currentProductTask.status === "waiting" ? "等待" : currentProductTask.status === "needs_improvement" ? "可优化" : "推进中",
       title: currentProductTask.productTitle || capturedTitle || latestRun?.id || "当前商品",
-      stuckAt: currentProductTask.blockedAt || workflowNodeTitle(currentProductTask.nodeKey || ""),
+      stuckAt: currentProductTask.blockedAt
+        || (workflowNodeTitle(currentProductTask.nodeKey || "") !== "未命名节点"
+          ? workflowNodeTitle(currentProductTask.nodeKey || "")
+          : sellerTaskStageTitle(currentProductTask.stage)),
       reason: currentProductTask.reason || "当前商品需要按工作流摘要处理。",
       next: `下一步：${currentProductTask.nextAction || "查看当前商品任务"}`,
       view: currentProductTask.view || "workflow-console",
@@ -1818,15 +3588,25 @@ function renderCurrentProductTaskReminder(task, options = {}) {
         ? "可优化"
         : "推进中";
   const title = task.productTitle || task.offerId || task.runId || "当前商品";
-  const blockedAt = task.blockedAt || workflowNodeTitle(task.nodeKey || "") || task.stage;
+  const nodeTitle = workflowNodeTitle(task.nodeKey || "");
+  const blockedAt = task.blockedAt || (nodeTitle !== "未命名节点" ? nodeTitle : sellerTaskStageTitle(task.stage));
   const reason = task.reason || "当前商品需要按工作流摘要处理。";
   const nextAction = task.nextAction || "进入对应业务模块继续处理。";
+  const taskView = String(task.view || "").trim();
+  const taskViewLabel = taskView === "warehouse"
+    ? "去库存核对"
+    : taskView === "orders"
+      ? "去订单履约"
+      : taskView === "products"
+        ? "查看商品运营"
+        : "进入处理";
   return `
     <article class="${placement}" aria-label="当前商品任务">
       <span>当前商品任务 · ${escapeHtml(statusLabel)}</span>
       <strong>${escapeHtml(title)}</strong>
       <p>${escapeHtml(blockedAt)}：${escapeHtml(reason)}</p>
       <small>安全下一步：${escapeHtml(nextAction)}</small>
+      ${taskView ? `<button type="button" class="ghost" data-cockpit-view="${escapeHtml(taskView)}">${escapeHtml(taskViewLabel)}</button>` : ""}
     </article>
   `;
 }
@@ -1874,6 +3654,7 @@ function renderSellerManagementScope() {
 
 function renderErpModuleOwnership() {
   renderSellerOperatingModel();
+  renderListingSellerTaskSummary();
   renderErpArchitectureMap();
   renderListingStagePanels();
   renderListingPipelineWorkbench();
@@ -1976,6 +3757,85 @@ function cockpitWorkflowPhases() {
   return phases;
 }
 
+// Keep the offline golden-path seller task visible at the ordinary seller
+// entry point.  Real workflow runs may carry an explicit goldenPathSellerTask
+// when they were produced from a replay/controlled handoff; older runs only
+// expose currentProductTask, so the fallback is deliberately labelled as a
+// workflow-derived summary rather than pretending it is an Ozon response.
+function latestGoldenPathSellerTask() {
+  const runs = [...(state.workflowRuns || [])]
+    .sort((left, right) => String(right.updatedAt || right.createdAt || "").localeCompare(String(left.updatedAt || left.createdAt || "")));
+  for (const run of runs) {
+    const explicit = run?.goldenPathSellerTask || run?.summary?.goldenPathSellerTask;
+    if (explicit && typeof explicit === "object") {
+      return {
+        ...explicit,
+        title: explicit.title || run.title || run.source?.title || "当前商品",
+        view: explicit.view || run.summary?.currentProductTask?.view || "listing",
+        runId: run.id || "",
+        sourceLabel: "黄金链路任务摘要",
+      };
+    }
+    const current = run?.summary?.currentProductTask;
+    if (current && typeof current === "object" && current.stage) {
+      return {
+        status: current.status === "blocked" ? "blocked" : current.status === "waiting" ? "waiting_human" : current.status || "running",
+        blockedStage: current.blockedAt || current.stage,
+        reasonCode: current.reasonCode || "WORKFLOW_CURRENT_PRODUCT_TASK",
+        reason: current.reason || "当前商品需要按黄金链路继续处理。",
+        nextAction: current.nextAction || "进入上架中心继续处理当前商品。",
+        sideEffect: "仅打开本地业务模块并显示当前任务；不会调用 Ozon 写接口。",
+        title: current.productTitle || current.offerId || run.title || "当前商品",
+        view: current.view || "listing",
+        runId: run.id || "",
+        sourceLabel: "工作流任务映射（非 Ozon 审核回执）",
+      };
+    }
+  }
+  return null;
+}
+
+function renderGoldenPathSellerTask() {
+  const target = $("#goldenPathSellerTaskStatus");
+  if (!target) return;
+  const stageLabels = {
+    source: "1688 货源采集",
+    sku: "SKU 绑定",
+    category: "类目与属性",
+    content: "俄文内容",
+    media: "图片媒体",
+    pricing: "价格与费用",
+    preflight: "提交前预检",
+  };
+  const task = latestGoldenPathSellerTask();
+  if (!task) {
+    target.innerHTML = `<article><span>状态</span><strong>暂无当前商品</strong><small>先从 1688 采集商品；刷新后这里会显示黄金链路的安全下一步。</small><button type="button" class="primary" data-cockpit-view="sourcing">去采集 1688 商品</button></article>`;
+    return;
+  }
+  const status = String(task.status || "unknown");
+  const statusLabel = status === "blocked"
+    ? "当前阻塞"
+    : status === "waiting_human" || status === "waiting"
+      ? "等待人工"
+      : status === "needs_confirmation"
+        ? "等待确认"
+        : "推进中";
+  const view = String(task.view || "listing");
+  const progress = task.stageProgress && typeof task.stageProgress === "object" ? task.stageProgress : null;
+  const blockedStageLabel = stageLabels[task.blockedStage] || stageLabels[task.reasonCode] || "当前阶段";
+  const completedStages = Array.isArray(progress?.completedStages) ? progress.completedStages : [];
+  const remainingStages = Array.isArray(progress?.remainingStages) ? progress.remainingStages : [];
+  const progressHtml = progress
+    ? `<article><span>链路进度</span><strong>${Number(progress.completedCount || completedStages.length)}/${Number(progress.totalCount || (completedStages.length + remainingStages.length))} 阶段完成</strong><small>已完成：${escapeHtml(completedStages.map((stage) => stageLabels[stage] || stage).join("、") || "暂无")}；待处理：${escapeHtml(remainingStages.map((stage) => stageLabels[stage] || stage).join("、") || "无")}</small></article>`
+    : "";
+  target.innerHTML = `
+    <article><span>当前商品</span><strong>${escapeHtml(task.title || "当前商品")}</strong><small>${escapeHtml(task.sourceLabel || "黄金链路任务摘要")}</small></article>
+    <article><span>卡点</span><strong>${escapeHtml(statusLabel)} · ${escapeHtml(blockedStageLabel)}</strong><small>${escapeHtml(task.reason || "当前商品需要继续处理")}</small></article>
+    ${progressHtml}
+    <article><span>安全下一步</span><strong>${escapeHtml(task.nextAction || "进入对应模块继续处理")}</strong><small>${escapeHtml(task.sideEffect || "仅查看或修改本地草稿，不会自动提交 Ozon")}</small>${view ? `<button type="button" class="primary" data-cockpit-view="${escapeHtml(view)}" data-golden-path-run-id="${escapeHtml(task.runId || "")}">去处理</button>` : ""}</article>
+  `;
+}
+
 function renderStoreOperatingOverview() {
   const sales = $("#storeSalesOverview");
   const health = $("#storeBusinessHealthGrid");
@@ -1986,21 +3846,44 @@ function renderStoreOperatingOverview() {
   const workflows = state.workflowRuns || [];
   const summary = state.workflowSummary || {};
   const currentProductTask = latestCurrentProductTask();
-  const orderRevenue = orders.reduce((total, order) => {
-    const productsTotal = (order.products || []).reduce((sum, product) => sum + Number(product.price || product.offer_price || 0), 0);
-    return total + productsTotal;
-  }, 0);
+  renderGoldenPathSellerTask();
+  // The dashboard must not derive a sales number from whatever order rows are
+  // currently in memory.  A page can be partial and order lines can omit
+  // amount/quantity fields; summing unit prices here made incomplete evidence
+  // look like a store KPI.  The server finance read model is the single
+  // conservative source and only exposes revenue after a complete batch with
+  // complete line coverage.
+  const financeOrder = state.financeReadModel?.order || null;
+  const orderRevenue = financeOrder?.state === "complete"
+    && financeOrder?.revenueCoverage?.complete === true
+    && Number.isFinite(Number(financeOrder.revenue))
+    ? Number(financeOrder.revenue)
+    : null;
   const awaitingOrders = orders.filter((order) => ["awaiting_packaging", "awaiting_deliver"].includes(order.status)).length;
+  const orderBatch = state.orderBatch || {};
+  const orderSellerStatus = String(orderBatch.sellerStatus || orderBatch.sellerView?.status || "");
+  const orderEvidenceKnown = orderBatch.loaded === true
+    && orderBatch.failed !== true
+    && orderBatch.partial !== true
+    && !["unknown", "manual_review", "error"].includes(orderSellerStatus);
   const riskyProducts = products.filter((item) => ["error", "needFix"].includes(item.status_group) || item.status === "error").length;
-  const lowStockProducts = products.filter((item) => Number(item.stocks?.present || item.stock || 0) <= 0).length;
-  const activePromotions = promotions.filter((item) => !/inactive|closed|finished/i.test(String(item.status || ""))).length;
+  const stockCounts = productStockCounts(products);
+  const lowStockProducts = stockCounts.lowStockProducts.length;
+  const unknownStockProducts = stockCounts.unknownStockProducts.length;
+  const promotionCoverageKnown = promotionCoverageComplete();
+  const activePromotions = promotionCoverageKnown
+    ? promotions.filter((item) => !/inactive|closed|finished/i.test(String(item.status || ""))).length
+    : null;
   const waitingHuman = Number(summary.waitingHuman || workflows.filter((run) => run.status === "waiting_human").length);
+  if ($("#workflowStatusCount")) $("#workflowStatusCount").textContent = String(workflows.length || 0);
+  if ($("#erpDashboardOrderCell")) $("#erpDashboardOrderCell").textContent = String(orders.length || "-");
+  if ($("#erpDashboardProductCell")) $("#erpDashboardProductCell").textContent = String(products.length || "-");
   if (sales) {
     sales.innerHTML = `
-      <article><span>今日销售额</span><strong>${orderRevenue ? orderRevenue.toFixed(0) : "-"}</strong><small>基于已加载订单估算</small></article>
-      <article><span>今日订单</span><strong>${orders.length || "-"}</strong><small>${awaitingOrders} 单待备货/发运</small></article>
+      <article><span>当前读取范围销售额</span><strong>${orderRevenue !== null ? orderRevenue.toFixed(0) : "-"}</strong><small>${orderRevenue !== null ? "当前订单范围完整且订单行金额已核对；不是结算利润" : "订单范围或金额证据未完整，不显示合计"}</small></article>
+      <article><span>当前订单批次</span><strong>${orders.length || "-"}</strong><small>${awaitingOrders} 单待备货/发运；数量仅代表当前已加载范围</small></article>
       <article><span>商品风险</span><strong>${riskyProducts}</strong><small>${products.length || 0} 个商品已加载</small></article>
-      <article><span>活动中</span><strong>${activePromotions}</strong><small>${promotions.length || 0} 个活动已加载</small></article>
+      <article><span>活动中</span><strong>${activePromotions === null ? "-" : activePromotions}</strong><small>${activePromotions === null ? "活动范围未完整读取，不显示数量" : `${promotions.length || 0} 个活动已加载`}</small></article>
     `;
   }
   if (health) {
@@ -2011,13 +3894,13 @@ function renderStoreOperatingOverview() {
         <button type="button" data-cockpit-view="products">进入商品管理</button>
       </section>
       <section id="storeOrderFulfillment" class="store-health-panel">
-        <div><span>订单履约</span><strong>${awaitingOrders ? "有待处理" : "暂无积压"}</strong></div>
-        <p>${awaitingOrders ? `${awaitingOrders} 单需要备货或发运。` : "已加载订单里没有待备货/待发运积压。"}</p>
+        <div><span>订单履约</span><strong>${!orderBatch.loaded ? "待同步" : !orderEvidenceKnown ? "状态未知" : awaitingOrders ? "有待处理" : "暂无积压"}</strong></div>
+        <p>${!orderBatch.loaded ? "尚未读取订单，不能判断是否有履约积压。" : !orderEvidenceKnown ? "订单读取不完整或解释状态未知，不能据此判断没有积压。" : awaitingOrders ? `${awaitingOrders} 单需要人工核对；订单状态不会触发备货或发运。` : "已加载订单里没有待备货/待发运积压。"}</p>
         <button type="button" data-cockpit-view="orders">进入订单履约</button>
       </section>
       <section id="storeInventoryRisk" class="store-health-panel">
-        <div><span>库存仓库</span><strong>${lowStockProducts ? "有风险" : "待同步"}</strong></div>
-        <p>${lowStockProducts ? `${lowStockProducts} 个商品可能缺库存。` : "库存风险会在商品和仓库数据加载后更新。"}</p>
+        <div><span>库存仓库</span><strong>${lowStockProducts ? "有缺库存" : unknownStockProducts ? "库存未知" : "已同步"}</strong></div>
+        <p>${lowStockProducts ? `${lowStockProducts} 个商品已明确为 0 库存。` : unknownStockProducts ? `${unknownStockProducts} 个商品尚未获得当前库存证据，不能按 0 判断。` : "当前已加载商品均有明确库存证据。"}</p>
         <button type="button" data-cockpit-view="warehouse">进入库存仓库</button>
       </section>
       <section id="storeProfitSnapshot" class="store-health-panel">
@@ -2055,36 +3938,155 @@ function renderStoreOperatingOverview() {
   }
 }
 
+function writeCommandStateLabel(state) {
+  return state === "needs_review" ? "需要人工复核" : "执行已陈旧，结果未知";
+}
+
+function productStockCounts(products = []) {
+  const rows = Array.isArray(products) ? products : [];
+  return {
+    lowStockProducts: rows.filter((item) => productStockEvidenceState(item) === "zero"),
+    unknownStockProducts: rows.filter((item) => productStockEvidenceState(item) === "unknown"),
+  };
+}
+
+// A non-empty first page is not proof of the store's complete activity set.
+function promotionCoverageComplete(sellerResult = state.promotionSellerResult, evidence = state.promotionEvidence) {
+  // A status label is not sufficient evidence of full store coverage. Older
+  // adapters can say `complete` for a successfully returned page while
+  // omitting pagination/total metadata; treating that as a complete activity
+  // set would turn a stale first page into a seller KPI.
+  return sellerResult?.coverageComplete === true || evidence?.coverageComplete === true;
+}
+
+function renderWriteCommandAttention(data = {}) {
+  const target = $("#writeCommandAttentionList");
+  if (!target) return;
+  const items = Array.isArray(data.items) ? data.items : [];
+  if (!items.length) {
+    target.innerHTML = `<article class="write-command-attention-empty"><strong>没有待复核写操作</strong><p>当前没有结果未知或执行陈旧的 Ozon 写命令。</p></article>`;
+    return;
+  }
+  target.innerHTML = items.map((item) => `
+    <article class="write-command-attention-item">
+      <div>
+        <span class="status-pill warning">${escapeHtml(writeCommandStateLabel(item.state))}</span>
+        <strong>${escapeHtml(item.action || "Ozon 写操作")}</strong>
+        <small>${escapeHtml(item.storeId ? `店铺 ${item.storeId}` : "店铺未标记")} · 发起于 ${escapeHtml(formatDateTime(item.createdAt))}</small>
+      </div>
+      <p><b>为什么要复核：</b>${escapeHtml(item.reason || "系统无法安全判断写入结果。")}</p>
+      <p><b>安全下一步：</b>${escapeHtml(item.safeNextStep || "先只读回查 Ozon 平台状态；核实前不会自动重试，也不要手动重复写入。")}</p>
+    </article>
+  `).join("");
+}
+
+async function loadWriteCommandAttention() {
+  const target = $("#writeCommandAttentionList");
+  if (!target) return true;
+  try {
+    const data = await api("/api/ozon/write-command-attention");
+    renderWriteCommandAttention(data);
+    return true;
+  } catch (error) {
+    target.innerHTML = `<article class="write-command-attention-empty"><strong>待复核状态读取失败</strong><p>${escapeHtml(error.message)}</p><small>请稍后刷新；读取失败不会触发任何写入。</small></article>`;
+    return false;
+  }
+}
+
+function financeAmount(value) {
+  if (value === null || value === undefined || value === "") return null;
+  const amount = Number(value);
+  return Number.isFinite(amount) && amount >= 0 ? amount : null;
+}
+
+function financeOrderLineAmount(product = {}) {
+  const lineTotal = financeAmount(product.total_price ?? product.totalPrice ?? product.line_total ?? product.amount);
+  if (lineTotal !== null) return lineTotal;
+  const unitPrice = financeAmount(product.price ?? product.offer_price ?? product.offerPrice);
+  if (unitPrice === null) return null;
+  const quantity = financeAmount(product.quantity ?? product.count ?? product.qty);
+  // A unit price without an observed quantity is not a one-item line.  The
+  // server finance model applies the same rule; keeping the UI fallback
+  // conservative prevents an offline/older response from manufacturing
+  // revenue by silently assuming quantity=1.
+  return quantity === null ? null : unitPrice * quantity;
+}
+
+function financeSnapshotRevenue(orders, orderBatch) {
+  const complete = orderBatch.loaded === true
+    && orderBatch.failed !== true
+    && orderBatch.partial !== true
+    && orderBatch.hasNext !== true;
+  if (!complete) return null;
+  let total = 0;
+  let unknownLine = false;
+  let excludedOrder = false;
+  for (const order of Array.isArray(orders) ? orders : []) {
+    const status = String(order?.statusGroup || order?.status || "").trim().toLowerCase();
+    const substatus = String(order?.substatus || "").trim().toLowerCase();
+    // Keep the compatibility path aligned with the server finance model:
+    // cancelled/disputed postings need settlement/refund evidence before
+    // their lines can be called realized sales.
+    if (status === "cancelled" || status === "dispute" || substatus.includes("dispute")) {
+      excludedOrder = true;
+      continue;
+    }
+    for (const product of Array.isArray(order?.products) ? order.products : []) {
+      const amount = financeOrderLineAmount(product);
+      if (amount === null) unknownLine = true;
+      else total += amount;
+    }
+  }
+  return unknownLine || excludedOrder ? null : total;
+}
+
 function domainPanelSnapshot() {
   const orders = state.orderRows || [];
   const products = state.productRows || [];
   const promotions = state.promotionRows || [];
   const workflows = state.workflowRuns || [];
   const summary = state.workflowSummary || {};
-  const revenue = orders.reduce((total, order) => {
-    const productTotal = (order.products || []).reduce((sum, product) => sum + Number(product.price || product.offer_price || 0), 0);
-    return total + productTotal;
-  }, 0);
-  const awaitingOrders = orders.filter((order) => ["awaiting_packaging", "awaiting_deliver"].includes(order.status)).length;
-  const disputeOrders = orders.filter((order) => order.status === "dispute" || String(order.substatus || "").includes("dispute")).length;
-  const cancelledOrders = orders.filter((order) => order.status === "cancelled").length;
+  const orderBatch = state.orderBatch || null;
+  const orderCoverageKnown = orderBatch?.loaded === true
+    && orderBatch.failed !== true
+    && orderBatch.partial !== true
+    && orderBatch.hasNext !== true
+    && orderBatch.paginationComplete !== false;
+  const revenue = financeSnapshotRevenue(orders, orderBatch || {});
+  // An empty/partial order array is not evidence that there are no disputes or
+  // cancellations. Keep service metrics unknown until the current store's
+  // complete order scope is known.
+  const awaitingOrders = orderCoverageKnown ? orders.filter((order) => ["awaiting_packaging", "awaiting_deliver"].includes(order.status)).length : null;
+  const disputeOrders = orderCoverageKnown ? orders.filter((order) => order.status === "dispute" || String(order.substatus || "").includes("dispute")).length : null;
+  const cancelledOrders = orderCoverageKnown ? orders.filter((order) => order.status === "cancelled").length : null;
   const riskyProducts = products.filter((item) => ["error", "needFix"].includes(item.status_group) || item.status === "error");
-  const lowStockProducts = products.filter((item) => Number(item.stocks?.present || item.stock || 0) <= 0);
-  const activePromotions = promotions.filter((item) => !/inactive|closed|finished/i.test(String(item.status || "")));
+  const stockCounts = productStockCounts(products);
+  const lowStockProducts = stockCounts.lowStockProducts;
+  const unknownStockProducts = stockCounts.unknownStockProducts;
+  // A non-empty activity page is not a complete store activity set. Keep an
+  // unknown value explicit so the finance panel cannot turn a partial read
+  // into a count of active promotions.
+  const activePromotions = promotionCoverageComplete()
+    ? promotions.filter((item) => !/inactive|closed|finished/i.test(String(item.status || "")))
+    : null;
   const waitingHuman = Number(summary.waitingHuman || workflows.filter((run) => run.status === "waiting_human").length);
   const highRisk = Number(summary.highRisk || workflows.filter((run) => run.summary?.riskLevel === "high").length);
   const blocked = Number(summary.blocking || workflows.filter((run) => run.status === "blocked" || run.summary?.blockingNodeName).length);
   return {
     orders,
+    orderBatch,
     products,
     promotions,
     workflows,
     revenue,
+    activityImpact: state.promotionImpactPreview || null,
+    financeReadModel: state.financeReadModel || null,
     awaitingOrders,
     disputeOrders,
     cancelledOrders,
     riskyProducts,
     lowStockProducts,
+    unknownStockProducts,
     activePromotions,
     waitingHuman,
     highRisk,
@@ -2092,11 +4094,119 @@ function domainPanelSnapshot() {
   };
 }
 
+function buildFinanceSellerResultFromSnapshot(snapshot = {}) {
+  const batch = snapshot.orderBatch || {};
+  const checkedAtMs = batch.checkedAt ? Date.parse(String(batch.checkedAt)) : null;
+  const staleOrderEvidence = batch.checkedAt
+    && (!Number.isFinite(checkedAtMs) || checkedAtMs > Date.now() + 5 * 60 * 1000 || Date.now() - checkedAtMs > 60 * 60 * 1000);
+  const complete = batch.loaded === true && batch.failed !== true && batch.partial !== true && batch.hasNext !== true;
+  // A legacy/older response may not carry the server finance projection.  In
+  // that fallback path, a complete page with an unknown order-line amount is
+  // not observed revenue: the snapshot deliberately returns `null` for that
+  // case.  Keep the seller result blocked instead of displaying an "observed"
+  // card with no value (or encouraging a profit conclusion from incomplete
+  // rows).  The server projection applies the same gate.
+  const revenueKnown = complete
+    && batch.paginationComplete !== false
+    && snapshot.revenue !== null
+    && snapshot.revenue !== undefined
+    && snapshot.revenue !== ""
+    && Number.isFinite(Number(snapshot.revenue));
+  const failed = batch.failed === true;
+  const orderState = staleOrderEvidence ? "unknown" : failed ? "unknown" : batch.loaded !== true ? "unknown" : !complete ? "partial" : revenueKnown ? "complete" : "unknown";
+  const orderCode = failed
+    ? "ORDER_READ_FAILED"
+    : staleOrderEvidence
+      ? (Number.isFinite(checkedAtMs) ? "ORDER_READ_STALE" : "ORDER_READ_TIMESTAMP_INVALID")
+    : batch.loaded !== true
+      ? "ORDER_READ_NOT_RUN"
+      : !complete
+        ? "ORDER_READ_INCOMPLETE"
+        : batch.paginationComplete === false
+          ? "ORDER_PAGINATION_EVIDENCE_MISSING"
+          : revenueKnown ? "ORDER_READ_COMPLETE" : "ORDER_REVENUE_FIELDS_UNKNOWN";
+  const orderReason = failed
+    ? "订单读取失败，当前缓存不能作为全店销售额。"
+    : staleOrderEvidence
+      ? "订单读取证据已过期或时间无效，当前缓存不能作为当前销售额。"
+    : batch.loaded !== true
+      ? "订单尚未读取，当前没有销售额证据。"
+      : !complete
+        ? "订单批次不完整或仍有后续分页，不能代表全店销售额。"
+        : batch.paginationComplete === false
+          ? "订单读取缺少可核对的分页结束证据，当前页面不能代表销售额范围。"
+          : revenueKnown
+        ? "订单读取批次已结束。"
+        : "订单范围已读取，但部分订单行缺少可核对金额字段，当前合计不能代表全店销售额。";
+  const impact = snapshot.activityImpact || {};
+  const knownPriceCount = Number(impact.knownPriceCount || 0);
+  const summary = [
+    {
+      key: "revenue",
+      label: "订单销售额",
+      status: orderState === "complete" && revenueKnown ? "observed" : orderState === "partial" ? "blocked" : "unknown",
+      code: orderCode,
+      reason: orderReason,
+      nextAction: orderState === "complete"
+        ? "可查看当前已完成订单范围的销售额。"
+        : orderCode === "ORDER_REVENUE_FIELDS_UNKNOWN"
+          ? "补齐订单行金额或改用带财务明细的订单读取，再查看销售额。"
+        : ["ORDER_READ_STALE", "ORDER_READ_TIMESTAMP_INVALID"].includes(orderCode)
+          ? "重新读取当前店铺订单范围，确认读取时间有效且在新鲜窗口内后再查看销售额。"
+          : "完成订单范围读取（含全部分页）后再查看销售额。",
+      value: revenueKnown ? snapshot.revenue : null,
+    },
+    {
+      key: "activityImpact",
+      label: "活动价格影响",
+      status: knownPriceCount > 0 ? "estimate" : "unknown",
+      code: knownPriceCount > 0 ? "ACTIVITY_PRICE_IMPACT_ONLY" : "ACTIVITY_IMPACT_NOT_AVAILABLE",
+      reason: knownPriceCount > 0 ? "仅比较活动价与当前价，不代表利润或结算结果。" : "没有可比较的活动价格证据。",
+      nextAction: "仅将活动数据用于价格影响参考，不要据此宣称利润。",
+      value: knownPriceCount > 0 ? `${knownPriceCount} 个可比较` : "未知",
+    },
+    {
+      key: "costSettlement",
+      label: "成本/结算证据",
+      status: "unknown",
+      code: "FINANCE_COST_SETTLEMENT_EVIDENCE_MISSING",
+      reason: "采购成本、物流费、佣金、杂费和结算规则尚未形成可追溯证据。",
+      nextAction: "补齐成本、费用和结算规则证据。",
+      value: "未知",
+    },
+    {
+      key: "profit",
+      label: "利润结论",
+      status: "unknown",
+      code: "FINANCE_SETTLEMENT_NOT_VERIFIED",
+      reason: "不从订单金额、活动折扣或定价估算推导确定利润。",
+      nextAction: "完成结算证据回读并核对成本后，再生成利润报表。",
+      value: "未知",
+    },
+  ];
+  const blockers = [];
+  if (orderState !== "complete") blockers.push(orderCode);
+  blockers.push("FINANCE_COST_SETTLEMENT_EVIDENCE_MISSING");
+  if (knownPriceCount > 0) blockers.push("ACTIVITY_PRICE_IMPACT_NOT_PROFIT");
+  return {
+    state: blockers.length ? "blocked" : "ready_for_review",
+    blockerCodes: blockers,
+    nextAction: orderState !== "complete"
+      ? ["ORDER_READ_STALE", "ORDER_READ_TIMESTAMP_INVALID"].includes(orderCode)
+        ? "重新读取当前店铺订单范围，确认读取时间有效且在新鲜窗口内后再查看销售额。"
+        : "先读取并完成当前店铺订单范围（含全部分页），再查看销售额。"
+      : "补齐采购成本、物流费、佣金、杂费和结算规则证据；未补齐前不要宣称利润。",
+    evidenceSummary: summary,
+    sideEffect: "只生成只读经营摘要，不会修改订单、活动、价格或结算数据。",
+  };
+}
+
 function domainMetricCard(label, value, note, view) {
+  const displayValue = value === null || value === undefined ? "未知" : value;
   return `
     <article class="domain-metric-card">
       <span>${escapeHtml(label)}</span>
-      <strong>${escapeHtml(String(value))}</strong>
+      <strong>${escapeHtml(String(displayValue))}</strong>
       <small>${escapeHtml(note)}</small>
       ${view ? `<button type="button" data-cockpit-view="${escapeHtml(view)}">进入</button>` : ""}
     </article>
@@ -2117,19 +4227,59 @@ function renderFinanceProfitPanel() {
   const list = $("#financeRiskList");
   if (!grid && !list) return;
   const snapshot = domainPanelSnapshot();
+  const finance = snapshot.financeReadModel || {
+    sellerResult: buildFinanceSellerResultFromSnapshot(snapshot),
+  };
+  const sellerResult = finance.sellerResult || buildFinanceSellerResultFromSnapshot(snapshot);
+  const evidenceSummary = Array.isArray(finance.evidenceSummary)
+    ? finance.evidenceSummary
+    : (Array.isArray(sellerResult.evidenceSummary) ? sellerResult.evidenceSummary : []);
+  const orderBatch = snapshot.orderBatch || {};
+  const orderReadIncomplete = orderBatch.failed === true
+    || orderBatch.partial === true
+    || orderBatch.loaded !== true
+    || orderBatch.hasNext === true
+    || orderBatch.paginationComplete === false;
+  const financeEvidenceNote = orderBatch.failed === true
+    ? "订单读取失败；销售额未知，请先重试订单读取"
+    : orderBatch.loaded !== true
+      ? "尚未读取订单；销售额未知，请先读取订单"
+      : orderBatch.partial === true || orderBatch.hasNext === true || orderBatch.paginationComplete === false
+        ? "订单读取范围未完成；销售额未知，不能用当前批次代表全店"
+        : "仅按已读取订单估算；成本、物流、佣金和结算仍未知";
+  const costEvidenceNote = "成本/结算证据：采购成本、物流费、佣金、杂费和结算规则尚未形成可追溯证据";
   if (grid) {
     grid.innerHTML = [
-      domainMetricCard("已加载销售额", snapshot.revenue ? snapshot.revenue.toFixed(0) : "-", "来自当前订单缓存估算", "orders"),
-      domainMetricCard("价格/利润风险", snapshot.highRisk + snapshot.blocked, "来自 workflow 定价和预检风险", "workflow-console"),
-      domainMetricCard("活动中商品域", snapshot.activePromotions.length, "活动价风险进入营销活动", "promotions"),
-      domainMetricCard("待核算订单", snapshot.orders.length, "后续接入佣金、物流费和结算", "reports"),
+      ...evidenceSummary.slice(0, 4).map((entry) => domainMetricCard(
+        `${entry.label}${entry.status === "observed" ? "" : "（待补证据）"}`,
+        entry.value === null || entry.value === undefined ? "未知" : entry.value,
+        `${entry.reason} 下一步：${entry.nextAction}`,
+        entry.key === "revenue" ? "orders" : entry.key === "activityImpact" ? "promotions" : "reports",
+      )),
     ].join("");
   }
   if (list) {
     const items = [
+      domainRiskItem(
+        sellerResult.state === "blocked" ? "财务证据未闭环" : "财务证据可复核",
+        `${sellerResult.nextAction} ${sellerResult.sideEffect || "仅读取，不修改经营数据。"}`,
+        "finance",
+        sellerResult.state === "blocked" ? "warning" : "info",
+      ),
+      ...evidenceSummary.filter((entry) => entry.status !== "observed").map((entry) => domainRiskItem(
+        `${entry.label}：${entry.status === "estimate" ? "估算" : "未知"}`,
+        `${entry.reason} 下一步：${entry.nextAction}`,
+        entry.key === "revenue" ? "orders" : entry.key === "activityImpact" ? "promotions" : "finance",
+        entry.status === "estimate" ? "info" : "warning",
+      )),
       snapshot.highRisk ? domainRiskItem("高风险定价", `${snapshot.highRisk} 条流程需要复核利润或最低价。`, "workflow-console", "warning") : "",
-      snapshot.activePromotions.length ? domainRiskItem("活动价格影响利润", `${snapshot.activePromotions.length} 个活动可能影响毛利。`, "promotions", "info") : "",
-      domainRiskItem("利润口径", "采购成本、物流费、佣金、杂费、活动折扣统一在财务利润页汇总。", "finance", "info"),
+      snapshot.activePromotions === null
+        ? domainRiskItem("活动范围未知", "活动读取覆盖不完整，不能据此判断店铺活动数量或价格影响。", "promotions", "warning")
+        : snapshot.activePromotions.length
+          ? domainRiskItem("活动仅为价格影响预览", `${snapshot.activePromotions.length} 个活动可能改变成交价；没有采购成本、佣金和结算证据，不能推导利润。`, "promotions", "info")
+          : "",
+      orderReadIncomplete ? domainRiskItem("财务证据未闭环", `${financeEvidenceNote}；下一步：进入订单履约读取完整批次。`, "orders", "warning") : "",
+      domainRiskItem("利润口径仍未知", `${costEvidenceNote}；活动折扣不能替代结算规则。`, "finance", "warning"),
     ].filter(Boolean);
     list.innerHTML = items.join("");
   }
@@ -2150,10 +4300,12 @@ function renderServiceRiskPanel() {
   }
   if (list) {
     const items = [
+      snapshot.disputeOrders === null ? domainRiskItem("争议订单范围未知", "订单尚未完成当前店铺范围读取，不能判断没有争议订单。", "orders", "warning") : "",
       snapshot.disputeOrders ? domainRiskItem("优先处理争议", `${snapshot.disputeOrders} 个争议订单需要售后介入。`, "orders", "danger") : "",
+      snapshot.cancelledOrders === null ? domainRiskItem("取消订单范围未知", "订单尚未完成当前店铺范围读取，不能判断没有取消订单。", "orders", "warning") : "",
       snapshot.cancelledOrders ? domainRiskItem("取消订单复盘", `${snapshot.cancelledOrders} 个取消订单需要归因。`, "orders", "warning") : "",
       snapshot.riskyProducts.length ? domainRiskItem("商品资料风险", `${snapshot.riskyProducts.length} 个商品异常可能影响售后。`, "products", "warning") : "",
-      domainRiskItem("售后数据接口", "后续接入评价、退货、纠纷和客服消息后，这里成为售后主队列。", "service", "info"),
+      domainRiskItem("售后动作尚未接入", "当前先从订单页查看争议和取消；本页只展示风险，不处理退货或客服动作。", "orders", "info"),
     ].filter(Boolean);
     list.innerHTML = items.join("");
   }
@@ -2169,7 +4321,14 @@ function renderReportsPanel() {
       domainMetricCard("订单样本", snapshot.orders.length, "当前已加载订单", "orders"),
       domainMetricCard("商品样本", snapshot.products.length, "当前已加载商品", "products"),
       domainMetricCard("上架流程", snapshot.workflows.length, "workflow 成功率和卡点来源", "workflow-console"),
-      domainMetricCard("营销活动", snapshot.promotions.length, "活动表现和候选商品来源", "promotions"),
+      domainMetricCard(
+        "营销活动",
+        snapshot.activePromotions === null ? "未知" : snapshot.activePromotions.length,
+        snapshot.activePromotions === null
+          ? "活动范围未完整读取，不能据此判断活动数量"
+          : "当前完整读取范围内的活动表现和候选商品来源",
+        "promotions",
+      ),
     ].join("");
   }
   if (list) {
@@ -2188,9 +4347,11 @@ function renderSystemConfigPanel() {
   if (!grid && !list) return;
   const snapshot = domainPanelSnapshot();
   const workerOnline = Boolean(state.crawlerWorkerStatus?.online || state.crawlerWorkerStatus?.connected || state.crawlerWorkerStatus?.active);
+  const observability = observabilitySellerStatus(state.observabilitySummary);
   if (grid) {
     grid.innerHTML = [
       domainMetricCard("店铺 API", $("#healthStatus")?.textContent || "未测试", `${state.stores.length} 个店铺`, "dashboard"),
+      domainMetricCard("服务观测", observability.label, observability.nextAction, "system"),
       domainMetricCard("1688 采集器", workerOnline ? "在线" : "待连接", "浏览器插件与人机状态", "sourcing"),
       domainMetricCard("自动化锁", snapshot.waitingHuman, "waiting_human 流程必须人工处理", "workflow-console"),
       domainMetricCard("运行流程", snapshot.workflows.length, "工作流日志和高级诊断", "workflow-console"),
@@ -2198,10 +4359,687 @@ function renderSystemConfigPanel() {
   }
   if (list) {
     list.innerHTML = [
+      observability.state === "unknown"
+        ? domainRiskItem("服务观测尚未读取", observability.nextAction, "system", "info")
+        : observability.state === "alert"
+          ? domainRiskItem("服务观测有告警", observability.nextAction, "system", "warning")
+          : "",
       domainRiskItem("Ozon 提交安全", "提交商品必须通过 preflight，并带 confirmSubmit 人工确认。", "workflow-console", "warning"),
       domainRiskItem("自动化模式", "默认 observe_only；高风险动作不自动提交外部平台。", "system", "info"),
       domainRiskItem("字典与插件", "Ozon 类目属性字典、1688 插件、运行日志统一在系统配置维护。", "system", "info"),
     ].join("");
+  }
+  renderRuntimeSafetyStatus(state.runtimeSafetySnapshot);
+  renderMigrationStateStatus(state.migrationStateAudit);
+}
+
+function observabilitySellerStatus(summary = null) {
+  if (!summary || typeof summary !== "object") {
+    return { state: "unknown", label: "未读取", nextAction: "点击 API 测试后再查看服务错误告警；这不代表 Seller API 或业务 readiness。" };
+  }
+  if (summary.error || summary.failed === true) {
+    return { state: "alert", label: "读取失败", nextAction: "重新读取服务观测摘要；先处理服务错误，再判断 API 或业务状态。" };
+  }
+  const alerts = Array.isArray(summary.alerts) ? summary.alerts : [];
+  const high = alerts.filter((alert) => String(alert?.severity || "").toLowerCase() === "high").length;
+  if (high) {
+    return { state: "alert", label: `${high} 个高优先级告警`, nextAction: "查看服务错误和运行日志；告警处理前不要把 API 连通当作生产或业务就绪。" };
+  }
+  return { state: "ok", label: alerts.length ? `${alerts.length} 个一般告警` : "无高优先级告警", nextAction: alerts.length ? "查看一般告警；它们不等于 Seller API 或业务 readiness。" : "服务观测未发现高优先级告警；仍需单独核对运行配置和业务证据。" };
+}
+
+function renderRuntimeSafetyStatus(snapshot = state.runtimeSafetySnapshot) {
+  const target = $("#runtimeSafetyStatus");
+  if (!target) return;
+  const safety = runtimeSafetySellerStatus(snapshot || {});
+  target.dataset.state = safety.blocked ? "needs_review" : "verified";
+  target.innerHTML = `<strong>${escapeHtml(safety.label)}</strong><span>下一步：${escapeHtml(safety.nextAction)}</span>`;
+  renderSystemOperatorActionStatus(snapshot, state.migrationStateAudit);
+}
+
+async function loadRuntimeSafetySummary() {
+  const target = $("#runtimeSafetyStatus");
+  if (target) target.textContent = "正在核验认证、持久化和店铺作用域…";
+  try {
+    const data = await api("/api/system/runtime-safety");
+    state.runtimeSafetySnapshot = data;
+    renderRuntimeSafetyStatus(data);
+    return data;
+  } catch (error) {
+    state.runtimeSafetySnapshot = { error: String(error?.message || "运行安全摘要读取失败") };
+    renderRuntimeSafetyStatus(state.runtimeSafetySnapshot);
+    return null;
+  }
+}
+
+function renderMigrationStateStatus(audit = state.migrationStateAudit) {
+  const target = $("#migrationStateStatus");
+  if (!target) return;
+  if (!audit) {
+    target.textContent = "尚未读取迁移状态；读取只读本地状态，不连接数据库。";
+    renderSystemOperatorActionStatus(state.runtimeSafetySnapshot, audit);
+    return;
+  }
+  if (audit.error) {
+    target.dataset.state = "needs_review";
+    target.innerHTML = `<strong>迁移状态读取失败</strong><span>下一步：${escapeHtml(audit.error)}；检查本地状态文件后重新读取。</span>`;
+    renderSystemOperatorActionStatus(state.runtimeSafetySnapshot, audit);
+    return;
+  }
+  const blockers = Array.isArray(audit.blockers) ? audit.blockers : [];
+  const nextAction = String(audit.nextAction || blockers[0]?.nextAction || "迁移状态完整；仍需按部署环境执行恢复演练。");
+  target.dataset.state = audit.ok === true ? "verified" : "needs_review";
+  const blockerSummary = blockers.length
+    ? `<ul>${blockers.slice(0, 4).map((item) => `<li><code>${escapeHtml(item.code || "MIGRATION_BLOCKED")}</code>：${escapeHtml(item.nextAction || "请查看部署预检输出")}</li>`).join("")}</ul>`
+    : "";
+  target.innerHTML = `<strong>迁移状态：${escapeHtml(audit.state || (audit.ok ? "complete" : "blocked"))}</strong><span>下一步：${escapeHtml(nextAction)}</span>${blockerSummary}`;
+  renderSystemOperatorActionStatus(state.runtimeSafetySnapshot, audit);
+}
+
+function renderSystemOperatorActionStatus(runtimeSafety = state.runtimeSafetySnapshot, migration = state.migrationStateAudit) {
+  const target = $("#systemOperatorActionStatus");
+  if (!target) return;
+  const runtime = runtimeSafety ? runtimeSafetySellerStatus(runtimeSafety) : null;
+  const migrationBlockers = Array.isArray(migration?.blockers) ? migration.blockers : [];
+  const deployment = state.deploymentPreflight;
+  const deploymentBlockers = Array.isArray(deployment?.blockers) ? deployment.blockers : [];
+  // A local preflight with no blockers is still not production readiness. If
+  // it has been read, preserve its explicit deploymentReady=false boundary
+  // whenever another system panel re-renders this shared operator status.
+  const deploymentNotReady = deployment && deployment.deploymentReady !== true;
+  const blocker = runtime?.blocked
+    ? `运行配置：${runtime.nextAction}`
+    : migrationBlockers[0]?.nextAction
+      || deploymentBlockers[0]?.nextAction
+      || (deploymentNotReady ? "本地门禁结果不能证明生产已就绪；请在受控终端完成真实迁移和恢复演练。" : "");
+  const needsReview = Boolean(blocker);
+  target.dataset.state = needsReview ? "needs_review" : "verified";
+  target.innerHTML = needsReview
+    ? `<strong>当前不能宣称可部署</strong><span>运维下一步：${escapeHtml(blocker)}</span><small>解决后点击上方按钮重新读取；最后再在受控终端执行 <code>npm run deployment-preflight</code>。</small>`
+    : `<strong>本地阻断项未发现</strong><span>下一步：复制并在受控终端执行部署预检。</span><small>此页面仍不连接数据库，也不代表真实迁移或恢复已验证。</small>`;
+}
+
+async function copyDeploymentPreflightCommand() {
+  const command = "npm run deployment-preflight";
+  const target = $("#systemOperatorActionStatus");
+  try {
+    if (navigator.clipboard?.writeText) await navigator.clipboard.writeText(command);
+    else {
+      const input = document.createElement("textarea");
+      input.value = command;
+      input.setAttribute("readonly", "");
+      input.style.position = "fixed";
+      input.style.opacity = "0";
+      document.body.appendChild(input);
+      input.select();
+      document.execCommand("copy");
+      input.remove();
+    }
+    if (target) target.innerHTML = `<strong>命令已复制</strong><span><code>${command}</code></span><small>请在受控部署终端运行；本页面未执行命令。</small>`;
+    toast("部署预检命令已复制");
+  } catch {
+    if (target) target.innerHTML = `<strong>复制失败</strong><span>请手动运行 <code>${command}</code>。</span>`;
+    toast("复制失败，请手动运行部署预检", "warning");
+  }
+}
+
+async function loadMigrationStateAudit() {
+  const target = $("#migrationStateStatus");
+  if (target) target.textContent = "正在读取本地迁移状态…";
+  try {
+    const data = await api("/api/system/migration-state");
+    state.migrationStateAudit = data;
+    renderMigrationStateStatus(data);
+    return data;
+  } catch (error) {
+    state.migrationStateAudit = { error: String(error?.message || "迁移状态读取失败") };
+    renderMigrationStateStatus(state.migrationStateAudit);
+    return null;
+  }
+}
+
+async function loadDeploymentPreflight() {
+  const target = $("#systemOperatorActionStatus");
+  if (target) target.textContent = "正在检查生产门禁（仅读取本地配置和状态）…";
+  try {
+    const data = await api("/api/system/deployment-preflight");
+    state.deploymentPreflight = data;
+    const blockers = Array.isArray(data.blockers) ? data.blockers : [];
+    // Low disk space is the most immediate recovery risk; surface it first
+    // even when runtime/migration declarations have other blockers. The API
+    // remains read-only and the operator still has to free/expand storage.
+    const first = blockers.find((item) => item.check === "disk_space") || blockers[0];
+    const diskSpace = data.diskSpace || {};
+    const diskHint = first?.check === "disk_space" && diskSpace.availableBytes != null && Number.isFinite(Number(diskSpace.availableBytes))
+      ? ` 当前可用 ${Number(diskSpace.availableBytes)} bytes，最低要求 ${Number(diskSpace.minimumFreeBytes)} bytes。`
+      : "";
+    const blockerList = blockers.slice(0, 5).map((item) => {
+      const label = item?.check || item?.code || "DEPLOYMENT_BLOCKED";
+      const detail = item?.blocker?.code || item?.blocker || item?.nextAction || "请查看部署预检输出";
+      return `<li><code>${escapeHtml(label)}</code>：${escapeHtml(String(detail))}</li>`;
+    }).join("");
+    const blockerListHtml = blockerList ? `<ul class="deployment-preflight-blockers">${blockerList}</ul>` : "";
+    if (target) {
+      // The endpoint is intentionally a local, read-only preflight.  Even an
+      // empty blocker list cannot prove a deploy is ready: the contract keeps
+      // deploymentReady=false until the deployment operator runs the real
+      // migration/recovery procedure.  Keep this state actionable rather
+      // than presenting a green "verified" badge that operators could read
+      // as production readiness.
+      const locallyClear = data.ok === true && data.deploymentReady !== true;
+      const productionReady = data.ok === true && data.deploymentReady === true;
+      target.dataset.state = productionReady ? "verified" : "needs_review";
+      target.innerHTML = productionReady
+        ? `<strong>生产门禁通过</strong><span>仍需保留迁移和恢复演练回执，并按部署变更流程上线。</span><small>验证等级：${escapeHtml(data.verificationLevel || "locally_tested")}。</small>`
+        : locallyClear
+          ? `<strong>本地门禁未发现阻断，但生产未就绪</strong><span>仍需在受控终端执行真实迁移、恢复演练和部署预检。</span><small>验证等级：${escapeHtml(data.verificationLevel || "locally_tested")}；本页面未连接数据库，也不代表可部署。</small>`
+        : `<strong>生产门禁仍被阻断</strong><span>运维下一步：${escapeHtml((first?.nextAction || data.nextAction || "查看部署预检阻断项") + diskHint)}</span><small>阻断 ${blockers.length} 项；解决后重新检查，最后在受控终端运行 <code>npm run deployment-preflight</code>。未执行迁移或 Ozon 写入。</small>`;
+      if (!productionReady && target.innerHTML && blockerListHtml) target.innerHTML += blockerListHtml;
+    }
+    return data;
+  } catch (error) {
+    state.deploymentPreflight = { error: String(error?.message || "生产门禁读取失败") };
+    if (target) {
+      target.dataset.state = "needs_review";
+      target.innerHTML = `<strong>生产门禁读取失败</strong><span>下一步：${escapeHtml(state.deploymentPreflight.error)}；请在受控终端运行部署预检。</span>`;
+    }
+    return null;
+  }
+}
+
+// Keep permission/scope failures in seller language.  The API intentionally
+// returns a reasonCode instead of store names or credentials; this projection
+// must remain equally safe and actionable for a normal operator.
+function readOperatorReceiptRecovery(errorOrSummary = {}) {
+  const responseData = errorOrSummary?.responseData || {};
+  const reasonCode = String(errorOrSummary?.reasonCode || responseData.reasonCode || "").trim();
+  const status = Number(errorOrSummary?.httpStatus || responseData.status || 0);
+  const known = {
+    PRINCIPAL_STORE_SCOPE_REQUIRED: {
+      title: "当前会话没有绑定店铺权限",
+      nextAction: "请让管理员把当前 ERP 会话绑定到允许的店铺后重新登录，再刷新只读回执。",
+    },
+    READ_RECEIPT_STORE_SCOPE_REQUIRED: {
+      title: "系统还没有配置可读取的店铺范围",
+      nextAction: "请管理员配置部署店铺范围和当前会话的店铺范围，再重新检查只读回执。",
+    },
+    PRINCIPAL_STORE_ACCESS_DENIED: {
+      title: "当前会话不能访问所选店铺",
+      nextAction: "切换到当前会话已授权的店铺，或让管理员补充店铺范围后重新读取。",
+    },
+    STORE_ACCESS_DENIED: {
+      title: "部署范围未允许所选店铺",
+      nextAction: "请管理员把目标店铺加入部署允许范围后重新检查；本次没有读取 Ozon。",
+    },
+    READ_OPERATOR_STORE_SCOPE_INVALID: {
+      title: "读取店铺范围标识无效",
+      nextAction: "清除手工填写的店铺范围并使用系统生成的计划，再重新检查。",
+    },
+  }[reasonCode];
+  if (known) return { ...known, reasonCode, status, sideEffect: String(responseData.sideEffect || "本次只校验权限范围，不会读取或写入 Ozon。") };
+  if (status === 401) return {
+    title: "ERP 会话已失效或未登录",
+    nextAction: "重新建立 ERP 会话后，再刷新当前环境的只读回执。",
+    reasonCode: reasonCode || "AUTH_REQUIRED",
+    status,
+    sideEffect: "本次没有读取或写入 Ozon。",
+  };
+  return {
+    title: "只读回执状态暂时无法读取",
+    nextAction: "先确认当前环境和会话，再重试；失败不会把旧回执当作当前证据。",
+    reasonCode: reasonCode || "READ_OPERATOR_RECEIPT_READ_FAILED",
+    status,
+    sideEffect: "本次没有读取或写入 Ozon。",
+  };
+}
+
+function readOperatorReceiptFreshnessRecovery(latest = {}, sellerTask = {}) {
+  if (latest?.stale === true) return {
+    title: "最近回执已过期",
+    nextAction: "按当前店铺、环境和读取范围重新执行受控只读回查；旧回执不能用于上架、价格或库存判断。",
+  };
+  if (latest?.endpointCoverageComplete !== true) return {
+    title: "最近回执的读取范围不完整",
+    nextAction: "补齐计划要求的 Seller API 只读端点后重新回查；当前结果只能作部分证据。",
+  };
+  if (sellerTask?.status === "needs_review") return {
+    title: String(sellerTask.title || "只读结果需要人工复核"),
+    nextAction: String(sellerTask.nextAction || "按回执的失败原因和当前店铺范围人工复核后再读取。"),
+  };
+  return {
+    title: String(sellerTask.title || "只读结果待核验"),
+    nextAction: String(sellerTask.nextAction || "确认店铺、环境和读取范围后再继续业务操作。"),
+  };
+}
+
+function validateReadOperatorEnvironment(value) {
+  const environment = String(value || "").trim();
+  if (!environment) return { ok: false, reasonCode: "READ_OPERATOR_ENVIRONMENT_REQUIRED", message: "请先填写读取环境标识；不能跨环境汇总只读回执。" };
+  if (environment.length < 3 || environment.length > 120 || /[\u0000-\u001f\u007f]/.test(environment)) {
+    return { ok: false, reasonCode: "READ_OPERATOR_ENVIRONMENT_INVALID", message: "读取环境标识需为 3-120 个可见字符；请使用当前部署的唯一环境名。" };
+  }
+  return { ok: true, environment };
+}
+
+function currentSellerReadEnvironment() {
+  // General product/order/stock reads belong to the system operator scope.
+  // The listing field is only a fallback for the category/attribute workbench;
+  // a stale listing value must not poison unrelated Seller API requests.
+  return String($("#readOperatorEnvironment")?.value || $("#listingReadEnvironment")?.value || "").trim();
+}
+
+// Keep the ordinary operator view focused on the business decision.  Hashes,
+// endpoint names and receipt ids remain available only in the collapsed
+// diagnostics panel so a seller does not need to interpret API internals.
+function renderReadOperatorReceiptBusinessCard(summary = state.readOperatorReceiptSummary) {
+  const card = $("#readOperatorReceiptBusinessStatus");
+  const diagnostics = $("#readOperatorReceiptDiagnostics");
+  if (!card) return;
+  const cells = card.querySelectorAll("div");
+  const setCell = (index, value) => { if (cells[index]) cells[index].querySelector("strong").textContent = String(value || "—"); };
+  const setDiagnostics = (value) => { if (diagnostics) diagnostics.textContent = String(value || "暂无高级诊断信息"); };
+  if (!summary) {
+    setCell(0, "尚未选择环境"); setCell(1, "待读取");
+    setCell(2, "需要先填写读取环境"); setCell(3, "填写环境后刷新回执");
+    setCell(4, "只读取本地脱敏回执，不会访问或写入 Ozon。");
+    setDiagnostics("尚未读取诊断信息");
+    return;
+  }
+  if (summary.error) {
+    const recovery = readOperatorReceiptRecovery(summary);
+    setCell(0, "当前读取环境"); setCell(1, "需要复核");
+    setCell(2, recovery.title); setCell(3, recovery.nextAction);
+    setCell(4, recovery.sideEffect);
+    setDiagnostics(`reasonCode: ${recovery.reasonCode}\nhttpStatus: ${recovery.status || "—"}`);
+    return;
+  }
+  const latest = summary.latest;
+  if (!latest) {
+    setCell(0, "当前环境 / 已授权店铺范围"); setCell(1, "暂无回执");
+    setCell(2, "还没有可用于判断当前状态的只读证据");
+    setCell(3, "先确认 session proof 和四店铺计划矩阵，再执行当前店铺只读");
+    setCell(4, summary.sideEffect || "这里只读取本地回执，不会访问或写入 Ozon。");
+    setDiagnostics(`receiptCount: ${Number(summary.receiptCount || 0)}\ncountScope: ${summary.countScope || "—"}`);
+    return;
+  }
+  const task = latest.sellerTask || {};
+  const stale = latest.stale === true;
+  const incomplete = latest.endpointCoverageComplete !== true;
+  const needsReview = stale || incomplete || task.status === "needs_review" || latest.status !== "success";
+  const statusLabel = needsReview ? (stale ? "已过期，需要重新读取" : latest.status === "success" ? "范围不完整，需要复核" : "读取失败，需要复核") : "读取成功，可作为当前只读证据";
+  const scope = latest.scope?.name || "当前店铺只读范围";
+  const offers = Number.isFinite(Number(latest.scope?.offerCount)) ? ` · ${Number(latest.scope?.offerCount)} 个商品范围` : "";
+  const shortHash = latest.storeRefHash ? `${String(latest.storeRefHash).slice(0, 15)}…` : "店铺范围哈希缺失";
+  setCell(0, `${scope}${offers} · 店铺 ${shortHash}`);
+  setCell(1, statusLabel);
+  setCell(2, task.title || (incomplete ? "Seller API 读取端点未覆盖完整" : "服务端回执需要人工确认"));
+  setCell(3, task.nextAction || "确认范围后按当前店铺计划重新读取");
+  setCell(4, task.sideEffect || summary.sideEffect || "只读取并保存脱敏回执，不会写入 Ozon。");
+  setDiagnostics([
+    `receiptId: ${latest.id || "—"}`,
+    `checkedAt: ${latest.checkedAt || "—"}`,
+    `status: ${latest.status || "unknown"}`,
+    `endpointCoverageComplete: ${latest.endpointCoverageComplete === true}`,
+    `endpoints: ${Array.isArray(latest.endpoints) ? latest.endpoints.join(", ") || "—" : "—"}`,
+    `responseHash: ${latest.responseHash || "—"}`,
+  ].join("\n"));
+}
+
+function renderReadOperatorReceiptStatus(summary = state.readOperatorReceiptSummary) {
+  const target = $("#readOperatorReceiptStatus");
+  if (!target) return;
+  renderReadOperatorReceiptBusinessCard(summary);
+  if (!summary) {
+    target.textContent = "尚未读取回执状态；刷新只读回执不会联网，只读取本地脱敏回执。";
+    return;
+  }
+  if (summary.error) {
+    const recovery = readOperatorReceiptRecovery(summary);
+    target.dataset.state = "needs_review";
+    target.dataset.reasonCode = recovery.reasonCode;
+    target.textContent = `${recovery.title}：${recovery.nextAction} ${recovery.sideEffect}`;
+    return;
+  }
+  const latest = summary.latest;
+  const sellerTask = latest?.sellerTask || {};
+  const coverage = latest?.endpointCoverageComplete === true ? "端点覆盖完整" : "端点覆盖不完整";
+  const stale = latest?.stale === true;
+  const recovery = readOperatorReceiptFreshnessRecovery(latest, sellerTask);
+  target.dataset.state = stale || latest?.endpointCoverageComplete !== true || sellerTask?.status === "needs_review"
+    ? "needs_review"
+    : "verified";
+  target.dataset.reasonCode = stale ? "READ_OPERATOR_RECEIPT_STALE" : latest?.endpointCoverageComplete !== true ? "READ_OPERATOR_RECEIPT_SCOPE_INCOMPLETE" : "";
+  target.textContent = latest
+    ? `服务端回执 ${Number(summary.receiptCount || 0)} 条；最近：${formatDateTime(latest.checkedAt)}；状态 ${stale ? "stale（已过期）" : (latest.status || "unknown")}，${coverage}。${recovery.title}：${recovery.nextAction} 真实读取不代表写入成功。`
+    : `当前没有服务端只读回执（${Number(summary.receiptCount || 0)} 条）；先生成明确店铺、环境和读取范围的计划，再由授权操作者确认执行。`;
+}
+
+async function loadReadOperatorReceipts() {
+  const button = $("#refreshReadOperatorReceipts");
+  setBusy(button, true);
+  try {
+    const environmentCheck = validateReadOperatorEnvironment($("#readOperatorEnvironment")?.value);
+    if (!environmentCheck.ok) {
+      state.readOperatorReceiptSummary = { error: environmentCheck.message, reasonCode: environmentCheck.reasonCode, httpStatus: 400, responseData: { reasonCode: environmentCheck.reasonCode, sideEffect: "仅校验环境标识，不会联网或读取 Ozon。" } };
+      renderReadOperatorReceiptStatus(state.readOperatorReceiptSummary);
+      return null;
+    }
+    const environment = environmentCheck.environment;
+    const storeId = String(selectedStoreId() || "").trim();
+    if (!storeId) {
+      state.readOperatorReceiptSummary = { error: "必须先选择当前店铺。", reasonCode: "READ_OPERATOR_STORE_SCOPE_REQUIRED", httpStatus: 400, responseData: { reasonCode: "READ_OPERATOR_STORE_SCOPE_REQUIRED", sideEffect: "仅校验店铺范围，不会联网或读取 Ozon。" } };
+      renderReadOperatorReceiptStatus(state.readOperatorReceiptSummary);
+      return null;
+    }
+    const storeRefHash = await sha256Text(storeId);
+    const query = `?environment=${encodeURIComponent(environment)}&storeRefHash=${encodeURIComponent(storeRefHash)}`;
+    const data = await api(`/api/ozon/read-operator/receipts${query}`);
+    state.readOperatorReceiptSummary = data;
+    renderReadOperatorReceiptStatus(data);
+    return data;
+  } catch (error) {
+    const recovery = readOperatorReceiptRecovery(error);
+    state.readOperatorReceiptSummary = {
+      error: String(error?.message || "读取失败"),
+      reasonCode: recovery.reasonCode,
+      httpStatus: recovery.status,
+      responseData: { reasonCode: recovery.reasonCode, sideEffect: recovery.sideEffect },
+    };
+    renderReadOperatorReceiptStatus(state.readOperatorReceiptSummary);
+    return null;
+  } finally {
+    setBusy(button, false);
+  }
+}
+
+function renderReadOperatorMatrix(matrix = state.readOperatorMatrix) {
+  const target = $("#readOperatorMatrixStatus");
+  if (!target) return;
+  if (!matrix) return;
+  if (matrix.error) {
+    target.textContent = `四店铺计划检查失败：${matrix.error}；失败不会触发 Ozon 请求。`;
+    return;
+  }
+  const stores = Array.isArray(matrix.matrix?.stores) ? matrix.matrix.stores : [];
+  const rows = stores.map((entry) => {
+    const hash = String(entry.storeRefHash || "");
+    const shortHash = hash ? `${hash.slice(0, 15)}…` : "店铺哈希缺失";
+    const storeLabel = String(entry.storeLabel || "当前店铺").trim();
+    const plan = entry.ok ? "计划通过" : "计划阻塞";
+    const receipt = entry.latestReceipt
+      ? `最近回执 ${formatDateTime(entry.latestReceipt.checkedAt)} · ${entry.latestReceipt.status || "unknown"}`
+      : "尚无服务端回执";
+    return `<div class="system-read-operator-matrix-row"><strong>${escapeHtml(storeLabel)}</strong><small>${escapeHtml(shortHash)}</small><span>${escapeHtml(plan)} · ${escapeHtml(receipt)}</span></div>`;
+  }).join("");
+  const proof = state.sessionProofSummary;
+  const proofText = proof?.ok === true
+    ? `session proof 已获取 · ${escapeHtml(proof.authSource || "signed session")} · 环境 ${escapeHtml(proof.environment || "当前环境")} · ${Number(Array.isArray(proof.storeIds) ? proof.storeIds.length : 0)} 店铺范围`
+    : "session proof 尚未获取；真实读取前必须先建立签名会话。";
+  target.innerHTML = `<strong>矩阵 ${Number(matrix.canonicalStoreCount || 0)}/${Number(matrix.expectedPrimaryStoreCount || 4)} 店铺</strong><span>${proofText}</span><span>${escapeHtml(matrix.nextAction || "未开始真实读取")}</span>${rows || "<span>没有可用店铺计划。</span>"}`;
+}
+
+function renderSessionProofStatus(summary = state.sessionProofSummary) {
+  const target = $("#sessionProofStatus");
+  if (!target) return;
+  if (!summary) {
+    target.dataset.state = "needs_review";
+    target.textContent = "尚未获取当前会话 proof；只读按钮不会执行 Ozon 请求。";
+    return;
+  }
+  if (summary.error || summary.ok !== true) {
+    target.dataset.state = "needs_review";
+    target.textContent = `session proof 未获取：${summary.nextAction || summary.error || "请先建立 ERP 签名会话"}`;
+    return;
+  }
+  const hash = String(summary.proofRefHash || "");
+  const shortHash = hash ? `${hash.slice(0, 15)}…` : "哈希缺失";
+  target.dataset.state = "verified";
+  target.innerHTML = `<strong>session proof 已获取</strong><span>来源：${escapeHtml(summary.authSource || "signed session")} · 环境：${escapeHtml(summary.environment || "当前环境")} · 店铺范围：${Number(Array.isArray(summary.storeIds) ? summary.storeIds.length : 0)} 个</span><small>proof 哈希：${escapeHtml(shortHash)}；不展示 Token，不代表已读取 Ozon。</small>`;
+}
+
+function invalidateReadOperatorEnvironmentEvidence() {
+  const environment = String($("#readOperatorEnvironment")?.value || "").trim();
+  state.readOperatorReceiptSummary = null;
+  state.readOperatorMatrix = null;
+  state.readOperatorMatrixEnvironment = "";
+  state.readOperatorExecutionSummary = null;
+  state.readOperatorExecutionRequestToken = Number(state.readOperatorExecutionRequestToken || 0) + 1;
+  const proofEnvironment = String(state.sessionProofSummary?.environment || "").trim();
+  if (!environment || !proofEnvironment || proofEnvironment !== environment) {
+    state.sessionProofSummary = null;
+  }
+  renderReadOperatorReceiptStatus();
+  renderReadOperatorMatrix();
+  renderReadOperatorExecutionStatus();
+  renderSessionProofStatus();
+  invalidateStockEvidenceForEnvironment();
+}
+
+function invalidateStockEvidenceForEnvironment() {
+  const environment = String(currentSellerReadEnvironment() || "").trim();
+  invalidatePromotionEvidenceForEnvironment();
+  invalidateOrderEvidenceForEnvironment();
+  if (!state.stockEvidence || String(state.stockEvidence.environment || "").trim() === environment) return;
+  state.stockEvidence = { ...state.stockEvidence, stale: true, partial: true };
+  state.stockDryRun = null;
+  syncStockActionButtons();
+  renderStockEvidence({ ...state.stockEvidence, products: [], warehouses: [], currentStocks: [] });
+  const dryRun = $("#stockDryRunResult");
+  if (dryRun) dryRun.innerHTML = "<p class=\"hint\">读取环境已变化；旧库存证据和预演结果已失效，请重新读取。</p>";
+}
+
+function invalidatePromotionEvidenceForEnvironment() {
+  const environment = String(currentSellerReadEnvironment() || "").trim();
+  if (!state.promotionEvidence || String(state.promotionEvidence.environment || "").trim() === environment) return;
+  state.promotionRequestToken = Number(state.promotionRequestToken || 0) + 1;
+  state.promotionDetailRequestToken = Number(state.promotionDetailRequestToken || 0) + 1;
+  state.promotionRows = [];
+  state.promotionSellerResult = null;
+  state.promotionEvidence = { failed: false, loading: false, checkedAt: "", count: 0, readStatus: "unknown", coverageComplete: false, partial: true, environment, readOnly: true };
+  state.promotionSelectedProductIds = [];
+  state.promotionProducts = [];
+  state.promotionCandidates = [];
+  state.promotionSelectedProductIds = [];
+  state.promotionImpactPreview = null;
+  state.promotionDetailSellerResult = { products: null, candidates: null };
+  state.selectedPromotion = null;
+  renderPromotions();
+  renderSecondaryDomainPanels();
+}
+
+function invalidateOrderEvidenceForEnvironment() {
+  const environment = String(currentSellerReadEnvironment() || "").trim();
+  const orderEnvironment = String(state.orderBatch?.scope?.environment || "").trim();
+  if (!state.orderBatch?.loaded && !state.financeReadModel) return;
+  if (orderEnvironment === environment) return;
+  state.orderRequestToken = Number(state.orderRequestToken || 0) + 1;
+  state.orderDetailRequestToken = Number(state.orderDetailRequestToken || 0) + 1;
+  state.orderRows = [];
+  state.orderCoverage = { pageOffsets: [], pageCursors: [], orderKeys: [], observedCount: 0, hasNext: false };
+  state.orderBatch = { loaded: false, loading: false, failed: false, partial: false, hasNext: false, syncedAt: "", sourceCount: 0, scope: { storeId: selectedStoreId(), environment } };
+  state.financeReadModel = null;
+  const table = $("#ordersTable");
+  if (table) table.innerHTML = "<tr><td colspan=\"10\" class=\"product-empty\">读取环境已变化，请重新读取当前店铺订单。</td></tr>";
+  renderOrderBatchStatus([]);
+  renderSecondaryDomainPanels();
+}
+
+async function loadSessionProofSummary() {
+  const button = $("#refreshSessionProof");
+  setBusy(button, true);
+  try {
+    const data = await api("/api/auth/session-proof");
+    state.sessionProofSummary = data;
+    renderSessionProofStatus(data);
+    renderReadOperatorMatrix(state.readOperatorMatrix);
+    return data;
+  } catch (error) {
+    state.sessionProofSummary = { error: String(error?.message || "session proof 读取失败"), reasonCode: error?.reasonCode || "SESSION_PROOF_REQUIRED", nextAction: "先建立 ERP 签名会话，再获取当前环境的只读 proof；不会读取 Ozon。" };
+    renderSessionProofStatus(state.sessionProofSummary);
+    renderReadOperatorMatrix(state.readOperatorMatrix);
+    return null;
+  } finally {
+    setBusy(button, false);
+  }
+}
+
+async function loadReadOperatorMatrix() {
+  const button = $("#refreshReadOperatorMatrix");
+  const environmentCheck = validateReadOperatorEnvironment($("#readOperatorEnvironment")?.value);
+  if (!environmentCheck.ok) {
+    state.readOperatorMatrix = { error: environmentCheck.message, reasonCode: environmentCheck.reasonCode };
+    renderReadOperatorMatrix(state.readOperatorMatrix);
+    return null;
+  }
+  const environment = environmentCheck.environment;
+  setBusy(button, true);
+  try {
+    const data = await api(`/api/ozon/read-operator/matrix?environment=${encodeURIComponent(environment)}`);
+    state.readOperatorMatrix = data;
+    state.readOperatorMatrixEnvironment = environment;
+    renderReadOperatorMatrix(data);
+    return data;
+  } catch (error) {
+    state.readOperatorMatrix = { error: String(error?.message || "检查失败") };
+    renderReadOperatorMatrix(state.readOperatorMatrix);
+    return null;
+  } finally {
+    setBusy(button, false);
+  }
+}
+
+function renderReadOperatorExecutionStatus(summary = state.readOperatorExecutionSummary) {
+  const target = $("#readOperatorExecutionStatus");
+  if (!target) return;
+  if (!summary) {
+    target.dataset.state = "needs_review";
+    target.textContent = "尚未执行当前店铺只读计划；默认不执行，不会直连 Ozon。";
+    return;
+  }
+  const report = summary.report || {};
+  const task = summary.sellerTask || {};
+  const status = summary.ok === true ? "本店只读回执已保存" : "本店只读执行失败或需要复核";
+  const coverage = report.endpointCoverage || {};
+  const requestedCount = Array.isArray(coverage.requested) ? coverage.requested.length : 0;
+  const observedCount = Array.isArray(coverage.observed) ? coverage.observed.length : 0;
+  const missingCount = Array.isArray(coverage.missing) ? coverage.missing.length : 0;
+  const scope = report.scope && typeof report.scope === "object"
+    ? `${String(report.scope.name || "当前范围")} · ${Number(report.scope.offerCount || 0)} 个商品范围`
+    : "当前已确认范围";
+  const coverageText = requestedCount
+    ? `读取范围：${scope}；已完成 ${observedCount}/${requestedCount} 个读取步骤${missingCount ? `，缺少 ${missingCount} 个` : ""}`
+    : "读取范围：未能确认完整覆盖";
+  target.dataset.state = summary.ok === true ? "verified" : "needs_review";
+  target.innerHTML = `<strong>${escapeHtml(status)}</strong><span>${escapeHtml(task.title || report.nextStep || summary.nextAction || "查看服务端回执和失败原因")}</span><small>${escapeHtml(coverageText)}</small><small>验证等级：${escapeHtml(summary.verificationLevel || report.verificationLevel || "server_observed")}；${escapeHtml(task.nextAction || "不会写入 Ozon，按原计划处理下一步")}</small>`;
+}
+
+async function executeCurrentStoreRead() {
+  const button = $("#executeReadOperatorCurrentStore");
+  const environmentCheck = validateReadOperatorEnvironment($("#readOperatorEnvironment")?.value);
+  if (!environmentCheck.ok) {
+    state.readOperatorExecutionSummary = { ok: false, nextAction: environmentCheck.message };
+    renderReadOperatorExecutionStatus(state.readOperatorExecutionSummary);
+    return null;
+  }
+  const environment = environmentCheck.environment;
+  const storeId = selectedStoreId();
+  const requestToken = (state.readOperatorExecutionRequestToken = Number(state.readOperatorExecutionRequestToken || 0) + 1);
+  if (!storeId) {
+    state.readOperatorExecutionSummary = { ok: false, nextAction: "先选择当前店铺，再生成单店只读计划。" };
+    renderReadOperatorExecutionStatus(state.readOperatorExecutionSummary);
+    return null;
+  }
+  const proofEnvironment = String(state.sessionProofSummary?.environment || "").trim();
+  if (!state.sessionProofSummary?.ok || proofEnvironment !== environment || !Array.isArray(state.sessionProofSummary.storeIds) || !state.sessionProofSummary.storeIds.includes(storeId)) {
+    state.readOperatorExecutionSummary = { ok: false, nextAction: "先获取覆盖当前店铺和环境的 session proof；不会执行 Ozon 请求。" };
+    renderReadOperatorExecutionStatus(state.readOperatorExecutionSummary);
+    return null;
+  }
+  if (!state.readOperatorMatrix || state.readOperatorMatrixEnvironment !== environment || state.readOperatorMatrix.ok !== true) {
+    state.readOperatorExecutionSummary = { ok: false, nextAction: "先检查当前环境的四店铺计划矩阵，并确认矩阵通过后再执行单店读取。" };
+    renderReadOperatorExecutionStatus(state.readOperatorExecutionSummary);
+    return null;
+  }
+  const splitIds = (value) => String(value || "")
+    .split(/[\s,;]+/)
+    .map((item) => item.trim())
+    .filter(Boolean)
+    .slice(0, 100);
+  const offerIds = splitIds($("#readOperatorOfferIds")?.value);
+  const productIds = splitIds($("#readOperatorProductIds")?.value);
+  const lastId = String($("#readOperatorLastId")?.value || "").trim();
+  if (!offerIds.length && !productIds.length) {
+    state.readOperatorExecutionSummary = { ok: false, nextAction: "至少填写一个 Offer ID 或 Product ID；空范围不会发送 Seller API 请求。" };
+    renderReadOperatorExecutionStatus(state.readOperatorExecutionSummary);
+    return null;
+  }
+  const operatorPlan = {
+    store: { id: storeId },
+    environment,
+    scope: {
+      name: "single_store_manual",
+      offerCount: Math.max(offerIds.length, productIds.length),
+      ...(offerIds.length ? { offerIds } : {}),
+      ...(productIds.length ? { productIds } : {}),
+      ...(lastId ? { lastId } : {}),
+    },
+    endpoints: ["/v3/product/list", "/v3/product/info/list"],
+    readOnly: true,
+    writeAttempted: false,
+    confirm: "I_CONFIRM_READ_ONLY",
+    maxAgeMs: 60 * 60 * 1000,
+  };
+  if (!window.confirm("确认执行当前店铺的受控只读读取吗？只读取商品列表/详情并保存脱敏回执，不会写入 Ozon。")) return null;
+  setBusy(button, true);
+  try {
+    const planGate = await api("/api/ozon-learning/readiness-evidence-receipts/plan", { method: "POST", body: JSON.stringify({ plan: operatorPlan }) });
+    if (!planGate?.ok || !planGate.planBinding) throw new Error("READ_OPERATOR_PLAN_BINDING_REQUIRED");
+    const data = await api("/api/ozon/read-operator/execute", {
+      method: "POST",
+      body: JSON.stringify({ recordEvidence: true, storeId, confirm: "I_CONFIRM_READ_ONLY", operatorPlan, planBinding: planGate.planBinding }),
+    });
+    if (requestToken !== state.readOperatorExecutionRequestToken
+      || String(selectedStoreId() || "").trim() !== String(storeId || "").trim()
+      || String(currentSellerReadEnvironment() || "").trim() !== environment) {
+      return null;
+    }
+    state.readOperatorExecutionSummary = data;
+    renderReadOperatorExecutionStatus(data);
+    // The controlled read receipt is an audit result, not the product table
+    // itself.  When it actually observed the product list/detail endpoints,
+    // refresh the seller-facing product state in the same bound store and
+    // environment; otherwise the operator could see a fresh server receipt
+    // beside stale product/status/readiness rows.
+    const observedEndpoints = Array.isArray(data?.report?.endpointCoverage?.observed)
+      ? data.report.endpointCoverage.observed.map((endpoint) => String(endpoint || ""))
+      : [];
+    const productReadObserved = data?.ok === true
+      && String(data?.verificationLevel || data?.report?.verificationLevel || "") === "server_observed"
+      && data?.report?.endpointCoverage?.complete === true
+      && observedEndpoints.some((endpoint) => endpoint === "/v3/product/list" || endpoint === "/v3/product/info/list");
+    if (productReadObserved
+      && requestToken === state.readOperatorExecutionRequestToken
+      && String(selectedStoreId() || "").trim() === String(storeId || "").trim()
+      && String(currentSellerReadEnvironment() || "").trim() === environment) {
+      await loadProducts();
+    }
+    return data;
+  } catch (error) {
+    if (requestToken !== state.readOperatorExecutionRequestToken
+      || String(selectedStoreId() || "").trim() !== String(storeId || "").trim()
+      || String(currentSellerReadEnvironment() || "").trim() !== environment) return null;
+    state.readOperatorExecutionSummary = {
+      ok: false,
+      reasonCode: error?.reasonCode || "READ_OPERATOR_EXECUTION_FAILED",
+      nextAction: error?.responseData?.message || "服务端未完成只读执行；查看会话、店铺范围和回执状态后按原计划重试。",
+      report: error?.responseData?.report,
+      sellerTask: error?.responseData?.sellerTask,
+      verificationLevel: error?.responseData?.verificationLevel || "server_observed",
+    };
+    renderReadOperatorExecutionStatus(state.readOperatorExecutionSummary);
+    return null;
+  } finally {
+    setBusy(button, false);
   }
 }
 
@@ -2210,6 +5048,39 @@ function renderSecondaryDomainPanels() {
   renderServiceRiskPanel();
   renderReportsPanel();
   renderSystemConfigPanel();
+}
+
+async function establishErpSession(event) {
+  event.preventDefault();
+  const form = event.currentTarget;
+  const secretInput = form.querySelector("#erpSessionSecret");
+  const status = form.querySelector("#erpSessionStatus");
+  const secret = secretInput?.value || "";
+  if (!secret) {
+    if (status) status.textContent = "请输入认证密钥";
+    return;
+  }
+  try {
+    const response = await api("/api/auth/session", { method: "POST", body: JSON.stringify({ secret }) });
+    if (secretInput) secretInput.value = "";
+    if (status) status.textContent = response.session ? "会话已建立，密钥未保存" : "本机模式已确认";
+    toast("ERP 会话已建立");
+  } catch {
+    if (status) status.textContent = "认证失败，请检查密钥或服务端配置";
+    toast("ERP 会话建立失败", "error");
+  }
+}
+
+async function logoutErpSession() {
+  const status = $("#erpSessionStatus");
+  try {
+    await api("/api/auth/session", { method: "DELETE" });
+    if (status) status.textContent = "会话已退出";
+    toast("ERP 会话已退出");
+  } catch {
+    if (status) status.textContent = "退出失败，请稍后重试";
+    toast("ERP 会话退出失败", "error");
+  }
 }
 
 function renderCockpitDashboard() {
@@ -2267,13 +5138,16 @@ function renderCockpitDashboard() {
 
 function refreshActiveStoreView() {
   const active = document.querySelector(".view.active")?.id;
-  if (active === "orders") loadOrders();
+  if (["orders", "finance", "dashboard"].includes(active)) loadOrders({ resetOffset: true });
   if (active === "products") loadProducts();
   if (active === "promotions") {
     state.selectedPromotion = null;
     state.promotionRows = [];
+    state.promotionSellerResult = null;
     state.promotionProducts = [];
     state.promotionCandidates = [];
+    state.promotionSelectedProductIds = [];
+    state.promotionDetailSellerResult = { products: null, candidates: null };
     renderPromotionDetail();
     loadPromotions();
   }
@@ -2292,6 +5166,17 @@ function syncListingStore() {
 
 async function testApi() {
   const button = $("#testButton");
+  const environmentCheck = validateReadOperatorEnvironment(currentSellerReadEnvironment());
+  if (!environmentCheck.ok) {
+    $("#healthStatus").textContent = "待填写只读环境";
+    toast(environmentCheck.message, "warning");
+    return false;
+  }
+  if (!selectedStoreId()) {
+    $("#healthStatus").textContent = "待选择店铺";
+    toast("请先选择需要读取的店铺；本次未发起 API 请求。", "warning");
+    return false;
+  }
   setBusy(button, true);
   try {
     const data = await api("/api/ozon/test", {
@@ -2303,72 +5188,241 @@ async function testApi() {
       ? data.warehouses
       : data.warehouses?.result || data.warehouses?.warehouses || [];
     $("#warehouseCount").textContent = Array.isArray(warehouses) ? warehouses.length : "-";
-    showResponse(data);
-    toast("API 连通正常");
+    let runtimeSafety = null;
+    let observability = null;
+    try {
+      runtimeSafety = await api("/api/system/runtime-safety");
+    } catch {
+      // Ozon connectivity and deployment safety are separate facts. Keep the
+      // API read result, but do not claim the runtime is production-ready when
+      // its safety endpoint cannot be checked.
+      $("#healthStatus").textContent = "API 正常，运行配置未核验";
+    }
+    if (runtimeSafety) {
+      const safety = runtimeSafetySellerStatus(runtimeSafety);
+      $("#healthStatus").textContent = safety.label;
+      if (safety.blocked) toast(safety.nextAction, "warning");
+    }
+    try {
+      observability = await api("/api/system/observability");
+      state.observabilitySummary = observability;
+    } catch {
+      // Observability is an operator aid; an unavailable summary must not
+      // upgrade or erase the bounded Seller API/runtime safety result.
+      state.observabilitySummary = { alerts: [{ code: "OBSERVABILITY_UNAVAILABLE", severity: "high" }] };
+    }
+    const highObservabilityAlerts = Array.isArray(observability?.alerts)
+      && observability.alerts.some((alert) => String(alert?.severity || "").toLowerCase() === "high");
+    if (highObservabilityAlerts) {
+      $("#healthStatus").textContent = "API 正常，但服务有错误告警";
+    }
+    showResponse({ ...data, runtimeSafety, observability });
+    toast(highObservabilityAlerts
+      ? "API 连通，但服务错误告警需要运维处理"
+      : runtimeSafety?.mode === "guarded_not_production"
+        ? "API 连通，但运行配置需要处理"
+        : "API 连通；运行前置条件满足，但业务 readiness 未验证");
+    return true;
   } catch (error) {
     $("#healthStatus").textContent = "异常";
-    toast(error.message, "error");
+    toast(sellerReadAccessRecovery(error, error.message || "仓库读取失败，请重新读取。"), "error");
+    return false;
   } finally {
     setBusy(button, false);
   }
+}
+
+function runtimeSafetySellerStatus(snapshot = {}) {
+  const valid = snapshot && ["guarded_not_production", "production_prerequisites_present"].includes(String(snapshot.mode || ""))
+    && Array.isArray(snapshot.blockers)
+    && Array.isArray(snapshot.risks)
+    && typeof snapshot.nextAction === "string"
+    && typeof snapshot.loopbackOnly === "boolean"
+    && typeof snapshot.authConfigured === "boolean"
+    && typeof snapshot.databaseConfigured === "boolean"
+    && typeof snapshot.persistenceMode === "string"
+    && snapshot.businessReadiness === "not_verified"
+    && typeof snapshot.businessReadinessNextAction === "string";
+  if (!valid) {
+    const missingPrerequisite = snapshot?.authConfigured === false
+      ? "先配置服务端认证并重新读取运行安全摘要。"
+      : snapshot?.databaseConfigured === false
+        ? "先配置持久化/数据库连接并重新读取运行安全摘要。"
+        : snapshot?.persistenceMode === "memory_only"
+          ? "当前为内存模式；先切换到受支持的持久化环境，再执行部署预检。"
+          : "运行安全摘要缺少认证或持久化字段；请重新读取并确认服务端版本。";
+    return {
+      blocked: true,
+      label: "API 正常，运行配置未核验",
+      nextAction: missingPrerequisite,
+    };
+  }
+  const blockers = Array.isArray(snapshot.blockers) ? snapshot.blockers : [];
+  const risks = Array.isArray(snapshot.risks) ? snapshot.risks : [];
+  const blocked = snapshot.mode === "guarded_not_production" || blockers.length > 0;
+  return {
+    blocked,
+    label: blocked ? "API 正常，运行配置需处理" : "API 与运行前置条件已满足（业务未验证）",
+    nextAction: blocked
+      ? `先处理运行前置条件：${[...new Set([...blockers, ...risks])].slice(0, 4).join("、") || "查看系统配置"}`
+      : (snapshot.businessReadinessNextAction || "业务 readiness 未验证；需要真实 Seller API 回执、审核回读和库存对账。"),
+  };
 }
 
 async function loadWarehouses() {
   const button = $("#loadWarehouses");
+  const requestToken = (state.warehouseRequestToken = Number(state.warehouseRequestToken || 0) + 1);
+  const requestStoreId = String(selectedStoreId() || "").trim();
   setBusy(button, true);
   try {
-    const data = await api(`/api/ozon/warehouses?storeId=${encodeURIComponent(selectedStoreId())}`);
+    const data = await api(`/api/ozon/warehouses?storeId=${encodeURIComponent(requestStoreId)}`);
+    if (requestToken !== state.warehouseRequestToken || requestStoreId !== String(selectedStoreId() || "").trim()) return false;
+    if (String(data.storeId || "").trim() !== requestStoreId) {
+      const error = new Error("仓库读取范围已变化，请重新读取当前店铺。操作者不会看到旧仓库状态。");
+      error.httpStatus = 409;
+      throw error;
+    }
     const warehouses = data.result || data.warehouses || [];
+    const paginationComplete = data.paginationComplete === true && data.hasNext !== true;
+    state.stockWarehouses = Array.isArray(warehouses) ? warehouses : null;
     $("#warehouseCount").textContent = Array.isArray(warehouses) ? warehouses.length : "-";
-    $("#warehouseList").innerHTML = Array.isArray(warehouses) && warehouses.length
-      ? warehouses.map((warehouse) => `
+    const warehouseRows = Array.isArray(warehouses) && warehouses.length
+      ? warehouses.map((warehouse) => {
+        const warehouseId = String(warehouse.warehouse_id || warehouse.id || "").trim();
+        const warehouseName = String(warehouse.name || warehouse.warehouse_name || "未命名仓库");
+        const chooseButton = warehouseId && state.stockFocusOfferIds?.length
+          ? `<button class="small-blue stock-warehouse-choose" type="button" data-stock-warehouse-id="${escapeHtml(warehouseId)}" data-stock-warehouse-name="${escapeHtml(warehouseName)}">应用到待填写目标</button>`
+          : "";
+        return `
           <article>
-            <strong>${warehouse.name || warehouse.warehouse_name || "未命名仓库"}</strong>
-            <code>ID: ${warehouse.warehouse_id || warehouse.id || "-"}</code>
-            <span>类型: ${warehouse.type || warehouse.delivery_method_type || "-"}</span>
-            <span>状态: ${warehouse.status || (warehouse.is_rfbs ? "rfbs" : "-")}</span>
+            <strong>${escapeHtml(warehouseName)}</strong>
+            <code>ID: ${escapeHtml(warehouseId || "-")}</code>
+            <span>类型: ${escapeHtml(warehouse.type || warehouse.delivery_method_type || "-")}</span>
+            <span>状态: ${escapeHtml(warehouse.status || (warehouse.is_rfbs ? "rfbs" : "-"))}</span>
+            ${chooseButton}
           </article>
-        `).join("")
+        `;
+      }).join("")
       : "<p class=\"hint\">没有返回仓库数据。</p>";
+    $("#warehouseList").innerHTML = `${paginationComplete ? "" : "<p class=\"warning\">仓库列表未完整读取；当前数量和可用仓库范围不能代表全部结果，请重新读取。</p>"}${warehouseRows}`;
+    bindStockWarehouseChoices();
     showResponse(data);
-    toast("仓库已读取");
+    toast(data.readStatus === "empty" ? "本次没有仓库证据，请检查店铺权限和范围" : paginationComplete ? "仓库已读取" : "仓库读取不完整，请重新读取", data.readStatus === "empty" || !paginationComplete ? "warning" : "ok");
   } catch (error) {
-    toast(error.message, "error");
+    state.stockWarehouses = null;
+    $("#warehouseCount").textContent = "-";
+    $("#warehouseList").innerHTML = "<p class=\"hint\">仓库读取失败，未展示旧仓库状态；请重新读取。</p>";
+    toast(sellerReadAccessRecovery(error, error.message || "仓库读取失败，请重新读取。"), "error");
   } finally {
-    setBusy(button, false);
+    if (requestToken === state.warehouseRequestToken) setBusy(button, false);
   }
 }
 
+// A readiness handoff already carries the exact Offer IDs, but the seller
+// still has to choose an observed warehouse before the tuple evidence read can
+// run. Keep that choice in the same local target editor instead of forcing the
+// seller to copy a large warehouse ID from a diagnostic response.
+function bindStockWarehouseChoices() {
+  document.querySelectorAll(".stock-warehouse-choose[data-stock-warehouse-id]").forEach((button) => {
+    button.addEventListener("click", () => {
+      const warehouseId = String(button.dataset.stockWarehouseId || "").trim();
+      if (!warehouseId) return;
+      const focusOffers = new Set((state.stockFocusOfferIds || []).map(String).filter(Boolean));
+      let rows;
+      try {
+        const parsed = JSON.parse($("#stockJson")?.value || "[]");
+        rows = Array.isArray(parsed) ? parsed : [];
+      } catch {
+        rows = [];
+      }
+      const next = rows.map((row) => {
+        const offerId = String(row?.offer_id || row?.offerId || "").trim();
+        if (focusOffers.has(offerId) && !(Number(row?.warehouse_id || row?.warehouseId || 0) > 0)) {
+          return { ...row, offer_id: offerId, warehouse_id: Number(warehouseId) };
+        }
+        return row;
+      });
+      const stockJson = $("#stockJson");
+      if (stockJson) stockJson.value = JSON.stringify(next, null, 2);
+      invalidateStockEvidenceOnTargetChange();
+      toast(`已把仓库 ${warehouseId} 应用到待填写的 Offer；请继续填写目标库存`, "ok");
+    });
+  });
+}
+
 async function loadListingWarehouses() {
+  const requestToken = (state.listingWarehouseRequestToken = Number(state.listingWarehouseRequestToken || 0) + 1);
+  const requestStoreId = String(selectedStoreId() || "").trim();
   try {
-    const data = await api(`/api/ozon/warehouses?storeId=${encodeURIComponent(selectedStoreId())}`);
+    const data = await api(`/api/ozon/warehouses?storeId=${encodeURIComponent(requestStoreId)}`);
+    if (requestToken !== state.listingWarehouseRequestToken || requestStoreId !== String(selectedStoreId() || "").trim()) return false;
+    if (String(data.storeId || "").trim() !== requestStoreId) {
+      throw new Error("上架仓库读取范围已变化，请重新读取当前店铺。操作者不会看到旧仓库状态。");
+    }
     const warehouses = data.warehouses || [];
-    state.listingWarehouses = warehouses.filter((warehouse) => warehouse.status === "created" || warehouse.is_rfbs);
-    const options = warehouses
+    const paginationComplete = data.paginationComplete === true && data.hasNext !== true;
+    state.listingWarehouseReadIncomplete = !paginationComplete;
+    state.listingWarehouses = paginationComplete
+      ? warehouses.filter((warehouse) => warehouse.status === "created" || warehouse.is_rfbs)
+      : [];
+    const options = paginationComplete ? warehouses
       .filter((warehouse) => warehouse.status === "created" || warehouse.is_rfbs)
       .map((warehouse) => `<option value="${warehouse.warehouse_id}">${warehouse.name} - ${warehouse.warehouse_id}</option>`)
-      .join("");
+      .join("")
+      : `<option value="" disabled selected>仓库列表未完整读取，请重新读取</option>`;
     document.querySelectorAll(".variant-warehouse, #listingWarehouse").forEach((select) => {
       const selected = select.value;
       select.innerHTML = options;
+      select.disabled = !paginationComplete;
       if ([...select.options].some((option) => option.value === selected)) {
         select.value = selected;
       }
     });
   } catch {
+    if (requestToken !== state.listingWarehouseRequestToken || requestStoreId !== String(selectedStoreId() || "").trim()) return false;
+    state.listingWarehouses = [];
+    state.listingWarehouseReadIncomplete = true;
     document.querySelectorAll(".variant-warehouse, #listingWarehouse").forEach((select) => {
       select.innerHTML = "";
+      select.disabled = true;
     });
   }
 }
 
-async function loadOrders() {
+async function loadOrders(options = {}) {
+  const append = options.append === true;
   const button = $("#loadOrders");
+  // A store switch can leave the previous read in flight. Only the latest
+  // request may paint rows or freshness; a late response must not appear
+  // under the newly selected store.
+  const requestToken = (state.orderRequestToken = Number(state.orderRequestToken || 0) + 1);
+  state.fbsReceiptRequestToken = Number(state.fbsReceiptRequestToken || 0) + 1;
+  // Invalidate any selected-posting detail read from the previous batch/store.
+  state.orderDetailRequestToken = Number(state.orderDetailRequestToken || 0) + 1;
+  const requestStoreId = selectedStoreId();
+  const environmentCheck = validateReadOperatorEnvironment(currentSellerReadEnvironment());
+  if (!environmentCheck.ok) {
+    state.orderRows = [];
+    state.financeReadModel = null;
+    state.orderBatch = { loaded: false, loading: false, failed: true, partial: true, hasNext: false, syncedAt: "", sourceCount: 0, scope: { storeId: requestStoreId, environment: "" } };
+    updateDataFreshness("#orderDataFreshness", "error", environmentCheck.message);
+    toast(environmentCheck.message, "warning");
+    return false;
+  }
+  const requestEnvironment = environmentCheck.environment;
+  if (options.resetOffset === true || options.resetCursor === true) {
+    state.orderPageOffset = 0;
+    state.orderCursor = "";
+    state.orderCursorHistory = [];
+  }
   setBusy(button, true);
+  updateDataFreshness("#orderDataFreshness", "loading", "正在读取订单；完成前不会执行备货或发运。");
   try {
     const params = new URLSearchParams({
-      storeId: selectedStoreId(),
+      storeId: requestStoreId,
       limit: "100",
+      cursor: String(state.orderCursor || ""),
+      sortDir: String(state.orderSortDir || "DESC"),
     });
     const status = state.orderStatus && state.orderStatus !== "dispute" ? state.orderStatus : "";
     const since = toUtcIsoFromLocal($("#orderSince").value);
@@ -2381,32 +5435,169 @@ async function loadOrders() {
     if (warehouseId) params.set("warehouseId", warehouseId);
     if (query) params.set("query", query);
 
+    const scope = { storeId: requestStoreId, environment: requestEnvironment, status, warehouseId, since, to, query, limit: 100, cursor: String(state.orderCursor || ""), sortDir: state.orderSortDir || "DESC", pagination: "cursor" };
+    // A failed continuation page must not erase orders already observed from
+    // earlier pages. Keep those rows visible but downgrade the batch to
+    // partial; the seller can retry the same cursor without losing context.
+    if (!append) state.orderRows = [];
+    if (!scope.cursor) state.orderCoverage = { pageOffsets: [], pageCursors: [], orderKeys: [], observedCount: 0, hasNext: false };
+    state.orderBatch = { loaded: false, loading: true, failed: false, partial: false, hasNext: false, syncedAt: "", sourceCount: 0, scope };
+    state.financeReadModel = null;
+    $("#orderCount").textContent = "0";
+    $("#ordersTable").innerHTML = "<tr><td colspan=\"10\" class=\"product-empty\">正在读取当前店铺和筛选范围的订单…</td></tr>";
+    renderOrderBatchStatus([]);
+
     const data = await api(`/api/ozon/order-dashboard?${params}`);
+    if (requestToken !== state.orderRequestToken) return false;
+    // The request token prevents late responses from painting after a newer
+    // request, while this scope check prevents a stale/cached response from
+    // being accepted under the current store or pagination page.
+    const responseStoreId = String(data.storeId || "");
+    // The API's data.requestScope?.cursor is part of the response identity;
+    // normalize it once before comparing the complete scope.
+    const responseScope = data.requestScope || {};
+    const responseCursor = String(responseScope.cursor || "");
+    const responseWarehouseId = String(responseScope.warehouseId || "");
+    // Keep the legacy store mismatch guard explicit in the audit trail:
+    // responseStoreId !== requestStoreId must never paint a seller's rows.
+    const scopeMatches = responseStoreId === requestStoreId
+      && String(data.environment || "").trim() === requestEnvironment
+      && responseCursor === scope.cursor
+      && String(responseScope.pagination || "") === "cursor"
+      && String(responseScope.since || "") === String(scope.since || "")
+      && String(responseScope.to || "") === String(scope.to || "")
+      && String(responseScope.status || "") === String(scope.status || "")
+      && responseWarehouseId === String(scope.warehouseId || "")
+      && String(responseScope.sortDir || "") === String(scope.sortDir || "");
+    if (!scopeMatches) {
+      const error = new Error("订单读取范围已变化，请重新读取当前店铺和游标。操作者不会看到旧批次数据。");
+      error.httpStatus = 409;
+      throw error;
+    }
+    const sourceOrders = Array.isArray(data.orders) ? data.orders : [];
     state.orderRows = state.orderStatus === "dispute"
-      ? (data.orders || []).filter((order) => order.substatus?.includes("dispute"))
-      : data.orders || [];
+      ? sourceOrders.filter((order) => String(order.substatus || "").toLowerCase().includes("dispute")
+        || String(order.statusGroup || order.status || "").toLowerCase().includes("disput"))
+      : sourceOrders;
+    const hasNext = data.has_next === true;
+    if (!scope.cursor) state.orderCoverage = { pageOffsets: [], pageCursors: [], orderKeys: [], observedCount: 0, hasNext: false };
+    const pageCursors = [...new Set([...(state.orderCoverage?.pageCursors || []), scope.cursor || "首批"])];
+    const orderKeys = new Set(state.orderCoverage?.orderKeys || []);
+    sourceOrders.forEach((order, index) => orderKeys.add(String(order.posting_number || order.order_number || `${scope.offset}:${index}`)));
+    state.orderCoverage = {
+      pageOffsets: [],
+      pageCursors,
+      orderKeys: [...orderKeys],
+      observedCount: orderKeys.size,
+      hasNext,
+    };
+    state.orderBatch = {
+      loaded: true,
+      failed: false,
+      partial: data.partial === true || data.stale === true || hasNext,
+      hasNext,
+      nextCursor: String(data.nextCursor || data.readCoverage?.nextCursor || ""),
+      syncedAt: String(data.checkedAt || data.syncedAt || new Date().toISOString()),
+      sourceCount: sourceOrders.length,
+      missingEvidence: Array.isArray(data.missingEvidence) ? data.missingEvidence.map(String) : [],
+      sellerView: data.sellerView || null,
+      sellerStatus: String(data.sellerView?.status || ""),
+      verificationLevel: String(data.verificationLevel || "locally_tested"),
+      scope,
+      coverage: { pageOffsets: [], pageCursors: state.orderCoverage.pageCursors, observedCount: state.orderCoverage.observedCount, hasNext },
+    };
+    // The finance panel consumes the same server-side order evidence. It may
+    // still show revenue/profit as unknown because this FBS read deliberately
+    // omits financial_data and settlement fields.
+    state.financeReadModel = data.financeReadModel || null;
     $("#orderCount").textContent = state.orderRows.length;
     updateOrderCounts(data.counts || {});
-    updateOrderFilterOptions(data.orders || []);
+    updateOrderFilterOptions(sourceOrders);
     renderOrders();
     showResponse(data);
     toast("FBS 订单已读取");
+    updateDataFreshness("#orderDataFreshness", state.orderBatch.partial ? "stale" : "success", `订单同步时间：${formatDateTime(state.orderBatch.syncedAt)}${state.orderBatch.partial ? "；本批读取不完整" : ""}`);
+    return true;
   } catch (error) {
-    toast(error.message, "error");
+    if (requestToken !== state.orderRequestToken) return false;
+    // A failed continuation page must not erase orders already observed from
+    // earlier pages. Keep those rows visible but downgrade the batch to
+    // partial; the seller can retry the same cursor without losing context.
+    if (!append) state.orderRows = [];
+    if (!state.orderCursor) state.orderCoverage = { pageOffsets: [], pageCursors: [], orderKeys: [], observedCount: 0, hasNext: false };
+    const failedScope = state.orderBatch?.scope || {
+      storeId: requestStoreId,
+      environment: requestEnvironment,
+      status: state.orderStatus || "",
+      warehouseId: $("#orderWarehouse")?.value || "",
+      since: toUtcIsoFromLocal($("#orderSince")?.value || ""),
+      to: toUtcIsoFromLocal($("#orderTo")?.value || ""),
+      limit: 100,
+      cursor: state.orderCursor || "",
+      sortDir: state.orderSortDir || "DESC",
+      pagination: "cursor",
+    };
+    state.orderBatch = {
+      ...state.orderBatch,
+      loaded: false,
+      loading: false,
+      failed: true,
+      httpStatus: Number(error.httpStatus || 0),
+      scope: failedScope,
+      sellerStatus: "error",
+      sellerView: {
+        status: "error",
+        nextAction: "保持当前店铺、筛选和页码不变，点击“读取订单”重试；核实前不执行履约动作。",
+        sellerTasks: [{
+          state: "blocked",
+          code: "FBS_READ_RETRY_REQUIRED",
+          count: 1,
+          nextAction: "按当前读取范围重新读取订单和商品详情。",
+        }],
+      },
+    };
+    state.financeReadModel = null;
+    $("#orderCount").textContent = String(state.orderRows.length);
+    if (!append) {
+      $("#ordersTable").innerHTML = `<tr><td colspan="10" class="product-empty">${state.orderBatch.httpStatus === 403 ? "当前店铺无权读取这批订单。" : "本批订单读取失败，未展示旧订单。"}</td></tr>`;
+      renderOrderBatchStatus([]);
+    } else {
+      renderOrders();
+      renderOrderBatchStatus(state.orderRows);
+    }
+    const failureText = sellerReadAccessRecovery(error, state.orderBatch.httpStatus === 403
+      ? "当前店铺没有订单读取权限，请检查店铺授权。"
+      : "FBS 订单服务暂时不可用，请稍后重试。");
+    toast(failureText, "error");
+    updateDataFreshness("#orderDataFreshness", "error", `订单同步失败；${failureText} 本次没有执行任何订单动作。`);
+    return false;
   } finally {
-    setBusy(button, false);
+    if (requestToken === state.orderRequestToken) setBusy(button, false);
   }
 }
 
 function updateOrderCounts(counts) {
+  const batch = state.orderBatch || {};
+  const incomplete = batch.loaded !== true || batch.failed === true || batch.partial === true || batch.hasNext === true;
+  const scopeHint = $("#orderCountScopeHint");
+  if (scopeHint) {
+    scopeHint.dataset.scope = incomplete ? "page" : "complete";
+    scopeHint.textContent = incomplete
+      ? "上方状态数量仅代表当前已读取批次，不是店铺全量；继续读取下一页后再判断积压。"
+      : "上方状态数量代表当前筛选范围的完整读取结果。";
+  }
   document.querySelectorAll("#orderStatusTabs .product-tab").forEach((tab) => {
     const key = tab.dataset.status || "all";
-    tab.querySelector("span").textContent = counts[key] ?? 0;
+    const value = counts[key] ?? 0;
+    tab.dataset.countScope = incomplete ? "current_batch" : "complete_scope";
+    tab.setAttribute("aria-label", `${tab.textContent.replace(/\s+\d+\s*$/, "").trim()}：${incomplete ? "本批 " : ""}${value}`);
+    tab.querySelector("span").textContent = incomplete ? `本批 ${value}` : String(value);
   });
 }
 
 function updateOrderFilterOptions(orders) {
   const currentWarehouse = $("#orderWarehouse").value;
+  const currentService = $("#orderService").value;
   const warehouses = [...new Map(orders
     .filter((order) => order.warehouse_id)
     .map((order) => [String(order.warehouse_id), order])).values()];
@@ -2419,6 +5610,29 @@ function updateOrderFilterOptions(orders) {
   $("#orderService").innerHTML = `<option value="">全部服务</option>${services
     .map((service) => `<option value="${escapeHtml(service)}">${escapeHtml(service)}</option>`)
     .join("")}`;
+  if (services.includes(currentService)) $("#orderService").value = currentService;
+}
+
+async function loadNextOrderBatch() {
+  if (state.orderBatch?.hasNext !== true) return;
+  const nextCursor = String(state.orderBatch?.nextCursor || "").trim();
+  if (!nextCursor || nextCursor === state.orderCursor) {
+    toast("Ozon 未返回可继续使用的新游标，不能冒险重复读取。", "error");
+    return;
+  }
+  state.orderCursorHistory = [...(state.orderCursorHistory || []), state.orderCursor || ""];
+  state.orderCursor = nextCursor;
+  state.orderPageOffset += 100;
+  await loadOrders();
+}
+
+async function loadPreviousOrderBatch() {
+  const history = [...(state.orderCursorHistory || [])];
+  if (!history.length || state.orderBatch?.loading === true) return;
+  state.orderCursor = String(history.pop() || "");
+  state.orderCursorHistory = history;
+  state.orderPageOffset = Math.max(0, state.orderPageOffset - 100);
+  await loadOrders();
 }
 
 function renderOrders() {
@@ -2426,23 +5640,285 @@ function renderOrders() {
   const rows = service
     ? state.orderRows.filter((order) => order.delivery_service === service)
     : state.orderRows;
+  const filtered = Boolean(state.orderStatus || $("#orderWarehouse").value || service || $("#orderSearch").value.trim());
+  const sellerStatus = String(state.orderBatch?.sellerStatus || state.orderBatch?.sellerView?.status || "");
+  const emptyMessage = state.orderBatch?.failed
+    ? "订单读取失败，未展示旧订单；不能据此判断店铺没有订单。"
+    : ["unknown", "manual_review", "error"].includes(sellerStatus)
+      ? "订单读取范围或解释状态未知，不能判断店铺没有订单；请查看下方下一步。"
+      : state.orderBatch?.partial
+        ? "订单读取不完整，不能据此判断店铺没有订单；请继续读取或重新读取。"
+        : filtered ? "当前筛选没有匹配订单。" : "当前读取范围没有订单。";
   $("#ordersTable").innerHTML = rows.length
     ? rows.map(orderRowHtml).join("")
-    : "<tr><td colspan=\"10\" class=\"product-empty\">没有订单数据。</td></tr>";
+    : `<tr><td colspan="10" class="product-empty">${emptyMessage}</td></tr>`;
+  renderOrderBatchStatus(rows);
+}
+
+function currentOrderViewFilter() {
+  const statusLabels = {
+    awaiting_packaging: "待备货",
+    awaiting_deliver: "待发运",
+    delivering: "运输中",
+    dispute: "争议",
+    delivered: "已签收",
+    cancelled: "已取消",
+  };
+  const status = String(state.orderStatus || "").trim();
+  const warehouseId = String($("#orderWarehouse")?.value || "").trim();
+  const service = String($("#orderService")?.value || "").trim();
+  const query = String($("#orderSearch")?.value || "").trim();
+  const parts = [];
+  if (status) parts.push(`状态：${statusLabels[status] || status}`);
+  if (warehouseId) parts.push(`仓库：${warehouseId}`);
+  if (service) parts.push(`配送服务：${service}`);
+  if (query) parts.push(`搜索：${query}`);
+  return { active: parts.length > 0, summary: parts.length ? parts.join("；") : "全部已读取订单" };
+}
+
+function renderOrderBatchStatus(visibleRows = []) {
+  const target = $("#orderBatchStatus");
+  if (!target) return;
+  const batch = state.orderBatch || {};
+  const previous = $("#orderPreviousBatch");
+  const next = $("#orderNextBatch");
+  const pageLabel = $("#orderPageLabel");
+  const coverage = state.orderCoverage || {};
+  const observedBatches = Number((coverage.pageCursors || coverage.pageOffsets || []).length || 0);
+  const observedOrders = Number(coverage.observedCount || 0);
+  const coverageText = observedBatches > 1
+    ? ` · 已读取 ${observedBatches} 批，去重累计 ${observedOrders} 个订单`
+    : "";
+  if (previous) previous.disabled = batch.loading === true || !(state.orderCursorHistory || []).length;
+  if (next) next.disabled = batch.loading === true || batch.loaded !== true || batch.hasNext !== true || !batch.nextCursor;
+  if (pageLabel) pageLabel.textContent = `第 ${Number(state.orderCursorHistory?.length || 0) + 1} 批 · cursor 分页，当前页替换显示 · 每批最多 100 个${coverageText}`;
+  if (batch.loading) {
+    target.dataset.state = "loading";
+    target.innerHTML = "<strong>正在读取当前批次</strong><span>旧订单已清除；完成前不会执行任何订单动作。</span><p><b>下一步：</b>等待本批读取完成；如果失败，点击“读取订单”重试。</p>";
+    renderOrderReceiptControls();
+    return;
+  }
+  if (batch.failed) {
+    target.dataset.state = "failed";
+    const failedTask = batch.sellerView?.sellerTasks?.[0];
+    const retryNextAction = batch.sellerView?.nextAction || "保持当前店铺、筛选和页码不变，点击“读取订单”重试；当前不执行履约动作。";
+    target.innerHTML = batch.httpStatus === 403
+      ? `<strong>本批读取失败：无读取权限</strong><span>当前店铺没有这批 FBS 订单的读取权限；未展示旧订单。</span><p><b>下一步：</b>${escapeHtml(retryNextAction)}</p><button type="button" class="ghost" data-fbs-order-retry>重新读取当前范围</button>`
+      : `<strong>本批读取失败</strong><span>订单服务暂时不可用；未展示旧订单。本页没有执行备货、发运或取消。</span><p><b>下一步：</b>${escapeHtml(retryNextAction)}</p><button type="button" class="ghost" data-fbs-order-retry>重新读取当前范围</button>${failedTask ? `<small>${escapeHtml(failedTask.code || "FBS_READ_RETRY_REQUIRED")}：${escapeHtml(failedTask.nextAction || "请重新读取当前范围")}</small>` : ""}`;
+    renderOrderReceiptControls();
+    return;
+  }
+  if (!batch.loaded) return;
+  const service = $("#orderService")?.value || "";
+  const filtered = Boolean(state.orderStatus || $("#orderWarehouse")?.value || service || $("#orderSearch")?.value.trim());
+  const viewFilter = currentOrderViewFilter();
+  const emptyText = visibleRows.length
+    ? `当前显示 ${visibleRows.length} 个订单。`
+    : filtered ? "当前筛选没有匹配订单。" : "当前读取范围没有订单。";
+  const missingLabels = (batch.missingEvidence || []).map((item) => ({
+    product_details: "部分商品详情未读取",
+    orders: "部分订单未读取",
+    pagination: "分页信息不完整",
+  })[item] || "部分只读证据缺失");
+  const sellerStatus = String(batch.sellerStatus || batch.sellerView?.status || (batch.partial ? "partial" : "evidence_ready"));
+  // A technically complete page can still have an unknown/manual-review
+  // seller view (for example an unrecognised order status). Do not tell the
+  // seller that the batch is complete in that case: completeness of the
+  // response is different from confidence in the operational interpretation.
+  const sellerInterpretationBlocked = ["unknown", "manual_review", "error"].includes(sellerStatus);
+  const partialText = sellerInterpretationBlocked
+    ? "订单已读取，但卖家状态仍需人工复核；不能据此执行履约。"
+    : batch.hasNext && !batch.missingEvidence?.length
+      ? "当前页读取完整，但仍有后续分页；当前数量不是全量订单。"
+      : batch.partial
+        ? `本批读取不完整${missingLabels.length ? `：${[...new Set(missingLabels)].join("、")}` : "，请稍后重新读取"}。`
+        : "本批读取完整。";
+  target.dataset.state = ["unknown", "manual_review", "error"].includes(sellerStatus)
+    ? "unknown"
+    : batch.partial ? "partial" : "success";
+  const scope = batch.scope || {};
+  const range = scope.since || scope.to ? `${formatDateTime(scope.since)} 至 ${formatDateTime(scope.to)}` : "默认读取范围";
+  const sellerTasks = Array.isArray(batch.sellerView?.sellerTasks) ? batch.sellerView.sellerTasks : [];
+  const sellerTaskHtml = sellerTasks.length
+    ? `<ul class="seller-task-list">${sellerTasks.slice(0, 5).map((task) => `<li data-task-code="${escapeHtml(task.code || "")}" data-task-priority="${escapeHtml(task.priority || "normal")}"><strong>${escapeHtml(task.label || "需人工处理")}</strong>${Number(task.count || 0) > 1 ? `（${Number(task.count)} 单）` : ""}：${escapeHtml(task.nextAction || "请人工核对当前订单")}</li>`).join("")}</ul>`
+    : "";
+  // Service and free-text filters are view filters over the already-read
+  // batch. Keep the next action aligned with what the seller can actually
+  // see, and never let an empty filtered view look like an empty store queue.
+  const visibleNextAction = filtered
+    ? visibleRows.length
+      ? "当前筛选只影响已读取批次的展示；要判断完整店铺范围，请清除筛选并继续读取全部分页。"
+      : "清除或调整当前筛选后再查看；当前筛选没有匹配订单，不代表店铺没有待处理订单。"
+    : (batch.sellerView?.nextAction || "根据当前订单状态继续人工核对；当前页面不执行履约动作。");
+  target.innerHTML = `
+    <strong>${escapeHtml(emptyText)}</strong>
+    <span>证据范围：店铺 ${escapeHtml(scope.storeId || "未知")} · ${escapeHtml(range)}</span>
+    <span>当前视图筛选：${escapeHtml(viewFilter.summary)}${filtered ? "（只影响已读取批次展示）" : ""}</span>
+    <span>同步时间：${escapeHtml(formatDateTime(batch.syncedAt))} · ${escapeHtml(partialText)} · 卖家状态：${escapeHtml(sellerStatus)}</span>
+    <small>验证等级：${escapeHtml(batch.verificationLevel || "locally_tested")}</small>
+    <small>当前批次 ${Number(batch.sourceCount || 0)} 个；${batch.hasNext ? "还有下一批，当前数量不是订单总数。" : "服务端未标记还有下一批，仍仅代表当前读取范围。"}${observedBatches > 1 ? ` 已读取 ${observedBatches} 批，去重累计 ${observedOrders} 个订单；累计范围仅作只读覆盖提示。` : ""} 只读展示，不执行订单动作。</small>
+    <p><b>安全下一步：</b>${escapeHtml(visibleNextAction)}</p>
+    ${sellerTaskHtml}
+  `;
+  renderOrderReceiptControls();
+}
+
+function renderOrderReceiptControls() {
+  const target = $("#orderReceiptControls");
+  if (!target) return;
+  const batch = state.orderBatch || {};
+  const sellerStatus = String(batch.sellerStatus || batch.sellerView?.status || "");
+  const sellerInterpretationBlocked = ["unknown", "manual_review", "error"].includes(sellerStatus);
+  // A technically complete page is not safe to save as an operator receipt
+  // when the seller interpretation is unknown/manual-review/error.  Keep the
+  // receipt action aligned with the same boundary shown in the batch status.
+  const eligible = Boolean(batch.loaded === true
+    && batch.failed !== true
+    && batch.partial !== true
+    && batch.hasNext !== true
+    && !sellerInterpretationBlocked
+    && Number(batch.sourceCount || 0) > 0);
+  target.dataset.eligible = eligible ? "true" : "false";
+  target.innerHTML = `
+    <strong>保存 FBS 只读证据回执</strong>
+    <label>环境名
+      <input type="text" list="fbsReceiptEnvironmentOptions" data-fbs-receipt-environment placeholder="例如：production-readonly" ${eligible ? "" : "disabled"} />
+      <datalist id="fbsReceiptEnvironmentOptions"><option value="local-dev-readonly"></option><option value="staging-readonly"></option><option value="production-readonly"></option></datalist>
+    </label>
+    <label><input type="checkbox" data-fbs-receipt-confirm ${eligible ? "" : "disabled"} /> 我确认保存当前批次的只读证据回执</label>
+    <button type="button" class="ghost" data-save-fbs-evidence-receipt disabled>保存本次只读回执</button>
+    <button type="button" class="ghost" data-load-fbs-evidence-summary disabled>查看已保存回执摘要</button>
+    <small>${eligible ? "服务端会重新读取当前范围并保存脱敏摘要。" : "仅完整、非分页且卖家状态可解释的批次可保存；部分、失败、未知或仍有下一批时保持禁用。"} 不会备货、发运或取消订单。</small>
+    <p class="fbs-evidence-receipt-response" aria-live="polite"></p>
+  `;
+}
+
+function updateFbsReceiptControl(container) {
+  if (!container) return;
+  const environment = container.querySelector("[data-fbs-receipt-environment]")?.value.trim() || "";
+  const confirmed = container.querySelector("[data-fbs-receipt-confirm]")?.checked === true;
+  const button = container.querySelector("[data-save-fbs-evidence-receipt]");
+  const summaryButton = container.querySelector("[data-load-fbs-evidence-summary]");
+  const batchStoreId = String(state.orderBatch?.scope?.storeId || "").trim();
+  if (summaryButton) summaryButton.disabled = environment.length < 3 || !batchStoreId;
+  if (button) button.disabled = container.dataset.eligible !== "true" || !environment || !confirmed;
+}
+
+async function saveFbsEvidenceReceipt(button) {
+  const container = button.closest("#orderReceiptControls");
+  const response = container?.querySelector(".fbs-evidence-receipt-response");
+  const environment = container?.querySelector("[data-fbs-receipt-environment]")?.value.trim() || "";
+  const batch = state.orderBatch || {};
+  setBusy(button, true);
+  try {
+    const data = await api("/api/ozon/order-dashboard/evidence-receipts", {
+      method: "POST",
+      body: JSON.stringify({ recordEvidence: true, environment, storeId: batch.scope?.storeId, scope: batch.scope }),
+    });
+    if (response) response.textContent = `回执已保存 · 证据时间 ${escapeHtml(data.receipt?.checkedAt || "未返回")}`;
+  } catch {
+    if (response) response.textContent = "FBS 只读回执保存未完成，请检查环境名和店铺只读连接后重试。";
+  } finally {
+    setBusy(button, false);
+    updateFbsReceiptControl(container);
+  }
+}
+
+async function loadFbsEvidenceSummary(button) {
+  const container = button.closest("#orderReceiptControls");
+  const response = container?.querySelector(".fbs-evidence-receipt-response");
+  const environment = container?.querySelector("[data-fbs-receipt-environment]")?.value.trim() || "";
+  const requestToken = (state.fbsReceiptRequestToken = Number(state.fbsReceiptRequestToken || 0) + 1);
+  const batchScope = { ...(state.orderBatch?.scope || {}) };
+  const requestStoreId = String(batchScope.storeId || selectedStoreId() || "").trim();
+  setBusy(button, true);
+  try {
+    const queryParams = new URLSearchParams();
+    if (environment) queryParams.set("environment", environment);
+    if (requestStoreId) queryParams.set("storeId", requestStoreId);
+    ["since", "to", "status", "warehouseId", "limit", "offset", "cursor", "sortDir"].forEach((key) => {
+      if (batchScope[key] !== undefined && batchScope[key] !== null && String(batchScope[key]) !== "") {
+        queryParams.set(key, String(batchScope[key]));
+      }
+    });
+    if (batchScope.pagination === "cursor" || batchScope.cursor !== undefined) queryParams.set("pagination", "cursor");
+    const query = queryParams.toString() ? `?${queryParams.toString()}` : "";
+    const data = await api(`/api/ozon/order-dashboard/evidence-receipts${query}`);
+    const currentStoreId = String(selectedStoreId() || "").trim();
+    if (requestToken !== state.fbsReceiptRequestToken || currentStoreId !== requestStoreId) {
+      if (response) response.textContent = "店铺或订单批次已变化，本次回执摘要已丢弃；请重新查看当前批次。";
+      return false;
+    }
+    const latest = data.latestReceipt;
+    if (response) response.textContent = latest
+      ? `已保存 ${Number(data.receiptCount || 0)} 次 · 最近 ${escapeHtml(latest.checkedAt || "未知时间")} · 状态 ${escapeHtml(latest.status || "needs_review")} · 验证 ${escapeHtml(latest.verificationLevel || "server_observed")} · ${escapeHtml(latest.nextAction || (latest.datasetComplete ? "当前范围完成（全范围完成）" : latest.hasNext ? "仍有下一批" : "当前范围需要复核"))} ${escapeHtml(latest.sideEffect || "不会备货、发运或取消。")}`
+      : "当前环境还没有已保存的服务端观察回执。";
+  } catch {
+    if (response) response.textContent = "回执摘要读取失败，请检查服务状态后重试。";
+  } finally { setBusy(button, false); }
+}
+
+function orderStatusClass(statusGroup = "") {
+  const allowed = new Set(["awaiting_packaging", "awaiting_deliver", "delivering", "dispute", "delivered", "cancelled"]);
+  return allowed.has(String(statusGroup || "")) ? String(statusGroup) : "unknown";
+}
+
+function safeOrderImageUrl(value = "") {
+  const raw = String(value || "").trim();
+  if (!raw || /[\u0000-\u001f\u007f"'<>\\]/.test(raw)) return "";
+  try {
+    const parsed = new URL(raw);
+    if (!["http:", "https:"].includes(parsed.protocol) || parsed.username || parsed.password) return "";
+    return parsed.href;
+  } catch {
+    return "";
+  }
+}
+
+function orderSellerNextAction(order = {}) {
+  const status = String(order.statusGroup || order.status || "").toLowerCase();
+  const hasUnknownProduct = !Array.isArray(order.products) || !order.products.length
+    || order.products.some((product) => product?.quantityStatus === "unknown" || product?.quantity == null || product?.detailStatus !== "matched");
+  if (status === "dispute" || String(order.substatus || "").toLowerCase().includes("dispute")) {
+    return "先进入争议/售后处理并核对平台状态；争议未澄清前不要备货或发运。";
+  }
+  if (order.deadlineStatus === "overdue") {
+    return "截止时间已过：先重新读取订单详情并核对平台状态；不要按旧状态备货或发运。";
+  }
+  if (hasUnknownProduct) {
+    return "先重新读取选中货件详情，确认 SKU 与数量；确认前不要备货或发运。";
+  }
+  if (order.deadlineStatus === "due_soon") {
+    return "截止时间临近：先核对详情和仓库，再按平台流程人工处理；本页不执行发运。";
+  }
+  if (status === "awaiting_packaging") return "订单可进入备货核对；本页不执行备货或发运。";
+  if (status === "awaiting_deliver") return "订单待发运；先核对包裹和追踪信息；本页不执行发运。";
+  return "当前仅只读观察；如需履约，请先核对订单详情和平台状态。";
 }
 
 function orderRowHtml(order) {
   const firstProduct = order.products[0] || {};
-  const productsHtml = order.products.map((product) => `
+  const productsHtml = order.products.length
+    ? order.products.map((product) => `
     <div class="order-product-line">
-      <strong>${product.quantity} x ${escapeHtml(product.offer_id || product.sku || "-")}</strong>
+      <strong>${product.quantityStatus === "unknown" || product.quantity == null ? "数量未知，需重读" : `${escapeHtml(product.quantity)} x`} ${escapeHtml(product.offer_id || product.sku || "-")}</strong>
       <span>${escapeHtml(product.name || "-")}</span>
+      <small>${product.detailStatus === "matched" ? "商品详情已匹配" : "商品详情未知；不能据此备货"}</small>
     </div>
-  `).join("");
-  const image = firstProduct.image
-    ? `<img class="product-photo" src="${firstProduct.image}" alt="${escapeHtml(firstProduct.name || "")}" />`
+    `).join("")
+    : `<div class="order-product-line"><strong>商品明细未知，需重读</strong><span>当前批次没有返回商品行，不能把该订单当作可履约事实。</span><small>只读详情未建立数量证据</small></div>`;
+  const safeImage = safeOrderImageUrl(firstProduct.image);
+  const image = safeImage
+    ? `<img class="product-photo" src="${escapeHtml(safeImage)}" alt="${escapeHtml(firstProduct.name || "")}" />`
     : `<div class="photo-placeholder">＋</div>`;
   const weightText = order.declaration_weight_required ? "需填写" : "不适用";
+  const deadlineLabel = order.deadlineStatus === "overdue"
+    ? "已超时，需人工核对"
+    : order.deadlineStatus === "due_soon"
+      ? "12 小时内到期，优先处理"
+      : order.deadlineStatus === "unknown"
+        ? "截止时间未知，不能安全安排"
+        : order.deadlineStatus === "upcoming" ? "截止时间已读取" : "";
   return `
     <tr>
       <td>
@@ -2451,17 +5927,82 @@ function orderRowHtml(order) {
           <span>${escapeHtml(order.tracking_number || "")}</span>
         </div>
       </td>
-      <td><span class="status-pill ${order.status}">${escapeHtml(order.status_label || "-")}</span></td>
+      <td><span class="status-pill ${orderStatusClass(order.statusGroup)}">${escapeHtml(order.status_label || "状态未知")}</span></td>
       <td>${formatDateTime(order.accepted_at)}</td>
-      <td>${formatDateTime(order.shipment_date)}<div class="status-sub">不延期</div></td>
+      <td>${order.shipment_date ? formatDateTime(order.shipment_date) : "截止时间未知"}${deadlineLabel ? `<div class="status-sub">${escapeHtml(deadlineLabel)}</div>` : ""}</td>
       <td>${image}</td>
-      <td>${productsHtml}</td>
-      <td>${formatMoney(order.price)} ${order.currency_code}</td>
-      <td>${escapeHtml(order.warehouse || "-")}</td>
+      <td>
+        ${productsHtml}
+        <details class="order-readonly-detail">
+          <summary>查看只读详情</summary>
+          ${order.posting_number
+            ? `<button type="button" class="ghost" data-fbs-order-detail="${escapeHtml(order.posting_number)}">重新读取选中货件详情</button>`
+            : `<button type="button" class="ghost" disabled title="缺少 posting number，无法定位货件详情">无法重读：缺少货件编号</button>`}
+          <span class="status-sub" data-fbs-order-detail-result>尚未单独读取；列表行不是详情证据。</span>
+          <div><span>订单号：${escapeHtml(order.order_number || "未知")}</span><span>仓库：${escapeHtml(order.warehouse || "未知")}</span><span>追踪号：${escapeHtml(order.tracking_number || "未知")}</span></div>
+          <small>卖家下一步：${escapeHtml(orderSellerNextAction(order))}</small>
+          <small>任务：${escapeHtml(order.task?.nextAction || "当前仅只读观察")}</small>
+          <small>只读详情；数量未知时必须重新读取，当前不提供备货、发运或取消操作。</small>
+        </details>
+      </td>
+      <td>${order.financialStatus === "not_requested" ? "财务数据未读取" : `${formatMoney(order.price)} ${escapeHtml(order.currency_code || "")}`}</td>
+      <td>${escapeHtml(order.warehouse || "仓库未知")}</td>
       <td>${escapeHtml(order.delivery_service || "-")}<div class="status-sub">${escapeHtml(order.delivery_type || order.delivery_method || "")}</div></td>
       <td>${weightText}</td>
     </tr>
   `;
+}
+
+async function loadFbsOrderDetail(button) {
+  const postingNumber = String(button?.dataset?.fbsOrderDetail || "").trim();
+  const container = button?.closest(".order-readonly-detail");
+  const result = container?.querySelector("[data-fbs-order-detail-result]");
+  if (!postingNumber || !container) return;
+  const storeId = String(state.orderBatch?.scope?.storeId || $("#storeSelect")?.value || "").trim();
+  const environmentCheck = validateReadOperatorEnvironment(currentSellerReadEnvironment());
+  const requestEnvironment = environmentCheck.environment || "";
+  if (!storeId) {
+    if (result) result.textContent = "未选择店铺，不能读取详情。";
+    return;
+  }
+  if (!environmentCheck.ok) {
+    if (result) result.textContent = environmentCheck.message || "未绑定读取环境，不能读取详情。";
+    return;
+  }
+  const detailRequestToken = (state.orderDetailRequestToken = Number(state.orderDetailRequestToken || 0) + 1);
+  button.disabled = true;
+  if (result) result.textContent = "正在读取选中货件详情；不会执行履约动作。";
+  try {
+    const params = new URLSearchParams({ storeId, postingNumber, environment: requestEnvironment });
+    const data = await api(`/api/ozon/order-dashboard/detail?${params}`);
+    const currentStoreId = String(selectedStoreId() || state.orderBatch?.scope?.storeId || $("#storeSelect")?.value || "").trim();
+    if (detailRequestToken !== state.orderDetailRequestToken
+      || currentStoreId !== storeId
+      || String(currentSellerReadEnvironment() || "").trim() !== requestEnvironment
+      || String(data?.environment || "").trim() !== requestEnvironment) {
+      if (result) result.textContent = "店铺或订单批次已变化，本次详情结果已丢弃；请重新读取当前货件详情。";
+      return false;
+    }
+    const detail = data.orders?.[0] || null;
+    const identity = data.detailRead?.returnedPostingIdentity || "";
+    if (data.partial || data.expectedPostingIdentity !== postingNumber || identity !== postingNumber || !detail) {
+      if (result) result.textContent = `详情证据不完整：${data.sellerView?.nextAction || "请重新读取当前货件"}`;
+    } else if (result) {
+      const products = Array.isArray(detail.products) ? detail.products : [];
+      const productRows = products.slice(0, 20).map((product) => {
+        const offer = String(product?.offer_id || product?.offerId || product?.sku || "未知 SKU").trim();
+        const quantity = product?.quantityStatus === "unknown" || product?.quantity == null
+          ? "数量未知，需重读"
+          : `${product.quantity} 件`;
+        return `<li><b>${escapeHtml(offer)}</b> · ${escapeHtml(quantity)} · ${escapeHtml(product?.name || "商品名称未知")}</li>`;
+      }).join("");
+      result.innerHTML = `<span class="fbs-detail-readback-ok">详情已回读：${products.length} 个商品行</span>${productRows ? `<ul class="fbs-detail-product-list">${productRows}</ul>` : "<span>未返回可解释商品行，不能据此备货。</span>"}<span>${escapeHtml(detail.task?.nextAction || "当前仅只读观察；确认数量后再按平台流程人工处理")}</span>`;
+    }
+  } catch (error) {
+    if (result) result.textContent = `详情读取失败：${error?.message || "请稍后重试"}`;
+  } finally {
+    button.disabled = false;
+  }
 }
 
 function formatDateTime(value) {
@@ -2500,20 +6041,119 @@ async function collect1688() {
   }
 }
 
+async function sha256Text(value) {
+  if (!window.crypto?.subtle) return "";
+  const bytes = new TextEncoder().encode(String(value || ""));
+  const digest = await window.crypto.subtle.digest("SHA-256", bytes);
+  return `sha256:${[...new Uint8Array(digest)].map((item) => item.toString(16).padStart(2, "0")).join("")}`;
+}
+
+async function import1688Fixture() {
+  const button = $("#import1688Fixture");
+  const status = $("#1688FixtureImportStatus");
+  const manifestFile = $("#1688FixtureManifest")?.files?.[0];
+  const pageFile = $("#1688FixturePage")?.files?.[0];
+  if (!manifestFile || !pageFile) {
+    if (status) status.textContent = "请同时选择 manifest.json 和 page.html。";
+    return;
+  }
+  setBusy(button, true);
+  try {
+    const [manifestText, html] = await Promise.all([manifestFile.text(), pageFile.text()]);
+    let manifest;
+    try {
+      manifest = JSON.parse(manifestText);
+    } catch {
+      throw new Error("manifest.json 不是有效 JSON");
+    }
+    if (manifest?.redacted !== true) throw new Error("只接受明确标记 redacted=true 的脱敏快照");
+    const url = String(manifest.url || "").trim();
+    if (!url) throw new Error("manifest.json 缺少商品 url");
+    if (!html.trim()) throw new Error("page.html 为空");
+    if (html.length > 50 * 1024 * 1024) throw new Error("page.html 超过 50MB，本地导入已阻断");
+    const hints = manifest.hints && typeof manifest.hints === "object" ? manifest.hints : {};
+    const safeHintKeys = ["taskId", "capturedAt", "captureMode", "title", "images", "detailImages", "attributes", "skuVariants", "packageInfo", "supplier", "supplierId", "supplierName", "moq", "priceTiers", "video"];
+    const safeHints = Object.fromEntries(safeHintKeys.filter((key) => Object.prototype.hasOwnProperty.call(hints, key)).map((key) => [key, hints[key]]));
+    const fixtureProvenance = {
+      fixtureKind: manifest.fixtureKind || "real_redacted_capture",
+      synthetic: typeof manifest.synthetic === "boolean" ? manifest.synthetic : null,
+      redacted: true,
+      verificationLevel: manifest.verificationLevel || "locally_tested_fixture",
+      manifestHash: await sha256Text(manifestText),
+      captureMode: hints.captureMode || "fixture_replay",
+      capturedAt: hints.capturedAt || "",
+      validationTargets: Array.isArray(manifest.validationTargets) ? manifest.validationTargets : [],
+    };
+    const data = await api("/api/1688/capture", {
+      method: "POST",
+      body: JSON.stringify({
+        url,
+        html,
+        storeId: $("#captureStoreSelect")?.value || selectedStoreId(),
+        includeVideo: $("#manualIncludeVideo")?.checked !== false,
+        ...safeHints,
+        taskId: hints.taskId || manifest.taskId || "",
+        capturedAt: hints.capturedAt || "",
+        captureMode: hints.captureMode || "fixture_replay",
+        fixtureProvenance,
+      }),
+    });
+    state.collected1688 = data;
+    state.currentCaptureId = data.id || "";
+    render1688Collection(data);
+    await loadCaptureBox();
+    showResponse({ fixtureImport: { ok: true, collectionId: data.id, captureReceipt: data.captureReceipt }, sideEffect: "仅保存解析摘要与哈希；未保存原始 HTML，未提交 Ozon。" });
+    if (status) status.textContent = `已导入 ${data.title || "商品"}；仅保存解析摘要，可在采集箱运行本地预检。`;
+    toast(data.duplicate ? "该快照已存在，已保留原采集记录" : "脱敏快照已导入采集箱");
+  } catch (error) {
+    if (status) status.textContent = error.message || "脱敏快照导入失败";
+    toast(error.message || "脱敏快照导入失败", "error");
+  } finally {
+    setBusy(button, false);
+  }
+}
+
 async function loadCaptureBox() {
   const data = await api("/api/1688/captures");
   state.captureRows = data.items || [];
   renderCaptureBox();
 }
 
-async function loadCrawlerTasks() {
-  const data = await api("/api/1688-crawler/tasks");
-  state.crawlerTasks = data.items || [];
-  if (!state.selectedCrawlerTaskId && state.crawlerTasks.length) {
-    state.selectedCrawlerTaskId = state.crawlerTasks[0].id;
+function openCaptureFromDeepLink() {
+  const captureId = String(new URLSearchParams(window.location.search).get("captureId") || "").trim();
+  if (!captureId) return false;
+  const item = state.captureRows.find((row) => String(row.id || "") === captureId);
+  if (!item) {
+    toast("采集结果已回传，但当前店铺看不到这条采集记录，请先检查店铺范围。", "error");
+    return false;
   }
-  renderCrawlerTaskRows();
-  renderCrawlerLivePanel();
+  document.querySelector('[data-view="sourcing"]')?.click();
+  window.setTimeout(() => {
+    const row = document.querySelector(`#captureBoxTable tr[data-id="${CSS.escape(captureId)}"]`);
+    row?.scrollIntoView({ behavior: "smooth", block: "center" });
+    row?.classList.add("capture-deep-link-focus");
+    window.setTimeout(() => row?.classList.remove("capture-deep-link-focus"), 2200);
+  }, 0);
+  toast("已定位刚采集的商品；下一步生成本地草稿，不会自动提交 Ozon。", "ok");
+  return true;
+}
+
+async function loadCrawlerTasks() {
+  try {
+    const data = await api("/api/1688-crawler/tasks");
+    state.crawlerTasks = data.items || [];
+    if (!state.selectedCrawlerTaskId && state.crawlerTasks.length) {
+      state.selectedCrawlerTaskId = state.crawlerTasks[0].id;
+    }
+    renderCrawlerTaskRows();
+    renderCrawlerLivePanel();
+  } catch (error) {
+    state.crawlerTasks = [];
+    state.selectedCrawlerTaskId = "";
+    renderCrawlerTaskRows();
+    renderCrawlerLivePanel();
+    throw error;
+  }
 }
 
 async function loadCrawlerSessionStatus() {
@@ -2652,25 +6292,69 @@ function bindCrawlerTaskRows() {
 }
 
 async function loadCrawlerCandidates() {
+  const requestToken = ++state.crawlerCandidateRequestToken;
+  const requestedTaskId = state.selectedCrawlerTaskId;
   const params = new URLSearchParams();
-  if (state.selectedCrawlerTaskId) params.set("taskId", state.selectedCrawlerTaskId);
+  if (requestedTaskId) params.set("taskId", requestedTaskId);
   const status = $("#crawlerCandidateStatus")?.value.trim();
   const query = $("#crawlerCandidateQuery")?.value.trim();
   if (status) params.set("status", status);
   if (query) params.set("query", query);
-  const data = await api(`/api/1688-crawler/candidates?${params}`);
-  state.crawlerCandidates = data.items || [];
-  renderCrawlerCandidateRows();
-  renderCrawlerTaskRows();
-  renderCrawlerLivePanel();
+  try {
+    const data = await api(`/api/1688-crawler/candidates?${params}`);
+    if (requestToken !== state.crawlerCandidateRequestToken || requestedTaskId !== state.selectedCrawlerTaskId) {
+      return data;
+    }
+    state.crawlerCandidates = data.items || [];
+    renderCrawlerCandidateRows();
+    renderCrawlerTaskRows();
+    renderCrawlerLivePanel();
+  } catch (error) {
+    if (requestToken !== state.crawlerCandidateRequestToken || requestedTaskId !== state.selectedCrawlerTaskId) {
+      return null;
+    }
+    state.crawlerCandidates = [];
+    renderCrawlerCandidateRows();
+    renderCrawlerTaskRows();
+    renderCrawlerLivePanel();
+    throw error;
+  }
 }
 
 function renderCrawlerCandidateRows() {
   const tbody = $("#crawlerCandidateRows");
   if (!tbody) return;
   tbody.innerHTML = state.crawlerCandidates.length
-    ? state.crawlerCandidates.map((item) => `
-      <tr data-candidate-id="${escapeHtml(item.id)}">
+    ? state.crawlerCandidates.map((item) => {
+      const status = String(item.status || "").toLowerCase();
+      const captured = status === "captured";
+      const ignored = status === "ignored";
+      const sourceReview = item.sourceEvidenceSummary && typeof item.sourceEvidenceSummary === "object"
+        ? item.sourceEvidenceSummary
+        : item.parsed?.sourceEvidence?.sellerFacing || {};
+      const sourceStatus = ["ready", "needs_review", "waiting_human", "unknown"].includes(String(sourceReview.status || ""))
+        ? String(sourceReview.status)
+        : "unknown";
+      const sourceLabel = sourceStatus === "ready" ? "来源已验证"
+        : sourceStatus === "waiting_human" ? "等待人工验证"
+          : sourceStatus === "needs_review" ? "来源待补齐" : "来源证据未知";
+      const sourceBlocker = String(sourceReview.blocker || (sourceStatus === "ready" ? "" : "缺少可安全使用的完整来源证据"));
+      const sourceNextAction = String(sourceReview.nextAction || "重新打开 1688 商品详情页并采集有效页面快照");
+      // A waiting-human source cannot be handed off accidentally.  Incomplete
+      // evidence may still create a local draft so the seller can repair it,
+      // but the row makes the limitation and side effect explicit.
+      const actionDisabled = captured || ignored || sourceStatus === "waiting_human";
+      const actionLabel = captured ? "已入采集箱" : ignored ? "已忽略" : sourceStatus === "waiting_human" ? "先完成人工验证" : "";
+      const statusHint = captured
+        ? "该候选已进入采集箱；这不代表已创建上架草稿，请打开采集箱继续确认来源证据。"
+        : ignored ? "该候选已忽略，如需处理请调整筛选或恢复候选状态。"
+          : sourceStatus === "waiting_human"
+            ? `来源需要人工处理：${sourceBlocker} 下一步：${sourceNextAction}`
+            : sourceStatus === "ready"
+              ? "来源快照已记录；生成的只是本地草稿，仍需补齐资料并重新预检。"
+              : `来源证据${sourceStatus === "needs_review" ? "待补齐" : "尚未确认"}：${sourceBlocker} 下一步：${sourceNextAction}`;
+      return `
+      <tr data-candidate-id="${escapeHtml(item.id)}" data-store-id="${escapeHtml(item.storeId || "")}">
         <td>
           <strong>${escapeHtml(item.title || "未命名商品")}</strong>
           <div class="status-sub"><a href="${escapeHtml(item.url || "#")}" target="_blank">${escapeHtml(item.url || "-")}</a></div>
@@ -2679,13 +6363,15 @@ function renderCrawlerCandidateRows() {
         <td>${escapeHtml(item.skuCount || 0)}</td>
         <td>${item.sizeWeightReady ? "完整" : "缺失"}</td>
         <td>${escapeHtml(item.score || 0)}</td>
-        <td>${escapeHtml(item.status || "-")}</td>
+        <td>${escapeHtml(item.status || "-")}<div class="status-sub candidate-source-evidence" data-source-evidence-status="${escapeHtml(sourceStatus)}">${escapeHtml(sourceLabel)}</div></td>
         <td class="row-actions">
-          <button class="small-blue crawler-to-capture" type="button">入采集箱</button>
-          <button class="ghost crawler-ignore" type="button">忽略</button>
+          <button class="small-blue crawler-to-capture" type="button" ${actionDisabled ? "disabled" : ""}>${actionLabel || "入采集箱"}</button>
+          <button class="primary crawler-create-listing-draft" type="button" ${actionDisabled ? "disabled" : ""}>${actionDisabled ? (captured ? "已入采集箱（未建草稿）" : "不可操作") : "建上架草稿"}</button>
+          <button class="ghost crawler-ignore" type="button" ${actionDisabled ? "disabled" : ""}>${ignored ? "已忽略" : "忽略"}</button>
         </td>
       </tr>
-    `).join("")
+      ${statusHint ? `<tr class="status-sub"><td colspan="7">${statusHint}</td></tr>` : ""}`;
+    }).join("")
     : "<tr><td colspan=\"7\" class=\"product-empty\">暂无候选数据</td></tr>";
   bindCrawlerCandidateRows();
 }
@@ -2693,16 +6379,83 @@ function renderCrawlerCandidateRows() {
 function bindCrawlerCandidateRows() {
   document.querySelectorAll("#crawlerCandidateRows tr[data-candidate-id]").forEach((row) => {
     const id = row.dataset.candidateId;
+    const candidateStoreId = String(row.dataset.storeId || "").trim();
     row.querySelector(".crawler-ignore")?.addEventListener("click", async () => {
       await api(`/api/1688-crawler/candidates/${id}`, {
         method: "PATCH",
-        body: JSON.stringify({ status: "ignored" }),
+        body: JSON.stringify({ status: "ignored", storeId: candidateStoreId }),
       });
       await loadCrawlerCandidates();
       toast("候选已标记为忽略");
     });
-    row.querySelector(".crawler-to-capture")?.addEventListener("click", () => moveCrawlerCandidateToCapture(id));
+    row.querySelector(".crawler-to-capture")?.addEventListener("click", () => moveCrawlerCandidateToCapture(id, candidateStoreId));
+    row.querySelector(".crawler-create-listing-draft")?.addEventListener("click", () => createListingDraftFromCandidate(id));
   });
+}
+
+async function createListingDraftFromCandidate(id) {
+  const row = document.querySelector(`#crawlerCandidateRows tr[data-candidate-id="${CSS.escape(id)}"]`);
+  const button = row?.querySelector(".crawler-create-listing-draft");
+  const candidateStoreId = String(row?.dataset.storeId || "").trim();
+  const storeId = candidateStoreId || String(selectedStoreId() || "").trim();
+  if (!storeId) {
+    toast("候选没有归属店铺，请先绑定店铺后再建草稿", "error");
+    return;
+  }
+  setBusy(button, true);
+  try {
+    const data = await api(`/api/1688-crawler/candidates/${encodeURIComponent(id)}/create-listing-draft`, {
+      method: "POST",
+      body: JSON.stringify({ storeId }),
+    });
+    state.listingHandoffNotice = data.duplicate
+      ? "已找到已有本地上架草稿；下一步打开当前草稿并重新预检"
+      : "1688 候选已交接为本地上架草稿；下一步补齐资料并运行预检";
+    showResponse(data);
+    toast(data.duplicate ? "已打开已有上架草稿；未提交 Ozon" : "已创建本地上架草稿；未提交 Ozon");
+    await loadWorkflowRuns();
+    // Duplicate handoffs may return the existing job without repeating a
+    // workflowRunId. Resolve only an exact job/candidate binding after the
+    // scoped workflow refresh; never fall back to the latest unrelated run.
+    const existingJobId = String(data.job?.id || "").trim();
+    const workflowRunId = String(data.workflowRunId || data.job?.workflowRunId || "").trim()
+      || String((state.workflowRuns || []).find((run) => (
+        (existingJobId && String(run?.entity?.autoListingJobId || run?.autoListingJobId || "").trim() === existingJobId)
+        || String(run?.entity?.candidateId || run?.candidateId || "").trim() === String(id || "").trim()
+      ))?.id || "").trim();
+    // Keep the legacy no-id guard visible for static safety audits: if (!data.workflowRunId)
+    // alone is insufficient for duplicate responses, so the exact binding above is required.
+    if (!workflowRunId) {
+      // A local job without a workflow cannot reach the normal preflight and
+      // must not make the listing page fall back to an unrelated latest run.
+      // Leave the seller in the candidate context with an explicit recovery
+      // action instead of showing another product's draft.
+      state.selectedWorkflowRunId = "__no_workflow__";
+      state.listingHandoffNotice = "本地草稿已保存，但商品工作流未绑定；请稍后重试交接，绑定成功后才能运行预检。";
+      toast("草稿已保存，但工作流未绑定；暂不能进入预检", "warning");
+      return;
+    }
+    state.selectedWorkflowRunId = workflowRunId;
+    state.selectedWorkflowNodeKey = "candidate_handoff";
+    renderWorkflowConsole?.();
+    activateErpView("listing");
+    await loadAutoListJobs().catch(() => {});
+    renderListingSellerTaskSummary();
+  } catch (error) {
+    const responseData = error.responseData || {};
+    const nextAction = String(responseData.captureImportReview?.nextAction || responseData.nextAction || "").trim();
+    if (nextAction) {
+      state.listingHandoffNotice = nextAction;
+      showResponse(responseData);
+      activateErpView("listing");
+      renderListingSellerTaskSummary();
+      toast(`当前不能建草稿：${nextAction}`, "warning");
+    } else {
+      toast(error.message || "创建上架草稿失败", "error");
+    }
+  } finally {
+    setBusy(button, false);
+  }
 }
 
 async function moveCrawlerCandidateToCapture(id, storeId = "") {
@@ -2780,12 +6533,19 @@ function startCrawlerAutoRefresh() {
 }
 
 async function loadOzonLearningTasks() {
-  const data = await api("/api/ozon-learning/tasks");
-  state.ozonLearningTasks = data.items || [];
-  if (!state.selectedOzonLearningTaskId && state.ozonLearningTasks.length) {
-    state.selectedOzonLearningTaskId = state.ozonLearningTasks[0].id;
+  try {
+    const data = await api("/api/ozon-learning/tasks");
+    state.ozonLearningTasks = data.items || [];
+    if (!state.selectedOzonLearningTaskId && state.ozonLearningTasks.length) {
+      state.selectedOzonLearningTaskId = state.ozonLearningTasks[0].id;
+    }
+    renderOzonLearningTaskRows();
+  } catch (error) {
+    state.ozonLearningTasks = [];
+    state.selectedOzonLearningTaskId = "";
+    renderOzonLearningTaskRows();
+    throw error;
   }
-  renderOzonLearningTaskRows();
 }
 
 async function loadOzonLearningItems() {
@@ -2793,10 +6553,17 @@ async function loadOzonLearningItems() {
   if (state.selectedOzonLearningTaskId) params.set("taskId", state.selectedOzonLearningTaskId);
   const query = $("#ozonLearningQuery")?.value.trim();
   if (query) params.set("query", query);
-  const data = await api(`/api/ozon-learning/items?${params}`);
-  state.ozonLearningItems = data.items || [];
-  renderOzonLearningItemRows();
-  renderOzonLearningTaskRows();
+  try {
+    const data = await api(`/api/ozon-learning/items?${params}`);
+    state.ozonLearningItems = data.items || [];
+    renderOzonLearningItemRows();
+    renderOzonLearningTaskRows();
+  } catch (error) {
+    state.ozonLearningItems = [];
+    renderOzonLearningItemRows();
+    renderOzonLearningTaskRows();
+    throw error;
+  }
 }
 
 async function loadOzonOpportunities() {
@@ -3172,6 +6939,40 @@ async function deleteCrawlerTask(id) {
   }
 }
 
+// Keep the collection box seller-facing: a raw capture status is not enough
+// to tell an operator what blocks this item or what the next click does.
+// This pure view model is also easy to exercise with offline fixtures.
+function captureSellerTaskView(item = {}, { sourceEvidenceStatus = "unknown", evidenceIssues = [] } = {}) {
+  const lastError = String(item.lastError || "").trim();
+  if (String(item.status || "") === "error" || lastError) {
+    return { state: "error", label: "采集失败", blocker: lastError || "上一次采集没有形成可用商品数据。", nextAction: "先清理本地失败标记，再打开商品重试；不会跳过来源确认。", actionLabel: "清理错误并重试" };
+  }
+  if (sourceEvidenceStatus === "waiting_human") {
+    return { state: "waiting_human", label: "等待人工验证", blocker: "1688 页面需要人工完成登录或人机验证。", nextAction: "回到 1688 页面完成验证，然后重新采集。", actionLabel: "继续验证" };
+  }
+  const draft = item.draft || {};
+  // A saved single-SKU draft can legitimately have an empty `variants` array;
+  // use the persisted draft identity/category markers instead of requiring a
+  // multi-SKU row to exist, otherwise the capture box tells the seller to
+  // generate the same draft again.
+  if (draft.parentSku || draft.payloadDraftHash || draft.categoryId || draft.typeId) {
+    return {
+      state: evidenceIssues.length ? "draft_blocked" : "draft_ready",
+      label: evidenceIssues.length ? "草稿待补资料" : "草稿已保存，待预检",
+      blocker: evidenceIssues.length ? evidenceIssues[0] : "尚未运行当前草稿的提交前预检。",
+      nextAction: evidenceIssues.length ? "打开草稿补齐阻塞项，再重新预检。" : "打开上架草稿，运行预检并查看修复项。",
+      actionLabel: evidenceIssues.length ? "补齐草稿" : "打开草稿",
+    };
+  }
+  return {
+    state: evidenceIssues.length ? "capture_blocked" : "captured",
+    label: evidenceIssues.length ? "采集完成，待补资料" : "已采集，待生成草稿",
+    blocker: evidenceIssues.length ? evidenceIssues[0] : "还没有把来源商品转换成本地上架草稿。",
+    nextAction: evidenceIssues.length ? "打开采集记录补齐来源、采购或媒体证据。" : "打开采集记录，确认来源后生成上架草稿。",
+    actionLabel: evidenceIssues.length ? "补齐采集" : "生成草稿",
+  };
+}
+
 function renderCaptureBox() {
   const tbody = $("#captureBoxTable");
   if (!tbody) return;
@@ -3183,7 +6984,53 @@ function renderCaptureBox() {
         const warningBadge = sizeWeight.ok && !sizeWeight.warnOnly
           ? ""
           : `<span class="warn-badge" title="${escapeHtml(sizeWeight.message)}">${sizeWeight.warnOnly ? "SKU尺重回填" : "尺重不全"}</span>`;
+        const sourceEvidenceRecord = product.sourceEvidenceRecord || {};
+        const captureIdentity = sourceEvidenceRecord.captureIdentity || product.capture || {};
+        const captureTaskId = String(captureIdentity.taskId || product.capture?.taskId || item.taskId || "").trim();
+        const captureSnapshotHash = String(sourceEvidenceRecord.snapshot?.hash || product.sourceEvidence?.snapshotHash || "").trim();
+        const captureHashShort = /^sha256:[a-f0-9]{64}$/i.test(captureSnapshotHash)
+          ? `${captureSnapshotHash.slice(0, 15)}…${captureSnapshotHash.slice(-8)}`
+          : "未记录";
+        const captureIdentityText = [
+          captureIdentity.taskId ? `任务 ${captureIdentity.taskId}` : "任务未绑定",
+          captureIdentity.offerId ? `Offer ${captureIdentity.offerId}` : "Offer 未解析",
+          `快照 ${captureHashShort}`,
+        ].join(" · ");
+        const sourceEvidenceSeller = product.sourceEvidence?.sellerFacing || sourceEvidenceRecord.sellerFacing || {};
+        const domainCoverage = sourceEvidenceRecord.domainCoverage && typeof sourceEvidenceRecord.domainCoverage === "object"
+          ? sourceEvidenceRecord.domainCoverage : {};
+        const domainLabels = { sku: "SKU", procurement: "采购", media: "媒体" };
+        const domainText = ["sku", "procurement", "media"].map((key) => {
+          const status = String(domainCoverage[key]?.status || "needs_review");
+          return `${domainLabels[key]}${status === "captured" ? "已记录" : "待补齐"}`;
+        }).join(" · ");
+        const missingDomains = Array.isArray(sourceEvidenceRecord.missingDomains)
+          ? sourceEvidenceRecord.missingDomains : [];
+        const sourceEvidenceStatus = ["ready", "needs_review", "waiting_human", "unknown"].includes(String(sourceEvidenceSeller.status || ""))
+          ? String(sourceEvidenceSeller.status)
+          : product.sourceEvidence?.snapshotHash ? "needs_review" : "unknown";
+        const captureReview = product.captureReview || item.captureReview || {};
+        const captureReviewApproved = captureReview.humanConfirmed === true
+          && String(captureReview.reviewedSnapshotHash || "").trim() === captureSnapshotHash
+          && /^sha256:[a-f0-9]{64}$/i.test(captureSnapshotHash);
+        const captureReviewNeeded = !captureReviewApproved && /^sha256:[a-f0-9]{64}$/i.test(captureSnapshotHash);
+        const sourceEvidenceNextAction = String(sourceEvidenceSeller.nextAction || "重新打开来源商品详情页并采集有效页面快照");
+        const sourceEvidenceBlocker = String(sourceEvidenceSeller.blocker || (sourceEvidenceStatus === "ready" ? "" : "来源证据待补齐"));
+        const evidenceIssues = [
+          sourceEvidenceStatus === "ready" ? "" : (!product.sourceEvidence?.snapshotHash && sourceEvidenceStatus === "unknown"
+            ? `来源快照缺失：${sourceEvidenceBlocker || "来源证据待补齐"}`
+            : (sourceEvidenceBlocker || "来源证据待补齐")),
+          captureReviewNeeded ? "当前 1688 快照尚未由卖家确认" : "",
+          (product.procurementEvidence?.supplierId?.value || product.procurementEvidence?.supplierName?.value)
+            && product.procurementEvidence?.moq?.value
+            && product.procurementEvidence?.priceTiers?.values?.length ? "" : "供应商/MOQ/采购阶梯价待核",
+          Array.isArray(product.mediaAssets) && product.mediaAssets.length && product.mediaAssets.some((asset) => asset?.checks?.humanApproved !== true) ? "媒体待人工" : "",
+        ].filter(Boolean);
+        const evidenceBadge = evidenceIssues.length
+          ? `<span class="warn-badge capture-evidence-badge" title="${escapeHtml([sourceEvidenceBlocker, sourceEvidenceNextAction, ...evidenceIssues].filter(Boolean).join("；"))}">${sourceEvidenceStatus === "waiting_human" ? "需人工处理" : "证据待补齐"} ${evidenceIssues.length}</span>`
+          : `<span class="ok-badge capture-evidence-badge" title="${escapeHtml(sourceEvidenceNextAction)}">来源证据完整</span>`;
         const draftStatus = captureDraftVariantStatuses(item);
+        const sellerTask = captureSellerTaskView(item, { sourceEvidenceStatus, evidenceIssues });
         return `
           <tr data-id="${item.id}">
             <td><input class="capture-check" type="checkbox" /></td>
@@ -3197,16 +7044,28 @@ function renderCaptureBox() {
               <strong>${escapeHtml(product.title || "未命名商品")}</strong>
               <div class="status-sub">${escapeHtml(product.url || "")}</div>
               ${warningBadge}
+              ${evidenceBadge}
+              <div class="status-sub capture-source-evidence" data-source-evidence-status="${escapeHtml(sourceEvidenceStatus)}">下一步：${escapeHtml(sourceEvidenceNextAction)}</div>
+              <div class="status-sub capture-evidence-side-effect">影响：证据未验证前不会创建或提交 Ozon；补证动作只更新本地候选。</div>
+              <div class="status-sub capture-source-domain-coverage" data-missing-domains="${escapeHtml(missingDomains.join(","))}">证据覆盖：${escapeHtml(domainText)}</div>
+              <div class="status-sub capture-identity-summary" data-capture-task-id="${escapeHtml(captureIdentity.taskId || "")}" data-capture-offer-id="${escapeHtml(captureIdentity.offerId || "")}">回传身份：${escapeHtml(captureIdentityText)}</div>
             </td>
             <td>${product.skuVariants?.length || 0}</td>
             <td>${product.video?.url ? "有" : "无"}</td>
             <td>
-              ${escapeHtml(item.status || "collected")}
+              <div class="capture-seller-task" data-capture-task-state="${escapeHtml(sellerTask.state)}">
+                <span class="status-pill ${sellerTask.state === "captured" || sellerTask.state === "draft_ready" ? "success" : sellerTask.state === "waiting_human" ? "warning" : "blocked"}">${escapeHtml(sellerTask.label)}</span>
+                <div class="status-sub"><b>卡点：</b>${escapeHtml(sellerTask.blocker)}</div>
+                <div class="status-sub"><b>下一步：</b>${escapeHtml(sellerTask.nextAction)}</div>
+              </div>
               ${draftStatus ? `<div class="status-sub">${escapeHtml(draftStatus)}</div>` : ""}
             </td>
             <td class="row-actions">
-              <button class="small-blue edit-capture" type="button">编辑</button>
-              <button class="ghost promote-capture-candidate" type="button">转候选池</button>
+              <button class="small-blue edit-capture" type="button">${escapeHtml(sellerTask.actionLabel)}</button>
+              ${sellerTask.state === "waiting_human" && captureTaskId ? `<button class="small-blue resume-capture-human" type="button" data-task-id="${escapeHtml(captureTaskId)}">打开采集任务</button>` : ""}
+              ${captureReviewNeeded ? `<button class="small-blue review-capture" type="button">确认当前快照</button>` : ""}
+              <button class="small-blue preflight-capture" type="button">运行本地预检</button>
+              <button class="ghost promote-capture-candidate" type="button">${evidenceIssues.length ? "转候选池（需审核）" : "转候选池"}</button>
               <button class="ghost delete-capture" type="button">删除</button>
             </td>
           </tr>
@@ -3276,10 +7135,155 @@ function bindCaptureBoxRows() {
       if (item) item.storeId = event.target.value;
       toast("采集箱店铺已更新");
     });
-    row.querySelector(".edit-capture")?.addEventListener("click", () => editCaptureItem(id));
+    row.querySelector(".edit-capture")?.addEventListener("click", () => {
+      const action = row.querySelector(".edit-capture");
+      const storeId = row.querySelector(".capture-store")?.value || "";
+      if (String(action?.textContent || "").includes("清理错误")) retryCaptureAfterError(id, storeId, action);
+      else if (String(action?.textContent || "").includes("生成草稿")) createDraftFromCapture(id, storeId, action);
+      else editCaptureItem(id, storeId);
+    });
+    row.querySelector(".resume-capture-human")?.addEventListener("click", () => openCaptureHumanTask(row.querySelector(".resume-capture-human")?.dataset.taskId || ""));
+    row.querySelector(".review-capture")?.addEventListener("click", () => reviewCaptureSnapshot(id, row.querySelector(".capture-store")?.value || "", row.querySelector(".review-capture")));
+    row.querySelector(".preflight-capture")?.addEventListener("click", () => runCapturePreflight(id, row.querySelector(".capture-store")?.value || ""));
     row.querySelector(".promote-capture-candidate")?.addEventListener("click", () => promoteCaptureToCandidate(id));
     row.querySelector(".delete-capture")?.addEventListener("click", () => deleteCaptureItem(id));
   });
+}
+
+// Batch draft/preflight failures are persisted on the capture so the seller
+// can see what happened.  They must not become a sticky dead end: this action
+// only clears the local retry marker and reloads the capture; it does not
+// approve a snapshot, create a draft, or call Ozon.
+async function retryCaptureAfterError(id, storeId = "", button = null) {
+  setBusy(button, true);
+  try {
+    await api(`/api/1688/captures/${encodeURIComponent(id)}`, {
+      method: "PATCH",
+      body: JSON.stringify({ storeId, status: "captured", lastError: "" }),
+    });
+    await loadCaptureBox();
+    toast("已清理本地失败标记；请打开采集记录并按当前证据重新尝试，不会提交 Ozon", "ok");
+  } catch (error) {
+    toast(error.message || "清理采集失败标记失败", "error");
+  } finally {
+    setBusy(button, false);
+  }
+}
+
+// A waiting-human capture must return the operator to the crawler task that
+// owns the login/CAPTCHA gate.  Opening the local capture editor alone cannot
+// complete that gate and used to leave the seller with a dead-end action.
+async function openCaptureHumanTask(taskId = "") {
+  const id = String(taskId || "").trim();
+  if (!id) {
+    toast("当前采集没有绑定任务，无法定位人机验证；请重新打开 1688 页面采集", "warning");
+    return false;
+  }
+  state.selectedCrawlerTaskId = id;
+  document.querySelector('.tab[data-view="crawler1688"]')?.click();
+  try {
+    if (!state.crawlerTasks.some((task) => String(task.id || "") === id)) await loadCrawlerTasks();
+    await loadCrawlerCandidates();
+  } catch (error) {
+    toast(error.message || "采集任务读取失败，请刷新后重试", "error");
+    return false;
+  }
+  const row = document.querySelector(`#crawlerTaskRows tr[data-task-id="${CSS.escape(id)}"]`);
+  row?.scrollIntoView({ behavior: "smooth", block: "center" });
+  row?.classList.add("capture-deep-link-focus");
+  window.setTimeout(() => row?.classList.remove("capture-deep-link-focus"), 2200);
+  toast("已定位采集任务；请点击“继续”完成 1688 登录或人机验证", "ok");
+  return true;
+}
+
+async function reviewCaptureSnapshot(id, storeId = "", button = null) {
+  const item = state.captureRows.find((entry) => String(entry.id || "") === String(id || ""));
+  const hash = String(item?.parsed?.sourceEvidence?.snapshotHash || "").trim();
+  if (!/^sha256:[a-f0-9]{64}$/i.test(hash)) {
+    toast("当前采集没有有效快照 hash，不能确认", "error");
+    return;
+  }
+  const shortHash = `${hash.slice(0, 15)}…${hash.slice(-8)}`;
+  if (!window.confirm(`确认你已核对当前 1688 商品，并确认快照 ${shortHash} 就是目标商品？`)) return;
+  setBusy(button, true);
+  try {
+    await api(`/api/1688/captures/${encodeURIComponent(id)}/review`, {
+      method: "POST",
+      body: JSON.stringify({ storeId }),
+    });
+    await loadCaptureBox();
+    toast("当前 1688 快照已确认；现在可以生成草稿并预检", "ok");
+  } catch (error) {
+    toast(error.message || "来源快照确认失败", "error");
+  } finally {
+    setBusy(button, false);
+  }
+}
+
+async function createDraftFromCapture(id, storeId = "", button = null) {
+  setBusy(button, true);
+  try {
+    await editCaptureItem(id, storeId);
+    const item = state.captureRows.find((entry) => entry.id === id) || { id, parsed: state.collected1688 };
+    const snapshotHash = String(item.parsed?.sourceEvidence?.snapshotHash || "").trim();
+    const review = item.parsed?.captureReview || item.captureReview || {};
+    if (!(/^sha256:[a-f0-9]{64}$/i.test(snapshotHash)
+      && review.humanConfirmed === true
+      && String(review.reviewedSnapshotHash || "").trim() === snapshotHash)) {
+      throw new Error("请先在采集箱点击“确认当前快照”，确认同一份 1688 来源后再生成草稿");
+    }
+    assertListingBoundToCapture(item);
+    const saved = await saveListingDraft("draft", { createdFromCaptureAction: true });
+    if (!saved) throw new Error("本地草稿未保存");
+    state.listingHandoffNotice = "已保存本地上架草稿；下一步补齐证据并运行预检，未提交 Ozon。";
+    // Keep the seller on the explicit golden-path destination even if the
+    // field-population helper changes its own navigation behavior later.
+    // Saving a draft is the hand-off boundary: the next screen must be the
+    // listing workbench with the freshly bound task summary visible.
+    activateErpView("listing");
+    renderListingSellerTaskSummary();
+    toast("本地上架草稿已保存；尚未提交 Ozon");
+  } catch (error) {
+    toast(error.message || "本地草稿生成失败", "error");
+  } finally {
+    setBusy(button, false);
+  }
+}
+
+async function runCapturePreflight(id, storeId = "") {
+  const row = document.querySelector(`#captureBoxTable tr[data-id="${CSS.escape(id)}"]`);
+  const button = row?.querySelector(".preflight-capture");
+  setBusy(button, true);
+  try {
+    const data = await api(`/api/1688/captures/${encodeURIComponent(id)}/preflight`, {
+      method: "POST",
+      body: JSON.stringify({ storeId }),
+    });
+    if (data.workflowRunId) {
+      state.selectedWorkflowRunId = data.workflowRunId;
+      state.selectedWorkflowNodeKey = "preflight_check";
+      await loadWorkflowRuns();
+    }
+    showResponse(data);
+    const task = data.sellerTask || {};
+    if (row && !data.ok) {
+      const taskBox = row.querySelector(".capture-seller-task");
+      if (taskBox) {
+        taskBox.dataset.captureTaskState = "blocked";
+        taskBox.innerHTML = `<span class="status-pill blocked">预检阻塞</span><div class="status-sub"><b>卡点：</b>${escapeHtml(task.title || task.reasonCode || "本地 Payload 尚未通过")}</div><div class="status-sub"><b>下一步：</b>${escapeHtml(task.nextAction || data.nextAction || "打开商品草稿补齐资料后重试")}</div>`;
+      }
+      if (button) button.dataset.label = "重新预检";
+      toast(`本地预检已完成：${task.title || "还有阻塞项"}；请按当前行下一步处理`, "error");
+    } else {
+      document.querySelector('[data-view="listing"]')?.click();
+      toast("本地预检通过；提交前仍需人工确认", "ok");
+    }
+    return data;
+  } catch (error) {
+    toast(error.message || "本地预检失败", "error");
+  } finally {
+    setBusy(button, false);
+  }
 }
 
 async function promoteCaptureToCandidate(id) {
@@ -3386,16 +7390,20 @@ async function batchGenerateDrafts() {
   const result = [];
   for (const { id, storeId } of selections) {
     try {
+      const savedItem = await api(`/api/1688/captures/${id}`);
+      assertCaptureSnapshotReviewed(savedItem);
       await editCaptureItem(id, storeId);
       assertListingBoundToCapture(state.captureRows.find((item) => item.id === id) || { id, parsed: state.collected1688 });
       await saveListingDraft("draft");
       result.push({ id, storeId, ok: true, parentSku: $("#listingParentSku").value });
     } catch (error) {
       result.push({ id, storeId, ok: false, error: error.message });
-      await api(`/api/1688/captures/${id}`, {
-        method: "PATCH",
-        body: JSON.stringify({ status: "error", lastError: error.message }),
-      });
+      if (!String(error.message || "").includes("CAPTURE_HUMAN_REVIEW_REQUIRED")) {
+        await api(`/api/1688/captures/${id}`, {
+          method: "PATCH",
+          body: JSON.stringify({ status: "error", lastError: error.message }),
+        });
+      }
     }
   }
   await loadCaptureBox();
@@ -3414,26 +7422,56 @@ async function batchPublishCaptures() {
   for (const { id, storeId } of selections) {
     try {
       const savedItem = await api(`/api/1688/captures/${id}`);
+      assertCaptureSnapshotReviewed(savedItem);
       ensureCaptureReadyForBatchPublish(savedItem);
       await editCaptureItem(id, storeId, { useSavedDraft: true });
       assertListingBoundToCapture(state.captureRows.find((item) => item.id === id) || { id, parsed: state.collected1688 });
-      $("#listingTaskId").value = "";
-      await submitListing();
-      const taskId = $("#listingTaskId").value;
-      if (!taskId) throw new Error("提交失败，未返回 Task ID");
-      result.push({ id, storeId, ok: true, taskId });
+      // Batch actions may prepare local drafts, but they must not pretend to
+      // submit Ozon or wait for a task id.  Submission is intentionally gated
+      // by each workflow's preflight result and an explicit human confirmation.
+      const savedDraft = await saveListingDraft("draft", { batchPreparedAt: new Date().toISOString() });
+      result.push({
+        id,
+        storeId,
+        ok: true,
+        status: "draft_ready",
+        workflowRunId: state.selectedWorkflowRunId || "",
+        nextAction: "逐个打开工作流运行预检；通过后再人工确认提交",
+        draftUpdatedAt: savedDraft?.draft?.updatedAt || savedDraft?.updatedAt || "",
+      });
     } catch (error) {
       result.push({ id, storeId, ok: false, error: error.message });
-      await api(`/api/1688/captures/${id}`, {
-        method: "PATCH",
-        body: JSON.stringify({ status: "error", lastError: error.message }),
-      });
+      if (!String(error.message || "").includes("CAPTURE_HUMAN_REVIEW_REQUIRED")) {
+        await api(`/api/1688/captures/${id}`, {
+          method: "PATCH",
+          body: JSON.stringify({ status: "error", lastError: error.message }),
+        });
+      }
     }
   }
   await loadCaptureBox();
-  showResponse({ batchPublish: result });
+  showResponse({
+    batchPublish: result,
+    sellerView: {
+      title: "批量草稿已准备",
+      nextAction: "逐个打开工作流运行预检；通过后再人工确认提交",
+      sideEffect: "仅保存本地草稿和工作流绑定；没有调用 Ozon，也没有创建提交任务。",
+    },
+  });
   const okCount = result.filter((item) => item.ok).length;
-  toast(`批量自动上架完成：成功 ${okCount} / ${selections.length}`);
+  toast(`批量草稿准备完成：成功 ${okCount} / ${selections.length}；请逐个预检并人工确认`, okCount ? "ok" : "error");
+}
+
+function assertCaptureSnapshotReviewed(item = {}) {
+  const parsed = item.parsed || {};
+  const snapshotHash = String(parsed.sourceEvidence?.snapshotHash || "").trim();
+  const review = item.captureReview || parsed.captureReview || {};
+  if (!(/^sha256:[a-f0-9]{64}$/i.test(snapshotHash)
+    && review.humanConfirmed === true
+    && String(review.reviewedSnapshotHash || "").trim() === snapshotHash)) {
+    throw new Error("CAPTURE_HUMAN_REVIEW_REQUIRED：请逐条确认当前 1688 快照后再批量生成草稿");
+  }
+  return true;
 }
 
 function ensureCaptureReadyForBatchPublish(item = {}) {
@@ -3465,12 +7503,37 @@ async function load1688Capture() {
   }
 }
 
+function collectorParseIssueLabel(code = "") {
+  const labels = {
+    missing_title: "缺少商品标题",
+    missing_images: "缺少商品图片",
+    missing_sku_variants: "缺少 SKU 变体",
+    missing_attributes: "缺少商品属性",
+    missing_package_weight: "缺少包装重量",
+    missing_package_dimensions: "缺少包装尺寸",
+  };
+  return labels[code] || code || "未知解析问题";
+}
+
+function renderCollectorParseIssues(parseIssues = []) {
+  const issues = Array.isArray(parseIssues) ? parseIssues.filter(Boolean) : [];
+  if (!issues.length) return "";
+  return `
+    <div class="collector-parse-issue-title">解析问题</div>
+    <div class="collector-parse-issue-list">
+      ${issues.map((issue) => `<span class="collector-parse-issue">${escapeHtml(collectorParseIssueLabel(issue))}</span>`).join("")}
+    </div>
+    <p class="hint">这些问题只用于定位采集缺口，不会自动提交 Ozon。</p>
+  `;
+}
+
 function render1688Collection(data) {
   $("#collectTitle").textContent = data.title || "-";
   $("#collectSkuCount").textContent = data.skuVariants?.length || 0;
   $("#collectImageCount").textContent = data.images?.length || 0;
   $("#collectAttrCount").textContent = data.attributes?.length || 0;
   $("#collectWarnings").innerHTML = (data.warnings || []).map((warning) => `<p>${escapeHtml(warning)}</p>`).join("");
+  $("#collectParseIssues").innerHTML = renderCollectorParseIssues(data.parseIssues);
   $("#collectSkuTable").innerHTML = (data.skuVariants || []).length
     ? data.skuVariants.map((sku) => {
       const status = skuSizeWeightStatus(sku, data);
@@ -3637,7 +7700,7 @@ function clearListingSourceFields() {
       <td><input id="listingOldPrice" value="" /></td>
       <td><input id="listingMinPrice" value="" /></td>
       <td><select id="listingWarehouse" class="variant-warehouse">${state.listingWarehouses.map((warehouse) => `<option value="${warehouse.warehouse_id}">${escapeHtml(warehouse.name)}</option>`).join("")}</select></td>
-      <td><input id="listingStock" value="100" /></td>
+      <td><input id="listingStock" value="" placeholder="读取真实库存后填写" /></td>
       <td><input id="listingWeight" value="" /></td>
       <td><input id="listingDepth" value="" /></td>
       <td><input id="listingWidth" value="" /></td>
@@ -4280,6 +8343,11 @@ async function renderListingVariantsFrom1688(data, parentSku = "") {
     const price = autoPrice?.price || (purchasePrice || "");
     const oldPrice = price ? roundListingMoney(Number(price) * 2) : fallbackOldPrice;
     const minPrice = $("#enableLowestPrice")?.checked !== false && price ? minimumPriceFromFinalPrice(price) : fallbackMinPrice;
+    const priceSource = autoPrice?.price
+      ? "本地试算，未写入 Ozon；提交前需确认"
+      : price
+        ? "候选/草稿价格，尚未验证 Ozon 生效"
+        : "价格未知，需补齐证据";
     const warehouseId = warehouseIdForShippingLevel(autoPrice?.level);
     const primaryImage = normalizeImageUrlForOzon(variant.image);
     const imageHtml = primaryImage
@@ -4306,10 +8374,10 @@ async function renderListingVariantsFrom1688(data, parentSku = "") {
         </td>
         <td><input class="variant-offer-id" value="${escapeHtml(offerId)}" /></td>
         <td><input class="variant-barcode" placeholder="任务成功后生成" /></td>
-        <td><input class="variant-price" value="${escapeHtml(price)}" /></td>
-        <td><input class="variant-cost-price" value="${escapeHtml(purchasePrice || 0)}" /></td>
-        <td><input class="variant-old-price" value="${escapeHtml(oldPrice)}" /></td>
-        <td><input class="variant-min-price" value="${escapeHtml(minPrice)}" ${$("#enableLowestPrice")?.checked === false ? "disabled" : ""} /></td>
+        <td><input class="variant-price" data-price-source="${escapeHtml(priceSource)}" title="${escapeHtml(priceSource)}" value="${escapeHtml(price)}" /></td>
+        <td><input class="variant-cost-price" data-price-source="采购成本草稿值，未写入 Ozon" title="采购成本草稿值，未写入 Ozon" value="${escapeHtml(purchasePrice || "")}" placeholder="采购成本" /></td>
+        <td><input class="variant-old-price" data-price-source="${escapeHtml(priceSource)}" title="${escapeHtml(priceSource)}" value="${escapeHtml(oldPrice)}" /></td>
+        <td><input class="variant-min-price" data-price-source="${escapeHtml(priceSource)}" title="${escapeHtml(priceSource)}" value="${escapeHtml(minPrice)}" ${$("#enableLowestPrice")?.checked === false ? "disabled" : ""} /></td>
         <td>${selectOptionsWithSelected(warehouseId)}</td>
         <td><input class="variant-stock" value="${DEFAULT_LISTING_STOCK}" /></td>
         <td>
@@ -4536,10 +8604,10 @@ function renderVariantTableHeader() {
     <th><b>*</b>产品图</th>
     <th><b>*</b>SKU编号<br /><span>唯一生成</span></th>
     <th>条形码<br /><span>任务成功后请求生成</span></th>
-    <th><b>*</b>售价<br /><span>CNY</span></th>
-    <th>成本价<br /><span>CNY</span></th>
-    <th>划线价<br /><span>CNY</span></th>
-    <th>最低价<br /><span>CNY</span></th>
+    <th><b>*</b>售价<br /><span>CNY · 本地试算/草稿值，提交前需确认</span></th>
+    <th>成本价<br /><span>CNY · 草稿值</span></th>
+    <th>划线价<br /><span>CNY · 本地试算值</span></th>
+    <th>最低价<br /><span>CNY · 本地试算值</span></th>
     <th><b>*</b>仓库</th>
     <th><b>*</b>库存</th>
     <th><b>*</b>重量(g)<br /><span>含包装</span></th>
@@ -5078,25 +9146,185 @@ function priceItemsFromResponse(data) {
   return data.items || data.result?.items || data.result || [];
 }
 
-async function loadProducts() {
+// Ozon cursors can occasionally repeat the boundary row. Keep the seller's
+// accumulated product ledger keyed by a stable product identity so pagination
+// cannot inflate rows or status counts. A later page wins for the same key,
+// which also lets a refreshed status replace the older boundary copy.
+function productRowKey(row = {}, index = 0) {
+  const value = row?.product_id || row?.id || row?.productId || row?.offer_id || row?.offerId || row?.sku;
+  return String(value || `row:${index}`);
+}
+
+function mergeProductRows(existing = [], incoming = []) {
+  const rows = Array.isArray(existing) ? existing.slice() : [];
+  const indexes = new Map(rows.map((row, index) => [productRowKey(row, index), index]));
+  for (const [index, row] of (Array.isArray(incoming) ? incoming : []).entries()) {
+    const key = productRowKey(row, rows.length + index);
+    if (indexes.has(key)) rows[indexes.get(key)] = row;
+    else {
+      indexes.set(key, rows.length);
+      rows.push(row);
+    }
+  }
+  return rows;
+}
+
+function productCountsFromRows(rows = [], total = null) {
+  const items = Array.isArray(rows) ? rows : [];
+  return {
+    all: Number.isFinite(Number(total)) && Number(total) > items.length ? Number(total) : items.length,
+    selling: items.filter((item) => item.status_group === "selling").length,
+    ready: items.filter((item) => item.status_group === "ready").length,
+    error: items.filter((item) => item.status_group === "error").length,
+    needFix: items.filter((item) => item.status_group === "needFix").length,
+    delisted: items.filter((item) => item.status_group === "delisted").length,
+    archived: items.filter((item) => item.status_group === "archived").length,
+  };
+}
+
+async function loadProducts(options = {}) {
+  const append = options.append === true;
   const button = $("#loadProducts");
+  const nextButton = $("#productNextPage");
+  // Store/search changes invalidate older reads. A slower response must not
+  // repaint a different store's product ledger after the switch.
+  const requestToken = (state.productRequestToken = Number(state.productRequestToken || 0) + 1);
+  const requestStoreId = selectedStoreId();
   setBusy(button, true);
+  if (nextButton) setBusy(nextButton, true);
+  updateDataFreshness("#productDataFreshness", "loading", "正在读取商品列表和详情；不会修改商品、价格或库存。");
+  // Invalidate stock readiness for both first-page and pagination reads.  A
+  // request in flight is not current evidence, even when prior rows remain
+  // visible while appending the next page.
+  state.productReadState = "loading";
+  state.productReadCheckedAt = "";
   try {
+    if (!append) {
+      // A new store/search/filter read invalidates the previous page immediately.
+      // Keep stale rows from looking like current evidence while the request is
+      // in flight (or when an unknown/empty response arrives).
+      state.productRows = [];
+      state.productCounts = {};
+      state.productReadState = "loading";
+      state.productReadCheckedAt = "";
+      state.productNextAction = "等待商品列表和详情读取完成。";
+      state.productSellerResult = productSellerResultFromRead({}, { readStatus: "unknown", nextAction: "等待商品列表和详情读取完成。" });
+      state.productLastId = "";
+      state.productHasNext = false;
+      if (nextButton) nextButton.disabled = true;
+      renderProducts();
+    }
     const params = new URLSearchParams({
-      storeId: selectedStoreId(),
+      storeId: requestStoreId,
       limit: "100",
       query: $("#productSearch").value.trim(),
     });
+    if (append && state.productLastId) params.set("lastId", state.productLastId);
     const data = await api(`/api/ozon/product-dashboard?${params}`);
-    state.productRows = data.products || [];
-    updateProductCounts(data.counts || {});
+    if (requestToken !== state.productRequestToken) return false;
+    state.productRows = append
+      ? mergeProductRows(state.productRows, data.products || [])
+      : mergeProductRows([], data.products || []);
+    state.productLastId = String(data.last_id || "");
+    const evidence = data.readEvidence || {};
+    const pageCounts = data.counts || {};
+    // Recompute status distribution from the de-duplicated ledger. Preserve a
+    // server-reported total when it is larger than the currently observed
+    // rows, but never sum duplicated boundary pages into the seller counts.
+    state.productCounts = productCountsFromRows(state.productRows, pageCounts.all);
+    state.productSellerResult = productSellerResultFromRead({
+      ...data,
+      counts: state.productCounts,
+      sellerResult: data.sellerResult || {
+        readStatus: evidence.readStatus,
+        partial: evidence.partial,
+        nextAction: evidence.nextAction,
+        sideEffect: evidence.sideEffect,
+        evidenceAt: evidence.checkedAt,
+        detailProductCount: evidence.detailProductCount,
+        loadedProductCount: state.productRows.length,
+      },
+    }, evidence);
+    state.productReadState = String(evidence.readStatus || (evidence.partial ? "partial" : "unknown"));
+    state.productReadCheckedAt = String(evidence.checkedAt || "");
+    state.productNextAction = String(evidence.nextAction || "查看商品状态并确认读取范围。");
+    state.productHasNext = evidence.hasNext === true && Boolean(state.productLastId);
+    updateProductCounts(state.productCounts);
     renderProducts();
     showResponse(data);
-    toast("商品已读取");
+    const operationEvidenceCount = Array.isArray(evidence.operationEvidence) ? evidence.operationEvidence.length : 0;
+    const evidenceText = evidence.partial
+      ? `商品同步时间：${formatDateTime(evidence.checkedAt)}；本批证据不完整${evidence.hasNext ? "，仍有下一页" : ""}`
+      : (evidence.readStatus === "unknown"
+        ? `商品同步时间：${formatDateTime(evidence.checkedAt)}；商品列表响应格式未知，不能判断商品数量`
+        : (evidence.readStatus === "empty" ? `商品同步时间：${formatDateTime(evidence.checkedAt)}；当前读取页没有商品，不代表全店没有商品` : `商品同步时间：${formatDateTime(evidence.checkedAt)}；本次读取完整`));
+    const evidenceNeedsReview = evidence.partial || evidence.readStatus === "empty" || evidence.readStatus === "unknown";
+    updateDataFreshness("#productDataFreshness", evidenceNeedsReview ? "stale" : "success", `${evidenceText}。已记录 ${operationEvidenceCount} 个只读接口证据。下一步：${evidence.nextAction || "查看商品状态"}`);
+    toast(evidenceNeedsReview ? "商品读取结果需要补充或确认" : "商品已读取");
+    if (nextButton) {
+      nextButton.disabled = !state.productHasNext;
+      nextButton.title = state.productHasNext ? "继续读取下一页商品；当前列表仍不代表全店范围" : "没有可继续读取的商品页";
+    }
   } catch (error) {
-    toast(error.message, "error");
+    if (requestToken !== state.productRequestToken) return false;
+    if (!append) {
+      // Do not leave a previous store/search result on screen as current
+      // evidence after the first page failed. Already observed pages may stay
+      // visible during an append failure, but the banner remains an error.
+      state.productRows = [];
+      state.productCounts = {};
+      state.productReadState = "error";
+      state.productReadCheckedAt = "";
+      state.productNextAction = sellerReadAccessRecovery(error, Number(error.httpStatus || 0) === 403
+        ? "检查店铺授权和当前会话权限后，重新读取商品。"
+        : "检查服务连接后重新读取商品。");
+      state.productSellerResult = productSellerResultFromRead({ sellerResult: {
+        status: "error",
+        failed: true,
+        reason: sellerReadAccessRecovery(error, Number(error.httpStatus || 0) === 403 ? "当前店铺没有商品读取权限。" : "商品同步服务暂时不可用。"),
+        nextAction: state.productNextAction,
+        sideEffect: "本次没有修改商品、价格或库存。",
+      } });
+      state.productLastId = "";
+      state.productHasNext = false;
+      renderProducts();
+    } else {
+      // Keep the already observed rows visible, but downgrade the overall
+      // evidence when a later page fails.  Leaving `completed` here would
+      // make the product ledger (and its stock hints) look current even
+      // though the seller has not received the full requested range.  The
+      // previous cursor remains intact so the same page can be retried.
+      state.productReadState = "partial";
+      state.productReadCheckedAt = "";
+      state.productNextAction = "重新读取下一页商品；当前已加载商品不能代表完整店铺范围。";
+      state.productSellerResult = productSellerResultFromRead({ sellerResult: {
+        status: "partial",
+        partial: true,
+        loadedProductCount: state.productRows.length,
+        reason: "下一页商品读取失败；已保留之前读取的商品，但当前结果不能代表完整店铺范围。",
+        nextAction: state.productNextAction,
+        sellerTasks: [{
+          code: "PRODUCT_PAGE_READ_FAILED",
+          count: 1,
+          nextAction: "重试下一页商品读取；成功后再判断完整商品状态、价格或库存。",
+        }],
+        sideEffect: "本次没有修改商品、价格或库存；已读取的商品仅作为部分范围保留。",
+      } }, { readStatus: "partial", partial: true, nextAction: state.productNextAction });
+      renderProducts();
+    }
+    const failureText = sellerReadAccessRecovery(error, Number(error.httpStatus || 0) === 403
+      ? "当前店铺没有商品读取权限，请检查店铺授权。"
+      : "商品同步服务暂时不可用，请稍后重试。");
+    updateDataFreshness("#productDataFreshness", "error", `商品同步失败；${failureText} 本次没有修改商品、价格或库存。`);
+    toast(failureText, "error");
   } finally {
-    setBusy(button, false);
+    if (requestToken === state.productRequestToken) {
+      setBusy(button, false);
+      if (nextButton) {
+        setBusy(nextButton, false);
+        nextButton.disabled = !state.productHasNext;
+      }
+    }
   }
 }
 
@@ -5115,7 +9343,10 @@ function productAssetSnapshot() {
   const reviewing = products.filter((item) => ["ready", "moderating", "pending"].includes(item.status_group) && !item.archived);
   const actionQueue = products.filter((item) => productAssetIssues(item).length > 0 && !item.archived);
   const priced = products.filter((item) => Number(item.price || 0) > 0);
-  const stocked = products.filter((item) => Number(item.fbs_stock ?? item.stock ?? 0) > 0);
+  const active = products.filter((item) => !item.archived && !["archived", "delisted"].includes(item.status_group));
+  const stocked = active.filter((item) => productStockEvidenceState(item) === "positive");
+  const stockMissing = active.filter((item) => productStockEvidenceState(item) === "zero");
+  const stockUnknown = active.filter((item) => productStockEvidenceState(item) === "unknown");
   return {
     products,
     actionQueue,
@@ -5124,19 +9355,68 @@ function productAssetSnapshot() {
     archived,
     priced,
     stocked,
+    stockMissing,
+    stockUnknown,
   };
+}
+
+// An empty ledger is not the same as a clean ledger. During the first load,
+// an unknown/partial response, or a failed read, showing zero risks and a
+// green "no high-priority risk" message would make the seller believe the
+// store was checked successfully. Keep that state explicit until a complete
+// read has produced rows (or a confirmed empty result).
+function productAssetLedgerState() {
+  const readState = String(state.productReadState || "idle");
+  const hasRows = Array.isArray(state.productRows) && state.productRows.length > 0;
+  if (hasRows) return { known: true, label: "当前已加载商品资产", emptyMessage: "当前筛选范围没有匹配商品。" };
+  if (readState === "empty") return { known: false, label: "当前读取范围没有商品", emptyMessage: "当前读取范围没有商品；这不代表全店没有商品。" };
+  if (readState === "error") return { known: false, label: "商品读取失败", emptyMessage: "尚无可判定的商品风险；请先修复读取失败。" };
+  if (readState === "partial") return { known: false, label: "商品证据不完整", emptyMessage: "尚无可判定的商品风险；请继续读取或补齐详情。" };
+  if (readState === "loading") return { known: false, label: "正在读取商品", emptyMessage: "正在读取商品，暂不判断风险。" };
+  return { known: false, label: "尚未读取商品", emptyMessage: "尚无可判定的商品风险；先读取商品列表。" };
+}
+
+function productStockEvidenceState(item = {}) {
+  // A product row can contain a numeric stock copied from a prior/partial
+  // Seller response.  It must not enter the stock summary unless the current
+  // product read is complete and fresh; otherwise the seller may see a
+  // positive quantity for a product whose readiness is unknown or stale.
+  const readState = String(state.productReadState || "idle");
+  const checkedAt = Date.parse(String(state.productReadCheckedAt || ""));
+  const maxAgeMs = 30 * 60 * 1000;
+  const fresh = Number.isFinite(checkedAt)
+    && checkedAt <= Date.now()
+    && Date.now() - checkedAt <= maxAgeMs;
+  if (readState !== "completed" || !fresh) return "unknown";
+  const raw = item.fbs_stock ?? item.stock;
+  if (raw === null || raw === undefined || raw === "") return "unknown";
+  const numeric = Number(raw);
+  if (!Number.isFinite(numeric)) return "unknown";
+  return numeric > 0 ? "positive" : "zero";
 }
 
 function productAssetIssues(item = {}) {
   const issues = [];
-  const stock = Number(item.fbs_stock ?? item.stock ?? 0);
+  const stockState = productStockEvidenceState(item);
   const price = Number(item.price || 0);
   if (["error", "needFix"].includes(item.status_group) || item.status === "error") issues.push(item.status_group === "needFix" ? "待修改" : "审核/状态错误");
   if (item.errors?.length) issues.push(`错误 ${item.errors.length}`);
-  if (stock <= 0 && !["archived", "delisted"].includes(item.status_group)) issues.push("缺库存");
+  if (stockState === "unknown" && !["archived", "delisted"].includes(item.status_group)) issues.push("库存未知");
+  else if (stockState === "zero" && !["archived", "delisted"].includes(item.status_group)) issues.push("缺库存");
   if (price <= 0 && !["archived", "delisted"].includes(item.status_group)) issues.push("缺价格");
+  if (!item.image && !["archived", "delisted"].includes(item.status_group)) issues.push("缺主图");
   if (item.reasons?.length) issues.push("有失败原因");
   return [...new Set(issues)];
+}
+
+function productAssetNextAction(issues = []) {
+  const list = Array.isArray(issues) ? issues : [];
+  if (list.some((issue) => /审核|状态|错误|失败/.test(issue))) return "打开审核回执或商品状态详情，按具体 SKU/字段处理。";
+  if (list.includes("缺价格")) return "进入上架中心核对售价、采购成本和费用证据，再运行预检。";
+  if (list.includes("缺主图")) return "进入上架中心补齐主图和媒体审核，确认后再预检。";
+  if (list.some((issue) => /库存/.test(issue))) return "进入库存页重新读取准确仓库库存；商品总览不直接写库存。";
+  if (list.length) return "查看商品异常详情并按提示修复；修复后重新预检。";
+  return "当前没有待处理异常。";
 }
 
 function productAssetCard(label, value, note, tone = "info") {
@@ -5152,8 +9432,9 @@ function productAssetCard(label, value, note, tone = "info") {
 function productLedgerItemHtml(item, mode = "default") {
   const issues = productAssetIssues(item);
   const issueText = issues.length ? issues.slice(0, 3).join(" / ") : item.status_label || "状态正常";
+  const nextAction = productAssetNextAction(issues);
   const price = item.price ? `${formatMoney(item.price)} ${item.currency_code || ""}`.trim() : "未定价";
-  const stock = item.fbs_stock ?? item.stock ?? 0;
+  const stock = productStockLabel(item);
   const tone = issues.length ? "warning" : mode;
   return `
     <article class="product-ledger-item ${escapeHtml(tone)}">
@@ -5164,9 +9445,10 @@ function productLedgerItemHtml(item, mode = "default") {
       <div class="product-ledger-meta">
         <span>${escapeHtml(item.status_label || item.status_group || "-")}</span>
         <span>${escapeHtml(price)}</span>
-        <span>FBS ${escapeHtml(String(stock))}</span>
+        <span>库存 ${escapeHtml(stock)}</span>
       </div>
       <p>${escapeHtml(issueText)}</p>
+      <small>下一步：${escapeHtml(nextAction)}；副作用：商品总览只读，不会直接修改 Ozon。</small>
     </article>
   `;
 }
@@ -5179,23 +9461,25 @@ function renderProductAssetLedger() {
   const summary = $("#productAssetSummary");
   if (!summary) return;
   const snapshot = productAssetSnapshot();
+  const ledgerState = productAssetLedgerState();
   const missingPrice = snapshot.products.length - snapshot.priced.length;
-  const missingStock = snapshot.products.length - snapshot.stocked.length;
+  const missingStock = snapshot.stockMissing.length;
+  const unknownStock = snapshot.stockUnknown.length;
   const currentProductTask = latestCurrentProductTask();
   summary.innerHTML = [
     renderCurrentProductTaskReminder(currentProductTask, { placement: "products" }),
-    productAssetCard("商品总数", snapshot.products.length, "当前已加载 Ozon 商品资产", "info"),
-    productAssetCard("待处理", snapshot.actionQueue.length, "错误、待修改、缺价或缺库存", snapshot.actionQueue.length ? "warning" : "success"),
-    productAssetCard("在售商品", snapshot.selling.length, "正在产生经营结果的商品", "success"),
-    productAssetCard("缺库存/缺价", `${Math.max(0, missingStock)} / ${Math.max(0, missingPrice)}`, "库存和价格是运营优先级", missingStock || missingPrice ? "warning" : "success"),
-    productAssetCard("审核/归档", `${snapshot.reviewing.length} / ${snapshot.archived.length}`, "提交回执和非在售资产分开看", "info"),
+    productAssetCard("商品总数", ledgerState.known ? snapshot.products.length : "待确认", ledgerState.label, "info"),
+    productAssetCard("待处理", ledgerState.known ? snapshot.actionQueue.length : "—", "错误、待修改、缺价或缺库存", ledgerState.known && snapshot.actionQueue.length ? "warning" : ledgerState.known ? "success" : "warning"),
+    productAssetCard("在售商品", ledgerState.known ? snapshot.selling.length : "—", "正在产生经营结果的商品", ledgerState.known ? "success" : "warning"),
+    productAssetCard("缺库存/未知库存", ledgerState.known ? `${Math.max(0, missingStock)} / ${Math.max(0, unknownStock)}` : "待确认", ledgerState.known ? `未知库存不能按 0 推导；价格缺口 ${Math.max(0, missingPrice)} 个` : ledgerState.label, ledgerState.known && (missingStock || unknownStock || missingPrice) ? "warning" : ledgerState.known ? "success" : "warning"),
+    productAssetCard("审核/归档", ledgerState.known ? `${snapshot.reviewing.length} / ${snapshot.archived.length}` : "待确认", "提交回执和非在售资产分开看", "info"),
   ].join("");
 
   const groups = [
-    ["#productAssetActionQueue", snapshot.actionQueue, "当前没有高优先级商品风险。", "warning"],
-    ["#productSellingLedger", snapshot.selling, "当前没有加载到在售商品。", "success"],
-    ["#productReviewLedger", snapshot.reviewing, "当前没有待上架或审核中的商品。", "info"],
-    ["#productArchivedLedger", snapshot.archived, "当前没有下架或归档商品。", "muted"],
+    ["#productAssetActionQueue", snapshot.actionQueue, ledgerState.known ? "当前没有高优先级商品风险。" : ledgerState.emptyMessage, "warning"],
+    ["#productSellingLedger", snapshot.selling, ledgerState.known ? "当前没有加载到在售商品。" : ledgerState.emptyMessage, "success"],
+    ["#productReviewLedger", snapshot.reviewing, ledgerState.known ? "当前没有待上架或审核中的商品。" : ledgerState.emptyMessage, "info"],
+    ["#productArchivedLedger", snapshot.archived, ledgerState.known ? "当前没有下架或归档商品。" : ledgerState.emptyMessage, "muted"],
   ];
   groups.forEach(([selector, rows, emptyText, mode]) => {
     const box = $(selector);
@@ -5211,20 +9495,89 @@ function renderProducts() {
     ? state.productRows
     : state.productRows.filter((item) => item.status_group === state.productStatus);
 
+  renderProductSellerResult();
   renderProductAssetLedger();
-  $("#productsTable").innerHTML = rows.length
-    ? rows.map(productRowHtml).join("")
-    : "<tr><td colspan=\"9\" class=\"product-empty\">没有匹配的商品。</td></tr>";
+  if (rows.length) {
+    $("#productsTable").innerHTML = rows.map(productRowHtml).join("");
+    return;
+  }
+  // A successful read with zero rows after a status/search filter is a
+  // business "filter empty" state, not an empty store. Keep that distinction
+  // visible so an operator knows to change the filter rather than re-authorize
+  // the shop or infer that all products disappeared.
+  const filterEmpty = rows.length === 0 && state.productRows.length > 0;
+  const messages = {
+    idle: "商品状态尚未读取；先点击“刷新商品”获取当前店铺商品。",
+    loading: "正在读取商品列表和详情；旧数据已清除。",
+    unknown: "商品读取结果未知，不能判断店铺商品数量。请重试或检查 Seller API 版本。",
+    partial: "商品证据不完整。请继续读取下一页或补齐缺失详情后再判断。",
+    empty: "当前读取页没有商品；请结合筛选条件和分页结果判断，不代表全店没有商品。",
+    error: "商品读取失败；请按上方提示检查权限或连接后重试。",
+    completed: "本次读取没有可展示商品。",
+  };
+  const message = filterEmpty ? "当前筛选没有匹配的商品。" : (messages[state.productReadState] || "没有可展示的商品。");
+  const nextAction = filterEmpty
+    ? "清除关键词或切换状态筛选后再查看；不会修改商品。"
+    : (state.productNextAction || (state.productReadState === "idle" ? "点击“刷新商品”" : "重新读取商品"));
+  $("#productsTable").innerHTML = `<tr><td colspan="9" class="product-empty" data-product-empty-state="${filterEmpty ? "filter" : escapeHtml(state.productReadState || "unknown")}">${escapeHtml(message)}<br><small>下一步：${escapeHtml(nextAction)}</small></td></tr>`;
+}
+
+function productStockLabel(item = {}) {
+  // The product overview may retain a numeric stock from an older or partial
+  // Seller response. Do not show that number as current inventory until the
+  // list read is complete and fresh; the warehouse page is the editing/read
+  // entry point for an explicit tuple snapshot and dry-run.
+  if (productStockEvidenceState(item) === "unknown") return "未知";
+  const raw = item.fbs_stock ?? item.stock;
+  if (raw === null || raw === undefined || raw === "") return "未知";
+  const numeric = Number(raw);
+  return Number.isFinite(numeric) ? String(numeric) : "未知";
+}
+
+function productStockReadinessClaim(item = {}) {
+  const status = String(item.status_group || item.status || "").trim().toLowerCase();
+  const itemVerification = String(item.readinessVerificationLevel || item.verificationLevel || item.statusVerificationLevel || "").trim().toLowerCase();
+  const verification = itemVerification || (state.productSellerResult?.liveReadObserved === true ? "server_observed" : "");
+  const checkedAt = Date.parse(String(state.productReadCheckedAt || ""));
+  const fresh = Number.isFinite(checkedAt)
+    && checkedAt <= Date.now()
+    && Date.now() - checkedAt <= 30 * 60 * 1000;
+  const readyStatus = ["selling", "ready_for_sale"].includes(status);
+  return state.productReadState === "completed"
+    && fresh
+    && (status === "selling" || readyStatus)
+    && verification === "server_observed"
+    && item.visible !== false;
 }
 
 function productRowHtml(item) {
-  const price = item.price ? `${formatMoney(item.price)} ${item.currency_code}` : "-";
+  const priceEvidenceReady = state.productReadState === "completed"
+    && state.productSellerResult?.coverageComplete === true;
+  const price = priceEvidenceReady && item.price !== null && item.price !== undefined && item.price !== ""
+    ? `${formatMoney(item.price)} ${item.currency_code}`
+    : "未知";
   const oldPrice = item.old_price ? `划线价 ${formatMoney(item.old_price)}` : "没有指数";
+  const priceSourceNote = priceEvidenceReady
+    ? "Seller API 当前读取价；不含采购成本、佣金、物流或利润"
+    : "价格读取证据不完整或覆盖未完成；不能作为当前售价或利润结论";
   const image = item.image
     ? `<img class="product-photo" src="${item.image}" alt="${escapeHtml(item.name)}" />`
     : `<div class="photo-placeholder">＋</div>`;
   const reason = item.reasons?.[0] || item.status_description || "";
   const marker = item.errors?.length ? `错误 ${item.errors.length}` : "添加";
+  const stockEvidenceState = productStockEvidenceState(item);
+  const stockNote = stockEvidenceState === "unknown"
+    ? "当前库存证据未知；去库存页重新读取"
+    : `预留 ${item.reserved ?? 0}`;
+  const assetIssues = productAssetIssues(item);
+  const nextAction = productAssetNextAction(assetIssues);
+  const productStatusLabel = state.productReadState === "completed"
+    ? (item.visible === false ? "不可见" : (item.status_label || "状态未知"))
+    : state.productReadState === "partial"
+      ? "状态未完整"
+      : state.productReadState === "loading"
+        ? "正在读取"
+        : "状态未知";
 
   return `
     <tr>
@@ -5244,20 +9597,27 @@ function productRowHtml(item) {
         </div>
       </td>
       <td>
-        <span class="status-pill ${item.status_group}">${item.status_label}</span>
+        <span class="status-pill ${state.productReadState === "completed" && item.visible !== false ? item.status_group : "unknown"}"
+          title="${escapeHtml(state.productReadState === "completed" ? (item.visible === false ? "当前商品对买家不可见" : "当前读取批次的商品状态") : "当前商品列表读取未完整，旧状态不作可售结论")}">${escapeHtml(productStatusLabel)}</span>
         <div class="status-sub">${escapeHtml(reason)}</div>
+        <div class="status-sub">下一步：${escapeHtml(nextAction)}；副作用：商品总览只读。</div>
       </td>
       <td><strong>${escapeHtml(marker)}</strong></td>
       <td>
         <div class="price-cell">
           <strong>${price}</strong>
           <span class="price-index">${oldPrice}</span>
+          <span class="price-source-note">${escapeHtml(priceSourceNote)}</span>
         </div>
       </td>
-      <td>${item.fbs_stock ?? 0}<div class="status-sub">预留 ${item.reserved ?? 0}</div></td>
+      <td>${escapeHtml(productStockLabel(item))}<div class="status-sub">${escapeHtml(stockNote)}</div></td>
       <td>
         <div class="row-actions">
-          <button class="icon-button" title="编辑">✎</button>
+          <button class="icon-button" title="商品总览只读；去上架中心编辑" aria-label="商品总览只读" disabled>只读</button>
+          ${item.offer_id ? (productStockReadinessClaim(item)
+             ? `<button class="icon-button" type="button" data-product-stock-offer="${escapeHtml(item.offer_id)}" data-stock-readiness-ready="true" data-stock-readiness-fresh="true" data-stock-readiness-status="ready_for_sale" data-stock-readiness-verification="server_observed" title="只读核对该 Offer 的库存">库存核对</button>`
+             : `<button class="icon-button" type="button" data-product-stock-offer="${escapeHtml(item.offer_id)}" data-stock-readiness-status="${escapeHtml(String(item.status_group || item.status || "unknown"))}" data-stock-readiness-verification="${escapeHtml(String(item.readinessVerificationLevel || item.verificationLevel || "unknown"))}" title="商品状态未形成可售证据；先回查商品状态">查看状态/修复商品</button>`
+          ) : ""}
           <button class="icon-button" title="更多">⋮</button>
         </div>
       </td>
@@ -5267,14 +9627,97 @@ function productRowHtml(item) {
 
 async function loadPromotions() {
   const button = $("#loadPromotions");
+  const requestToken = Number(state.promotionRequestToken || 0) + 1;
+  state.promotionRequestToken = requestToken;
+  const requestStoreId = String(selectedStoreId() || "").trim();
+  const environmentCheck = validateReadOperatorEnvironment(currentSellerReadEnvironment());
+  if (!environmentCheck.ok) {
+    state.promotionRows = [];
+    state.promotionEvidence = { failed: true, loading: false, checkedAt: "", count: 0, readStatus: "unknown", coverageComplete: false, partial: true, environment: "", readOnly: true };
+    renderPromotions();
+    toast(environmentCheck.message, "warning");
+    return;
+  }
+  const requestEnvironment = environmentCheck.environment;
   setBusy(button, true);
+  // A store/filter refresh invalidates the previous activity evidence at the
+  // moment the request starts.  Keeping old cards clickable while the new
+  // read is in flight lets a seller open an activity from another store (or
+  // an expired page) and mistake it for current evidence.
+  state.promotionRows = [];
+  state.selectedPromotion = null;
+  state.promotionProducts = [];
+  state.promotionCandidates = [];
+  state.promotionSelectedProductIds = [];
+  state.promotionImpactPreview = null;
+  state.promotionDetailError = "";
+  state.promotionEvidence = {
+    checkedAt: "",
+    count: 0,
+    readStatus: "unknown",
+    partial: false,
+    coverageComplete: false,
+    readOnly: true,
+    loading: true,
+  };
+  state.promotionMutationEvidence = null;
+  state.promotionDetailSellerResult = { products: null, candidates: null };
+  state.promotionDetailOffset = 0;
+  state.promotionDetailHasNext = false;
+  renderPromotions();
+  updateDataFreshness("#promotionDataFreshness", "loading", "正在读取活动和活动商品；不会修改活动商品。");
   try {
-    const data = await api(`/api/ozon/actions?storeId=${encodeURIComponent(selectedStoreId())}`);
+    const data = await api(`/api/ozon/actions?storeId=${encodeURIComponent(requestStoreId)}`);
+    if (requestToken !== state.promotionRequestToken) return;
+    const responseStoreId = String(data.storeId || "").trim();
+    if (!responseStoreId || responseStoreId !== requestStoreId || String(data.environment || "").trim() !== requestEnvironment) {
+      const error = new Error("活动读取范围已变化，请重新读取当前店铺。操作者不会看到旧活动数据。");
+      error.httpStatus = 409;
+      throw error;
+    }
     state.promotionRows = normalizeOzonList(data, ["actions", "items"]);
+    state.promotionSellerResult = data.sellerResult || null;
+    // The number of rows is not a coverage signal.  A non-empty first page
+    // can still be partial (or have an unknown server total), so retain the
+    // server-side seller result as the source of truth for the activity list.
+    const sellerStatus = String(data.sellerResult?.status || "");
+    state.promotionEvidence = {
+      checkedAt: new Date().toISOString(),
+      environment: requestEnvironment,
+      count: state.promotionRows.length,
+      operationEvidence: Array.isArray(data.operationEvidence) ? [data.operationEvidence] : [],
+      readStatus: sellerStatus || (state.promotionRows.length ? "completed" : "empty"),
+      partial: data.partial === true || sellerStatus === "partial",
+      coverageComplete: data.sellerResult?.coverageComplete === true,
+      coverageText: data.sellerResult?.coverageText || "",
+      readOnly: true,
+    };
     renderPromotions();
     showResponse(data);
-    toast(`已读取 ${state.promotionRows.length} 个 Ozon 促销活动`);
+    const evidenceState = state.promotionEvidence.partial || !state.promotionEvidence.coverageComplete || ["unknown", "empty"].includes(state.promotionEvidence.readStatus) ? "stale" : "success";
+    const message = state.promotionEvidence.partial
+      ? "活动读取不完整；不能据此判断活动商品范围。"
+      : !state.promotionEvidence.coverageComplete
+        ? "活动返回了记录，但完整覆盖证据缺失；不能据此判断全店活动。"
+      : state.promotionEvidence.readStatus === "unknown"
+        ? "活动返回了记录，但服务端覆盖范围未知；不能据此判断全店活动。"
+      : state.promotionEvidence.readStatus === "empty"
+        ? "本次店铺没有返回活动证据；请确认筛选范围和店铺权限。"
+        : `活动同步时间：${formatDateTime(state.promotionEvidence.checkedAt)} · ${state.promotionEvidence.coverageText || `已读取 ${state.promotionRows.length} 个活动`}`;
+    updateDataFreshness("#promotionDataFreshness", evidenceState, message);
+    const coverageWarning = state.promotionEvidence.partial || !state.promotionEvidence.coverageComplete || ["unknown", "empty"].includes(state.promotionEvidence.readStatus);
+    toast(coverageWarning ? message : `已读取 ${state.promotionRows.length} 个 Ozon 促销活动`, coverageWarning ? "warning" : "ok");
   } catch (error) {
+    state.promotionRows = [];
+    state.promotionSellerResult = { status: "unknown", nextAction: "检查店铺只读连接后重新读取活动。", sideEffect: "未展示旧活动状态；不会修改活动商品。" };
+    state.selectedPromotion = null;
+    state.promotionProducts = [];
+    state.promotionCandidates = [];
+    state.promotionDetailSellerResult = { products: null, candidates: null };
+    state.promotionMutationEvidence = null;
+    state.promotionEvidence = { failed: true, checkedAt: new Date().toISOString(), count: 0, operationEvidence: [], readOnly: true };
+    renderPromotions();
+    updateDataFreshness("#promotionDataFreshness", "error", "活动同步失败；未展示旧活动状态，请检查店铺只读连接后重试。");
     toast(error.message, "error");
   } finally {
     setBusy(button, false);
@@ -5285,15 +9728,31 @@ function renderPromotions() {
   const container = $("#promotionList");
   if (!container) return;
   if (!state.promotionRows.length) {
-    container.innerHTML = `<p class="hint">当前店铺没有返回促销活动。</p>`;
+    const sellerStatus = String(state.promotionSellerResult?.status || state.promotionEvidence?.readStatus || "unknown");
+    const message = state.promotionEvidence?.failed
+      ? "活动读取失败，未展示旧活动状态；请重新读取。"
+      : state.promotionEvidence?.loading
+        ? "正在读取当前店铺活动；旧活动已清除，读取完成前不能判断活动范围。"
+      : state.promotionEvidence?.partial
+        ? "活动读取不完整，暂不展示活动范围；请重新读取。"
+        : state.promotionEvidence?.coverageComplete !== true || sellerStatus === "unknown"
+          ? "活动读取结果缺少完整覆盖信息，不能判断店铺是否没有活动；请检查分页或重新读取。"
+          : "当前读取范围没有返回促销活动。";
+    container.innerHTML = `<p class="hint">${escapeHtml(message)}</p>`;
     renderPromotionDetail();
     return;
   }
   container.innerHTML = state.promotionRows.map((action) => {
     const id = promotionId(action);
     const selected = id && promotionId(state.selectedPromotion || {}) === id;
-    const productCount = action.participating_products_count ?? action.products_count ?? action.product_count ?? "-";
-    const candidateCount = action.potential_products_count ?? action.candidates_count ?? action.candidate_count ?? "-";
+    const coverageComplete = state.promotionSellerResult?.coverageComplete === true
+      && state.promotionEvidence?.coverageComplete === true;
+    const productCount = coverageComplete
+      ? (action.participating_products_count ?? action.products_count ?? action.product_count ?? "-")
+      : "未知（范围未完成）";
+    const candidateCount = coverageComplete
+      ? (action.potential_products_count ?? action.candidates_count ?? action.candidate_count ?? "-")
+      : "未知（范围未完成）";
     return `
       <button class="promotion-card ${selected ? "active" : ""}" type="button" data-action-id="${id}">
         <span>${escapeHtml(promotionPeriod(action))}</span>
@@ -5312,29 +9771,145 @@ async function selectPromotion(actionId) {
   if (!action) return;
   state.selectedPromotion = action;
   state.promotionProductKind = "products";
+  // The detail request is scoped to the newly selected activity. Clear the
+  // previous activity's rows before showing the loading state so a seller
+  // cannot mistake stale products/candidates for the new activity.
+  state.promotionProducts = [];
+  state.promotionCandidates = [];
+  state.promotionSelectedProductIds = [];
+  state.promotionDetailSellerResult = { products: null, candidates: null };
+  state.promotionImpactPreview = null;
+  state.promotionDetailError = "";
+  state.promotionMutationEvidence = null;
   renderPromotions();
   renderPromotionDetail(true);
   await loadPromotionProducts(actionId);
 }
 
-async function loadPromotionProducts(actionId = promotionId(state.selectedPromotion || {})) {
+async function loadPromotionProducts(actionId = promotionId(state.selectedPromotion || {}), options = {}) {
   if (!actionId) return;
+  const requestToken = Number(state.promotionDetailRequestToken || 0) + 1;
+  state.promotionDetailRequestToken = requestToken;
+  const requestStoreId = String(selectedStoreId() || "").trim();
+  const environmentCheck = validateReadOperatorEnvironment(currentSellerReadEnvironment());
+  if (!environmentCheck.ok) return;
+  const requestEnvironment = environmentCheck.environment;
+  state.promotionDetailError = "";
+  const offset = Math.max(0, Number(options.offset ?? state.promotionDetailOffset ?? 0));
+  const append = offset > 0;
   try {
     const [productsData, candidatesData] = await Promise.all([
       api("/api/ozon/actions/products", {
         method: "POST",
-        body: JSON.stringify({ storeId: selectedStoreId(), action_id: actionId, limit: 1000 }),
+        body: JSON.stringify({ storeId: selectedStoreId(), action_id: actionId, limit: 1000, offset }),
       }),
       api("/api/ozon/actions/candidates", {
         method: "POST",
-        body: JSON.stringify({ storeId: selectedStoreId(), action_id: actionId, limit: 1000 }),
+        body: JSON.stringify({ storeId: selectedStoreId(), action_id: actionId, limit: 1000, offset }),
       }),
     ]);
-    state.promotionProducts = normalizeOzonList(productsData, ["products", "items"]);
-    state.promotionCandidates = normalizeOzonList(candidatesData, ["products", "items", "candidates"]);
+    // A seller can switch activities while the previous read is still in
+    // flight. Do not let a late response repaint the newly selected activity.
+    if (requestToken !== state.promotionDetailRequestToken || promotionId(state.selectedPromotion || {}) !== actionId || String(selectedStoreId() || "").trim() !== requestStoreId || String(currentSellerReadEnvironment() || "").trim() !== requestEnvironment) return;
+    const productStoreId = String(productsData.storeId || "").trim();
+    const candidateStoreId = String(candidatesData.storeId || "").trim();
+    if (!productStoreId || productStoreId !== requestStoreId || !candidateStoreId || candidateStoreId !== requestStoreId
+      || String(productsData.environment || "").trim() !== requestEnvironment
+      || String(candidatesData.environment || "").trim() !== requestEnvironment) {
+      throw Object.assign(new Error("活动商品读取范围已变化，请重新读取当前店铺。操作者不会看到旧店铺商品。"), { httpStatus: 409 });
+    }
+    const pageProducts = normalizeOzonList(productsData, ["products", "items"]);
+    const pageCandidates = normalizeOzonList(candidatesData, ["products", "items", "candidates"]);
+    const mergeRows = (previous, page) => {
+      const rows = [...(append ? previous : []), ...page];
+      const seen = new Set();
+      return rows.filter((row, index) => {
+        const key = String(row.product_id || row.id || row.productId || row.offer_id || `${offset}:${index}`);
+        if (seen.has(key)) return false;
+        seen.add(key);
+        return true;
+      });
+    };
+    state.promotionProducts = mergeRows(state.promotionProducts, pageProducts);
+    state.promotionCandidates = mergeRows(state.promotionCandidates, pageCandidates);
+    const pageHasNext = [productsData.sellerResult, candidatesData.sellerResult]
+      .some((result) => result?.status === "partial" || result?.nextOffset !== null && result?.nextOffset !== undefined);
+    state.promotionDetailOffset = offset;
+    state.promotionDetailHasNext = pageHasNext;
+    const availableIds = new Set(state.promotionProducts
+      .map((item) => Number(item.product_id || item.id || item.productId))
+      .filter(Boolean));
+    state.promotionSelectedProductIds = (state.promotionSelectedProductIds || [])
+      .filter((id) => availableIds.has(Number(id)));
+    const resultWithAccumulatedCoverage = (result, pageRows) => {
+      if (!result) return { status: "unknown", nextAction: "活动证据未返回，请重新读取。" };
+      const observed = offset + pageRows.length;
+      return {
+        ...result,
+        offset,
+        coverageText: result.total === null || result.total === undefined
+          ? `已读取至少 ${observed} 条，服务端总量未知`
+          : `已读取 ${Math.min(observed, Number(result.total))} / ${Number(result.total)} 条`,
+      };
+    };
+    state.promotionDetailSellerResult = {
+      products: resultWithAccumulatedCoverage(productsData.sellerResult, state.promotionProducts),
+      candidates: resultWithAccumulatedCoverage(candidatesData.sellerResult, state.promotionCandidates),
+    };
+    // Do not promote a partial/unknown page's discount arithmetic into the
+    // finance domain. Activity price impact is a comparison aid only after
+    // the Seller API confirms the selected activity's product scope.
+    state.promotionImpactPreview = productsData.sellerResult?.coverageComplete === true
+      ? productsData.impactPreview || null
+      : null;
+    const verifyIds = Array.isArray(options.verifyRemovedProductIds)
+      ? options.verifyRemovedProductIds.map((id) => Number(id)).filter(Boolean)
+      : [];
+    if (verifyIds.length) {
+      const remainingIds = new Set(state.promotionProducts
+        .map((item) => Number(item.product_id || item.id || item.productId))
+        .filter(Boolean));
+      const remaining = verifyIds.filter((id) => remainingIds.has(id));
+    const partial = productsData.partial === true || candidatesData.partial === true;
+    state.promotionMutationEvidence = {
+        ...(state.promotionMutationEvidence || {}),
+        status: state.promotionMutationEvidence?.writeStatus === "needs_review"
+          ? "needs_review"
+          : (!partial && remaining.length === 0 ? "server_observed" : "needs_review"),
+        checkedAt: new Date().toISOString(),
+        requestedProductIds: verifyIds,
+        remainingProductIds: remaining,
+        partial,
+        readback: true,
+      };
+    }
     showResponse({ products: productsData, candidates: candidatesData });
     renderPromotionDetail();
   } catch (error) {
+    if (requestToken !== state.promotionDetailRequestToken || promotionId(state.selectedPromotion || {}) !== actionId || String(selectedStoreId() || "").trim() !== requestStoreId) return;
+    state.promotionDetailError = Number(error.httpStatus || 0) === 403
+      ? "当前店铺无权读取该活动商品，请检查店铺授权。"
+      : "活动商品读取失败，未能确认参加商品或可添加商品；请重试。";
+    state.promotionProducts = [];
+    state.promotionCandidates = [];
+    state.promotionSelectedProductIds = [];
+    state.promotionDetailSellerResult = {
+      products: { status: "unknown", nextAction: "活动商品读取失败，请重试。" },
+      candidates: { status: "unknown", nextAction: "可添加商品读取失败，请重试。" },
+    };
+    state.promotionDetailHasNext = false;
+    state.promotionImpactPreview = null;
+    renderPromotionDetail();
+    if (Array.isArray(options.verifyRemovedProductIds) && options.verifyRemovedProductIds.length) {
+      state.promotionMutationEvidence = {
+        ...(state.promotionMutationEvidence || {}),
+        status: "needs_review",
+        checkedAt: new Date().toISOString(),
+        readback: false,
+        error: error.message,
+      };
+      renderPromotionDetail();
+    }
     toast(error.message, "error");
   }
 }
@@ -5343,49 +9918,138 @@ function renderPromotionDetail(loading = false) {
   const action = state.selectedPromotion;
   $("#promotionDetailTitle").textContent = action ? promotionTitle(action) : "请选择一个活动";
   $("#promotionDetailMeta").textContent = action ? `活动 ID ${promotionId(action)} / ${promotionPeriod(action)}` : "可查看正在参加和可加入商品。";
+  const sellerResultNode = $("#promotionSellerResult");
+  if (sellerResultNode) {
+    const results = [state.promotionSellerResult, state.promotionDetailSellerResult?.products, state.promotionDetailSellerResult?.candidates]
+      .filter((result) => result && typeof result === "object");
+    const statuses = [...new Set(results.map((result) => String(result.status || "unknown")))];
+    const statusLabel = { complete: "已完成读取", partial: "部分读取", empty: "当前范围为空", unknown: "覆盖范围未知" };
+    const nextAction = results.find((result) => result.status === "partial" || result.status === "unknown")?.nextAction
+      || results[0]?.nextAction || "先读取活动，系统不会修改活动商品。";
+    const coverage = results.map((result) => result.coverageText).filter(Boolean).join(" / ");
+    sellerResultNode.textContent = `证据状态：${statuses.map((status) => statusLabel[status] || status).join(" / ")}${coverage ? ` · 覆盖：${coverage}` : ""} · 下一步：${nextAction} · ${results[0]?.sideEffect || "仅读取，不加入/移出活动，不修改价格、库存或订单。"}`;
+  }
+  const mutation = state.promotionMutationEvidence;
+  const mutationStatus = mutation?.status === "server_observed"
+    ? `移出回读已确认：${mutation.requestedProductIds.length} 个商品不再参加活动`
+    : mutation?.status === "needs_review"
+      ? `移出结果待复核：仍返回 ${mutation.remainingProductIds?.length || 0} 个商品，或回读不完整`
+      : mutation?.status === "pending"
+        ? "移出请求已提交，正在读取活动商品确认结果"
+        : "";
+  const mutationNode = $("#promotionMutationStatus");
+  if (mutationNode) mutationNode.textContent = mutationStatus;
+  const impactNode = $("#promotionImpactPreview");
+  const impact = state.promotionImpactPreview;
+  if (impactNode) impactNode.textContent = loading
+    ? "活动价格影响：读取中；利润仍需成本、物流、佣金证据。"
+    : state.promotionDetailError
+      ? `活动商品读取失败：${state.promotionDetailError} 利润和活动范围均未确认。`
+    : impact
+      ? `活动价格影响：${impact.knownPriceCount || 0} 个商品可比较，${impact.unknownPriceCount || 0} 个价格未知；平均降幅 ${impact.averageReductionPercent === null ? "未知" : `${impact.averageReductionPercent}%`}。利润不可仅凭活动接口判断。`
+      : "活动价格影响：尚未读取；利润仍需成本、物流、佣金证据。";
+  const paginationNode = $("#promotionPaginationControls");
+  if (paginationNode) {
+    paginationNode.innerHTML = state.promotionDetailHasNext
+      ? `<button type="button" class="ghost" data-load-promotion-next ${loading ? "disabled" : ""}>继续读取下一页活动商品</button><small>当前已累计显示 ${state.promotionProducts.length} 个活动商品、${state.promotionCandidates.length} 个可添加商品；仍是只读读取。</small>`
+      : (state.promotionDetailOffset > 0
+        ? `<small>已读取到当前活动分页末端；累计显示 ${state.promotionProducts.length} 个活动商品、${state.promotionCandidates.length} 个可添加商品。</small>`
+        : "");
+    paginationNode.querySelector("[data-load-promotion-next]")?.addEventListener("click", () => {
+      loadPromotionProducts(promotionId(state.selectedPromotion || {}), { offset: state.promotionDetailOffset + 1000 });
+    });
+  }
   $("#promotionProductCount").textContent = loading ? "读取中" : String(state.promotionProducts.length || 0);
   $("#promotionCandidateCount").textContent = loading ? "读取中" : String(state.promotionCandidates.length || 0);
   $("#promotionProductsTabCount").textContent = String(state.promotionProducts.length || 0);
   $("#promotionCandidatesTabCount").textContent = String(state.promotionCandidates.length || 0);
   $("#promotionStatus").textContent = action?.is_participating === true ? "已参加" : (action?.status || action?.state || "-");
-  $("#removePromotionProducts").disabled = !action || state.promotionProducts.length === 0;
+  const selectedCount = Array.isArray(state.promotionSelectedProductIds) ? state.promotionSelectedProductIds.length : 0;
+  const removeButton = $("#removePromotionProducts");
+  removeButton.disabled = !action || selectedCount === 0 || loading;
+  removeButton.textContent = selectedCount ? `移出已选 ${selectedCount} 个商品（确认后写入）` : "先选择活动商品再移出";
   renderPromotionProductRows();
 }
 
 function renderPromotionProductRows() {
   const rows = state.promotionProductKind === "candidates" ? state.promotionCandidates : state.promotionProducts;
   const body = $("#promotionProductRows");
-  if (!rows.length) {
-    body.innerHTML = `<tr><td colspan="7" class="empty">暂无数据</td></tr>`;
+  if (state.promotionDetailError) {
+    body.innerHTML = `<tr><td colspan="8" class="empty">${escapeHtml(state.promotionDetailError)} 当前没有可安全操作的活动商品。</td></tr>`;
     return;
   }
+  if (!rows.length) {
+    const sellerResult = state.promotionDetailSellerResult?.[state.promotionProductKind] || {};
+    const status = String(sellerResult.status || "unknown");
+    const emptyText = status === "empty"
+      ? "当前活动读取范围没有商品。"
+      : status === "partial"
+        ? "活动商品读取不完整，不能判断当前活动没有商品；请继续读取下一页。"
+        : status === "error"
+          ? "活动商品读取失败，不能判断当前活动没有商品；请重新读取。"
+          : "活动商品读取范围未知，不能判断当前活动没有商品。";
+    const nextAction = String(sellerResult.nextAction || "").trim();
+    body.innerHTML = `<tr><td colspan="9" class="empty">${emptyText}${nextAction ? `<br><small>下一步：${escapeHtml(nextAction)}</small>` : ""}</td></tr>`;
+    return;
+  }
+  const impactByProductId = new Map((state.promotionImpactPreview?.products || [])
+    .map((item) => [String(item.productId || ""), item]));
   body.innerHTML = rows.map((item) => {
     const productId = item.product_id || item.id || item.productId || "";
-    const price = item.price || item.current_price || item.old_price || item.max_action_price || "";
-    const actionPrice = item.action_price || item.discount_price || item.max_action_price || item.min_price || "";
+    // Ozon old_price is the original/strikethrough price, not the current
+    // selling price. Keep the table unknown when no explicit current price
+    // was returned instead of displaying old_price under the current-price
+    // column.
+    const price = item.current_price || item.currentPrice || item.price || "";
+    // Range fields (min_price/max_action_price) are constraints, not an
+    // observed activity selling price. Showing one as “活动价” makes the
+    // seller believe a discount was verified when the API only returned a
+    // bound. Keep the comparison unknown until an explicit action price is
+    // present.
+    const actionPrice = item.action_price || item.discount_price || "";
     const discount = item.discount || item.discount_percent || item.discount_value || "";
+    const impact = impactByProductId.get(String(productId));
+    // Show the seller the comparable price impact rather than exposing a
+    // raw platform discount field as if it were a validated discount.
+    // Missing prices remain explicitly unknown and never become a profit
+    // conclusion.
+    const impactLabel = impact?.impact === "known"
+      ? `降幅 ${impact.reductionPercent}%`
+      : impact?.impact === "unknown"
+        ? "未知（缺当前价或活动价）"
+        : discount ? `平台折扣 ${discount}` : "未知";
+    const selected = state.promotionProductKind === "products"
+      && (state.promotionSelectedProductIds || []).includes(Number(productId));
     return `
       <tr>
+        <td>${state.promotionProductKind === "products" ? `<input type="checkbox" class="promotion-product-select" data-product-id="${escapeHtml(productId)}" ${selected ? "checked" : ""} aria-label="选择商品 ${escapeHtml(productId)}" />` : "-"}</td>
         <td>${escapeHtml(productId)}</td>
         <td>${escapeHtml(item.offer_id || item.offerId || "-")}</td>
         <td>${escapeHtml(item.name || item.title || "-")}</td>
         <td>${price ? escapeHtml(price) : "-"}</td>
         <td>${actionPrice ? escapeHtml(actionPrice) : "-"}</td>
-        <td>${discount ? escapeHtml(discount) : "-"}</td>
-        <td>${escapeHtml(item.status || item.state || item.action_status || "-")}</td>
+        <td>${escapeHtml(impactLabel)}</td>
+        <td>${escapeHtml(item.status || item.state || item.action_status || (state.promotionProductKind === "candidates" ? "候选待人工确认" : "-"))}${state.promotionProductKind === "candidates" ? `<div class="status-sub">本页只读；加入活动需在 Ozon 活动页人工确认</div>` : ""}</td>
+        <td>${item.offer_id || item.offerId ? `<button class="ghost" type="button" data-promotion-stock-offer="${escapeHtml(item.offer_id || item.offerId)}" data-stock-readiness-status="unknown" data-stock-readiness-verification="unknown" title="活动商品列表不提供当前可售证据；先回查商品状态">库存核对（先确认可售）</button>` : (state.promotionProductKind === "candidates" ? "本页不执行加入" : "-")}</td>
       </tr>
     `;
   }).join("");
+  body.querySelectorAll(".promotion-product-select").forEach((input) => {
+    input.addEventListener("change", () => {
+      const id = Number(input.dataset.productId);
+      const current = new Set((state.promotionSelectedProductIds || []).map(Number));
+      if (input.checked) current.add(id); else current.delete(id);
+      state.promotionSelectedProductIds = [...current].filter(Boolean);
+      renderPromotionDetail();
+    });
+  });
 }
 
 async function removePromotionProducts() {
   const actionId = promotionId(state.selectedPromotion || {});
-  const productIds = state.promotionProducts
-    .map((item) => item.product_id || item.id || item.productId)
-    .map((id) => Number(id))
-    .filter(Boolean);
+  const productIds = (state.promotionSelectedProductIds || []).map((id) => Number(id)).filter(Boolean);
   if (!actionId || !productIds.length) {
-    toast("当前活动没有可删除的活动商品", "error");
+    toast("请先选择要移出的活动商品", "error");
     return;
   }
   const title = promotionTitle(state.selectedPromotion);
@@ -5393,14 +10057,29 @@ async function removePromotionProducts() {
   if (!ok) return;
   const button = $("#removePromotionProducts");
   setBusy(button, true);
+  state.promotionMutationEvidence = {
+    status: "pending",
+    requestedProductIds: productIds,
+    remainingProductIds: [],
+    readback: false,
+  };
+  renderPromotionDetail();
   try {
     const data = await api("/api/ozon/actions/products/deactivate", {
       method: "POST",
-      body: JSON.stringify({ storeId: selectedStoreId(), action_id: actionId, product_ids: productIds }),
+      ...directWriteRequest({ storeId: selectedStoreId(), action_id: actionId, product_ids: productIds, confirmPromotionWrite: true }, "promotion-deactivate"),
     });
+    if (data?.commandState === "needs_review" || data?.status === "unknown_outcome") {
+      state.promotionMutationEvidence.writeStatus = "needs_review";
+    }
     showResponse(data);
-    toast("已提交删除活动商品请求");
-    await loadPromotionProducts(actionId);
+    toast("已提交移出请求，正在回读活动商品确认结果");
+    await loadPromotionProducts(actionId, { verifyRemovedProductIds: productIds });
+    if (state.promotionMutationEvidence?.status === "server_observed") {
+      toast("移出活动回读已确认", "ok");
+    } else {
+      toast("移出活动结果待复核；请不要重复提交", "warning");
+    }
   } catch (error) {
     toast(error.message, "error");
   } finally {
@@ -5625,6 +10304,17 @@ function workflowNodeTitle(key = "") {
     sync_stock: "库存写入",
   };
   return titles[key] || key || "未命名节点";
+}
+
+function sellerTaskStageTitle(stage = "") {
+  const titles = {
+    candidate_handoff: "1688 候选交接",
+    listing_progress: "Ozon 上架主流程",
+    product_readiness: "商品就绪检查",
+    stock_readiness: "库存就绪检查",
+    review_reconcile: "审核结果回读",
+  };
+  return titles[String(stage || "").trim()] || "当前业务步骤";
 }
 
 function workflowRiskLabel(riskLevel = "") {
@@ -5998,7 +10688,16 @@ async function loadWorkflowRuns() {
     }
     renderWorkflowConsole();
     renderCockpitDashboard();
+    // The seller-facing listing summary is derived from the selected workflow.
+    // Refreshing the workflow list can change that selection, so refresh the
+    // summary as well; otherwise the upload queue may keep showing the prior
+    // product's blocker and safe next action.
+    renderListingSellerTaskSummary();
   } catch (error) {
+    state.promotionProducts = [];
+    state.promotionCandidates = [];
+    state.promotionImpactPreview = null;
+    renderPromotionDetail();
     toast(error.message, "error");
   }
 }
@@ -6262,6 +10961,8 @@ function workflowPayloadLocationForIssue(issue = {}) {
 
 function workflowPayloadIssueLocator(issue = {}, index = 0, payload = {}) {
   const meta = workflowPayloadLocationForIssue(issue);
+  const offerId = String(issue.offerId || issue.offer_id || "").trim();
+  const attributeId = String(issue.attributeId || issue.attribute_id || "").trim();
   return `
     <article class="workflow-payload-issue" title="${escapeHtml(issue.message || issue.code || "问题")}">
       <div class="workflow-payload-issue-main">
@@ -6271,7 +10972,7 @@ function workflowPayloadIssueLocator(issue = {}, index = 0, payload = {}) {
       </div>
       ${workflowPayloadRepairTemplate(issue, payload)}
       <div class="workflow-payload-issue-actions">
-        <button class="ghost" type="button" data-payload-path="${escapeHtml(meta.path)}" data-payload-label="${escapeHtml(meta.label)}">定位字段</button>
+        <button class="ghost" type="button" data-payload-path="${escapeHtml(meta.path)}" data-payload-label="${escapeHtml(meta.label)}" data-payload-offer-id="${escapeHtml(offerId)}" data-payload-attribute-id="${escapeHtml(attributeId)}">定位字段</button>
       </div>
     </article>
   `;
@@ -7388,6 +12089,7 @@ function renderRequiredAttributeFillPlan(run = {}, node = {}) {
                   <strong>${escapeHtml(row.name || `属性 ${row.attributeId || ""}`)}</strong>
                   <small>#${escapeHtml(row.attributeId || "")} · ${escapeHtml(row.strategy || "")} · ${escapeHtml(row.confidence || "")}</small>
                   <small>${escapeHtml(requiredFillPlanSafetyText(row))}</small>
+                  <small>字段路径：${escapeHtml(row.fieldPath || `items[*].attributes[id=${row.attributeId || "*"}]`)}</small>
                 </div>
                 <div>
                   <span>${escapeHtml(requiredFillPlanActionText(row.action))}</span>
@@ -7397,6 +12099,7 @@ function renderRequiredAttributeFillPlan(run = {}, node = {}) {
                 </div>
                 <p>${escapeHtml(row.reasonZh || "修复后重新预检；不会自动提交 Ozon。")}</p>
                 <p>${escapeHtml(row.safeNextStep || "修复后重新预检；不会自动提交 Ozon。")}</p>
+                <small>副作用：${escapeHtml(row.sideEffect || "仅本地草稿预检；不会写入 Ozon、提交、修改价格或库存。")}</small>
               </div>
             `).join("")}
           </div>
@@ -7514,6 +12217,10 @@ function renderVariantConfigurationWorkbench(run = {}, node = {}) {
   const rows = Array.isArray(workbench?.rows) ? workbench.rows : [];
   if (rows.length < 2) return "";
   const summary = workbench.summary || {};
+  const sourceBinding = workbench.sourceVariantBinding?.summary || {};
+  const sourceBindingText = sourceBinding.ready
+    ? `来源绑定 ${Number(sourceBinding.boundCount || 0)}/${Number(sourceBinding.itemCount || rows.length)} 完整`
+    : `来源绑定 ${Number(sourceBinding.boundCount || 0)}/${Number(sourceBinding.itemCount || rows.length)}；缺失 ${Number(sourceBinding.missingCount || 0)}，重复 ${Number(sourceBinding.duplicateCount || 0)}`;
   return `
     <section class="workflow-variant-workbench">
       <div class="workflow-variant-workbench-head">
@@ -7528,6 +12235,7 @@ function renderVariantConfigurationWorkbench(run = {}, node = {}) {
         <span>属性覆盖 ${Number(summary.aspectCoveredRowCount || 0)}/${Number(summary.rowCount || rows.length)}，缺失 ${Number(summary.missingAspectRowCount || 0)}，重复 ${Number(summary.duplicateAspectRowCount || 0)}</span>
         <span>1688 规格候选 ${Number(summary.suggestedAspectRowCount || 0)} 行 / ${Number(summary.suggestedAspectCount || 0)} 个值</span>
         <span>SKU 图区分 ${Number(summary.uniqueSkuImageRowCount || 0)}/${Number(summary.rowCount || rows.length)}，缺图 ${Number(summary.missingSkuImageRowCount || 0)}，未区分 ${Number(summary.nonUniqueSkuImageRowCount || 0)}</span>
+        <span class="${sourceBinding.ready ? "ok-badge" : "warn-badge"}">1688 ${escapeHtml(sourceBindingText)}</span>
         <small>${escapeHtml(summary.safeNextAction || "修复后重新预检；不会自动提交 Ozon。")}</small>
       </div>
       ${renderVariantGroupDifferenceSuggestions(workbench)}
@@ -7548,7 +12256,11 @@ function renderVariantConfigurationWorkbench(run = {}, node = {}) {
               const primaryAspect = variantWorkbenchPrimaryAspect(row);
               return `
               <tr class="variant-workbench-row variant-workbench-row-${escapeHtml(row.rowStatus || "valid")}">
-                <td><code>${escapeHtml(row.offerId || "-")}</code></td>
+                <td>
+                  <code>${escapeHtml(row.offerId || "-")}</code>
+                  ${row.sourceVariant ? `<small class="variant-source-binding ${row.sourceVariant.sourceSkuId ? "is-bound" : "is-missing"}">${row.sourceVariant.sourceSkuId ? `1688 SKU：${escapeHtml(row.sourceVariant.sourceSkuId)}` : "缺少 1688 SKU 来源 ID"}</small>` : `<small class="variant-source-binding is-missing">未匹配 1688 来源变体</small>`}
+                  ${row.sourceVariant?.sourceSkuId ? "" : `<button type="button" class="ghost" data-variant-source-task data-run-id="${escapeHtml(run.id || "")}">回到来源变体</button>`}
+                </td>
                 <td>${escapeHtml(row.modelName || "未读取")}</td>
                 <td>${(row.aspects || []).length
                   ? (row.aspects || []).map((aspect) => `<span>${escapeHtml(aspect.name || `属性 ${aspect.id || ""}`)}：${escapeHtml(aspect.value || "空")}</span>`).join("")
@@ -7658,10 +12370,38 @@ function renderWorkflowPricingDiagnosis(node = {}) {
   const minPriceSource = pricingDiagnosis.minPriceSource || {};
   const oldPriceSource = pricingDiagnosis.oldPriceSource || {};
   const marginFloor = pricingDiagnosis.marginFloor || {};
+  const procurementEvidence = pricingDiagnosis.procurementEvidence || null;
+  const procurementMissingLabels = {
+    supplier: "供应商",
+    moq: "MOQ",
+    price_tiers: "数量绑定阶梯价",
+  };
+  const procurementMissing = Array.isArray(procurementEvidence?.missing)
+    ? procurementEvidence.missing.map((key) => procurementMissingLabels[key] || key)
+    : [];
+  const procurementActions = Array.isArray(node.diagnosis?.recommendedActions)
+    ? node.diagnosis.recommendedActions
+    : [];
   const commissionRateText = Number(pricingDiagnosis.commissionRate || 0)
     ? `${Math.round(Number(pricingDiagnosis.commissionRate || 0) * 1000) / 10}%`
     : "-";
+  const profitStatus = String(pricingDiagnosis.profitStatus || "unknown");
+  const profitStatusText = profitStatus === "observed"
+    ? "已核对"
+    : profitStatus === "estimate"
+      ? "估算（未核对结算）"
+      : "未知（佣金/结算证据不足）";
+  const commissionIsDefault = String(commissionSource.source || "manual_default") === "manual_default";
+  const commissionStatusText = commissionIsDefault
+    ? "未知（默认比例仅供试算）"
+    : `估算（${commissionSource.label || "来源待核对"}）`;
+  const pricingNextAction = profitStatus === "observed"
+    ? ""
+    : "下一步：补齐当前店铺/类目佣金、物流/结算规则和汇率证据，再确认利润。";
   const money = (value) => Number(value || 0).toFixed(2).replace(/\.00$/, "");
+  const logisticsStatusText = level.name
+    ? `本地档位试算 ${money(pricingDiagnosis.logisticsFee)} CNY`
+    : "未知（尺重/运费档位证据不足）";
   return `
     <section class="workflow-pricing-diagnosis">
       <div class="workflow-pricing-head">
@@ -7678,16 +12418,33 @@ function renderWorkflowPricingDiagnosis(node = {}) {
         <article><span>采购成本</span><strong>${money(pricingDiagnosis.purchaseCost)}</strong><small>含 ${money(pricingDiagnosis.purchaseMarkupRmb)} RMB 缓冲</small></article>
         <article><span>售价</span><strong>${money(pricingDiagnosis.priceCny)}</strong><small>原价 ${money(pricingDiagnosis.oldPriceCny)}</small></article>
         <article><span>最低价</span><strong>${escapeHtml(pricingDiagnosis.minPriceCny || "-")}</strong><small>最低价来源：${escapeHtml(minPriceSource.label || "低于售价防拒绝")}</small></article>
-        <article><span>运费等级</span><strong>${escapeHtml(level.name || "-")}</strong><small>运费 ${money(pricingDiagnosis.logisticsFee)}</small></article>
-        <article><span>佣金</span><strong>${money(pricingDiagnosis.commission)}</strong><small>${escapeHtml(commissionRateText)} · ${escapeHtml(commissionSource.label || "手填/默认佣金率")}</small></article>
-        <article><span>利润</span><strong>${money(pricingDiagnosis.profit)}</strong><small>目标 ${Math.round(Number(pricingDiagnosis.profitRate || 0) * 100)}%</small></article>
+        <article><span>运费等级</span><strong>${escapeHtml(level.name || "未知")}</strong><small>${escapeHtml(logisticsStatusText)}</small></article>
+        <article><span>佣金</span><strong>${escapeHtml(commissionStatusText)}</strong><small>试算 ${money(pricingDiagnosis.commission)} CNY · ${escapeHtml(commissionRateText)}</small></article>
+        <article><span>利润 · ${escapeHtml(profitStatusText)}</span><strong>${profitStatus === "unknown" ? "未知" : money(pricingDiagnosis.profit)}</strong><small>${profitStatus === "unknown" ? "公式结果仅作价格试算，不是确定利润" : `目标 ${Math.round(Number(pricingDiagnosis.profitRate || 0) * 100)}%`}</small></article>
       </div>
+      ${pricingNextAction ? `<p class="workflow-pricing-evidence-warning" role="status">${escapeHtml(pricingNextAction)}</p>` : ""}
+      ${procurementEvidence ? `
+        <section class="workflow-procurement-evidence ${procurementEvidence.status === "blocked" ? "is-blocked" : ""}" aria-label="采购证据">
+          <div>
+            <strong>采购证据 · ${procurementEvidence.status === "verified" ? "完整" : procurementEvidence.status === "blocked" ? "不完整，定价阻塞" : "待核实"}</strong>
+            <span>供应商：${escapeHtml(procurementEvidence.supplierName || procurementEvidence.supplierId || "未记录")}</span>
+            <span>MOQ：${procurementEvidence.moq ? escapeHtml(procurementEvidence.moq) : "未记录"}</span>
+            <span>阶梯价：${Number(procurementEvidence.priceTierCount || 0)} 档</span>
+          </div>
+          <p>${procurementMissing.length ? `为何阻塞：缺少${escapeHtml(procurementMissing.join("、"))}，无法证明当前数量对应的真实采购成本。` : procurementEvidence.verificationState === "manual_unverified" ? "当前资料来自手工填写，不能冒充 1688 页面事实；补充来源快照后才可标记为来源已验证。" : "供应商、MOQ 与数量绑定阶梯价已形成采购依据。"}</p>
+          ${procurementEvidence.sellerAction ? `<small>下一步：${escapeHtml(procurementEvidence.sellerAction)}</small>` : ""}
+          <small>1688 展示价不作为采购成本，也不能据此证明利润。</small>
+          ${procurementActions.length ? `<small>补证动作：${procurementActions.map(escapeHtml).join("；")}</small>` : ""}
+          ${procurementEvidence.reasonCode ? `<code>${escapeHtml(procurementEvidence.reasonCode || "PRICING_PROCUREMENT_EVIDENCE_MISSING")}</code>` : ""}
+        </section>
+      ` : ""}
       <div class="workflow-pricing-foot">
         <span>尺重：${Number(packageInfo.weightG || 0)}g / ${Number(packageInfo.lengthMm || 0)}×${Number(packageInfo.widthMm || 0)}×${Number(packageInfo.heightMm || 0)}mm</span>
         <span>成本基数：${money(pricingDiagnosis.baseCost)}</span>
         <span>原价策略：${escapeHtml(oldPriceSource.label || "旧规则：售价乘以 2")}</span>
         <span>利润底线：${marginFloor.floorCny ? `${money(marginFloor.floorCny)} CNY` : "未配置"}</span>
         <span>佣金来源：${escapeHtml(commissionSource.source || "manual_default")} / ${escapeHtml(commissionSource.confidence || "low")}</span>
+        <span>结算/汇率：${profitStatus === "observed" ? "已核对" : "未核对"}</span>
         <span>迭代：${steps.length} 步</span>
         <span>变体：${variants.length || 0} 个</span>
       </div>
@@ -7716,6 +12473,54 @@ function renderWorkflowPricingDiagnosis(node = {}) {
   `;
 }
 
+function renderReviewRepairDraft(node = {}, runId = "") {
+  const draft = node?.output?.reviewRepairDraft;
+  if (!draft?.ok || !Array.isArray(draft.repairs) || !draft.repairs.length) return "";
+  const workflow = draft.workflow || {};
+  return `
+    <section class="workflow-review-repair" data-review-repair-status="${escapeHtml(draft.status || "pending_manual_repair")}">
+      <div class="workflow-section-head">
+        <div><strong>审核失败修复草稿</strong><p class="hint">逐 Offer/字段定位；当前只生成本地草稿，不会自动提交。</p></div>
+        <span class="workflow-status workflow-status-failed">待人工修复</span>
+      </div>
+      <button class="primary" type="button" data-review-repair-return data-run-id="${escapeHtml(runId)}">打开本地草稿修复台</button>
+      <div class="workflow-review-repair-list">
+        ${draft.repairs.slice(0, 20).map((repair) => `
+          <article class="workflow-review-repair-item">
+            <strong>${escapeHtml(repair.code || "UNKNOWN")}</strong>
+            <span>任务 ${escapeHtml(draft.taskId || "-")} · 商品 ${escapeHtml(repair.productId || "-")} · Offer ${escapeHtml(repair.offerId || "未解析（需人工确认范围）")}</span>
+            <small>字段：${escapeHtml(repair.fieldPath || "items[*]")} · ${escapeHtml(repair.message || "需要修复")}</small>
+            <small>动作：${escapeHtml(repair.action || "人工修复本地草稿")}；不会写入 Ozon。</small>
+            <button class="ghost" type="button" data-review-repair-locate data-run-id="${escapeHtml(runId)}" data-issue-code="${escapeHtml(repair.code || "")}" data-issue-field-path="${escapeHtml(repair.fieldPath || "items[*]")}" data-issue-label="${escapeHtml(repair.message || repair.code || "审核问题")}" data-issue-offer-id="${escapeHtml(repair.offerId || "")}" data-issue-attribute-id="${escapeHtml(repair.attributeId || repair.attribute_id || "")}">查看并定位本地草稿字段</button>
+          </article>
+        `).join("")}
+      </div>
+      ${draft.repairs.length > 20 ? `<small>还有 ${draft.repairs.length - 20} 项，请查看节点输出。</small>` : ""}
+      <ol class="workflow-review-repair-steps">
+        <li>${escapeHtml(workflow.saveDraft || "保存修复后的本地 Payload，生成新的草稿 hash。")}</li>
+        <li>${escapeHtml(workflow.preflight || "对新草稿重新预检；旧确认不可复用。")}</li>
+        <li>${escapeHtml(workflow.submit || "预检通过后人工确认提交。")}</li>
+        <li>${escapeHtml(workflow.readback || "提交后按 task_id、product_id、Offer 再次只读回查。")}</li>
+      </ol>
+      <p class="hint">结果：${escapeHtml(draft.result || "等待人工修复")}；副作用：${escapeHtml(draft.sideEffect || "仅本地草稿")}</p>
+    </section>
+  `;
+}
+
+function openReviewRepairDraft(button) {
+  const runId = String(button?.dataset?.runId || "").trim();
+  if (!runId) return;
+  state.selectedWorkflowRunId = runId;
+  state.selectedWorkflowNodeKey = "review_reconcile";
+  activateErpView("listing");
+  setListingStage("current-product");
+  window.setTimeout(() => {
+    const target = $("#listingSellerTaskSummaryBody");
+    target?.scrollIntoView({ behavior: "smooth", block: "start" });
+  }, 0);
+  toast("已打开本地草稿修复台；保存后必须重新预检，不会自动提交 Ozon。");
+}
+
 function renderWorkflowDetail(run, node) {
   const detail = $("#workflowNodeDetail");
   if (!detail) return;
@@ -7731,6 +12536,45 @@ function renderWorkflowDetail(run, node) {
   const recentEvents = (run.events || []).slice(-8).reverse();
   const payloadValidation = run.payloadDraftValidation || {};
   const payloadIssues = Array.isArray(payloadValidation.issues) ? payloadValidation.issues : [];
+  // A completed/unknown reservation is already a seller-facing outcome. Keep
+  // the confirmation control visible for context, but lock it before a second
+  // click can reach the API and explain the safe next action. The server also
+  // enforces this reservation; this UI guard prevents duplicate-click anxiety
+  // and avoids presenting a replay as a fresh submission.
+  const submissionState = String(run.submissionReservation?.state || "").trim();
+  const submissionLocked = ["completed", "in_progress", "needs_review"].includes(submissionState);
+  const currentDraftHash = String(run.payloadDraftHash || "").trim();
+  const validatedDraftHash = String(run.validatedDraftHash || run.payloadDraftValidation?.draftHash || "").trim();
+  const preflightPassed = run.payloadDraftValidation?.ok === true;
+  const validationHashMatches = Boolean(currentDraftHash && validatedDraftHash && currentDraftHash === validatedDraftHash);
+  const submissionGateBlocked = !preflightPassed || !validationHashMatches;
+  const submissionButtonLabel = submissionState === "completed"
+    ? "已提交，等待审核回查"
+    : submissionState === "needs_review"
+      ? "结果未知，先人工回查"
+      : submissionState === "in_progress"
+      ? "提交处理中..."
+        : !preflightPassed
+          ? (run.payloadDraftValidation ? "先修复预检问题" : "先完成提交前预检")
+          : !validationHashMatches
+            ? "草稿已修改，先重新预检"
+            : "确认提交 Ozon";
+  const submissionButtonHint = submissionState === "completed"
+    ? "当前草稿已提交过；请使用 task_id 回查审核，不要再次提交。"
+    : submissionState === "needs_review"
+      ? "上次提交结果未知；先人工回查 Ozon，不能自动重试。"
+      : submissionState === "in_progress"
+      ? "已有提交请求处理中，请等待结果回写。"
+      : !preflightPassed
+        ? "当前 Payload 尚未通过预检；先点击“校验 Payload”，不会调用 Ozon。"
+        : !validationHashMatches
+          ? "当前草稿 hash 与预检版本不一致；旧确认不可复用，请先重新预检。"
+          : "预检通过并确认草稿哈希后才会调用 Ozon。";
+  const sellerNodeStatusLabel = node.key === "preflight_check" && node.status === "success"
+    ? "预检通过（尚未提交）"
+    : node.key === "ozon_submit" && submissionState === "completed"
+      ? "已提交，等待审核回查"
+      : workflowStatusLabel(node.status);
   detail.innerHTML = `
     <div class="workflow-section-head">
       <div>
@@ -7739,7 +12583,7 @@ function renderWorkflowDetail(run, node) {
       </div>
       <div class="workflow-detail-head-actions">
         <button class="ghost" data-workflow-action="copy-run-summary">复制工作流摘要</button>
-        <span class="workflow-status workflow-status-${escapeHtml(node.status || "pending")}">${workflowStatusLabel(node.status)}</span>
+        <span class="workflow-status workflow-status-${escapeHtml(node.status || "pending")}">${escapeHtml(sellerNodeStatusLabel)}</span>
       </div>
     </div>
     <div class="workflow-actions">
@@ -7768,6 +12612,7 @@ function renderWorkflowDetail(run, node) {
       </section>
     ` : ""}
     ${renderVariantGroupingDefectCard(node)}
+    ${renderReviewRepairDraft(node, run?.id || "")}
     ${renderWorkflowPricingDiagnosis(node)}
     <section class="workflow-decision workflow-risk-${escapeHtml(node.riskLevel || "low")}">
       <strong>分支判断</strong>
@@ -7804,7 +12649,8 @@ function renderWorkflowDetail(run, node) {
     <div class="workflow-actions">
       <button class="ghost" data-workflow-action="save-payload">保存草稿</button>
       <button class="primary" data-workflow-action="validate-payload">校验 Payload</button>
-      <button class="danger" data-workflow-action="submit-payload-draft">确认提交 Ozon</button>
+      <button class="danger" data-workflow-action="submit-payload-draft" ${submissionLocked || submissionGateBlocked ? "disabled" : ""}>${submissionButtonLabel}</button>
+      <small class="hint workflow-submit-state-hint">${submissionButtonHint}</small>
     </div>
     <section class="workflow-io-summary-grid">
       ${workflowNodeIoSummary("输入", node.input || {})}
@@ -7858,6 +12704,11 @@ function renderWorkflowConsole() {
 
 async function saveWorkflowPayloadDraft(runId, payloadText) {
   const payload = JSON.parse(payloadText || "{}");
+  const currentRun = state.workflowRuns.find((item) => item.id === runId);
+  if (currentRun) {
+    currentRun.validatedDraftHash = "";
+    currentRun.payloadDraftValidation = null;
+  }
   await api(`/api/workflows/${encodeURIComponent(runId)}/payload-draft`, {
     method: "PUT",
     body: JSON.stringify(payload),
@@ -7871,8 +12722,18 @@ async function validateWorkflowPayloadDraft(runId) {
     method: "POST",
     body: "{}",
   });
+  const currentRun = state.workflowRuns.find((item) => item.id === runId);
+  if (currentRun) {
+    currentRun.validatedDraftHash = String(result.draftHash || "");
+    currentRun.payloadDraftValidation = { ...result };
+  }
   toast(result.ok ? "Payload 校验通过" : `Payload 有 ${result.issues?.length || result.errors?.length || 0} 个问题`, result.ok ? "ok" : "error");
   await loadWorkflowRuns();
+}
+
+function workflowPayloadDraftMatchesRun(run, payloadText) {
+  const editorPayload = JSON.parse(payloadText || "{}");
+  return JSON.stringify(editorPayload) === JSON.stringify(run?.payloadDraft || {});
 }
 
 function focusWorkflowPayloadIssue(button) {
@@ -8045,6 +12906,7 @@ async function handleWorkflowAction(action, button) {
     });
     toast(result.ok ? "本地草稿已写回并通过预检，不会提交 Ozon" : "本地草稿已写回，但预检仍有问题", result.ok ? "ok" : "error");
     await loadWorkflowRuns();
+    renderListingSellerTaskSummary();
     return;
   }
   if (action === "apply-attribute-text-repair") {
@@ -8065,6 +12927,7 @@ async function handleWorkflowAction(action, button) {
     });
     toast(result.ok ? "本地文本属性已写回并通过预检，不会提交 Ozon" : "本地文本属性已写回，但预检仍有问题", result.ok ? "ok" : "error");
     await loadWorkflowRuns();
+    renderListingSellerTaskSummary();
     return;
   }
   if (action === "apply-variant-text-repair") {
@@ -8093,6 +12956,7 @@ async function handleWorkflowAction(action, button) {
     });
     toast(result.ok ? "本地变体文本已写回并通过预检，不会提交 Ozon" : "本地变体文本已写回，但预检仍有问题", result.ok ? "ok" : "error");
     await loadWorkflowRuns();
+    renderListingSellerTaskSummary();
     return;
   }
   if (action === "apply-package-info-repair") {
@@ -8121,17 +12985,39 @@ async function handleWorkflowAction(action, button) {
     });
     toast(result.ok ? "本地包装尺重已写回并通过预检，不会提交 Ozon" : "本地包装尺重已写回，但预检仍有问题", result.ok ? "ok" : "error");
     await loadWorkflowRuns();
+    renderListingSellerTaskSummary();
     return;
   }
   if (action === "submit-payload-draft") {
+    const payloadText = $("#workflowPayloadEditor")?.value || "{}";
+    if (!workflowPayloadDraftMatchesRun(run, payloadText)) {
+      toast("草稿内容已修改。请先保存草稿并重新预检，再确认提交。", "error");
+      return;
+    }
+    const expectedDraftHash = String(run.validatedDraftHash || run.payloadDraftValidation?.draftHash || "").trim();
+    if (!expectedDraftHash) {
+      toast("当前草稿没有有效的预检版本。请先重新预检，再确认提交。", "error");
+      return;
+    }
+    const workflowStoreId = String(run.entity?.storeId || "").trim();
+    if (!workflowStoreId) {
+      toast("当前工作流尚未绑定店铺。请先在商品任务中明确绑定店铺，再重新预检提交。", "error");
+      return;
+    }
     const ok = window.confirm("确认提交 Ozon 会调用 /v3/product/import。请确认 Payload 已校验通过且风险可接受，是否继续？");
     if (!ok) return;
-    await saveWorkflowPayloadDraft(run.id, $("#workflowPayloadEditor")?.value || "{}");
     const result = await api(`/api/workflows/${encodeURIComponent(run.id)}/payload-draft/submit`, {
       method: "POST",
-      body: JSON.stringify({ confirmSubmit: true, storeId: selectedStoreId() }),
+      body: JSON.stringify({ confirmSubmit: true, storeId: workflowStoreId, expectedDraftHash }),
     });
-    toast(result.ok ? `已提交 Ozon task：${result.taskId || "-"}` : (result.message || "Payload 未提交"), result.ok ? "ok" : "error");
+    const submitMessage = result.status === "replay"
+      ? `此前已提交 Ozon task：${result.taskId || "-"}；本次未重复提交，请回查审核`
+      : result.status === "needs_review"
+        ? (result.message || "提交结果未知，请先人工回查 Ozon")
+        : result.ok
+          ? `已提交 Ozon task：${result.taskId || "-"}，等待审核回查`
+          : (result.message || "Payload 未提交");
+    toast(submitMessage, result.ok && result.status !== "needs_review" ? "ok" : "error");
     await loadWorkflowRuns();
     return;
   }
@@ -8165,6 +13051,26 @@ async function loadShippingLevels() {
 
 async function calculatePrice() {
   const button = $("#calculatePrice");
+  const required = [
+    ["calcPurchaseCost", "采购成本", 0.000001],
+    ["calcWeight", "包装重量", 0.000001],
+    ["calcLength", "包装长度", 0.000001],
+    ["calcWidth", "包装宽度", 0.000001],
+    ["calcHeight", "包装高度", 0.000001],
+    ["calcCommissionRate", "佣金率", 0],
+    ["calcMiscRate", "杂费率", 0],
+    ["calcFixedMisc", "固定杂费", 0],
+    ["calcProfitRate", "目标利润率", 0.000001],
+  ];
+  for (const [id, label, minimum] of required) {
+    const raw = String($("#" + id)?.value || "").trim();
+    const value = Number(raw);
+    if (!raw || !Number.isFinite(value) || value < minimum) {
+      toast(`请先填写有效的${label}；当前没有发起定价请求。`, "warning");
+      $("#" + id)?.focus();
+      return false;
+    }
+  }
   setBusy(button, true);
   try {
     const payload = {
@@ -8242,8 +13148,14 @@ async function loadCategoryTree() {
   const button = $("#loadCategoryTree");
   setBusy(button, true);
   try {
-    const data = await api(`/api/ozon/description-categories?storeId=${encodeURIComponent(selectedStoreId())}`);
+    const environment = currentSellerReadEnvironment();
+    const data = await api(`/api/ozon/description-categories?storeId=${encodeURIComponent(selectedStoreId())}&environment=${encodeURIComponent(environment)}`);
     state.categoryTree = data.result || [];
+    state.categoryEvidence.tree = data.operationEvidence || null;
+    state.categoryEvidence.nextAction = data.cacheFreshness?.usable
+      ? "可继续读取当前类目下的必填属性和字典值。"
+      : "先刷新当前店铺的 Ozon 类目树，再执行类目匹配；不能把过期缓存当作当前类目证据。";
+    renderCategoryEvidenceStatus();
     showResponse(data);
     toast("中文类目已读取");
     searchCategory();
@@ -8260,10 +13172,12 @@ async function refreshCategoryCache() {
   try {
     const data = await api("/api/ozon/category-cache/refresh", {
       method: "POST",
-      body: JSON.stringify({ storeId: selectedStoreId() }),
+      body: JSON.stringify({ storeId: selectedStoreId(), environment: currentSellerReadEnvironment() }),
     });
-    const treeData = await api(`/api/ozon/description-categories?storeId=${encodeURIComponent(selectedStoreId())}`);
+    const treeData = await api(`/api/ozon/description-categories?storeId=${encodeURIComponent(selectedStoreId())}&environment=${encodeURIComponent(currentSellerReadEnvironment())}`);
     state.categoryTree = treeData.result || [];
+    state.categoryEvidence.tree = treeData.operationEvidence || data.operationEvidence || null;
+    renderCategoryEvidenceStatus();
     showResponse(data);
     toast(`本地类目库已刷新：${data.total || 0} 个类型`);
   } catch (error) {
@@ -8286,7 +13200,7 @@ async function autoMatchCategory() {
     };
     const data = await api("/api/ozon/category-match", {
       method: "POST",
-      body: JSON.stringify({ product, limit: 8 }),
+      body: JSON.stringify({ storeId: selectedStoreId(), product, limit: 8 }),
     });
     renderCategoryMatches(data.matches || []);
     const best = data.matches?.[0];
@@ -8330,8 +13244,10 @@ async function ensureCategoryTreeLoaded() {
   if (state.categoryTree.length || state.categorySearchLoading) return;
   state.categorySearchLoading = true;
   try {
-    const data = await api(`/api/ozon/description-categories?storeId=${encodeURIComponent(selectedStoreId())}`);
+    const data = await api(`/api/ozon/description-categories?storeId=${encodeURIComponent(selectedStoreId())}&environment=${encodeURIComponent(currentSellerReadEnvironment())}`);
     state.categoryTree = data.result || [];
+    state.categoryEvidence.tree = data.operationEvidence || null;
+    renderCategoryEvidenceStatus();
   } catch (error) {
     toast(`读取中文类目失败：${error.message}`, "error");
   } finally {
@@ -8438,6 +13354,9 @@ function markAllVariantRowsEdited(message = "草稿已重建，尚未提交") {
 
 async function loadListingAttributes() {
   const button = $("#loadListingAttributes");
+  const requestToken = (state.categoryAttributeRequestToken = Number(state.categoryAttributeRequestToken || 0) + 1);
+  const requestStoreId = String(selectedStoreId() || "").trim();
+  const requestEnvironment = String(currentSellerReadEnvironment() || "").trim();
   setBusy(button, true);
   try {
     const descriptionCategoryId = Number($("#listingCategoryId").value);
@@ -8449,11 +13368,30 @@ async function loadListingAttributes() {
       method: "POST",
       body: JSON.stringify({
         storeId: selectedStoreId(),
+        environment: currentSellerReadEnvironment(),
         description_category_id: descriptionCategoryId,
         type_id: typeId,
       }),
     });
+    if (requestToken !== state.categoryAttributeRequestToken
+      || String(selectedStoreId() || "").trim() !== requestStoreId
+      || String(currentSellerReadEnvironment() || "").trim() !== requestEnvironment) {
+      return;
+    }
+    const operationEvidence = data.operationEvidence || null;
+    const expectedEnvironmentRefHash = await sha256Text(requestEnvironment);
+    if (String(operationEvidence?.storeId || "").trim() !== requestStoreId
+      || String(operationEvidence?.environmentRefHash || "").trim() !== expectedEnvironmentRefHash
+      || operationEvidence?.verificationLevel !== "server_observed") {
+      state.categoryEvidence.attributes = null;
+      state.categoryEvidence.nextAction = "确认当前店铺和读取环境后重新读取类目属性；不会使用跨店铺或跨环境的类目属性回执。";
+      renderCategoryEvidenceStatus();
+      toast("类目属性回执范围不匹配，未更新当前商品草稿。", "warning");
+      return;
+    }
     const attributes = data.result || [];
+    state.categoryEvidence.attributes = operationEvidence;
+    renderCategoryEvidenceStatus();
     state.listingAttributes = attributes;
     state.listingVariantAspects = attributes.filter((item) => item.is_aspect);
     const required = attributes.filter((item) => item.is_required);
@@ -8480,10 +13418,40 @@ async function loadListingAttributes() {
   }
 }
 
+function renderCategoryEvidenceStatus() {
+  const target = $("#categoryEvidenceStatus");
+  if (!target) return;
+  const tree = state.categoryEvidence?.tree || null;
+  const attributes = state.categoryEvidence?.attributes || null;
+  const valid = (entry) => entry
+    && entry.verificationLevel === "server_observed"
+    && /^sha256:[a-f0-9]{64}$/i.test(String(entry.responseHash || ""))
+    && Number(entry.statusCode || 0) >= 200
+    && Number(entry.statusCode || 0) < 300;
+  const missing = [
+    ...(valid(tree) ? [] : ["类目树"]),
+    ...(valid(attributes) ? [] : ["属性"]),
+  ];
+  if (missing.length) {
+    target.className = "category-evidence-status warning";
+    target.innerHTML = `<strong>当前店铺证据未齐</strong><span>缺少：${escapeHtml(missing.join("、"))}。${escapeHtml(state.categoryEvidence?.nextAction || "请读取/刷新后再进入上架预检。")}</span>`;
+    return;
+  }
+  const checked = [tree.checkedAt, attributes.checkedAt].filter(Boolean).sort().slice(-1)[0] || "";
+  const storeLabel = tree.storeId || attributes.storeId || selectedStoreId();
+  target.className = "category-evidence-status ready";
+  target.innerHTML = `<strong>当前店铺类目/属性证据已记录</strong><span>店铺：${escapeHtml(storeLabel)} · 读取：${escapeHtml(checked || "时间未知")} · 仅作为当前回执，不代表可自动提交。</span>`;
+}
+
 function attributeInputHtml(item) {
   const name = item.name || item.attribute_name || "未命名属性";
   const required = item.is_required ? "<b>*</b> " : "";
-  const value = item.type === "Integer" || item.type === "Decimal" ? "1" : "";
+  // A numeric type is a validation rule, not a product fact. Never seed an
+  // example number into a seller draft; the seller must provide evidence.
+  const value = item.value == null ? "" : String(item.value);
+  const placeholder = item.type === "Integer" || item.type === "Decimal"
+    ? "填写真实数值；不能使用示例值"
+    : (item.description || name);
   return `
     <div class="attribute-form-row" data-attribute-id="${item.id}" data-complex-id="${item.attribute_complex_id || 0}" data-attribute-type="${item.type || "String"}">
       <label>${required}${escapeHtml(name)} <span class="status-sub">ID ${item.id}</span></label>
@@ -8493,7 +13461,7 @@ function attributeInputHtml(item) {
           data-complex-id="${item.attribute_complex_id || 0}"
           data-attribute-type="${item.type || "String"}"
           value="${value}"
-          placeholder="${escapeHtml(item.description || name)}" />
+          placeholder="${escapeHtml(placeholder)}" />
         <div class="attribute-value-menu"></div>
       </div>
       <button class="attribute-add" title="追加到 JSON">+</button>
@@ -8520,6 +13488,7 @@ async function loadAttributeValues(attributeId) {
     method: "POST",
     body: JSON.stringify({
       storeId: selectedStoreId(),
+      environment: currentSellerReadEnvironment(),
       description_category_id: descriptionCategoryId,
       type_id: typeId,
       attribute_id: Number(attributeId),
@@ -9119,29 +14088,73 @@ function previewListingImages() {
 }
 
 async function submitListing() {
-  const button = $("#submitListing");
+  toast("直通上架已关闭。请保存草稿，进入工作流预检，并使用绑定草稿哈希的人工确认提交。", "error");
+  document.querySelector('[data-view="workflow-console"]')?.click();
+}
+
+async function saveSelectedCategoryToListingDraft() {
+  const run = currentListingWorkflowRun();
+  const job = currentListingAutoListJob(run);
+  // A stale selected workflow must never fall through to the newest unrelated
+  // draft. Category/type evidence is store- and product-scoped; saving it to
+  // another job would make the next preflight appear to pass for the wrong
+  // listing.
+  if (state.selectedWorkflowRunId && state.selectedWorkflowRunId !== "__no_workflow__"
+    && (!run || String(run.id || "") !== String(state.selectedWorkflowRunId || ""))) {
+    toast("当前商品工作流已失效，请重新选择对应上架草稿后再保存类目", "warning");
+    return;
+  }
+  const activeStoreId = String(selectedStoreId() || "").trim();
+  if (job?.id && activeStoreId && String(job.storeId || "").trim() !== activeStoreId) {
+    toast("当前草稿不属于所选店铺，未保存类目；请切换回原店铺后重试", "warning");
+    return;
+  }
+  if (!job?.id) { toast("请先从候选池创建或选择上架草稿", "error"); return; }
+  const button = $("#saveListingCategoryDraft");
   setBusy(button, true);
   try {
-    const variants = collectListingVariants();
-    const items = await prepareListingItemsForOzon(buildListingItemsFromForm());
-    const data = await api("/api/ozon/product-import", {
+    let data = await api(`/api/ozon-learning/auto-list-jobs/${encodeURIComponent(job.id)}/manual-category`, {
       method: "POST",
       body: JSON.stringify({
-        storeId: selectedStoreId(),
-        items,
+        description_category_id: Number($("#listingCategoryId")?.value || 0),
+        type_id: Number($("#listingTypeId")?.value || 0),
+        path: $("#listingCategoryPath")?.value || $("#categoryKeyword")?.value || "已由当前店铺类目建议选择",
       }),
     });
-    const taskId = data.result?.task_id || data.task_id;
-    if (taskId) $("#listingTaskId").value = taskId;
-    applySubmittedStatusToRows(items, taskId);
-    const stockQueue = taskId ? await enqueueListingStockQueue(taskId, variants) : null;
-    await saveListingDraft("published", { taskId, stockQueueId: stockQueue?.job?.id || "" });
-    showResponse(stockQueue ? { productImport: data, stockQueue } : data);
-    toast(taskId ? `已提交 ${items.length} 个上架任务商品：${taskId}，库存队列已创建` : `已提交 ${items.length} 个上架商品`);
+    // Category selection is only useful to a seller once the refreshed draft
+    // has a new local preflight result.  Validate the saved draft immediately
+    // while keeping the hard boundary explicit: this endpoint only validates
+    // the local payload; 不会调用 Seller API 写端点，也不会提交 Ozon。
+    let preflight = null;
+    if (data.workflowRunId) {
+      try {
+        preflight = await api(`/api/workflows/${encodeURIComponent(data.workflowRunId)}/payload-draft/validate`, {
+          method: "POST",
+          body: "{}",
+        });
+        data = { ...data, localPreflight: preflight };
+      } catch (error) {
+        data = { ...data, localPreflight: { ok: false, status: "unavailable", message: error.message || "本地预检未完成" } };
+      }
+    }
+    showResponse(data);
+    if (preflight) {
+      toast(preflight.ok
+        ? "类目已保存，本地预检通过；仍需媒体、价格和人工确认才能提交"
+        : `类目已保存，但本地预检仍阻塞（${preflight.issues?.length || preflight.errors?.length || 0} 项）`, preflight.ok ? "ok" : "error");
+    } else {
+      toast(data.payloadDraftReady ? "类目已保存，Payload 已刷新；请继续运行本地预检" : "类目已保存到当前草稿");
+    }
+    await loadAutoListJobs();
+    await loadWorkflowRuns();
   } catch (error) {
-    toast(error.message, "error");
+    toast(error.message || "保存类目失败", "error");
   } finally {
     setBusy(button, false);
+    if (nextButton) {
+      setBusy(nextButton, false);
+      nextButton.disabled = !state.productHasNext;
+    }
   }
 }
 
@@ -9245,8 +14258,30 @@ async function saveListingDraft(status = "draft", extra = {}) {
     }),
   });
   state.currentCaptureDraft = item.draft || buildListingDraftSnapshot(extra);
+  // The collection-box editor historically saved only a local capture draft,
+  // leaving the seller without a workflow run and therefore without the
+  // existing preflight screen.  Bind it to a local workflow now; this route
+  // is strictly local and does not call Ozon or submit anything.
+  try {
+    const workflow = await api(`/api/1688/captures/${encodeURIComponent(state.currentCaptureId)}/workflow`, {
+      method: "POST",
+      body: JSON.stringify({ storeId: selectedStoreId() }),
+    });
+    if (workflow.workflowRunId) {
+      state.selectedWorkflowRunId = workflow.workflowRunId;
+      state.selectedWorkflowNodeKey = "candidate_handoff";
+      await loadWorkflowRuns();
+    }
+  } catch (error) {
+    state.listingHandoffNotice = "草稿已保存，但商品工作流绑定失败；请重新保存后再进入预检。";
+    console.warn("listing workflow binding failed", error?.message || error);
+  }
+  // Refresh the linked auto-listing job before the seller summary renders;
+  // otherwise a newly created capture workflow has an id but the UI cannot
+  // show its category/procurement/package repair forms yet.
+  await loadAutoListJobs().catch(() => {});
   await loadCaptureBox();
-  toast(status === "published" ? "已保存发布记录" : "草稿已保存");
+  toast(status === "published" ? "已保存发布记录" : status === "submitted" ? "已保存提交回查记录" : "草稿已保存");
   return item;
 }
 
@@ -9271,17 +14306,39 @@ async function checkListingTask() {
       body: JSON.stringify({
         storeId: selectedStoreId(),
         task_id: taskId,
+        workflowRunId: state.selectedWorkflowRunId || "",
       }),
     });
     applyImportInfoToVariantRows(data, taskId);
-    const productIds = productIdsFromImportInfo(data);
-    let barcodeResult = null;
-    if (productIds.length) {
-      barcodeResult = await generateOzonBarcodes(productIds);
+    const currentRun = currentListingWorkflowRun();
+    const currentJob = currentListingAutoListJob(currentRun);
+    let reconciliation = null;
+    if (currentJob?.id) {
+      try {
+        const environmentCheck = validateReadOperatorEnvironment(currentSellerReadEnvironment());
+        if (!environmentCheck.ok) throw new Error(environmentCheck.message);
+        reconciliation = await api("/api/ozon-learning/reconcile-submitted", {
+          method: "POST",
+          body: JSON.stringify({ limit: 1, jobId: currentJob.id, taskId, storeId: selectedStoreId(), environment: environmentCheck.environment }),
+        });
+      } catch (error) {
+        reconciliation = { ok: false, sellerResult: { status: "readback_unavailable", action: error.message || "审核节点尚未同步" } };
+      }
     }
-    showResponse(barcodeResult ? { importInfo: data, barcodeGenerate: barcodeResult } : data);
-    await saveListingDraft("published", { taskId, checkedAt: new Date().toISOString() });
-    toast(barcodeResult ? "任务结果已读取，条形码已请求生成" : "任务结果已读取");
+    showResponse({ importInfo: data, reviewReconciliation: reconciliation });
+    // A task readback is not moderation approval or sale readiness. Do not
+    // mark a pending/failed asynchronous task as published in the capture box.
+    await saveListingDraft("submitted", {
+      taskId,
+      checkedAt: new Date().toISOString(),
+      taskReadbackStatus: reconciliation?.sellerResult?.status || data?.result?.status || data?.status || "unknown",
+      taskReadbackEvidence: data.operationEvidence?.responseHash ? "server_observed" : "missing",
+    });
+    await loadAutoListJobs();
+    await loadWorkflowRuns();
+    const evidenceLabel = data.operationEvidence?.responseHash ? "已记录 1 条回查证据" : "未返回回查证据引用";
+    const reconciliationLabel = reconciliation?.sellerResult?.result || reconciliation?.sellerResult?.action || "审核节点尚未同步";
+    toast(`任务结果已读取；${evidenceLabel}；${reconciliationLabel}；不会自动生成条形码或执行其他写操作`);
   } catch (error) {
     toast(error.message, "error");
   } finally {
@@ -9325,30 +14382,99 @@ function productIdsFromImportInfo(data) {
 async function generateOzonBarcodes(productIds) {
   return api("/api/ozon/barcodes/generate", {
     method: "POST",
-    body: JSON.stringify({
+    ...directWriteRequest({
       storeId: selectedStoreId(),
       product_ids: productIds,
-    }),
+    }, "barcode-generate"),
   });
 }
 
 async function readStock() {
   const button = $("#readStock");
+  const requestToken = (state.stockReadRequestToken = Number(state.stockReadRequestToken || 0) + 1);
+  const requestStoreId = selectedStoreId();
+  const requestEnvironment = String(currentSellerReadEnvironment() || "").trim();
+  const environmentCheck = validateReadOperatorEnvironment(requestEnvironment);
+  if (!environmentCheck.ok) {
+    toast(environmentCheck.message || "请先选择有效的读取环境。", "error");
+    return false;
+  }
   setBusy(button, true);
+  state.stockSnapshotProducts = null;
+  state.stockSnapshot = null;
+  const stockTable = $("#stockTable");
+  if (stockTable) stockTable.innerHTML = "<tr><td colspan=\"5\">正在读取当前店铺库存……</td></tr>";
   try {
-    const offerId = $("#stockOfferId").value.trim();
+    const offerIds = [...new Set(String($("#stockOfferId").value || "")
+      .split(/[\s,;]+/)
+      .map((value) => value.trim())
+      .filter(Boolean))].slice(0, 100);
+    if (!offerIds.length) {
+      toast("请先填写至少一个 Offer ID。", "error");
+      return false;
+    }
     const data = await api("/api/ozon/product-stocks", {
       method: "POST",
       body: JSON.stringify({
-        storeId: selectedStoreId(),
+        storeId: requestStoreId,
+        environment: requestEnvironment,
         filter: {
-          offer_id: offerId ? [offerId] : [],
+          offer_id: offerIds,
           visibility: "ALL",
         },
-        limit: 10,
+        // The seller can enter up to 100 Offer IDs.  A limit of 10 silently
+        // dropped the remaining offers while the UI still announced a
+        // successful inventory read.
+        limit: 100,
       }),
     });
-    const items = data.items || data.result?.items || [];
+    if (requestToken !== state.stockReadRequestToken
+      || requestStoreId !== selectedStoreId()
+      || String(currentSellerReadEnvironment() || "").trim() !== requestEnvironment) return false;
+    if (String(data?.storeId || "").trim() !== String(requestStoreId || "").trim()) {
+      throw new Error("库存读取回执不属于当前店铺，已丢弃；请重新读取当前店铺库存。");
+    }
+    if (String(data?.environment || "").trim() !== requestEnvironment) {
+      throw new Error("库存读取回执不属于当前读取环境，已丢弃；请重新读取当前环境库存。");
+    }
+    const rawItems = data?.items ?? data?.result?.items;
+    if (!Array.isArray(rawItems)) {
+      state.stockSnapshotProducts = null;
+      state.stockSnapshot = null;
+      if (stockTable) stockTable.innerHTML = "<tr><td colspan=\"5\">库存读取结果未知；Seller API 没有返回可解释的商品库存列表，请重试。</td></tr>";
+      toast("库存读取结果未知，请检查 Seller API 返回后重试。", "error");
+      return false;
+    }
+    const items = rawItems;
+    const returnedOfferIds = new Set(items
+      .map((item) => String(item?.offer_id || item?.offerId || "").trim())
+      .filter(Boolean));
+    const missingOfferIds = offerIds.filter((offerId) => !returnedOfferIds.has(offerId));
+    const nextCursor = String(data?.cursor || data?.next_cursor || data?.result?.cursor || data?.result?.next_cursor || "").trim();
+    const hasNextPage = Boolean(data?.has_next || data?.result?.has_next || nextCursor);
+    state.stockSnapshotProducts = Array.isArray(items) ? items.map((item) => ({
+      offer_id: item.offer_id,
+      product_id: item.product_id,
+      status: item.status || item.status_name || item.moderate_status || "",
+      status_failed: item.status_failed === true,
+    })) : null;
+    const warehouseStocks = Array.isArray(items) ? items.flatMap((item) => (item.stocks || [])
+      .filter((stock) => Number(stock.warehouse_id || stock.warehouseId || 0) > 0)
+      .map((stock) => {
+        // A missing present/stock field is unknown evidence, not zero. Keep
+        // the null boundary so the dry-run and product ledger cannot present
+        // an incomplete Seller response as an empty warehouse.
+        const rawStock = stock.present ?? stock.stock;
+        const numericStock = rawStock === null || rawStock === undefined || rawStock === ""
+          ? null
+          : Number(rawStock);
+        return {
+          offer_id: item.offer_id,
+          warehouse_id: Number(stock.warehouse_id || stock.warehouseId),
+          stock: Number.isFinite(numericStock) ? numericStock : null,
+        };
+      })) : [];
+    state.stockSnapshot = warehouseStocks.length ? warehouseStocks : null;
     const rows = [];
     for (const item of items) {
       for (const stock of item.stocks || []) {
@@ -9363,13 +14489,575 @@ async function readStock() {
         `);
       }
     }
+    const completenessNotice = missingOfferIds.length || hasNextPage
+      ? `<tr class="stock-read-incomplete"><td colspan="5">库存读取不完整：${missingOfferIds.length ? `未返回 Offer ${missingOfferIds.join(", ")}${hasNextPage ? "；还有下一页" : ""}` : "Seller API 返回了下一页游标，请改用库存预演读取完整范围"}。当前结果不能代表全部输入商品。</td></tr>`
+      : "";
     $("#stockTable").innerHTML = rows.length
-      ? rows.join("")
-      : "<tr><td colspan=\"5\">没有库存数据。</td></tr>";
+      ? `${completenessNotice}${rows.join("")}`
+      : `${completenessNotice || "<tr><td colspan=\"5\">没有库存数据。</td></tr>"}`;
     showResponse(data);
-    toast("库存已读取");
+    toast(missingOfferIds.length || hasNextPage ? "库存读取不完整，请按提示补读" : "库存已读取", missingOfferIds.length || hasNextPage ? "warning" : "success");
   } catch (error) {
+    if (requestToken !== state.stockReadRequestToken
+      || requestStoreId !== selectedStoreId()
+      || String(currentSellerReadEnvironment() || "").trim() !== requestEnvironment) return false;
+    state.stockSnapshotProducts = null;
+    state.stockSnapshot = null;
+    if (stockTable) stockTable.innerHTML = "<tr><td colspan=\"5\">库存读取失败；旧店铺数据已清除，请重试。</td></tr>";
     toast(error.message, "error");
+  } finally {
+    if (requestToken === state.stockReadRequestToken) setBusy(button, false);
+  }
+}
+
+function renderStockDryRun(data = {}) {
+  const view = data.sellerView || {};
+  const result = $("#stockDryRunResult");
+  if (!result) return;
+  const blockers = (view.blockers || []).map((item) => `<li>${escapeHtml(item)}</li>`).join("");
+  const blockerDetails = (view.blockerDetails || []).map((item) => `
+    <li><b>${escapeHtml(item.label || item.code || "库存阻断")}</b> · Offer ${escapeHtml(item.offer_id || "-")} · 仓库 ${escapeHtml(String(item.warehouse_id || "未知"))}</li>
+  `).join("");
+  const changes = (view.changes || []).map((item) => `
+    <tr>
+      <td>${escapeHtml(item.offer_id || "-")}</td>
+      <td>${escapeHtml(String(item.warehouse_id || "-"))}</td>
+      <td>${escapeHtml(String(item.current))}</td>
+      <td>${escapeHtml(String(item.target))}</td>
+      <td>${escapeHtml(item.direction)} ${escapeHtml(String(Math.abs(item.delta)))}</td>
+    </tr>
+  `).join("");
+  const targetTuples = Array.isArray(view.targetTuples) ? view.targetTuples : [];
+  const unknownTuples = Array.isArray(view.unknownTuples) ? view.unknownTuples : [];
+  const tupleRows = targetTuples.map((item) => `
+    <tr>
+      <td>${escapeHtml(String(item.offer_id || "-"))}</td>
+      <td>${escapeHtml(String(item.warehouse_id || "-"))}</td>
+      <td>${unknownTuples.some((unknown) => String(unknown.offer_id) === String(item.offer_id) && Number(unknown.warehouse_id) === Number(item.warehouse_id)) ? "待重新读取" : escapeHtml(String(item.target ?? "未知"))}</td>
+    </tr>
+  `).join("");
+  const tupleEvidence = targetTuples.length ? `
+    <div class="stock-dry-run-tuples">
+      <strong>本次核对范围</strong>
+      <p>每一行都对应一个商品和仓库；当前数量未知时不能按 0 处理。</p>
+      <div class="table-wrap"><table><thead><tr><th>商品 Offer</th><th>仓库</th><th>目标库存</th></tr></thead><tbody>${tupleRows}</tbody></table></div>
+    </div>
+  ` : "";
+  const unknownTupleNotice = unknownTuples.length ? `
+    <p class="stock-dry-run-unknown"><b>还缺少当前库存：</b>${unknownTuples.map((item) => `Offer ${escapeHtml(String(item.offer_id || "-"))} / 仓库 ${escapeHtml(String(item.warehouse_id || "-"))}`).join("、")}。这些商品仓库组合必须重新读取到明确数量后，才能再次预演。</p>
+  ` : "";
+  const dryRun = data.dryRun || {};
+  const canConfirmWrite = dryRun.executable === true
+    && Number(view.changeCount || 0) > 0
+    && stockEvidenceUsableForCurrentTarget()
+    && stockDryRunMatchesCurrentTarget(data);
+  const writeConfirmation = canConfirmWrite ? `
+    <div class="stock-write-confirmation" data-stock-write-confirmation>
+      <strong>受控库存写入</strong>
+      <p>服务端会在写入前重新读取商品、仓库和当前库存；写入后仍会立即回读，不会把 accepted 当成已对账。</p>
+      <label><input type="checkbox" data-stock-write-confirm /> 我确认当前差异、仓库和目标库存无误</label>
+      <button type="button" class="primary" data-confirm-stock-write>确认并写入当前差异</button>
+      <p class="stock-write-response" aria-live="polite"></p>
+    </div>
+  ` : "";
+  result.innerHTML = `
+    <div class="stock-dry-run-summary">
+      <strong>${escapeHtml(view.statusLabel || "预演完成")}</strong>
+      <p>${escapeHtml(view.summary || "")}</p>
+      <small>${escapeHtml(view.sideEffect || "")}</small>
+    </div>
+    ${tupleEvidence}
+    ${unknownTupleNotice}
+    ${blockers || blockerDetails ? `<ul class="stock-dry-run-blockers">${blockerDetails || blockers}</ul>` : ""}
+    ${changes ? `<div class="table-wrap"><table><thead><tr><th>Offer ID</th><th>仓库</th><th>当前</th><th>目标</th><th>变化</th></tr></thead><tbody>${changes}</tbody></table></div>` : ""}
+    <p class="stock-dry-run-next"><strong>安全下一步：</strong>${escapeHtml(view.nextAction || "")}</p>
+    ${writeConfirmation}
+  `;
+}
+
+function stockTargetsFromEditor() {
+  const rows = JSON.parse($("#stockJson")?.value || "[]");
+  if (!Array.isArray(rows) || !rows.length) {
+    const error = new Error("请先填写至少一条目标库存。");
+    error.reasonCode = "STOCK_EVIDENCE_OFFERS_REQUIRED";
+    throw error;
+  }
+  const offerIds = [...new Set(rows.map((row) => String(row?.offer_id || row?.offerId || "").trim()).filter(Boolean))];
+  if (!offerIds.length) {
+    const error = new Error("目标库存缺少 Offer ID。");
+    error.reasonCode = "STOCK_EVIDENCE_OFFERS_REQUIRED";
+    throw error;
+  }
+  if (offerIds.length > 100) {
+    const error = new Error("一次最多读取 100 个商品的预演证据。");
+    error.reasonCode = "STOCK_EVIDENCE_OFFERS_LIMIT_EXCEEDED";
+    throw error;
+  }
+  const warehouseIds = [...new Set(rows
+    .map((row) => Number(row?.warehouse_id || row?.warehouseId || 0))
+    .filter((warehouseId) => Number.isSafeInteger(warehouseId) && warehouseId > 0))];
+  // A target without its exact warehouse tuple cannot be safely reconciled.
+  // Fail at the editor boundary with a seller-facing instruction instead of
+  // sending an empty warehouse scope and waiting for a generic server block.
+  const missingWarehouseRow = rows.findIndex((row) => {
+    const warehouseId = Number(row?.warehouse_id || row?.warehouseId || 0);
+    return !Number.isSafeInteger(warehouseId) || warehouseId <= 0;
+  });
+  if (missingWarehouseRow >= 0) {
+    const error = new Error(`第 ${missingWarehouseRow + 1} 行缺少仓库 ID。`);
+    error.reasonCode = "STOCK_EVIDENCE_WAREHOUSE_REQUIRED";
+    throw error;
+  }
+  const normalizedRows = rows.map((row, index) => {
+    const rawStock = row?.stock ?? row?.quantity;
+    const stock = rawStock === null || rawStock === undefined || String(rawStock).trim() === ""
+      ? NaN
+      : Number(rawStock);
+    if (!Number.isSafeInteger(stock) || stock < 0) {
+      const error = new Error(`第 ${index + 1} 行目标库存必须填写大于等于 0 的整数。`);
+      error.reasonCode = "STOCK_EVIDENCE_TARGET_STOCK_INVALID";
+      throw error;
+    }
+    return {
+      ...row,
+      offer_id: String(row?.offer_id || row?.offerId || "").trim(),
+      warehouse_id: Number(row?.warehouse_id || row?.warehouseId || 0),
+      stock,
+    };
+  });
+  return { rows: normalizedRows, offerIds, warehouseIds };
+}
+
+function stockTargetSignature(rows = []) {
+  return (Array.isArray(rows) ? rows : [])
+    .map((row) => ({
+      offer_id: String(row?.offer_id || row?.offerId || "").trim(),
+      warehouse_id: Number(row?.warehouse_id || row?.warehouseId || 0),
+      stock: Number(row?.stock ?? row?.quantity ?? 0),
+    }))
+    .sort((a, b) => a.offer_id.localeCompare(b.offer_id) || a.warehouse_id - b.warehouse_id)
+    .map((row) => `${row.offer_id}::${row.warehouse_id}::${row.stock}`)
+    .join("|");
+}
+
+function stockDryRunMatchesCurrentTarget(data = {}) {
+  const planned = data?.dryRun?.plan?.targetStocks;
+  if (!Array.isArray(planned) || !planned.length) return false;
+  try {
+    return stockTargetSignature(planned) === stockTargetSignature(stockTargetsFromEditor().rows);
+  } catch {
+    return false;
+  }
+}
+
+// The preview/write entry point must be tied to the same fresh evidence that
+// produced the target. A local JSON target alone is never write-ready.
+function stockEvidenceUsableForCurrentTarget() {
+  const evidence = state.stockEvidence;
+  if (!evidence || evidence.failed === true || evidence.stale === true || evidence.partial === true) return false;
+  // The read endpoint derives `partial` from this flag, but keep the guard at
+  // the UI boundary as well. A stale/legacy state object (or a handoff from a
+  // different view) must not become preview-ready merely because it omitted
+  // the completeness marker. Product readiness is part of the same evidence
+  // chain: current stock for a non-sellable or unconfirmed Offer is not a
+  // valid inventory preview input.
+  if (evidence.completeForRequestedIds !== true || evidence.productStatusReadyForAll !== true) return false;
+  if (!Array.isArray(evidence.missingEvidence) || evidence.missingEvidence.length) return false;
+  const checkedAt = Date.parse(String(evidence.checkedAt || ""));
+  if (!Number.isFinite(checkedAt) || checkedAt > Date.now() || Date.now() - checkedAt > 30 * 60 * 1000) return false;
+  let target;
+  try {
+    target = stockTargetsFromEditor();
+  } catch {
+    return false;
+  }
+  return evidence.storeId === selectedStoreId()
+    && String(evidence.environment || "").trim() === String(currentSellerReadEnvironment() || "").trim()
+    && Array.isArray(evidence.offerIds)
+    && evidence.offerIds.join("|") === target.offerIds.join("|")
+    && Array.isArray(evidence.warehouseIds)
+    && evidence.warehouseIds.join("|") === target.warehouseIds.join("|");
+}
+
+function syncStockActionButtons() {
+  const button = $("#stockDryRun");
+  if (!button) return;
+  const ready = stockEvidenceUsableForCurrentTarget();
+  button.disabled = !ready;
+  button.title = ready
+    ? "当前商品、仓库和库存证据有效，可进行本地差异预演"
+    : "必须先读取当前商品、仓库和库存证据；证据过期或目标变更后需重新读取";
+}
+
+function stockEvidenceSellerError(reasonCode = "") {
+  const messages = {
+    STOCK_EVIDENCE_STORE_REQUIRED: "请先选择当前店铺，再读取库存预演证据。",
+    STOCK_EVIDENCE_OFFERS_REQUIRED: "请在目标库存中填写至少一个有效 Offer ID。",
+    STOCK_EVIDENCE_OFFERS_LIMIT_EXCEEDED: "一次最多读取 100 个唯一 Offer ID，请拆分后再试。",
+    STOCK_EVIDENCE_OFFER_INVALID: "目标库存包含无效 Offer ID，请修正后再读取。",
+    STOCK_EVIDENCE_WAREHOUSE_REQUIRED: "每个目标库存都必须绑定明确的 Ozon 仓库 ID，不能按未知仓库读取。",
+    STOCK_EVIDENCE_TARGET_STOCK_INVALID: "每个目标库存都必须填写大于等于 0 的整数；空值不会按 0 处理。",
+  };
+  return messages[reasonCode] || "库存预演证据读取失败，请检查店铺连接后重试。";
+}
+
+function stockProductReadinessNextAction(data = {}) {
+  const products = Array.isArray(data.products) ? data.products : [];
+  if (products.some((item) => item?.visible === false)) return "先确认隐藏商品已上架且对买家可见，再重新读取商品状态；当前不能进入库存预演。";
+  if (products.some((item) => item?.status_stale === true || ["stale", "expired", "outdated"].includes(String(item?.statusFreshness || item?.freshnessStatus || "").toLowerCase()))) return "商品状态读取已陈旧；先重新读取并确认审核/在售状态，当前不能进入库存预演。";
+  if (products.some((item) => ["moderating", "moderation", "processing", "imported", "under_review", "pending"].includes(String(item?.status || item?.status_name || item?.moderate_status || "").toLowerCase()))) return "商品仍在审核或导入中；等待 Ozon 完成后重新读取状态，当前不能进入库存预演。";
+  if (products.some((item) => !String(item?.status || item?.status_name || item?.moderate_status || "").trim())) return "商品状态尚未确认；重新读取商品详情和审核状态，当前不能进入库存预演。";
+  return "等待商品状态明确可售后重新读取证据；当前不能进入库存预演。";
+}
+
+function stockOperationSellerLabel(operationPath = "") {
+  const path = String(operationPath || "");
+  if (/product\/list/.test(path)) return "商品状态";
+  if (/stocks/.test(path)) return "当前库存";
+  if (/product\/info/.test(path)) return "商品详情";
+  if (/warehouse/.test(path)) return "仓库状态";
+  return "库存读取";
+}
+
+function renderStockEvidence(data = {}) {
+  const result = $("#stockEvidenceResult");
+  if (!result) return;
+  const missing = Array.isArray(data.missingEvidence) ? data.missingEvidence : [];
+  const targetTuples = Array.isArray(data.targetTuples) ? data.targetTuples : [];
+  const unknownTuples = Array.isArray(data.unknownTuples) ? data.unknownTuples : missing
+    .map((item) => String(item).match(/^current_stock:([^:]+):(\d+)$/))
+    .filter(Boolean)
+    .map((match) => ({ offer_id: match[1], warehouse_id: Number(match[2]), current: null }));
+  const missingSellerLabels = missing.map((item) => {
+    const text = String(item);
+    const tuple = text.match(/^current_stock:([^:]+):(\d+)$/);
+    if (tuple) return `Offer ${tuple[1]} / 仓库 ${tuple[2]}：当前库存未读取`;
+    return ({
+      product_list: "商品状态未读取",
+      product_details: "商品详情未完整读取",
+      current_stocks: "当前库存未完整读取",
+      warehouses: "仓库状态未完整读取",
+    })[text] || "仍有一项库存证据未补齐";
+  });
+  const tupleNeedsRead = unknownTuples.length
+    ? `<p class="stock-evidence-unknown"><b>需要重新读取的商品仓库：</b>${unknownTuples.map((item) => `Offer ${escapeHtml(String(item.offer_id || "-"))} / 仓库 ${escapeHtml(String(item.warehouse_id || "-"))}`).join("、")}。当前数量未知，不能按 0 判断。</p>`
+    : "";
+  const tupleScope = targetTuples.length
+    ? `<p class="stock-evidence-targets"><b>本次核对范围：</b>${targetTuples.map((item) => `Offer ${escapeHtml(String(item.offer_id || "-"))} / 仓库 ${escapeHtml(String(item.warehouse_id || "-"))}，目标 ${escapeHtml(String(item.target ?? "未知"))}`).join("；")}</p>`
+    : "";
+  const partial = data.partial === true || data.stale === true || missing.length > 0;
+  const productNotReady = data.productStatusReadyForAll === false;
+  const hasProblem = data.failed === true || partial || productNotReady;
+  const verification = sellerEvidenceVerification({
+    failed: data.failed === true,
+    partial,
+    liveReadObserved: data.liveReadObserved === true,
+    verificationLevel: data.verificationLevel,
+  });
+  const scopeText = data.storeId
+    ? `店铺 ${data.storeId} · ${Number(data.offerIds?.length || 0)} 个 Offer · ${Number(data.warehouseIds?.length || 0)} 个目标仓库`
+    : "尚未绑定店铺和 Offer 范围";
+  const nextAction = data.nextAction || (data.failed
+    ? "检查店铺只读连接后重新读取证据。"
+    : partial
+      ? "补齐或重新读取缺失证据；当前不能继续库存预演。"
+      : productNotReady
+        ? stockProductReadinessNextAction(data)
+      : "确认目标库存未变化后，再点击库存差异预演。");
+  const receiptEligible = Boolean(!data.failed && !partial && !productNotReady && data.completeForRequestedIds === true && !data.stale && data.storeId && data.offerIds?.length);
+  const operationEvidence = Array.isArray(data.operationEvidence) ? data.operationEvidence : [];
+  const paginationAttempts = Array.isArray(data.endpointAttempts) ? data.endpointAttempts.filter((entry) => Number(entry?.pageCount || 0) > 1 || entry?.paginationComplete === false) : [];
+  const paginationSummary = paginationAttempts.length
+    ? `<small>分页读取：${paginationAttempts.map((entry) => `${escapeHtml(stockOperationSellerLabel(entry.endpoint))} ${Number(entry.pageCount || 0)} 页${entry.paginationCursorRepeated ? "，游标重复已停止" : entry.paginationComplete === false ? "，仍需重读" : ""}`).join("；")}</small>`
+    : "";
+  result.innerHTML = `
+    <div class="stock-evidence-summary ${hasProblem ? "is-partial" : "is-complete"}">
+      <strong>${data.failed === true ? "库存证据读取失败" : data.stale === true ? "目标库存已修改，原预演证据已陈旧" : partial ? "库存预演证据不完整" : productNotReady ? "商品尚未明确可售" : "库存预演证据已读取"}</strong>
+      <span>证据时间：${escapeHtml(data.checkedAt || "未返回")}</span>
+      <div class="seller-evidence-verification" data-level="${escapeHtml(verification.level)}">
+        <span>验证等级：${escapeHtml(verification.label)}</span>
+        <span>证据范围：${escapeHtml(scopeText)}</span>
+        <small>${escapeHtml(verification.explanation)} 不代表商品可售，也不代表库存已写入。</small>
+      </div>
+      <small>商品 ${Number(data.products?.length || 0)} · 仓库 ${Number(data.warehouses?.length || 0)} · 当前库存 ${Number(data.currentStocks?.length || 0)}</small>
+      ${operationEvidence.length ? `<small>本次读取：${[...new Set(operationEvidence.map((entry) => stockOperationSellerLabel(entry.operationPath)))].map(escapeHtml).join("、")}</small>` : ""}
+      ${paginationSummary}
+      ${missingSellerLabels.length ? `<p><b>还缺少：</b>${missingSellerLabels.map(escapeHtml).join("；")}</p>` : ""}
+      ${tupleScope}
+      ${tupleNeedsRead}
+      <p>本次只读，不会写库存、不会创建库存队列。</p>
+      <p><b>安全下一步：</b>${escapeHtml(nextAction)}</p>
+      <div class="stock-evidence-receipt" data-stock-receipt-eligible="${receiptEligible ? "true" : "false"}">
+        <strong>保存本地只读证据回执</strong>
+        <label>环境名
+          <input type="text" list="stockReceiptEnvironmentOptions" data-stock-receipt-environment placeholder="例如：local-dev-readonly" ${receiptEligible ? "" : "disabled"} />
+          <datalist id="stockReceiptEnvironmentOptions"><option value="local-dev-readonly"></option><option value="staging-readonly"></option><option value="production-readonly"></option></datalist>
+        </label>
+        <label><input type="checkbox" data-stock-receipt-confirm ${receiptEligible ? "" : "disabled"} /> 我确认保存当前环境的一次只读证据回执</label>
+         <button type="button" class="ghost" data-save-stock-evidence-receipt data-store-id="${escapeHtml(data.storeId || "")}" data-offer-ids="${escapeHtml((data.offerIds || []).join(","))}" data-warehouse-ids="${escapeHtml((data.warehouseIds || []).join(","))}" disabled>保存本次只读回执</button>
+        <small>${receiptEligible ? "只保存脱敏本地回执；服务端会重新执行受限只读聚合。" : "证据 partial、stale、failed 或范围不完整时不能保存回执。"} 不会写库存、不会创建队列。</small>
+        <p class="stock-evidence-receipt-response" aria-live="polite"></p>
+      </div>
+    </div>
+  `;
+}
+
+function updateStockReceiptControl(container) {
+  if (!container) return;
+  const environment = container.querySelector("[data-stock-receipt-environment]")?.value.trim() || "";
+  const confirmed = container.querySelector("[data-stock-receipt-confirm]")?.checked === true;
+  const button = container.querySelector("[data-save-stock-evidence-receipt]");
+  if (button) button.disabled = container.dataset.stockReceiptEligible !== "true" || !environment || !confirmed;
+}
+
+async function saveStockEvidenceReceipt(button) {
+  const container = button.closest(".stock-evidence-receipt");
+  const response = container?.querySelector(".stock-evidence-receipt-response");
+  const environment = container?.querySelector("[data-stock-receipt-environment]")?.value.trim() || "";
+  const offerIds = String(button.dataset.offerIds || "").split(",").filter(Boolean);
+  const warehouseIds = String(button.dataset.warehouseIds || "").split(",").map(Number).filter((warehouseId) => Number.isSafeInteger(warehouseId) && warehouseId > 0);
+  setBusy(button, true);
+  try {
+    const data = await api("/api/ozon/stock-reconciliation/evidence-receipts", {
+      method: "POST",
+      body: JSON.stringify({
+        recordEvidence: true,
+        environment,
+        storeId: button.dataset.storeId,
+        offerIds,
+        warehouseIds,
+      }),
+    });
+    const summaryQuery = new URLSearchParams({
+      environment,
+      storeId: String(button.dataset.storeId || ""),
+      offerIds: offerIds.join(","),
+      warehouseIds: warehouseIds.join(","),
+    });
+    const summary = await api(`/api/ozon/stock-reconciliation/evidence-receipts?${summaryQuery.toString()}`);
+    if (response) response.textContent = `回执已保存并按当前店铺/目标范围回读 · 验证等级 ${escapeHtml(summary.verification?.verificationLevel || data.verification?.verificationLevel || "locally_tested")} · 当前范围回执 ${Number(summary.receiptCount || 0)} 条 · 证据时间 ${escapeHtml(data.receipt?.checkedAt || "未返回")}`;
+  } catch {
+    if (response) response.textContent = "只读回执保存未完成，请检查环境名和只读连接后重试。";
+  } finally {
+    setBusy(button, false);
+    updateStockReceiptControl(container);
+  }
+}
+
+function invalidateStockEvidenceOnTargetChange() {
+  if (!state.stockEvidence) return;
+  state.stockSnapshotProducts = null;
+  state.stockWarehouses = null;
+  state.stockSnapshot = null;
+  state.stockEvidence = { ...state.stockEvidence, stale: true };
+  state.stockDryRun = null;
+  syncStockActionButtons();
+  renderStockEvidence({ ...state.stockEvidence, products: [], warehouses: [], currentStocks: [] });
+  const dryRun = $("#stockDryRunResult");
+  if (dryRun) dryRun.innerHTML = "<p class=\"hint\">目标库存已修改；旧预演结果和只读证据均不可继续使用，请重新读取证据。</p>";
+}
+
+async function readStockReconciliationEvidence() {
+  const button = $("#stockEvidenceRead");
+  const requestToken = (state.stockEvidenceRequestToken = Number(state.stockEvidenceRequestToken || 0) + 1);
+  const requestStoreId = selectedStoreId();
+  const environmentCheck = validateReadOperatorEnvironment(currentSellerReadEnvironment());
+  if (!environmentCheck.ok) {
+    state.stockEvidence = { failed: true, stale: true, partial: true, missingEvidence: [], environment: "" };
+    syncStockActionButtons();
+    toast(environmentCheck.message, "warning");
+    return false;
+  }
+  const requestEnvironment = environmentCheck.environment;
+  setBusy(button, true);
+  try {
+    const { offerIds, warehouseIds } = stockTargetsFromEditor();
+    const storeId = requestStoreId;
+    const data = await api("/api/ozon/stock-reconciliation/evidence", {
+      method: "POST",
+      body: JSON.stringify({ storeId, offerIds, warehouseIds }),
+    });
+    if (requestToken !== state.stockEvidenceRequestToken || requestStoreId !== selectedStoreId()) return false;
+    const responseOfferIds = Array.isArray(data.offerIds) ? data.offerIds.map((value) => String(value)).join("|") : "";
+    const responseWarehouseIds = Array.isArray(data.warehouseIds) ? data.warehouseIds.map((value) => String(value)).join("|") : "";
+    if (String(data.storeId || "").trim() !== String(requestStoreId || "").trim()
+      || String(data.environment || "").trim() !== requestEnvironment
+      || responseOfferIds !== offerIds.join("|")
+      || responseWarehouseIds !== warehouseIds.join("|")) {
+      throw new Error("库存证据回执范围已变化，已丢弃；请重新读取当前店铺和目标 Offer/仓库。");
+    }
+    state.stockSnapshotProducts = Array.isArray(data.products) ? data.products.map((item) => ({
+      offer_id: String(item.offer_id || ""),
+      product_id: Number(item.product_id || 0),
+      status: String(item.status || "unknown"),
+      visible: item.visible === true,
+    })) : [];
+    state.stockWarehouses = Array.isArray(data.warehouses) ? data.warehouses.map((item) => ({
+      warehouse_id: Number(item.warehouse_id || 0),
+      status: String(item.status || ""),
+      is_rf: item.is_rf === true,
+      is_rfbs: item.is_rfbs === true,
+      delivery_method_type: String(item.delivery_method_type || ""),
+    })) : [];
+    const normalizeObservedStock = (value) => {
+      if (value === null || value === undefined || value === "") return null;
+      const number = Number(value);
+      return Number.isFinite(number) ? number : null;
+    };
+    state.stockSnapshot = Array.isArray(data.currentStocks) ? data.currentStocks.map((item) => ({
+      offer_id: String(item.offer_id || ""),
+      product_id: Number(item.product_id || 0),
+      warehouse_id: Number(item.warehouse_id || 0),
+      stock: normalizeObservedStock(item.present),
+      present: normalizeObservedStock(item.present),
+      reserved: normalizeObservedStock(item.reserved),
+    })) : [];
+    state.stockEvidence = {
+      storeId,
+      environment: requestEnvironment,
+      offerIds,
+      warehouseIds,
+      checkedAt: String(data.checkedAt || ""),
+      partial: data.partial === true || data.completeForRequestedIds !== true,
+      completeForRequestedIds: data.completeForRequestedIds === true,
+      productStatusReadyForAll: data.productStatusReadyForAll === true,
+      missingEvidence: Array.isArray(data.missingEvidence) ? data.missingEvidence.map(String) : [],
+      targetTuples: Array.isArray(data.targetTuples) ? data.targetTuples : [],
+      unknownTuples: Array.isArray(data.unknownTuples) ? data.unknownTuples : [],
+      verificationLevel: String(data.verificationLevel || "locally_tested"),
+      liveReadObserved: data.liveReadObserved === true,
+    };
+    syncStockActionButtons();
+    renderStockEvidence({ ...state.stockEvidence, products: state.stockSnapshotProducts, warehouses: state.stockWarehouses, currentStocks: state.stockSnapshot });
+    toast(state.stockEvidence.partial || state.stockEvidence.missingEvidence.length ? "库存预演证据不完整，请先处理缺项" : "库存预演证据已读取");
+  } catch (error) {
+    if (requestToken !== state.stockEvidenceRequestToken || requestStoreId !== selectedStoreId()) return false;
+    state.stockSnapshotProducts = null;
+    state.stockWarehouses = null;
+    state.stockSnapshot = null;
+    state.stockDryRun = null;
+    state.stockEvidence = { failed: true, stale: true, partial: true, missingEvidence: [] };
+    syncStockActionButtons();
+    renderStockEvidence({
+      failed: true,
+      reasonCode: error.reasonCode || "STOCK_EVIDENCE_READ_FAILED",
+      nextAction: stockEvidenceSellerError(error.reasonCode),
+      storeId: selectedStoreId(),
+      offerIds: [],
+      checkedAt: new Date().toISOString(),
+      verificationLevel: "locally_tested",
+    });
+    toast(stockEvidenceSellerError(error.reasonCode), "error");
+  } finally {
+    if (requestToken === state.stockEvidenceRequestToken) setBusy(button, false);
+  }
+}
+
+async function runStockDryRun() {
+  const button = $("#stockDryRun");
+  setBusy(button, true);
+  try {
+    const { rows: targetStocks, offerIds, warehouseIds } = stockTargetsFromEditor();
+    const evidence = state.stockEvidence;
+    // Do not rely solely on the disabled attribute. Keyboard activation,
+    // restored browser state, or a direct event dispatch can still reach this
+    // handler. Re-run the exact store/Offer/warehouse/freshness gate before
+    // asking the server to calculate a preview.
+    if (!stockEvidenceUsableForCurrentTarget()) {
+      toast("库存预演证据不完整、已过期或商品尚未明确可售，请先重新读取当前证据。", "error");
+      return;
+    }
+    const evidenceCurrent = evidence
+      && evidence.storeId === selectedStoreId()
+      && evidence.offerIds.join("|") === offerIds.join("|")
+      && evidence.warehouseIds.join("|") === warehouseIds.join("|");
+    if (!evidenceCurrent || evidence.stale || evidence.partial || evidence.missingEvidence.length) {
+      toast("库存预演证据不完整或已与目标库存不一致，请先重新读取一次预演证据。", "error");
+      return;
+    }
+    const data = await api("/api/ozon/stock-reconciliation/dry-run", {
+      method: "POST",
+      body: JSON.stringify({
+        storeId: selectedStoreId(),
+        targetStocks,
+        products: state.stockSnapshotProducts,
+        warehouses: state.stockWarehouses,
+        currentStocks: state.stockSnapshot,
+      }),
+    });
+    renderStockDryRun(data);
+    state.stockDryRun = data;
+    showResponse(data);
+    toast(data.dryRun?.executable ? "库存差异预演完成" : "库存预演发现阻断", data.dryRun?.executable ? "success" : "warning");
+  } catch (error) {
+    toast(error.reasonCode ? stockEvidenceSellerError(error.reasonCode) : "库存预演未完成，请检查目标库存和只读证据后重试。", "error");
+  } finally {
+    setBusy(button, false);
+  }
+}
+
+async function confirmStockWrite() {
+  const container = document.querySelector("[data-stock-write-confirmation]");
+  const response = container?.querySelector(".stock-write-response");
+  if (container?.querySelector("[data-stock-write-confirm]")?.checked !== true) {
+    toast("请先确认当前库存差异、仓库和目标库存。", "error");
+    return;
+  }
+  const dryRun = state.stockDryRun?.dryRun || {};
+  if (dryRun.executable !== true || !dryRun.idempotencyKey) {
+    toast("当前 dry-run 已失效，请重新读取证据并预演。", "error");
+    return;
+  }
+  if (!stockEvidenceUsableForCurrentTarget() || !stockDryRunMatchesCurrentTarget(state.stockDryRun)) {
+    state.stockDryRun = null;
+    if (container) container.remove();
+    syncStockActionButtons();
+    toast("目标库存或只读证据已变化，旧 dry-run 不能复用；请重新读取证据并预演。", "error");
+    return;
+  }
+  let targetStocks;
+  try {
+    targetStocks = stockTargetsFromEditor().rows;
+  } catch (error) {
+    if (error.reasonCode === "DIRECT_WRITE_UNKNOWN_OUTCOME" || error.commandState === "needs_review") {
+      state.promotionMutationEvidence = {
+        ...(state.promotionMutationEvidence || {}),
+        status: "needs_review",
+        writeStatus: "needs_review",
+        checkedAt: new Date().toISOString(),
+        readback: false,
+      };
+      renderPromotionDetail();
+    }
+    toast(error.message, "error");
+    return;
+  }
+  const request = directWriteRequest({
+    storeId: selectedStoreId(),
+    stocks: targetStocks,
+    confirmStockDryRun: true,
+  }, "ozon.warehouse-stocks.confirmed");
+  const button = container?.querySelector("[data-confirm-stock-write]");
+  setBusy(button, true);
+  try {
+    const data = await api("/api/ozon/warehouse-stocks/confirmed", {
+      method: "POST",
+      headers: request.headers,
+      body: request.body,
+    });
+    if (response) response.textContent = "Ozon 已返回写入结果，正在执行写后只读回查……";
+    state.stockDryRun = null;
+    const readbackOk = await readStockReconciliationEvidence();
+    if (readbackOk !== true || String(data?.summary?.status || "") !== "reconciled") {
+      if (response) response.textContent = "写入响应已返回，但写后精确 tuple 回查未完成；结果保持待复核，不宣称库存已更新。";
+      toast("写入结果已返回，但写后库存回查未确认；请保持当前命令待复核，不要重复写入。", "warning");
+      return;
+    }
+    const readbackAt = data?.summary?.readbackCheckedAt ? ` · 回查于 ${escapeHtml(data.summary.readbackCheckedAt)}` : "";
+    if (response) response.textContent = `写入请求已完成并已通过精确 tuple 回查 · ${escapeHtml(data?.summary?.status || data?.status || "accepted")}${readbackAt}`;
+  } catch (error) {
+    if (response) response.textContent = error.message || "库存写入未完成";
+    toast(error.message || "库存写入未完成", "error");
   } finally {
     setBusy(button, false);
   }
@@ -9396,11 +15084,11 @@ async function replayStockQueueFailures() {
   try {
     const data = await api("/api/ozon/stock-queue/replay-failed", {
       method: "POST",
-      body: JSON.stringify({ limit: 10 }),
+      body: JSON.stringify({ limit: 10, storeId: selectedStoreId() }),
     });
     showResponse(data);
     await loadStockQueue();
-    toast(`已回放 ${data.replayed || 0} 个可重试库存失败`);
+    toast(`已回放 ${data.replayed || data.data?.replayed || 0} 个可重试库存失败`);
   } catch (error) {
     toast(error.message, "error");
   } finally {
@@ -9425,8 +15113,27 @@ function renderStockQueueJobCard(job = {}) {
   const recommended = recommendation.recommended || {};
   const excluded = Array.isArray(recommendation.excluded) ? recommendation.excluded.slice(0, 4) : [];
   const candidates = Array.isArray(recommendation.candidates) ? recommendation.candidates.slice(0, 3) : [];
-  const statusLabel = stockQueueStatusLabel(job.status);
-  const safeNextAction = recommendation.safeNextAction || (job.status === "failed" ? "查看失败原因后决定是否回放，不会直接盲写库存。" : "等待库存队列按商品就绪状态继续。");
+  const outcomeStatus = String(job.result?.status || job.result?.commandState || job.status || "unknown");
+  const statusLabel = stockQueueStatusLabel(outcomeStatus);
+  const safeNextAction = recommendation.safeNextAction || (
+    ["needs_review", "partial"].includes(outcomeStatus)
+      ? "先按相同 Offer/仓库逐项回查当前库存和写入结果；结果未确认前禁止换幂等键重复写入。"
+      : outcomeStatus === "blocked"
+        ? "补齐商品、仓库和精确库存证据后重新预演；不会创建写入任务。"
+        : outcomeStatus === "failed"
+          ? "查看失败原因后决定是否回放，不会直接盲写库存。"
+          : "等待库存队列按商品就绪状态继续。"
+  );
+  const tupleRows = (job.stocks || []).slice(0, 20).map((stock) => `
+    <li>Offer <code>${escapeHtml(String(stock.offer_id || "-"))}</code> · 仓库 <code>${escapeHtml(String(stock.warehouse_id || "未知"))}</code> · 目标库存 ${escapeHtml(String(stock.stock ?? "未知"))}</li>
+  `).join("");
+  const attention = ["needs_review", "partial", "blocked", "failed"].includes(outcomeStatus) ? `
+    <section class="stock-queue-attention" data-stock-queue-outcome="${escapeHtml(outcomeStatus)}">
+      <strong>${outcomeStatus === "needs_review" ? "结果需要人工复核" : outcomeStatus === "partial" ? "库存结果部分完成" : outcomeStatus === "blocked" ? "库存写入前证据被阻断" : "库存任务失败"}</strong>
+      <p>阻塞/结果原因：${escapeHtml(job.reasonCode || job.lastError || outcomeStatus)}</p>
+      <small>副作用：${outcomeStatus === "failed" || outcomeStatus === "blocked" ? "不会自动重复写入；回放前需重新确认证据。" : "在精确 tuple 回查完成前，不得换幂等键重复写入。"}</small>
+    </section>
+  ` : "";
   return `
     <article class="stock-queue-job ${escapeHtml(job.status || "unknown")}">
       <header>
@@ -9439,9 +15146,11 @@ function renderStockQueueJobCard(job = {}) {
       <div class="stock-queue-meta">
         <span>SKU ${escapeHtml(String((job.stocks || []).length || 0))}</span>
         <span>尝试 ${escapeHtml(String(job.attempts || 0))}/${escapeHtml(String(job.maxAttempts || 10))}</span>
-        <span>${escapeHtml(job.reasonCode || "等待执行")}</span>
+        <span>阻塞原因：${escapeHtml(job.reasonCode || "等待执行")}</span>
       </div>
+      ${tupleRows ? `<section class="stock-queue-tuples"><strong>精确目标 tuple</strong><ul>${tupleRows}</ul></section>` : ""}
       ${job.lastError ? `<p class="stock-queue-error">最后失败：${escapeHtml(job.lastError)}</p>` : ""}
+      ${attention}
       <section class="stock-warehouse-recommendation">
         <div>
           <span>推荐仓库</span>
@@ -9473,20 +15182,26 @@ function stockQueueStatusLabel(status = "") {
     retry_stock: "等待重试",
     success: "成功",
     failed: "失败",
+    blocked: "证据阻断",
+    partial: "部分完成，需回查",
+    needs_review: "需要人工复核",
+    unknown: "结果未知",
   };
   return map[status] || status || "未知";
 }
 
 async function submitJsonTextarea(button, textarea, path, payloadKey) {
+  const label = payloadKey === "prices" ? "价格" : "库存";
+  if (!window.confirm(`确认将当前 ${label} JSON 写入 Ozon 吗？提交后仍需读取结果进行对账。`)) return;
   setBusy(button, true);
   try {
     const items = JSON.parse(textarea.value);
     const data = await api(path, {
       method: "POST",
-      body: JSON.stringify({
+      ...directWriteRequest({
         storeId: selectedStoreId(),
         [payloadKey]: items,
-      }),
+      }, `direct-${payloadKey}`),
     });
     showResponse(data);
     toast("提交成功");
@@ -9532,6 +15247,12 @@ function bindTabs() {
       if (actualView === "workflow-console" && state.workflowRuns.length === 0) {
         loadWorkflowRuns();
       }
+      if (actualView === "system") {
+        if (!state.readOperatorReceiptSummary) loadReadOperatorReceipts();
+        if (!state.runtimeSafetySnapshot) loadRuntimeSafetySummary();
+        if (!state.migrationStateAudit) loadMigrationStateAudit();
+        if (!state.sessionProofSummary) loadSessionProofSummary();
+      }
     });
   });
 }
@@ -9552,7 +15273,10 @@ function renderViewOwnershipBars() {
       <em class="view-ownership-warning">错页提示：${escapeHtml(contract.wrongPageHint)}</em>
     `;
     const header = Array.from(view.children).find((child) => child.matches("header.page-head"));
-    if (header) {
+    const dashboardGrid = viewId === "dashboard" ? view.querySelector(".erp-dashboard-grid") : null;
+    if (dashboardGrid) {
+      dashboardGrid.insertAdjacentElement("afterend", bar);
+    } else if (header) {
       header.insertAdjacentElement("afterend", bar);
     } else {
       view.prepend(bar);
@@ -9578,9 +15302,12 @@ function renderTabTaskCards() {
       </nav>
     `;
     const ownership = view.querySelector(".view-ownership-bar");
+    const dashboardGrid = viewId === "dashboard" ? view.querySelector(".erp-dashboard-grid") : null;
     const header = Array.from(view.children).find((child) => child.matches("header.page-head"));
     if (ownership) {
       ownership.insertAdjacentElement("afterend", section);
+    } else if (dashboardGrid) {
+      dashboardGrid.insertAdjacentElement("afterend", section);
     } else if (header) {
       header.insertAdjacentElement("afterend", section);
     } else {
@@ -9592,7 +15319,9 @@ function renderTabTaskCards() {
 function applyProgressiveDisclosure() {
   document.querySelectorAll(".view").forEach((view) => {
     if (view.dataset.progressiveDisclosureReady === "1") return;
-    const visibleBase = new Set(["page-head", "view-ownership-bar", "tab-task-card", "tab-primary-panel"]);
+    const visibleBase = new Set(["page-head", "view-ownership-bar", "tab-task-card", "tab-primary-panel", "business-primary-panel"]);
+    const isBusinessPrimaryPanel = (element) =>
+      BUSINESS_PRIMARY_PANEL_CLASSES.some((className) => element.classList.contains(className));
     const contentSections = Array.from(view.children).filter((child) => {
       if (!(child instanceof HTMLElement)) return false;
       if (child.matches("header.page-head")) return false;
@@ -9603,6 +15332,7 @@ function applyProgressiveDisclosure() {
       return;
     }
     contentSections.slice(2).forEach((section) => {
+      if (isBusinessPrimaryPanel(section)) return;
       section.classList.add("tab-secondary-panel", "tab-secondary-collapsed");
     });
     const button = document.createElement("button");
@@ -9616,8 +15346,13 @@ function applyProgressiveDisclosure() {
       });
       button.textContent = collapsed ? "收起高级内容" : "展开本页高级内容";
     });
+    const firstCollapsedSection = view.querySelector(".tab-secondary-panel.tab-secondary-collapsed");
     const taskCard = view.querySelector(".tab-task-card");
-    if (taskCard) taskCard.insertAdjacentElement("afterend", button);
+    if (firstCollapsedSection) {
+      firstCollapsedSection.insertAdjacentElement("beforebegin", button);
+    } else if (taskCard) {
+      taskCard.insertAdjacentElement("afterend", button);
+    }
     view.dataset.progressiveDisclosureReady = "1";
   });
 }
@@ -9761,6 +15496,7 @@ async function loadAutoListJobs() {
   var data = await api("/api/ozon-learning/auto-list-jobs");
   state.autoListJobs = data.items || [];
   renderAutoListJobRows();
+  renderListingSellerTaskSummary();
   await loadAutoFlowStatus();
 }
 
@@ -9909,25 +15645,16 @@ async function runCockpitAction(kind) {
 async function autoListCompleteListing(jobId) {
   var storeId = selectedStoreId || ($("#storeSelect")?.value || "");
   if (!storeId) { toast("请先选择店铺", "error"); return; }
-  if (!confirm("确定将该商品上架到当前选择的店铺？")) return;
-  setBusyText("正在上架到 Ozon...");
-  try {
-    var data = await api("/api/ozon-learning/complete-listing", {
-      method: "POST",
-      body: JSON.stringify({ jobId: jobId, storeId: storeId }),
-    });
-    if (data.ok && data.ok === true) {
-      toast("上架成功！SKU: " + (data.sku || "-"));
-    } else if (data.ok === false) {
-      toast("上架失败: " + (data.error || JSON.stringify(data)), "error");
-    } else {
-      toast("上架结果: " + JSON.stringify(data));
-    }
-  } catch (error) {
-    toast(error.message, "error");
-  } finally {
-    setBusyText(false);
-    await loadAutoListJobs();
+  const job = (state.autoListJobs || []).find((item) => String(item.id || "") === String(jobId || ""));
+  const workflowRunId = String(job?.workflowRunId || job?.workflow?.id || "").trim();
+  if (workflowRunId) {
+    state.selectedWorkflowRunId = workflowRunId;
+    state.selectedWorkflowNodeKey = "preflight_check";
+    activateErpView("listing");
+    await loadWorkflowRuns();
+    toast("已打开当前商品统一提交入口；请先完成预检、草稿 hash 确认和人工提交", "warning");
+  } else {
+    toast("旧自动上架入口已停用；请先为该商品生成工作流，再从上架草稿提交", "warning");
   }
 }
 
@@ -10085,7 +15812,7 @@ async function analyzeOzonOpportunities() {
       const cats = data.rules.map(function(r) { return r.category + "(" + r.itemCount + "件, ¥" + r.suggestedPriceMinCny + "-" + r.suggestedPriceMaxCny + ")"; }).join("; ");
       result.innerHTML = "<b>" + totalOpps + "</b>个机会, " + data.totalCategories + "个品类: " + cats + ". 建议1688搜索: " + (data.strategy.searchSeeds || []).slice(0, 5).join(", ");
       toast("Ozon分析完成，建议搜索: " + (data.strategy.searchSeeds || []).slice(0, 3).join(", "));
-      
+
       // Auto-fill expandKeywords seeds
       const seedsInput = $("#crawlerExpandSeeds");
       if (seedsInput && data.strategy.searchSeeds) {
@@ -10166,13 +15893,99 @@ async function init() {
   renderErpWorkflowNavigator();
   await loadStores();
   await loadWorkflowRuns();
+  await loadWriteCommandAttention();
   await loadRuleApprovalAuditIntents();
   await loadRulePublishReviewIntents();
   on("#storeSelect", "change", () => {
+    // Category/type/attribute evidence is store-scoped just like stock and
+    // order evidence. Do not leave the previous store's green badge visible
+    // after a seller switches context.
+    state.categoryEvidence = { tree: null, attributes: null };
+    state.attributeValueCache = {};
+    state.fbsReceiptRequestToken = Number(state.fbsReceiptRequestToken || 0) + 1;
+    state.orderRequestToken = Number(state.orderRequestToken || 0) + 1;
+    state.orderDetailRequestToken = Number(state.orderDetailRequestToken || 0) + 1;
+    state.orderBatch = { loaded: false, loading: false, failed: false, partial: false, hasNext: false, syncedAt: "", sourceCount: 0, scope: { storeId: selectedStoreId() } };
+    state.orderRows = [];
+    state.orderCoverage = { pageOffsets: [], pageCursors: [], orderKeys: [], observedCount: 0, hasNext: false };
+    state.orderCursor = "";
+    state.orderCursorHistory = [];
+    state.financeReadModel = null;
+    // Activity rows and price-impact previews are store-scoped too. Clear
+    // them even when the dashboard (rather than the promotions tab) is open,
+    // otherwise the old store's activity count can remain in the finance and
+    // cockpit summaries after a store switch.
+    state.promotionRequestToken = Number(state.promotionRequestToken || 0) + 1;
+    state.promotionDetailRequestToken = Number(state.promotionDetailRequestToken || 0) + 1;
+    state.promotionRows = [];
+    state.promotionSellerResult = null;
+    state.promotionEvidence = null;
+    state.promotionImpactPreview = null;
+    state.promotionDetailSellerResult = { products: null, candidates: null };
+    state.promotionProducts = [];
+    state.promotionCandidates = [];
+    state.promotionSelectedProductIds = [];
+    state.selectedPromotion = null;
+    state.stockReadRequestToken = Number(state.stockReadRequestToken || 0) + 1;
+    state.warehouseRequestToken = Number(state.warehouseRequestToken || 0) + 1;
+    state.listingWarehouseRequestToken = Number(state.listingWarehouseRequestToken || 0) + 1;
+    state.stockEvidenceRequestToken = Number(state.stockEvidenceRequestToken || 0) + 1;
+    state.stockSnapshotProducts = null;
+    state.stockWarehouses = null;
+    state.stockSnapshot = null;
+    state.stockEvidence = state.stockEvidence ? { ...state.stockEvidence, stale: true, failed: false } : null;
+    state.stockDryRun = null;
+    // Product rows and their server-observed status are store-scoped too. A
+    // store switch must invalidate the old ledger before the new store loads;
+    // otherwise an old Offer row remains clickable and can be handed to the
+    // newly selected store's inventory workflow.
+    state.productRequestToken = Number(state.productRequestToken || 0) + 1;
+    state.productRows = [];
+    state.productCounts = {};
+    state.productReadState = "idle";
+    state.productSellerResult = null;
+    state.productReadCheckedAt = "";
+    state.productLastId = "";
+    state.productHasNext = false;
+    state.productNextAction = "已切换店铺，请重新读取商品后再进入库存。";
+    if ($("#productsTable")) $("#productsTable").innerHTML = "<tr><td colspan=\"9\" class=\"product-empty\">已切换店铺，请重新读取当前店铺商品。</td></tr>";
+    if ($("#productNextPage")) $("#productNextPage").disabled = true;
+    // Product readiness is a store-scoped readback keyed only by local job id.
+    // Clear it on a store switch before the listing panel can render again;
+    // otherwise a job from the previous store can remain visibly "ready" until
+    // the seller clicks another readback.
+    state.productReadinessByJobId = {};
+    // The controlled-read receipts are scoped by both store and environment;
+    // keep the previous store's proof/receipt from remaining visible after a
+    // context switch.
+    state.readOperatorReceiptSummary = null;
+    state.readOperatorMatrix = null;
+    state.readOperatorMatrixEnvironment = "";
+    state.readOperatorExecutionSummary = null;
+    state.readOperatorExecutionRequestToken = Number(state.readOperatorExecutionRequestToken || 0) + 1;
+    renderReadOperatorReceiptStatus();
+    renderReadOperatorMatrix();
+    renderReadOperatorExecutionStatus();
+    renderPromotions();
+    renderSecondaryDomainPanels();
+    const stockTable = $("#stockTable");
+    if (stockTable) stockTable.innerHTML = "<tr><td colspan=\"5\">已切换店铺，请重新读取库存。</td></tr>";
+    const stockEvidenceResult = $("#stockEvidenceResult");
+    if (stockEvidenceResult && state.stockEvidence) renderStockEvidence({ ...state.stockEvidence, stale: true, products: [], warehouses: [], currentStocks: [] });
     updateStoreHint();
+    renderCategoryEvidenceStatus();
+    syncStockActionButtons();
     refreshActiveStoreView();
     obsSetContext();
   });
+  on("#readOperatorEnvironment", "input", invalidateReadOperatorEnvironmentEvidence);
+  on("#readOperatorEnvironment", "change", invalidateReadOperatorEnvironmentEvidence);
+  on("#listingReadEnvironment", "input", invalidateStockEvidenceForEnvironment);
+  on("#listingReadEnvironment", "change", invalidateStockEvidenceForEnvironment);
+  on("#listingReadEnvironment", "input", invalidateOrderEvidenceForEnvironment);
+  on("#listingReadEnvironment", "change", invalidateOrderEvidenceForEnvironment);
+  on("#listingReadEnvironment", "input", invalidatePromotionEvidenceForEnvironment);
+  on("#listingReadEnvironment", "change", invalidatePromotionEvidenceForEnvironment);
   on("#testButton", "click", testApi);
   $("#dashboard")?.addEventListener("click", (event) => {
     const outcomeTarget = event.target.closest("[data-outcome-view]");
@@ -10202,6 +16015,116 @@ async function init() {
     }
   });
   document.addEventListener("click", (event) => {
+    const reviewRepairLocateTarget = event.target.closest("[data-review-repair-locate]");
+    if (reviewRepairLocateTarget) {
+      event.preventDefault();
+      openSellerPayloadIssue(reviewRepairLocateTarget.dataset.runId, reviewRepairLocateTarget);
+      return;
+    }
+    const reviewRepairReturnTarget = event.target.closest("[data-review-repair-return]");
+    if (reviewRepairReturnTarget) {
+      openReviewRepairDraft(reviewRepairReturnTarget);
+      return;
+    }
+    const variantSourceTarget = event.target.closest("[data-variant-source-task]");
+    if (variantSourceTarget) {
+      openVariantSourceTask(variantSourceTarget);
+      return;
+    }
+    const fbsOrderDetailTarget = event.target.closest("[data-fbs-order-detail]");
+    if (fbsOrderDetailTarget) {
+      loadFbsOrderDetail(fbsOrderDetailTarget).catch(() => toast("FBS 货件详情读取失败，请刷新后重试。", "error"));
+      return;
+    }
+    const fbsOrderRetryTarget = event.target.closest("[data-fbs-order-retry]");
+    if (fbsOrderRetryTarget) {
+      loadOrders({ resetOffset: true }).catch(() => toast("订单重新读取失败，请稍后重试。", "error"));
+      return;
+    }
+    const stockWriteTarget = event.target.closest("[data-confirm-stock-write]");
+    if (stockWriteTarget) {
+      confirmStockWrite().catch(() => toast("受控库存写入未完成，请刷新后重试。", "error"));
+      return;
+    }
+    const stockReceiptTarget = event.target.closest("[data-save-stock-evidence-receipt]");
+    if (stockReceiptTarget) {
+      saveStockEvidenceReceipt(stockReceiptTarget).catch(() => toast("只读回执保存未完成，请刷新后重试。", "error"));
+      return;
+    }
+    const readinessReceiptTarget = event.target.closest("[data-save-readiness-evidence-receipt]");
+    if (readinessReceiptTarget) {
+      saveReadinessEvidenceReceipt(readinessReceiptTarget).catch(() => toast("商品状态只读回执保存未完成，请刷新后重试。", "error"));
+      return;
+    }
+    const stockReadinessTarget = event.target.closest("[data-stock-readiness-offers]");
+    if (stockReadinessTarget) {
+      openStockReadinessTask(stockReadinessTarget);
+      return;
+    }
+    const promotionStockTarget = event.target.closest("[data-promotion-stock-offer]");
+    if (promotionStockTarget) {
+      openStockReadinessTask({ dataset: {
+        stockReadinessOffers: promotionStockTarget.dataset.promotionStockOffer || "",
+        stockReadinessStatus: promotionStockTarget.dataset.stockReadinessStatus || "",
+        stockReadinessVerification: promotionStockTarget.dataset.stockReadinessVerification || "",
+      } });
+      return;
+    }
+    const productStockTarget = event.target.closest("[data-product-stock-offer]");
+    if (productStockTarget) {
+      openStockReadinessTask({ dataset: {
+        stockReadinessOffers: productStockTarget.dataset.productStockOffer || "",
+        stockReadinessStatus: productStockTarget.dataset.stockReadinessStatus || "",
+        stockReadinessVerification: productStockTarget.dataset.stockReadinessVerification || "",
+      } });
+      return;
+    }
+    const fbsReceiptTarget = event.target.closest("[data-save-fbs-evidence-receipt]");
+    if (fbsReceiptTarget) {
+      saveFbsEvidenceReceipt(fbsReceiptTarget).catch(() => toast("FBS 只读回执保存未完成，请刷新后重试。", "error"));
+      return;
+    }
+    const fbsSummaryTarget = event.target.closest("[data-load-fbs-evidence-summary]");
+    if (fbsSummaryTarget) {
+      loadFbsEvidenceSummary(fbsSummaryTarget).catch(() => toast("FBS 回执摘要读取失败，请刷新后重试。", "error"));
+      return;
+    }
+    const mediaPublishTarget = event.target.closest("[data-publish-media-approval]");
+    if (mediaPublishTarget) {
+      publishMediaApproval(mediaPublishTarget).catch(() => toast("本地媒体批准发布未完成，请刷新后重试。", "error"));
+      return;
+    }
+    const mediaApprovalTarget = event.target.closest("[data-save-media-approval-draft]");
+    if (mediaApprovalTarget) {
+      saveMediaApprovalDraft(mediaApprovalTarget).catch(() => toast("批准草稿保存未完成，请刷新后重试。", "error"));
+      return;
+    }
+    const readinessTarget = event.target.closest("[data-product-readiness-job-id]");
+    if (readinessTarget) {
+      loadListingProductReadiness(readinessTarget.dataset.productReadinessJobId).catch((error) => toast(error.message, "error"));
+      return;
+    }
+    const sellerPrimaryTarget = event.target.closest("[data-listing-seller-primary-view]");
+    if (sellerPrimaryTarget) {
+      state.selectedWorkflowRunId = sellerPrimaryTarget.dataset.listingSellerRunId || state.selectedWorkflowRunId;
+      state.selectedWorkflowNodeKey = sellerPrimaryTarget.dataset.listingSellerNodeKey || state.selectedWorkflowNodeKey;
+      const target = sellerPrimaryTarget.dataset.listingSellerPrimaryView || "listing";
+      const activated = activateErpView(target);
+      // Refresh the listing destination from the workflow selected by the
+      // seller. Otherwise this click can leave an old product summary visible.
+      if (activated && target === "listing") {
+        // Primary seller actions (source/category/price/preflight) all land
+        // on the current-product workbench; keep the stage explicit so a
+        // previously selected research/queue stage cannot swallow the action.
+        setListingStage("current-product");
+        renderListingSellerTaskSummary();
+        renderListingStagePanels();
+      }
+      if (target === "workflow-console") renderWorkflowConsole();
+      const label = sellerPrimaryTarget.textContent?.trim() || "下一步";
+      toast(activated ? `已打开：${label}` : "目标页面暂不可用，请刷新后重试。", activated ? "ok" : "error");
+      return;
+    }
     const taskTarget = event.target.closest(".tab-task-card [data-task-card-view]");
     if (taskTarget) {
       activateErpView(taskTarget.dataset.taskCardView);
@@ -10247,26 +16170,69 @@ async function init() {
       if (target === "workflow-console") renderWorkflowConsole();
     }
   });
-    on("#refreshDashboard", "click", async () => {
-      await testApi();
-    await loadOrders();
-    });
-    on("#loadWarehouses", "click", loadWarehouses);
-  on("#loadOrders", "click", loadOrders);
-  on("#orderWarehouse", "change", loadOrders);
-  on("#orderService", "change", renderOrders);
+  document.addEventListener("input", (event) => {
+    const container = event.target.closest(".listing-media-review")?.querySelector(".listing-media-approval-draft");
+    if (container) updateMediaApprovalDraftControl(container);
+    const publishContainer = event.target.closest(".listing-media-review")?.querySelector(".listing-media-approval-publish");
+    if (publishContainer) updateMediaApprovalPublishControl(publishContainer);
+    const stockReceipt = event.target.closest(".stock-evidence-receipt");
+    if (stockReceipt) updateStockReceiptControl(stockReceipt);
+    const readinessReceipt = event.target.closest(".readiness-evidence-receipt");
+    if (readinessReceipt) updateReadinessReceiptControl(readinessReceipt);
+    const fbsReceipt = event.target.closest("#orderReceiptControls");
+    if (fbsReceipt) updateFbsReceiptControl(fbsReceipt);
+  });
+  document.addEventListener("change", (event) => {
+    const container = event.target.closest(".listing-media-review")?.querySelector(".listing-media-approval-draft");
+    if (container) updateMediaApprovalDraftControl(container);
+    const publishContainer = event.target.closest(".listing-media-review")?.querySelector(".listing-media-approval-publish");
+    if (publishContainer) updateMediaApprovalPublishControl(publishContainer);
+    const stockReceipt = event.target.closest(".stock-evidence-receipt");
+    if (stockReceipt) updateStockReceiptControl(stockReceipt);
+    const readinessReceipt = event.target.closest(".readiness-evidence-receipt");
+    if (readinessReceipt) updateReadinessReceiptControl(readinessReceipt);
+    const fbsReceipt = event.target.closest("#orderReceiptControls");
+    if (fbsReceipt) updateFbsReceiptControl(fbsReceipt);
+  });
+  on("#refreshDashboard", "click", async () => {
+    updateDataFreshness("#dashboardDataFreshness", "loading", "正在同步店铺连通状态和订单数据...");
+    updateDataFreshness("#erpDataFreshness", "loading", "数据同步中");
+    const apiOk = await testApi();
+    const ordersOk = await loadOrders();
+    await loadWriteCommandAttention();
+    if (apiOk && ordersOk) {
+      const message = synchronizedAt("最后同步");
+      updateDataFreshness("#dashboardDataFreshness", "success", message);
+      updateDataFreshness("#erpDataFreshness", "success", message);
+    } else {
+      const message = "同步失败；页面中的数据可能已过期，请重试。";
+      updateDataFreshness("#dashboardDataFreshness", "error", message);
+      updateDataFreshness("#erpDataFreshness", "error", "数据可能已过期");
+    }
+  });
+  on("#refreshWriteCommandAttention", "click", loadWriteCommandAttention);
+  on("#loadWarehouses", "click", loadWarehouses);
+  // Keep the legacy header action connected to the guarded tuple-read flow;
+  // an unbound “读取库存” button made the inventory entry appear inert.
+  on("#readStock", "click", readStockReconciliationEvidence);
+  on("#loadOrders", "click", () => loadOrders({ resetOffset: true }));
+  on("#orderPreviousBatch", "click", loadPreviousOrderBatch);
+  on("#orderNextBatch", "click", loadNextOrderBatch);
+  on("#orderWarehouse", "change", () => loadOrders({ resetOffset: true }));
+  on("#orderService", "change", () => loadOrders({ resetOffset: true }));
   on("#orderSearch", "keydown", (event) => {
-    if (event.key === "Enter") loadOrders();
+    if (event.key === "Enter") loadOrders({ resetOffset: true });
   });
   document.querySelectorAll("#orderStatusTabs .product-tab").forEach((tab) => {
     tab.addEventListener("click", () => {
       document.querySelectorAll("#orderStatusTabs .product-tab").forEach((item) => item.classList.remove("active"));
       tab.classList.add("active");
       state.orderStatus = tab.dataset.status;
-      loadOrders();
+      loadOrders({ resetOffset: true });
     });
   });
   on("#loadProducts", "click", loadProducts);
+  on("#productNextPage", "click", () => loadProducts({ append: true }));
   on("#loadPromotions", "click", loadPromotions);
   on("#removePromotionProducts", "click", removePromotionProducts);
   document.querySelectorAll("#promotionProductTabs .product-tab").forEach((tab) => {
@@ -10317,11 +16283,22 @@ async function init() {
     }
   });
   on("#loadListingAttributes", "click", loadListingAttributes);
+  on("#saveListingCategoryDraft", "click", saveSelectedCategoryToListingDraft);
   on("#rebuildListingDraft", "click", () => rebuildListingDraftFromCurrentCategory({ preserveText: true, save: true }));
   on("#submitListing", "click", submitListing);
   on("#saveListingDraft", "click", () => saveListingDraft("draft"));
   on("#saveAndSubmitListing", "click", saveAndSubmitListing);
   on("#backToCaptureBox", "click", backToCaptureBox);
+  on("#erpSessionForm", "submit", establishErpSession);
+  on("#erpSessionLogout", "click", logoutErpSession);
+  on("#refreshReadOperatorReceipts", "click", loadReadOperatorReceipts);
+  on("#refreshReadOperatorMatrix", "click", loadReadOperatorMatrix);
+  on("#refreshSessionProof", "click", loadSessionProofSummary);
+  on("#executeReadOperatorCurrentStore", "click", executeCurrentStoreRead);
+  on("#refreshRuntimeSafety", "click", loadRuntimeSafetySummary);
+  on("#refreshMigrationState", "click", loadMigrationStateAudit);
+  on("#refreshDeploymentPreflight", "click", loadDeploymentPreflight);
+  on("#copyDeploymentPreflight", "click", copyDeploymentPreflightCommand);
   on("#checkListingTask", "click", checkListingTask);
   on("#previewListingImages", "click", previewListingImages);
   on("#variantSelectAll", "change", (event) => setAllVariantChecked(event.target.checked));
@@ -10346,15 +16323,18 @@ async function init() {
     $("#listingNameCount").textContent = $("#listingName").value.length;
   });
   on("#readStock", "click", readStock);
+  on("#stockEvidenceRead", "click", readStockReconciliationEvidence);
+  on("#stockDryRun", "click", runStockDryRun);
+  on("#stockJson", "input", invalidateStockEvidenceOnTargetChange);
+  syncStockActionButtons();
   on("#loadStockQueue", "click", loadStockQueue);
   on("#replayStockQueue", "click", replayStockQueueFailures);
   on("#submitPrices", "click", () =>
     submitJsonTextarea($("#submitPrices"), $("#priceJson"), "/api/ozon/prices", "prices")
   );
-  on("#submitStocks", "click", () =>
-    submitJsonTextarea($("#submitStocks"), $("#stockJson"), "/api/ozon/warehouse-stocks", "stocks")
-  );
+  // 库存写入不再从原始 JSON 直通；必须先完成只读证据、dry-run 和受控确认流程。
   on("#collect1688", "click", collect1688);
+  on("#import1688Fixture", "click", import1688Fixture);
   on("#refreshCaptureBox", "click", async () => {
     await loadCaptureBox();
     toast(`采集箱已刷新：${state.captureRows.length} 个商品`);
@@ -10362,7 +16342,7 @@ async function init() {
   $("#crawlerTaskStart")?.addEventListener("click", createCrawlerTask);
   $("#ozonLearningStart")?.addEventListener("click", createOzonLearningTask);
   $("#ozonBlindStart")?.addEventListener("click", createOzonBlindRun);
-  
+
 $("#analyzeOpportunitiesBtn")?.addEventListener("click", analyzeOzonOpportunities);
 $("#analyzeRulesBtn")?.addEventListener("click", analyzeListingRules);
 
@@ -10425,7 +16405,7 @@ async function runPipeline() {
     await loadPipelineStatus();
   } catch(e) { toast("流水线启动失败: " + e.message); }
   btn.disabled = false;
-  btn.textContent = "一键全自动流水线";
+  btn.textContent = "运行分析与采集流水线";
 }
 
 $("#runPipelineBtn")?.addEventListener("click", runPipeline);
@@ -10530,6 +16510,7 @@ $("#ozonManualParse")?.addEventListener("click", parseOzonSearchHtml);
     state.selectedWorkflowRunId = card.dataset.runId || "";
     state.selectedWorkflowNodeKey = "";
     renderWorkflowConsole();
+    renderListingSellerTaskSummary();
   });
   $("#workflowNodeTimeline")?.addEventListener("click", (event) => {
     const card = event.target.closest(".workflow-node-card");
@@ -10615,6 +16596,7 @@ $("#ozonManualParse")?.addEventListener("click", parseOzonSearchHtml);
   await loadShippingLevels();
   await loadListingWarehouses();
   await loadCaptureBox();
+  openCaptureFromDeepLink();
   await loadOpen1688Status();
   await loadCrawlerWorkerStatus();
   await loadCrawlerTasks();
@@ -10630,4 +16612,10 @@ $("#ozonManualParse")?.addEventListener("click", parseOzonSearchHtml);
   syncListingStore();
 }
 
-init().catch((error) => toast(error.message, "error"));
+init().catch((error) => {
+  // A seller needs an actionable recovery state when bootstrap fails. A raw
+  // API error alone leaves the otherwise visible shell unusable and may leak
+  // technical details; no write is attempted by this recovery path.
+  renderAppBootstrapRecovery(error);
+  toast("工作台初始化未完成，请按页面提示处理。", "error");
+});

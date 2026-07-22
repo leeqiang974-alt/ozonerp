@@ -1,0 +1,10 @@
+{
+  "fixtureKind": "mocked_redacted_product_import_info",
+  "synthetic": true,
+  "redacted": true,
+  "verificationLevel": "mocked",
+  "endpoint": "/v1/product/import/info",
+  "scenario": "timeout",
+  "requestScope": { "task_id": 700105 },
+  "transport": { "status": "timeout", "errorCode": "OZON_READ_TIMEOUT", "responseObserved": false }
+}

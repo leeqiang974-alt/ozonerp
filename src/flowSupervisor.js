@@ -178,7 +178,23 @@ export async function getFlowStatusSnapshot() {
 }
 
 export async function autoHealFlow(options = {}) {
-  const reconcile = await reconcileSubmittedJobs({ limit: optionNumber(options, "reconcileLimit", 30) });
+  // A background supervisor has no signed seller session or single-store
+  // scope; live submission readback belongs to the request-scoped route.
+  const reconcile = {
+    ok: false,
+    scanned: 0,
+    updated: 0,
+    live: 0,
+    failed: 0,
+    pending: 0,
+    reasonCode: "CONTROLLED_RECONCILIATION_REQUIRED",
+    sellerResult: {
+      status: "needs_review",
+      action: "请在单个店铺和受控读取环境下打开任务，执行审核结果回读。",
+      sideEffect: "后台自愈未读取 Ozon 商品状态，也未修改任务。",
+      result: "后台自愈没有执行未绑定店铺范围的审核回读。",
+    },
+  };
   const before = await getFlowStatusSnapshot();
   const actions = [];
   const opportunities = await listOzonOpportunities({ minScore: optionNumber(options, "minScore", 55) });

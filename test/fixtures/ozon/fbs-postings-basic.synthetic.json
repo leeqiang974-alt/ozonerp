@@ -1,0 +1,30 @@
+{
+  "fixtureType": "synthetic_redacted",
+  "source": "offline_contract_test_only",
+  "result": {
+    "has_next": false,
+    "postings": [
+      {
+        "posting_number": "POSTING-REDACTED-001",
+        "order_number": "ORDER-REDACTED-001",
+        "status": "awaiting_packaging",
+        "substatus": "posting_acceptance_in_progress",
+        "tracking_number": "TRACK-REDACTED-001",
+        "accepted_at": "2026-07-12T08:00:00Z",
+        "shipment_date": "2026-07-13T09:00:00Z",
+        "analytics_data": {
+          "warehouse_id": 501,
+          "warehouse_name": "Synthetic FBS warehouse"
+        },
+        "products": [
+          {
+            "offer_id": "OFFER-REDACTED-001",
+            "sku": 10001,
+            "name": "Source product fallback name",
+            "quantity": 2
+          }
+        ]
+      }
+    ]
+  }
+}

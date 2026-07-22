@@ -250,6 +250,10 @@ function normalizeCommissionSource(source, commissionRate) {
       confidence: String(source.confidence || "low"),
       categoryKey: String(source.categoryKey || ""),
       updatedAt: String(source.updatedAt || ""),
+      effectiveFrom: String(source.effectiveFrom || ""),
+      effectiveTo: String(source.effectiveTo || ""),
+      evidenceRef: String(source.evidenceRef || ""),
+      verificationLevel: String(source.verificationLevel || ""),
     });
   }
   return {

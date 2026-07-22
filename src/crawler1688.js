@@ -2,7 +2,8 @@
 import path from "node:path";
 import iconv from "iconv-lite";
 import { addCollectionItem, getCollectionItem, updateCollectionItem } from "./collectionBox.js";
-import { fetch1688Html, parse1688Product } from "./collector1688.js";
+import { fetch1688Html, normalize1688CaptureEnvelope, parse1688Product } from "./collector1688.js";
+import { build1688ReadPlan, build1688ReadReceipt, validate1688ReadPlan } from "./controlled1688Read.js";
 import { calculateOzonPrice, matchRmbShippingLevel } from "./pricing.js";
 import { callAiTask } from "./aiTaskRouter.js";
 import { llmConfig } from "./llmListing.js";
@@ -24,6 +25,8 @@ const CANDIDATE_FILE = path.join(DATA_DIR, "1688-crawler-candidates.json");
 const SESSION_FILE = path.join(DATA_DIR, "1688-crawler-session.json");
 const JOB_FILE = path.join(DATA_DIR, "1688-crawler-jobs.json");
 const WORKER_FILE = path.join(DATA_DIR, "1688-crawler-workers.json");
+const JSON_LOCK_TIMEOUT_MS = 5000;
+const JSON_LOCK_STALE_MS = 30000;
 const RUNNING_JOB_TIMEOUT_MS = 5 * 60 * 1000;
 const WORKER_ONLINE_WINDOW_MS = 90 * 1000;
 const DEFAULT_MAX_ACCEPTED_CANDIDATES = Number(process.env.CRAWLER1688_MAX_ACCEPTED_CANDIDATES || 2);
@@ -47,12 +50,80 @@ function parseJsonWithRecovery(raw = "") {
   }
 }
 
-async function readJsonList(file) {
+function jsonLockFile(file) {
+  return `${file}.lock`;
+}
+
+function jsonBackupFile(file) {
+  return `${file}.bak`;
+}
+
+async function acquireJsonLock(file) {
+  await fs.mkdir(DATA_DIR, { recursive: true });
+  const lockFile = jsonLockFile(file);
+  const startedAt = Date.now();
+  const token = `${process.pid}-${Date.now()}-${Math.random().toString(36).slice(2)}`;
+  while (true) {
+    try {
+      const handle = await fs.open(lockFile, "wx");
+      await handle.writeFile(JSON.stringify({ pid: process.pid, token, acquiredAt: nowIso() }));
+      await handle.close();
+      return async () => {
+        try {
+          const current = JSON.parse(await fs.readFile(lockFile, "utf8"));
+          if (current.token === token) await fs.rm(lockFile, { force: true });
+        } catch (error) {
+          if (error.code !== "ENOENT" && error.name !== "SyntaxError") throw error;
+        }
+      };
+    } catch (error) {
+      if (!(error && ["EEXIST", "EPERM"].includes(error.code))) throw error;
+      try {
+        const stat = await fs.stat(lockFile);
+        if (Date.now() - stat.mtimeMs > JSON_LOCK_STALE_MS) await fs.rm(lockFile, { force: true });
+      } catch (statError) {
+        if (statError.code !== "ENOENT") throw statError;
+      }
+      if (Date.now() - startedAt >= JSON_LOCK_TIMEOUT_MS) {
+        const timeout = new Error(`crawler persistence lock timeout: ${path.basename(file)}`);
+        timeout.code = "CRAWLER_JSON_LOCK_TIMEOUT";
+        throw timeout;
+      }
+      await sleep(20);
+    }
+  }
+}
+
+function parseJsonList(raw = "") {
+  const data = parseJsonWithRecovery(raw);
+  if (!data || !Array.isArray(data.items)) {
+    const error = new Error("crawler data must contain an items array");
+    error.code = "CRAWLER_JSON_CORRUPT";
+    throw error;
+  }
+  return data.items;
+}
+
+async function readJsonListUnlocked(file) {
   try {
-    const data = parseJsonWithRecovery(await fs.readFile(file, "utf8"));
-    return Array.isArray(data.items) ? data.items : [];
+    return parseJsonList(await fs.readFile(file, "utf8"));
   } catch (error) {
     if (error.code === "ENOENT") return [];
+    if (error.name === "SyntaxError" || error.code === "CRAWLER_JSON_CORRUPT") {
+      try {
+        const items = parseJsonList(await fs.readFile(jsonBackupFile(file), "utf8"));
+        // Repair the primary while the caller's mutation lock is held.
+        await writeJsonListUnlocked(file, items);
+        return items;
+      } catch (backupError) {
+        if (backupError.code === "ENOENT") {
+          const corrupt = new Error(`crawler data is corrupt and no backup is available: ${path.basename(file)}`);
+          corrupt.code = "CRAWLER_JSON_CORRUPT";
+          throw corrupt;
+        }
+        throw backupError;
+      }
+    }
     throw error;
   }
 }
@@ -65,6 +136,13 @@ async function writeJsonListUnlocked(file, items) {
     const tmp = `${file}.tmp.${process.pid}.${Date.now()}.${Math.random().toString(36).slice(2, 8)}`;
     try {
       await fs.writeFile(tmp, payload, "utf8");
+      try {
+        const current = await fs.readFile(file, "utf8");
+        parseJsonList(current);
+        await fs.copyFile(file, jsonBackupFile(file));
+      } catch (error) {
+        if (error.code !== "ENOENT" && error.name !== "SyntaxError" && error.code !== "CRAWLER_JSON_CORRUPT") throw error;
+      }
       await fs.rename(tmp, file);
       return;
     } catch (error) {
@@ -80,8 +158,31 @@ async function writeJsonListUnlocked(file, items) {
 
 async function writeJsonList(file, items) {
   const previous = writeChains.get(file) || Promise.resolve();
-  const next = previous.catch(function() {}).then(function() {
-    return writeJsonListUnlocked(file, items);
+  const next = previous.catch(function() {}).then(async function() {
+    const release = await acquireJsonLock(file);
+    try { return await writeJsonListUnlocked(file, items); }
+    finally { await release(); }
+  });
+  writeChains.set(file, next.catch(function() {}));
+  return next;
+}
+
+async function readJsonList(file) {
+  const release = await acquireJsonLock(file);
+  try { return await readJsonListUnlocked(file); }
+  finally { await release(); }
+}
+
+async function mutateJsonList(file, mutator) {
+  const previous = writeChains.get(file) || Promise.resolve();
+  const next = previous.catch(function() {}).then(async function() {
+    const release = await acquireJsonLock(file);
+    try {
+      const items = await readJsonListUnlocked(file);
+      const result = await mutator(items);
+      if (result?.write !== false) await writeJsonListUnlocked(file, result?.items || items);
+      return result?.value;
+    } finally { await release(); }
   });
   writeChains.set(file, next.catch(function() {}));
   return next;
@@ -188,7 +289,7 @@ function safeTitle(text = "", fallback = "") {
   return value || fallback;
 }
 
-function candidateFromParsed(taskId, parsed, index) {
+function candidateFromParsed(taskId, parsed, index, storeId = "") {
   const prices = (parsed.skuVariants || []).map((sku) => Number(sku.price || 0)).filter((item) => item > 0);
   const priceMin = prices.length ? Math.min(...prices) : Number(parsed.ozonDraft?.price || 0);
   const priceMax = prices.length ? Math.max(...prices) : Number(parsed.ozonDraft?.price || 0);
@@ -199,6 +300,7 @@ function candidateFromParsed(taskId, parsed, index) {
   return {
     id: makeId("cc_"),
     taskId,
+    storeId: String(storeId || "").trim(),
     status: "pending_review",
     title: safeTitle(parsed.title, `候选商品 ${index + 1}`),
     url: parsed.url,
@@ -211,25 +313,30 @@ function candidateFromParsed(taskId, parsed, index) {
     riskLevel: sizeWeightReady ? "low" : "medium",
     score,
     parsed,
+    // Persist the seller-facing source contract at the crawler boundary; the
+    // UI must not infer safety from raw parser fields or HTML.
+    sourceEvidence: parsed.sourceEvidence || null,
+    sourceEvidenceSummary: parsed.sourceEvidence?.sellerFacing || null,
     createdAt: nowIso(),
     updatedAt: nowIso(),
   };
 }
 
 async function updateTask(id, patch = {}) {
-  const tasks = await readJsonList(TASK_FILE);
-  const index = tasks.findIndex((item) => item.id === id);
-  if (index === -1) return null;
-  tasks[index] = { ...tasks[index], ...patch, updatedAt: nowIso() };
-  await writeJsonList(TASK_FILE, tasks);
-  return tasks[index];
+  return mutateJsonList(TASK_FILE, (tasks) => {
+    const index = tasks.findIndex((item) => item.id === id);
+    if (index === -1) return { write: false, value: null };
+    tasks[index] = { ...tasks[index], ...patch, updatedAt: nowIso() };
+    return { items: tasks, value: tasks[index] };
+  });
 }
 
 async function appendCandidates(rows = []) {
   if (!rows.length) return;
-  const items = await readJsonList(CANDIDATE_FILE);
-  items.push(...rows);
-  await writeJsonList(CANDIDATE_FILE, items);
+  await mutateJsonList(CANDIDATE_FILE, (items) => {
+    items.push(...rows);
+    return { items };
+  });
 }
 
 function crawlerTaskTitle(task = {}) {
@@ -303,9 +410,10 @@ async function writeWorkers(items) {
 
 async function enqueueJobs(rows = []) {
   if (!rows.length) return;
-  const jobs = await readJobs();
-  jobs.push(...rows);
-  await writeJobs(jobs);
+  await mutateJsonList(JOB_FILE, (jobs) => {
+    jobs.push(...rows);
+    return { items: jobs };
+  });
 }
 
 function jobForTask(task, kind, url, extra = {}) {
@@ -374,15 +482,16 @@ async function maybeFinishExtensionTask(taskId) {
   });
 }
 
-function releaseStaleRunningJobs(jobs = []) {
+function releaseStaleRunningJobs(jobs = [], scope = {}) {
   const now = Date.now();
   return jobs.map((job) => {
-    if (job.status !== "running") return job;
+    if (job.status !== "running" || !extensionJobScopeDecision(job, scope).allowed) return job;
     const updatedAt = new Date(job.updatedAt || job.createdAt || 0).getTime();
     if (Number.isFinite(updatedAt) && now - updatedAt < RUNNING_JOB_TIMEOUT_MS) return job;
     return {
       ...job,
       status: Number(job.attempts || 0) >= Number(job.maxAttempts || 3) ? "failed" : "queued",
+      completionClaimedAt: "",
       lastError: "后台 worker 超时未回传，已自动释放作业",
       updatedAt: nowIso(),
     };
@@ -405,12 +514,53 @@ async function requeueRecoverableJobsForTask(taskId) {
       status: "queued",
       attempts: 0,
       workerId: "",
+      completionClaimedAt: "",
       lastError: "",
       updatedAt: nowIso(),
     };
   });
   if (changed) await writeJobs(nextJobs);
   return changed;
+}
+
+// A browser may retry a result POST after a timeout, while the first request
+// is still parsing the page. Claim the completion under the JSON lock so only
+// one request can turn a running job into a candidate. This keeps human-check
+// resume/retry safe without treating a client retry as a new collection.
+function extensionJobScopeDecision(job = {}, scope = {}) {
+  const requested = String(scope.storeId || "").trim();
+  const principalStores = Array.isArray(scope.storeIds)
+    ? scope.storeIds.map((value) => String(value || "").trim()).filter(Boolean)
+    : [];
+  const jobStore = String(job.storeId || "").trim();
+  // Loopback/local workers may remain unscoped for backwards compatibility.
+  // Once a caller names a store (or has a principal store scope), an unbound
+  // legacy job is not safe to claim or complete.
+  if (!requested && !principalStores.length) return { allowed: true, reasonCode: "WORKER_SCOPE_UNSCOPED" };
+  if (!jobStore) return { allowed: false, reasonCode: "WORKER_JOB_STORE_SCOPE_MISSING" };
+  if (requested && requested !== jobStore) return { allowed: false, reasonCode: "WORKER_JOB_STORE_ACCESS_DENIED" };
+  if (principalStores.length && !principalStores.includes(jobStore)) {
+    return { allowed: false, reasonCode: "WORKER_PRINCIPAL_STORE_ACCESS_DENIED" };
+  }
+  return { allowed: true, reasonCode: "WORKER_STORE_SCOPE_OK" };
+}
+
+async function claimExtensionCompletion(jobId, scope = {}) {
+  return mutateJsonList(JOB_FILE, (jobs) => {
+    const index = jobs.findIndex((job) => job.id === jobId);
+    if (index === -1) return { write: false, value: null };
+    const current = jobs[index];
+    const scopeDecision = extensionJobScopeDecision(current, scope);
+    if (!scopeDecision.allowed) {
+      return { write: false, value: { job: current, scopeDenied: true, reasonCode: scopeDecision.reasonCode } };
+    }
+    if (current.status !== "running" || current.completionClaimedAt) {
+      return { write: false, value: { job: current, duplicate: true } };
+    }
+    const claimed = { ...current, completionClaimedAt: nowIso(), updatedAt: nowIso() };
+    jobs[index] = claimed;
+    return { items: jobs, value: { job: claimed, duplicate: false } };
+  });
 }
 
 async function hasExtensionJobsForTask(taskId) {
@@ -507,7 +657,7 @@ async function runTask(taskId) {
           hints: { sourceType: "crawler1688", source: "crawler1688" },
         });
         if (!parsed.title && task.options?.mustHaveSku !== false && !(parsed.skuVariants || []).length) continue;
-        const candidate = candidateFromParsed(taskId, parsed, i);
+        const candidate = candidateFromParsed(taskId, parsed, i, task.storeId);
         if (task.options?.mustHaveSizeWeight && !candidate.sizeWeightReady) continue;
         if (task.options?.mustHaveSku && candidate.skuCount < 1) continue;
         if (task.options?.smallItemOnly) {
@@ -551,19 +701,28 @@ async function runTask(taskId) {
   }
 }
 
-export async function listCrawlerTasks() {
-  const items = await readJsonList(TASK_FILE);
-  return items.sort((a, b) => String(b.updatedAt || b.createdAt).localeCompare(String(a.updatedAt || a.createdAt)));
+function taskVisibleToScope(item = {}, scope = {}) {
+  const requested = String(scope.storeId || "").trim();
+  const principalStores = Array.isArray(scope.storeIds)
+    ? scope.storeIds.map((value) => String(value || "").trim()).filter(Boolean)
+    : [];
+  if (requested) return String(item.storeId || "") === requested;
+  if (principalStores.length) return principalStores.includes(String(item.storeId || ""));
+  return true;
 }
 
-export async function getCrawlerTask(id) {
+export async function listCrawlerTasks(scope = {}) {
   const items = await readJsonList(TASK_FILE);
-  return items.find((item) => item.id === id) || null;
+  return items.filter((item) => taskVisibleToScope(item, scope)).sort((a, b) => String(b.updatedAt || b.createdAt).localeCompare(String(a.updatedAt || a.createdAt)));
+}
+
+export async function getCrawlerTask(id, scope = {}) {
+  const items = await readJsonList(TASK_FILE);
+  return items.find((item) => item.id === id && taskVisibleToScope(item, scope)) || null;
 }
 
 export async function createCrawlerTask(input = {}) {
   const now = nowIso();
-  const tasks = await readJsonList(TASK_FILE);
   const sourceText = String(input.sourceValue || input.keyword || "").trim();
   const task = {
     id: makeId("ct_"),
@@ -594,8 +753,31 @@ export async function createCrawlerTask(input = {}) {
     createdAt: now,
     updatedAt: now,
   };
-  tasks.push(task);
-  await writeJsonList(TASK_FILE, tasks);
+  if (input.controlledRead === true || (input.controlledReadPlan && typeof input.controlledReadPlan === "object")) {
+    const requested = input.controlledReadPlan && typeof input.controlledReadPlan === "object" ? input.controlledReadPlan : {};
+    const controlledReadPlan = build1688ReadPlan({
+      ...requested,
+      taskId: task.id,
+      storeId: task.storeId,
+      scope: requested.scope || {
+        name: "crawler_task",
+        maxProducts: task.options.maxProducts,
+      },
+    });
+    // A controlled task must carry a valid, bounded identity.  Do not silently
+    // downgrade malformed operator intent into an uncontrolled crawl.
+    const planCheck = validate1688ReadPlan(controlledReadPlan);
+    if (!planCheck.ok) {
+      const error = new Error(`1688 受控读取计划无效：${planCheck.errors.join("、")}`);
+      error.code = "1688_CONTROLLED_READ_PLAN_INVALID";
+      throw error;
+    }
+    task.controlledReadPlan = controlledReadPlan;
+  }
+  await mutateJsonList(TASK_FILE, (tasks) => {
+    tasks.push(task);
+    return { items: tasks };
+  });
   const baseUrl = sourceUrlForTask(task);
   const initialJob = isDirectOfferUrl(baseUrl)
     ? jobForTask(task, "detail", normalizeOfferUrl(baseUrl))
@@ -616,9 +798,11 @@ export async function createCrawlerTask(input = {}) {
   return { task, candidatesCreated: 0 };
 }
 
-export async function updateCrawlerTaskStatus(id, status) {
+export async function updateCrawlerTaskStatus(id, status, scope = {}) {
   const allowed = new Set(["paused", "running", "stopped"]);
   if (!allowed.has(status)) throw new Error("不支持的任务状态");
+  const current = await getCrawlerTask(id, scope);
+  if (!current) return null;
   const requeuedJobs = status === "running" ? await requeueRecoverableJobsForTask(id) : 0;
   const item = await updateTask(id, { status });
   const hasExtensionJobs = status === "running" ? await hasExtensionJobsForTask(id) : false;
@@ -626,17 +810,26 @@ export async function updateCrawlerTaskStatus(id, status) {
   return item ? { ...item, requeuedJobs } : item;
 }
 
-export async function deleteCrawlerTask(id) {
+export async function deleteCrawlerTask(id, scope = {}) {
   const taskId = String(id || "").trim();
   if (!taskId) return null;
-  const tasks = await readJsonList(TASK_FILE);
-  const task = tasks.find((item) => item.id === taskId);
+  const task = await getCrawlerTask(taskId, scope);
   if (!task) return null;
-  await writeJsonList(TASK_FILE, tasks.filter((item) => item.id !== taskId));
-  await writeJobs((await readJobs()).filter((job) => job.taskId !== taskId));
-  await writeJsonList(CANDIDATE_FILE, (await readJsonList(CANDIDATE_FILE)).filter((candidate) => candidate.taskId !== taskId));
+  await mutateJsonList(TASK_FILE, (tasks) => ({ items: tasks.filter((item) => item.id !== taskId) }));
+  await mutateJsonList(JOB_FILE, (jobs) => ({ items: jobs.filter((job) => job.taskId !== taskId) }));
+  await mutateJsonList(CANDIDATE_FILE, (candidates) => ({ items: candidates.filter((candidate) => candidate.taskId !== taskId) }));
   runningTasks.delete(taskId);
   return task;
+}
+
+function candidateVisibleToScope(item = {}, filter = {}) {
+  const requested = String(filter.storeId || "").trim();
+  const principalStores = Array.isArray(filter.storeIds)
+    ? filter.storeIds.map((value) => String(value || "").trim()).filter(Boolean)
+    : [];
+  if (requested) return String(item.storeId || "") === requested;
+  if (principalStores.length) return principalStores.includes(String(item.storeId || ""));
+  return true;
 }
 
 export async function listCrawlerCandidates(filter = {}) {
@@ -644,7 +837,7 @@ export async function listCrawlerCandidates(filter = {}) {
   const taskId = String(filter.taskId || "").trim();
   const status = String(filter.status || "").trim();
   const query = String(filter.query || "").trim().toLowerCase();
-  let rows = items;
+  let rows = items.filter((item) => candidateVisibleToScope(item, filter));
   if (taskId) rows = rows.filter((item) => item.taskId === taskId);
   if (status) rows = rows.filter((item) => item.status === status);
   if (query) {
@@ -658,24 +851,39 @@ export async function listCrawlerCandidates(filter = {}) {
   return rows.sort((a, b) => String(b.updatedAt || b.createdAt).localeCompare(String(a.updatedAt || a.createdAt)));
 }
 
-export async function updateCrawlerCandidate(id, patch = {}) {
-  const items = await readJsonList(CANDIDATE_FILE);
-  const index = items.findIndex((item) => item.id === id);
-  if (index === -1) return null;
-  items[index] = {
-    ...items[index],
-    ...patch,
-    updatedAt: nowIso(),
-  };
-  await writeJsonList(CANDIDATE_FILE, items);
-  return items[index];
+export async function updateCrawlerCandidate(id, patch = {}, scope = {}) {
+  return mutateJsonList(CANDIDATE_FILE, (items) => {
+    const index = items.findIndex((item) => item.id === id);
+    if (index === -1 || !candidateVisibleToScope(items[index], scope)) return { write: false, value: null };
+    const current = items[index];
+    const contentKeys = ["parsed", "product", "title", "url", "sourceEvidence", "sourceEvidenceSummary", "captureId"];
+    const contentChanged = Boolean(current.captureId)
+      && contentKeys.some((key) => Object.prototype.hasOwnProperty.call(patch || {}, key));
+    const next = { ...current, ...patch, updatedAt: nowIso() };
+    // A capture approval is bound to the exact parsed candidate that the
+    // seller inspected.  If the candidate content is edited afterwards,
+    // invalidate the old approval instead of silently reusing its snapshot
+    // hash for a different local draft.
+    if (contentChanged) {
+      next.captureReview = {
+        ...(current.captureReview || {}),
+        status: "stale",
+        humanConfirmed: false,
+        invalidatedAt: next.updatedAt,
+        invalidationReason: "candidate_content_changed",
+      };
+    }
+    items[index] = next;
+    return { items, value: next };
+  });
 }
 
-export async function moveCrawlerCandidateToCapture(id, storeId = "") {
+export async function moveCrawlerCandidateToCapture(id, storeId = "", scope = {}) {
   const items = await readJsonList(CANDIDATE_FILE);
   const index = items.findIndex((item) => item.id === id);
   if (index === -1) return null;
   const candidate = items[index];
+  if (!candidateVisibleToScope(candidate, { ...scope, storeId: String(storeId || scope.storeId || "") })) return null;
   const parsed = candidate.parsed || {
     source: "1688",
     url: candidate.url,
@@ -698,12 +906,17 @@ export async function moveCrawlerCandidateToCapture(id, storeId = "") {
     captureId: result.id,
     updatedAt: nowIso(),
   };
-  await writeJsonList(CANDIDATE_FILE, items);
+  await mutateJsonList(CANDIDATE_FILE, (current) => {
+    const currentIndex = current.findIndex((item) => item.id === id);
+    if (currentIndex === -1) return { write: false };
+    current[currentIndex] = items[index];
+    return { items: current };
+  });
   return { candidate: items[index], capture: result };
 }
 
-export async function moveCaptureToCrawlerCandidate(id) {
-  const capture = await getCollectionItem(id);
+export async function moveCaptureToCrawlerCandidate(id, scope = {}) {
+  const capture = await getCollectionItem(id, scope);
   if (!capture) return null;
   const parsed = capture.parsed || {};
   const url = parsed.url || "";
@@ -713,16 +926,23 @@ export async function moveCaptureToCrawlerCandidate(id) {
     await updateCollectionItem(id, {
       status: "candidate_ready",
       candidateId: existing.id,
-    });
+    }, scope);
     return { capture, candidate: existing, duplicate: true };
   }
 
   const candidate = {
-    ...candidateFromParsed(`capture:${id}`, parsed, items.length),
+    ...candidateFromParsed(`capture:${id}`, parsed, items.length, capture.storeId || scope.storeId || ""),
     id: makeId(parsed.source === "pdd" ? "pddc_" : "cc_"),
     source: parsed.source || "capture",
     sourcePlatform: parsed.sourcePlatform || (parsed.source === "pdd" ? "拼多多" : "1688"),
     captureId: id,
+    // Carry the capture's hash-bound approval across the candidate hand-off.
+    // Without this, a seller who approved the exact snapshot in the capture
+    // box would be forced to approve the same snapshot a second time (or the
+    // candidate would be blocked with a misleading missing-review state).
+    ...(capture.captureReview || parsed.captureReview
+      ? { captureReview: capture.captureReview || parsed.captureReview }
+      : {}),
     storeId: capture.storeId || "",
     includeVideo: capture.includeVideo !== false,
     status: parsed.title ? "pending_review" : "needs_review",
@@ -730,15 +950,22 @@ export async function moveCaptureToCrawlerCandidate(id) {
     reviewIssues: [
       ...(parsed.title ? [] : ["缺少商品标题"]),
       ...(parsed.sizeWeight?.weightG && parsed.sizeWeight?.lengthMm && parsed.sizeWeight?.widthMm && parsed.sizeWeight?.heightMm ? [] : ["缺少完整尺重"]),
+      ...(parsed.sourceEvidence?.snapshotHash ? [] : ["缺少来源快照证据，不能证明当前商品页面内容"]),
+      ...(parsed.procurementEvidence?.moq?.value && parsed.procurementEvidence?.priceTiers?.values?.length
+        ? [] : ["缺少供应商 MOQ 或数量绑定阶梯价，不能确认采购成本"]),
+      ...(Array.isArray(parsed.mediaAssets) && parsed.mediaAssets.length && parsed.mediaAssets.some((asset) => asset?.checks?.humanApproved !== true)
+        ? ["存在未人工确认的图片候选，不能直接进入富内容"] : []),
       ...(parsed.warnings || []),
     ],
   };
-  items.push(candidate);
-  await writeJsonList(CANDIDATE_FILE, items);
+  await mutateJsonList(CANDIDATE_FILE, (current) => {
+    current.push(candidate);
+    return { items: current };
+  });
   const updatedCapture = await updateCollectionItem(id, {
     status: "candidate_ready",
     candidateId: candidate.id,
-  });
+  }, scope);
   return { capture: updatedCapture || capture, candidate, duplicate: false };
 }
 
@@ -761,12 +988,30 @@ export async function clearCrawlerSessionCookie() {
 
 export async function recordCrawlerWorkerHeartbeat(input = {}) {
   const workerId = String(input.workerId || "").trim() || "unknown-worker";
+  // The browser may report a worker id and a selected store, but it must not
+  // be allowed to attach an arbitrary principal to a durable heartbeat. The
+  // HTTP route injects the authenticated principal fields; direct/local
+  // callers may provide the same fields for replayable tests.
+  const principalId = String(input.principalId || "").trim().slice(0, 120);
+  const principalStoreIds = [...new Set((Array.isArray(input.principalStoreIds)
+    ? input.principalStoreIds
+    : String(input.principalStoreIds || "").split(","))
+    .map((value) => String(value || "").trim())
+    .filter(Boolean))].slice(0, 100);
+  const principalRole = String(input.principalRole || "").trim().toLowerCase().slice(0, 32);
   const now = nowIso();
   const workers = await readWorkers();
-  const index = workers.findIndex((item) => item.workerId === workerId);
+  // A persisted extension id is not a tenant identity. Keep separate durable
+  // records when the same browser id is presented by different principals.
+  const index = workers.findIndex((item) => item.workerId === workerId
+    && String(item.principalId || "") === principalId);
   const currentJob = input.currentJob || input.job || null;
   const payload = {
     workerId,
+    ...(principalId ? { principalId } : {}),
+    ...(principalStoreIds.length ? { principalStoreIds } : {}),
+    ...(principalRole ? { principalRole } : {}),
+    storeId: String(input.storeId || "").trim(),
     status: String(input.status || "idle"),
     message: String(input.message || ""),
     currentTaskId: String(input.currentTaskId || currentJob?.taskId || ""),
@@ -785,10 +1030,24 @@ export async function recordCrawlerWorkerHeartbeat(input = {}) {
   return payload;
 }
 
-export async function getCrawlerWorkerStatus() {
+export async function getCrawlerWorkerStatus(scope = {}) {
   const workers = await readWorkers();
+  const requestedStore = String(scope.storeId || "").trim();
+  const principalStores = Array.isArray(scope.storeIds)
+    ? scope.storeIds.map((value) => String(value || "").trim()).filter(Boolean)
+    : String(scope.storeIds || "").split(",").map((value) => value.trim()).filter(Boolean);
+  const principalId = String(scope.principalId || "").trim();
+  const scopedWorkers = workers.filter((worker) => {
+    const workerStore = String(worker.storeId || "").trim();
+    if (requestedStore && workerStore !== requestedStore) return false;
+    if (principalStores.length && (!workerStore || !principalStores.includes(workerStore))) return false;
+    // A principal-bound worker status is private to that principal. Admin
+    // deployments without a principal id can still inspect their store scope.
+    if (principalId && String(worker.principalId || "") !== principalId) return false;
+    return true;
+  });
   const now = Date.now();
-  const items = workers
+  const items = scopedWorkers
     .map((worker) => {
       const updatedAt = new Date(worker.updatedAt || 0).getTime();
       const online = Number.isFinite(updatedAt) && now - updatedAt <= WORKER_ONLINE_WINDOW_MS;
@@ -805,8 +1064,8 @@ export async function getCrawlerWorkerStatus() {
   };
 }
 
-export async function claimCrawlerExtensionJob(workerId = "") {
-  let jobs = releaseStaleRunningJobs(await readJobs());
+export async function claimCrawlerExtensionJob(workerId = "", scope = {}) {
+  let jobs = releaseStaleRunningJobs(await readJobs(), scope);
   await writeJobs(jobs);
   const tasks = await readJsonList(TASK_FILE);
   const taskById = new Map(tasks.map((item) => [item.id, item]));
@@ -821,6 +1080,7 @@ export async function claimCrawlerExtensionJob(workerId = "") {
       return kindA - kindB || a.i - b.i;
     });
   for (const { job, i } of claimable) {
+    if (!extensionJobScopeDecision(job, scope).allowed) continue;
     const candidateTask = taskById.get(job.taskId);
     if (!candidateTask || ["stopped", "paused", "waiting_human", "failed", "finished"].includes(candidateTask.status)) continue;
     index = i;
@@ -833,6 +1093,7 @@ export async function claimCrawlerExtensionJob(workerId = "") {
     status: "running",
     attempts: Number(jobs[index].attempts || 0) + 1,
     workerId: String(workerId || ""),
+    completionClaimedAt: "",
     updatedAt: nowIso(),
   };
   await writeJobs(jobs);
@@ -840,7 +1101,11 @@ export async function claimCrawlerExtensionJob(workerId = "") {
   return jobs[index];
 }
 
-export async function completeCrawlerExtensionDiscover(jobId, payload = {}) {
+export async function completeCrawlerExtensionDiscover(jobId, payload = {}, scope = {}) {
+  const completion = await claimExtensionCompletion(jobId, scope);
+  if (!completion) return null;
+  if (completion.scopeDenied) return { job: completion.job, urlsCreated: 0, scopeDenied: true, reasonCode: completion.reasonCode };
+  if (completion.duplicate) return { job: completion.job, urlsCreated: 0, duplicate: true };
   const jobs = await readJobs();
   const index = jobs.findIndex((job) => job.id === jobId);
   if (index === -1) return null;
@@ -849,7 +1114,20 @@ export async function completeCrawlerExtensionDiscover(jobId, payload = {}) {
   if (payload.needsHuman) {
     jobs[index] = { ...job, status: "failed", lastError: payload.error || "浏览器需要人工验证", updatedAt: nowIso() };
     await writeJobs(jobs);
-    await updateTask(job.taskId, { status: "waiting_human", lastError: jobs[index].lastError });
+    const waitingTask = await getCrawlerTask(job.taskId);
+    const waitingReceipt = waitingTask?.controlledReadPlan
+      ? build1688ReadReceipt(waitingTask.controlledReadPlan, {
+        status: "waiting_human",
+        humanReason: payload.error || "1688 人机验证",
+        captureMode: "extension_browser",
+        observations: [{ url: job.url, status: "waiting_human" }],
+      }, { persisted: true })
+      : null;
+    await updateTask(job.taskId, {
+      status: "waiting_human",
+      lastError: jobs[index].lastError,
+      ...(waitingReceipt ? { controlledReadReceipt: waitingReceipt } : {}),
+    });
     await emitCrawlerWorkflowNode(job.taskId, "waiting_crawl", {
       nodeStatus: "failed",
       runStatus: "waiting_human",
@@ -905,7 +1183,11 @@ export async function completeCrawlerExtensionDiscover(jobId, payload = {}) {
   return { job: jobs[index], urlsCreated: detailJobs.length };
 }
 
-export async function completeCrawlerExtensionDetail(jobId, payload = {}) {
+export async function completeCrawlerExtensionDetail(jobId, payload = {}, scope = {}) {
+  const completion = await claimExtensionCompletion(jobId, scope);
+  if (!completion) return null;
+  if (completion.scopeDenied) return { job: completion.job, candidate: null, scopeDenied: true, reasonCode: completion.reasonCode };
+  if (completion.duplicate) return { job: completion.job, candidate: null, duplicate: true };
   const jobs = await readJobs();
   const index = jobs.findIndex((job) => job.id === jobId);
   if (index === -1) return null;
@@ -929,13 +1211,74 @@ export async function completeCrawlerExtensionDetail(jobId, payload = {}) {
     return { job: jobs[index], candidate: null };
   }
   try {
+    const capture = normalize1688CaptureEnvelope({
+      ...payload,
+      // The extension used to call this field `sentAt`; normalize it at the
+      // task boundary so a stored capture can be resumed/replayed without
+      // depending on the browser worker's in-memory state.
+      collectedAt: payload.collectedAt || payload.sentAt,
+      captureMode: payload.captureMode || "extension_browser",
+    }, {
+      taskId: job.taskId,
+      url: job.url,
+      captureMode: "extension_browser",
+    });
+    // A browser worker can finish an old tab after the ERP has already
+    // assigned it a different detail job.  Never persist that payload as a
+    // candidate: the task identity is part of the resumable capture contract,
+    // not merely diagnostic metadata.  Empty taskId remains backwards
+    // compatible because the server supplies the claimed job id as fallback.
+    if (capture.taskId && capture.taskId !== String(job.taskId || "").trim()) {
+      const reason = `采集回传任务身份不匹配：期望 ${job.taskId}，实际 ${capture.taskId}`;
+      jobs[index] = { ...job, status: "failed", lastError: reason, updatedAt: nowIso() };
+      await writeJobs(jobs);
+      await updateTask(job.taskId, { status: "failed", lastError: reason });
+      await emitCrawlerWorkflowNode(job.taskId, "crawled", {
+        nodeStatus: "failed",
+        runStatus: "failed",
+        output: { error: reason, reasonCode: "CAPTURE_TASK_ID_MISMATCH", url: job.url },
+      });
+      return { job: jobs[index], candidate: null, reasonCode: "CAPTURE_TASK_ID_MISMATCH" };
+    }
     const parsed = parse1688Product({
-      url: payload.url || job.url,
+      url: capture.url || job.url,
       html: payload.html || "",
-      hints: { ...payload, sourceType: "crawler1688", source: "crawler1688" },
+      hints: {
+        ...payload,
+        ...capture,
+        sourceType: "crawler1688",
+        source: "crawler1688",
+      },
     });
     const task = await getCrawlerTask(job.taskId);
-    const candidate = candidateFromParsed(job.taskId, parsed, 0);
+    // A challenge page can arrive without the extension setting needsHuman.
+    // Never turn its empty/partial parser output into a candidate; persist the
+    // resumable pause on the controlled task instead.
+    if (parsed.sourceEvidence?.verificationState === "waiting_human") {
+      const reason = parsed.sourceEvidence?.verificationReason || "1688 页面需要人工验证";
+      jobs[index] = { ...job, status: "failed", lastError: reason, updatedAt: nowIso() };
+      await writeJobs(jobs);
+      const challengeReceipt = task?.controlledReadPlan
+        ? build1688ReadReceipt(task.controlledReadPlan, {
+          status: "waiting_human",
+          humanReason: reason,
+          captureMode: capture.captureMode,
+          observations: [{ offerId: capture.offerId, url: capture.url || job.url, status: "waiting_human" }],
+        }, { persisted: true })
+        : null;
+      await updateTask(job.taskId, {
+        status: "waiting_human",
+        lastError: reason,
+        ...(challengeReceipt ? { controlledReadReceipt: challengeReceipt } : {}),
+      });
+      await emitCrawlerWorkflowNode(job.taskId, "waiting_crawl", {
+        nodeStatus: "failed",
+        runStatus: "waiting_human",
+        output: { error: reason, needsHuman: true, url: job.url },
+      });
+      return { job: jobs[index], candidate: null };
+    }
+    const candidate = candidateFromParsed(job.taskId, parsed, 0, task?.storeId);
     const shouldKeep = (!task?.options?.mustHaveSku || candidate.skuCount > 0)
       && (!task?.options?.mustHaveSizeWeight || candidate.sizeWeightReady)
       && (!task?.options?.smallItemOnly || evaluateSourcingCandidate(candidate, {
@@ -944,6 +1287,17 @@ export async function completeCrawlerExtensionDetail(jobId, payload = {}) {
       }).ok);
     jobs[index] = { ...job, status: "done", updatedAt: nowIso() };
     await writeJobs(jobs);
+    const readReceipt = task?.controlledReadPlan
+      ? build1688ReadReceipt(task.controlledReadPlan, {
+        status: "success",
+        captureMode: capture.captureMode,
+        observations: [{ offerId: capture.offerId, url: capture.url || job.url, status: "success", snapshotHash: parsed.sourceEvidence?.snapshotHash }],
+      }, { persisted: true })
+      : null;
+    if (readReceipt) {
+      candidate.sourceEvidenceReceipt = readReceipt;
+      await updateTask(job.taskId, { controlledReadReceipt: readReceipt });
+    }
     if (shouldKeep) await appendCandidates([candidate]);
     const candidates = await listCrawlerCandidates({ taskId: job.taskId });
     const pausedAfterTarget = await stopRemainingDetailJobsAfterAcceptedTarget(job.taskId, candidates.length);

@@ -1,0 +1,12 @@
+{
+  "fixtureKind": "synthetic_redacted_replay",
+  "synthetic": true,
+  "redacted": true,
+  "url": "https://detail.1688.com/offer/900000000002.html?trace=redacted",
+  "hints": {
+    "capturedAt": "2026-07-12T08:05:00.000Z",
+    "captureMode": "fixture_replay"
+  },
+  "verificationLevel": "locally_tested_fixture",
+  "validationTargets": ["preserve_multi_sku_variant_matrix", "do_not_collapse_variants"]
+}

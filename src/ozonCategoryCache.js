@@ -2,6 +2,11 @@ import { mkdir, readFile, writeFile } from "node:fs/promises";
 import path from "node:path";
 
 const DATA_DIR = path.join(process.cwd(), "data");
+// Category/type dictionaries change independently of the ERP process.  A
+// cached tree without a freshness signal must not silently look like current
+// Ozon evidence.  The default is deliberately conservative but configurable
+// for operators who have a documented refresh cadence.
+const DEFAULT_CACHE_MAX_AGE_MS = 30 * 24 * 60 * 60 * 1000;
 function categoryCacheFile() {
   return process.env.OZON_CATEGORY_CACHE_FILE || path.join(DATA_DIR, "ozon-category-cache.json");
 }
@@ -20,6 +25,33 @@ export async function saveCategoryCache(cache) {
   const tmp = `${file}.tmp.${Date.now()}.${Math.random().toString(36).slice(2)}`;
   await writeFile(tmp, JSON.stringify(normalizeCategoryCache(cache), null, 2), "utf8");
   await renameFile(tmp, file);
+}
+
+/**
+ * Return a seller-safe freshness contract for a category cache.  This is a
+ * local signal only: `fresh` means the cache is within the configured age,
+ * not that Ozon has been contacted now.  Missing/invalid timestamps stay
+ * unusable so category matching cannot be mistaken for current platform
+ * evidence.
+ */
+export function inspectCategoryCacheFreshness(cache = {}, {
+  now = Date.now(),
+  maxAgeMs = Number(process.env.OZON_CATEGORY_CACHE_MAX_AGE_MS || DEFAULT_CACHE_MAX_AGE_MS),
+} = {}) {
+  const updatedAt = String(cache?.updatedAt || "").trim();
+  const updatedMs = Date.parse(updatedAt);
+  const ageLimit = Number.isFinite(maxAgeMs) && maxAgeMs > 0 ? maxAgeMs : DEFAULT_CACHE_MAX_AGE_MS;
+  if (!updatedAt || !Number.isFinite(updatedMs)) {
+    return { status: "unknown", reasonCode: "CATEGORY_CACHE_TIMESTAMP_MISSING", updatedAt, ageMs: null, maxAgeMs: ageLimit, usable: false };
+  }
+  const ageMs = Number(now) - updatedMs;
+  if (!Number.isFinite(ageMs) || ageMs < 0) {
+    return { status: "unknown", reasonCode: "CATEGORY_CACHE_TIMESTAMP_INVALID", updatedAt, ageMs: Number.isFinite(ageMs) ? ageMs : null, maxAgeMs: ageLimit, usable: false };
+  }
+  if (ageMs > ageLimit) {
+    return { status: "stale", reasonCode: "CATEGORY_CACHE_STALE", updatedAt, ageMs, maxAgeMs: ageLimit, usable: false };
+  }
+  return { status: "fresh", reasonCode: "", updatedAt, ageMs, maxAgeMs: ageLimit, usable: true };
 }
 
 export function attributeValueCacheKey({
@@ -43,6 +75,7 @@ export async function upsertAttributeValuesCache({
   attributeId = 0,
   language = "ZH_HANS",
   values = [],
+  operationEvidence = null,
 } = {}) {
   const cache = await loadCategoryCache();
   const key = attributeValueCacheKey({ descriptionCategoryId, typeId, attributeId, language });
@@ -63,6 +96,13 @@ export async function upsertAttributeValuesCache({
         values: Array.isArray(values) ? values : [],
       },
     },
+    categoryReadEvidence: {
+      ...(cache.categoryReadEvidence || {}),
+      attributeValues: {
+        ...(cache.categoryReadEvidence?.attributeValues || {}),
+        ...(operationEvidence ? { [key]: operationEvidence } : {}),
+      },
+    },
   };
   await saveCategoryCache(next);
   return next.attributeValues[key];
@@ -75,7 +115,16 @@ function normalizeCategoryCache(cache = {}) {
     tree: Array.isArray(cache.tree) ? cache.tree : [],
     flat: Array.isArray(cache.flat) ? cache.flat : [],
     attributes: cache.attributes && typeof cache.attributes === "object" ? cache.attributes : {},
+    attributeStores: cache.attributeStores && typeof cache.attributeStores === "object" ? cache.attributeStores : {},
+    attributeUpdatedAt: cache.attributeUpdatedAt && typeof cache.attributeUpdatedAt === "object" ? cache.attributeUpdatedAt : {},
     attributeValues: cache.attributeValues && typeof cache.attributeValues === "object" ? cache.attributeValues : {},
+    categoryReadEvidence: cache.categoryReadEvidence && typeof cache.categoryReadEvidence === "object"
+      ? {
+        tree: cache.categoryReadEvidence.tree && typeof cache.categoryReadEvidence.tree === "object" ? cache.categoryReadEvidence.tree : null,
+        attributes: cache.categoryReadEvidence.attributes && typeof cache.categoryReadEvidence.attributes === "object" ? cache.categoryReadEvidence.attributes : {},
+        attributeValues: cache.categoryReadEvidence.attributeValues && typeof cache.categoryReadEvidence.attributeValues === "object" ? cache.categoryReadEvidence.attributeValues : {},
+      }
+      : { tree: null, attributes: {}, attributeValues: {} },
   };
 }
 

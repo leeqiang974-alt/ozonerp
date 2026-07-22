@@ -1,0 +1,13 @@
+{
+  "verified": true,
+  "verificationLevel": "server_verified",
+  "proofRefHash": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+  "authSource": "session_bearer",
+  "environment": "staging-read",
+  "storeIds": [
+    "<canonical-store-id-1>",
+    "<canonical-store-id-2>",
+    "<canonical-store-id-3>",
+    "<canonical-store-id-4>"
+  ]
+}

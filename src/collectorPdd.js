@@ -1,3 +1,5 @@
+import { createHash } from "node:crypto";
+
 const IMAGE_RE = /https?:\\?\/\\?\/[^"'\s<>]+?(?:\.jpg|\.jpeg|\.png|\.webp)(?:[^"'\s<>]*)?/gi;
 
 export function parsePddProduct({ url = "", html = "", hints = {} } = {}) {
@@ -20,11 +22,43 @@ export function parsePddProduct({ url = "", html = "", hints = {} } = {}) {
   );
   const sizeWeight = normalizePackageInfo(hints.packageInfo || hints.sizeWeight || {});
   const goodsId = pddGoodsId(url || hints.url || "");
+  const parseIssues = buildParseIssues({ title, images, skuVariants, sizeWeight });
+  const collectedAt = normalizeCollectedAt(hints.collectedAt || hints.capturedAt || hints.sentAt);
+  const snapshotHash = `sha256:${createHash("sha256").update(cleanHtml, "utf8").digest("hex")}`;
+  const sourceEvidence = {
+    platform: "pdd",
+    canonicalUrl: String(url || hints.url || "").trim(),
+    snapshotHash,
+    verificationState: "unknown",
+    verificationReason: "pdd_source_not_verified",
+    capturedAt: collectedAt,
+    fields: {
+      title: { source: title ? "page_content" : "missing" },
+      images: { source: images.length ? "page_content" : "missing", count: images.length },
+      variants: { source: skuVariants.length ? "page_content" : "missing", count: skuVariants.length },
+      package: { source: sizeWeight.weightG && sizeWeight.lengthMm && sizeWeight.widthMm && sizeWeight.heightMm ? "page_content" : "missing", values: sizeWeight },
+    },
+    sellerFacing: {
+      status: "unknown",
+      blocker: "拼多多来源尚未完成可回放验证",
+      nextAction: "确认拼多多来源页面和字段，再进入采购、SKU、媒体与 Ozon 预检",
+      sideEffects: ["不会提交 Ozon", "不会修改价格", "不会写入库存"],
+    },
+  };
 
   return {
     source: "pdd",
     sourcePlatform: "拼多多",
     goodsId,
+    capture: {
+      taskId: String(hints.taskId || "").trim(),
+      offerId: goodsId,
+      url: String(url || hints.url || "").trim(),
+      collectedAt,
+      captureMode: String(hints.captureMode || hints.sourceType || "pdd_parser").trim() || "pdd_parser",
+    },
+    sourceEvidence,
+    parseIssues,
     url,
     title,
     skuProps: [],
@@ -41,6 +75,20 @@ export function parsePddProduct({ url = "", html = "", hints = {} } = {}) {
     ozonDraft: toOzonDraft({ title, images, attributes, skuVariants, sizeWeight }),
     warnings: buildWarnings({ title, images, skuVariants, attributes, sizeWeight }),
   };
+}
+
+function normalizeCollectedAt(value) {
+  const date = value ? new Date(value) : new Date();
+  return Number.isNaN(date.getTime()) ? new Date().toISOString() : date.toISOString();
+}
+
+function buildParseIssues({ title, images, skuVariants, sizeWeight }) {
+  const issues = [];
+  if (!title) issues.push("missing_title");
+  if (!images.length) issues.push("missing_images");
+  if (!skuVariants.length) issues.push("missing_sku_variants");
+  if (!sizeWeight.weightG || !sizeWeight.lengthMm || !sizeWeight.widthMm || !sizeWeight.heightMm) issues.push("missing_package_dimensions");
+  return issues;
 }
 
 function pddGoodsId(url = "") {

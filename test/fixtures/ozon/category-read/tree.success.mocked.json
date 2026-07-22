@@ -1,0 +1,21 @@
+{
+  "fixtureKind": "mocked_redacted_category_read",
+  "synthetic": true,
+  "redacted": true,
+  "verificationLevel": "mocked",
+  "endpoint": "/v1/description-category/tree",
+  "requestScope": {
+    "description_category_id": 17028673,
+    "type_id": 95183,
+    "language": "ZH_HANS"
+  },
+  "result": [
+    {
+      "description_category_id": 17028673,
+      "category_name": "Fixture storage category",
+      "type_id": 95183,
+      "type_name": "Fixture storage type"
+    }
+  ],
+  "has_next": false
+}

@@ -1,5 +1,6 @@
 import fs from "node:fs/promises";
 import path from "node:path";
+import { createHash } from "node:crypto";
 import { fileURLToPath } from "node:url";
 import { diagnoseListingQuality } from "./listingQuality.js";
 import { loadCategoryCache } from "./ozonCategoryCache.js";
@@ -22,6 +23,11 @@ function workflowFile() {
 
 function nowIso() {
   return new Date().toISOString();
+}
+
+function canonical1688OfferId(url = "") {
+  const canonical = String(url || "").trim().split(/[?#]/)[0];
+  return canonical.match(/^https?:\/\/detail\.1688\.com\/offer\/(\d+)(?:\.html)?$/i)?.[1] || "";
 }
 
 function makeId() {
@@ -64,6 +70,19 @@ async function writeStore(store) {
   const file = workflowFile();
   const previous = writeChains.get(file) || Promise.resolve();
   const next = previous.catch(() => {}).then(() => writeStoreUnlocked(store));
+  writeChains.set(file, next.catch(() => {}));
+  return next;
+}
+
+function mutateStore(operation) {
+  const file = workflowFile();
+  const previous = writeChains.get(file) || Promise.resolve();
+  const next = previous.catch(() => {}).then(async () => {
+    const store = await readStore();
+    const result = await operation(store);
+    if (result?.write !== false) await writeStoreUnlocked(store);
+    return result?.value;
+  });
   writeChains.set(file, next.catch(() => {}));
   return next;
 }
@@ -412,8 +431,73 @@ function sourceVariantForRow(sourceVariants = [], row = {}, index = 0, offerId =
   return {
     spec,
     image: variant.image || variant.imageUrl || variant.skuImageUrl || "",
+    sourceSkuId: String(variant.sourceSkuId || variant.source_sku_id || variant.skuId || variant.sku_id || "").trim(),
+    sourceSnapshotHash: String(variant.sourceSnapshotHash || variant.source_snapshot_hash || "").trim(),
     source: variant.source || "1688_sku_variant",
   };
+}
+
+export function buildSourceVariantBindingSummary(input = {}) {
+  const items = payloadItems(input.payload || input.submitPayload || {});
+  const sourceVariants = Array.isArray(input.sourceVariants) ? input.sourceVariants : [];
+  const expectedSnapshotHash = String(input.sourceEvidence?.snapshotHash || "").trim();
+  const requireSnapshotBinding = input.sourceVariantEvidenceRequired === true;
+  const rows = items.map((item, index) => {
+    const offerId = String(item?.offer_id || "").trim();
+    const sourceVariant = sourceVariantForRow(sourceVariants, { offerId }, index, offerId);
+    const sourceSkuId = String(sourceVariant?.sourceSkuId || "").trim();
+    const snapshotMatches = !requireSnapshotBinding
+      || (/^sha256:[a-f0-9]{64}$/i.test(expectedSnapshotHash)
+        && sourceVariant?.sourceSnapshotHash === expectedSnapshotHash);
+    return {
+      offerId,
+      sourceSkuId,
+      status: sourceSkuId && snapshotMatches ? "bound" : "missing",
+      sourceSpec: sourceVariant?.spec || "",
+      sourceSnapshotHash: sourceVariant?.sourceSnapshotHash || "",
+    };
+  });
+  const ids = rows.map((row) => row.sourceSkuId).filter(Boolean);
+  const duplicateIds = [...new Set(ids.filter((id, index) => ids.indexOf(id) !== index))];
+  const missingOfferIds = rows.filter((row) => row.status !== "bound").map((row) => row.offerId);
+  return {
+    rows,
+    summary: {
+      itemCount: rows.length,
+      boundCount: rows.filter((row) => row.status === "bound").length,
+      missingCount: missingOfferIds.length,
+      duplicateCount: duplicateIds.length,
+      missingOfferIds,
+      duplicateSourceSkuIds: duplicateIds,
+      ready: rows.length > 0 && missingOfferIds.length === 0 && duplicateIds.length === 0,
+    },
+  };
+}
+
+export function buildSourceVariantBindingReceipt(input = {}) {
+  const summary = buildSourceVariantBindingSummary(input);
+  const snapshotHash = String(input.sourceEvidence?.snapshotHash || "").trim();
+  const validSnapshot = /^sha256:[a-f0-9]{64}$/i.test(snapshotHash);
+  const rows = summary.rows.map((row) => ({
+    offerRef: `sha256:${createHash("sha256").update(String(row.offerId || ""), "utf8").digest("hex")}`,
+    sourceSkuRef: row.sourceSkuId
+      ? `sha256:${createHash("sha256").update(String(row.sourceSkuId), "utf8").digest("hex")}`
+      : "",
+    status: row.status,
+  }));
+  const receipt = {
+    schemaVersion: 1,
+    sourceSnapshotHash: validSnapshot ? snapshotHash : "",
+    itemCount: summary.summary.itemCount,
+    boundCount: summary.summary.boundCount,
+    missingCount: summary.summary.missingCount,
+    duplicateCount: summary.summary.duplicateCount,
+    rows,
+    ready: validSnapshot && summary.summary.ready,
+    verificationLevel: validSnapshot && summary.summary.ready ? "locally_tested" : "needs_evidence",
+  };
+  receipt.receiptHash = `sha256:${createHash("sha256").update(JSON.stringify(receipt), "utf8").digest("hex")}`;
+  return receipt;
 }
 
 function sourceVariantTextAspectValue(meta = {}, sourceVariant = null) {
@@ -1031,9 +1115,11 @@ export function buildVariantConfigurationSummary(input = {}) {
     };
   });
   const differenceSuggestions = variantGroupDifferenceSuggestions(grouping);
+  const sourceVariantBinding = buildSourceVariantBindingSummary({ payload, sourceVariants });
   return {
     rows,
     differenceSuggestions,
+    sourceVariantBinding,
     summary: variantCoverageSummary(rows, grouping, differenceSuggestions),
   };
 }
@@ -1164,6 +1250,26 @@ function variantConfigurationIssues(variantConfiguration = null) {
     }));
 }
 
+function staleRichContentMediaApprovalIssues(payload = {}, workflowRun = null) {
+  const hasRichContent = payloadItems(payload).some((item) => (
+    item?.rich_content_json || item?.richContentJson || item?.rich_content || item?.richContent
+  ));
+  const approval = workflowRun?.mediaApprovalDraft;
+  if (!hasRichContent || !approval) return [];
+  const currentDraftHash = hashPayloadDraft(payload);
+  const sourceHash = String(approval.expectedSourceHash || "");
+  const bindingCurrent = approval.status === "published_local"
+    && approval.expectedDraftHash === currentDraftHash
+    && /^sha256:[a-f0-9]{64}$/i.test(sourceHash)
+    && approval.richContentDetailAssetsApproved === true;
+  if (bindingCurrent) return [];
+  return [{
+    code: "RICH_CONTENT_MEDIA_APPROVAL_STALE",
+    message: "富内容媒体批准已陈旧或未绑定当前草稿，必须重新审查后才能提交 Ozon。",
+    source: "media_approval",
+  }];
+}
+
 function categoryMatchFromPayload(payload = {}) {
   const item = payloadItems(payload)[0] || {};
   return {
@@ -1246,7 +1352,8 @@ function buildPayloadDraftValidation(payload = {}, options = {}) {
   const qualityIssues = listingQualityIssues(listingQuality);
   const matrixIssues = listingAttributeMatrixIssues(attributeMatrix);
   const variantIssues = variantConfigurationIssues(variantConfiguration);
-  const issues = [...(payloadValidation.issues || []), ...qualityIssues, ...matrixIssues, ...variantIssues];
+  const mediaApprovalIssues = staleRichContentMediaApprovalIssues(payload, options.workflowRun || null);
+  const issues = [...(payloadValidation.issues || []), ...qualityIssues, ...matrixIssues, ...variantIssues, ...mediaApprovalIssues];
   const requiredAttributeFillPlan = buildRequiredAttributePlanForPayload(payload, options);
   const requiredAttributeFillSummary = summarizeRequiredAttributeFillPlan(requiredAttributeFillPlan);
   const requiredAttributeManualBacklog = buildRequiredAttributeManualBacklog(requiredAttributeFillPlan);
@@ -1255,6 +1362,11 @@ function buildPayloadDraftValidation(payload = {}, options = {}) {
     manualBacklog: requiredAttributeManualBacklog,
     fillPlan: requiredAttributeFillPlan,
   });
+  // Keep the same seller-facing contract on the persisted validation response
+  // as on the preflight workflow node.  The listing page normally reads this
+  // response after an explicit recheck, so omitting it here forced the UI to
+  // fall back to raw issue codes and lost the action/side-effect/result text.
+  const sellerResult = buildPreflightSellerResult({ issues, payload });
   return {
     ...payloadValidation,
     ok: issues.length === 0,
@@ -1267,6 +1379,238 @@ function buildPayloadDraftValidation(payload = {}, options = {}) {
     requiredAttributeManualBacklog,
     requiredAttributeRuleCandidateIndex,
     variantConfiguration,
+    sellerResult,
+  };
+}
+
+// A workflow created by the 1688 auto-listing path has a stronger preflight
+// policy than the generic Payload shape checks.  Keep that policy attached to
+// the preflight node so a later "校验 Payload" or submit request cannot fall
+// back to the weaker validator after a seller edits the draft.  Older/manual
+// local runs have no policy and intentionally retain the compatibility path.
+function buildPayloadDraftValidationForRun(run = {}, payload = {}, dictionaryValueCache = {}) {
+  const preflightNode = workflowNodeByKey(run, "preflight_check");
+  const policy = preflightNode?.output?.preflightPolicy;
+  const legacy1688 = String(run.entity?.source || "").trim().toLowerCase() === "1688";
+  if (!policy?.enforced && !legacy1688) {
+    return { validation: buildPayloadDraftValidation(payload, {
+      attrsMeta: run.payloadDraftAttrsMeta || [],
+      sourceVariants: run.payloadDraftSourceVariants || [],
+      workflowRun: run,
+      dictionaryValueCache,
+    }), gateNode: null };
+  }
+  // Older 1688 runs may predate the persisted policy.  They must fail closed
+  // instead of silently using the generic validator; the missing evidence is
+  // intentionally surfaced as a seller repair task.
+  const effectivePolicy = policy?.enforced ? policy : {
+    enforced: true,
+    sourceEvidence: run.entity?.sourceEvidence || null,
+    sourceEvidenceRequired: true,
+    sourceIdentityRequired: true,
+    sourceVariantBindingRequired: true,
+    categoryEvidenceRequired: true,
+    contentSummary: {},
+    variantCount: payloadItems(payload).length,
+  };
+  const gateNode = buildPreflightGateNode({
+    payload,
+    attrsMeta: run.payloadDraftAttrsMeta || [],
+    sourceVariants: run.payloadDraftSourceVariants || [],
+    dictionaryValueCache,
+    contentSummary: effectivePolicy.contentSummary || {},
+    category: effectivePolicy.category || null,
+    variantCount: Number(effectivePolicy.variantCount || payloadItems(payload).length || 0),
+    sourceEvidence: effectivePolicy.sourceEvidence || null,
+    sourceEvidenceRequired: effectivePolicy.sourceEvidenceRequired === true,
+    sourceIdentityRequired: effectivePolicy.sourceIdentityRequired === true,
+    sourceVariantBindingRequired: effectivePolicy.sourceVariantBindingRequired === true,
+    sourceVariantEvidenceRequired: effectivePolicy.sourceVariantEvidenceRequired === true,
+    categoryEvidence: effectivePolicy.categoryEvidence || null,
+    categoryEvidenceRequired: effectivePolicy.categoryEvidenceRequired === true,
+    categoryEvidenceStoreId: effectivePolicy.categoryEvidenceStoreId || "",
+    categoryEvidenceEnvironmentRefHash: effectivePolicy.categoryEvidenceEnvironmentRefHash || "",
+    categoryEvidenceMaxAgeMs: effectivePolicy.categoryEvidenceMaxAgeMs,
+    pricing: effectivePolicy.pricingDiagnosis || null,
+  });
+  return { validation: gateNode.output, gateNode };
+}
+
+// Convert technical preflight issues into an actionable seller contract.
+// This is intentionally read-only: repairs never mutate a draft or call Ozon.
+export function buildReviewRepairDraft({ taskId = "", skuOffers = [], importedItems = [], importErrors = [], submitPayload = {} } = {}) {
+  const offerIds = [...new Set((Array.isArray(skuOffers) ? skuOffers : []).map((id) => String(id || "").trim()).filter(Boolean))];
+  const errors = Array.isArray(importErrors) ? importErrors : [];
+  const importedByOffer = new Map((Array.isArray(importedItems) ? importedItems : [])
+    .map((item) => [String(item?.offer_id || item?.offerId || "").trim(), item])
+    .filter(([offerId]) => offerId));
+  const repairs = errors.map((error) => {
+    const offerId = String(error?.offer_id || error?.offerId || "").trim();
+    const imported = importedByOffer.get(offerId) || null;
+    const productId = Number(error?.product_id || error?.productId || imported?.product_id || imported?.productId || 0) || null;
+    const attributeId = String(error?.attribute_id || error?.attributeId || "").trim();
+    return { offerId, productId, code: String(error?.code || "REVIEW_ERROR"), message: String(error?.message || "审核问题需要人工确认"), fieldPath: offerId ? `items[offer_id=${offerId}].attributes${attributeId ? `[id=${attributeId}]` : ""}` : "items[*]", valueProvided: false, action: "按字段修复本地草稿后重新预检" };
+  });
+  if (!repairs.length && importedItems.some((item) => item?.offer_id)) repairs.push(...importedItems.map((item) => ({ offerId: String(item.offer_id), productId: Number(item?.product_id || item?.productId || 0) || null, code: "MODERATION_FAILED", message: "审核失败，需要人工确认具体字段", fieldPath: `items[offer_id=${String(item.offer_id)}]`, valueProvided: false, action: "定位 Offer 字段后修复并重新预检" })));
+  return { ok: true, status: "pending_manual_repair", taskId, offerIds, repairs, workflow: { draft: "保存本地修复草稿并生成新 hash", preflight: "修复后重新预检", confirmation: "通过预检后人工确认提交", readback: "按 task_id/product_id/Offer 再次只读回查" }, sideEffect: "仅生成本地修复草稿，不会修改 Ozon、价格或库存。", result: "尚未重新预检，等待人工修复。", submitPayload };
+}
+
+export function buildPreflightSellerResult({
+  issues = [],
+  payload = {},
+  sourceVariantBinding = null,
+  variantConfiguration = null,
+  sourceEvidence = null,
+  sourceEvidenceRequired = false,
+  categoryEvidence = null,
+  categoryEvidenceRequired = false,
+  contentEvidence = null,
+} = {}) {
+  const items = payloadItems(payload);
+  const itemIndexForIssue = (issue = {}) => {
+    const offerId = String(issue.offerId || issue.offer_id || "").trim();
+    if (!offerId) return -1;
+    return items.findIndex((item) => String(item?.offer_id || item?.offerId || "").trim() === offerId);
+  };
+  const fieldPathForIssue = (issue = {}) => {
+    const index = itemIndexForIssue(issue);
+    const itemPath = index >= 0 ? `items[${index}]` : "items[*]";
+    const code = String(issue.code || "");
+    // listing quality diagnostics are wrapped as LISTING_QUALITY_* issues.
+    // Keep the original quality code when choosing a field; otherwise a
+    // seller only sees the generic `listingQuality` bucket and cannot tell
+    // which SKU/image/attribute needs repair.
+    const qualityCode = String(issue.qualityCode || "").trim();
+    if (code === "EMPTY_PAYLOAD") return "items";
+    if (["MISSING_OFFER_ID", "DUPLICATE_OFFER_ID"].includes(code)) return `${itemPath}.offer_id`;
+    if (["MISSING_NAME", "CHINESE_IN_TITLE"].includes(code)) return `${itemPath}.name`;
+    if (code === "MISSING_CATEGORY") return `${itemPath}.description_category_id / ${itemPath}.type_id`;
+    if (code === "MISSING_PRICE") return `${itemPath}.price`;
+    if (["IMAGES_TOO_FEW", "SOURCE_IMAGES_TOO_FEW"].includes(code)) return `${itemPath}.images`;
+    if (["MISSING_BRAND", "MISSING_MODEL_NAME", "MISSING_VARIANT_ASPECT", "DUPLICATE_VARIANT_ASPECTS"].includes(code)) return `${itemPath}.attributes`;
+    if (["SOURCE_EVIDENCE_MISSING", "SOURCE_EVIDENCE_NOT_VERIFIED", "SOURCE_IDENTITY_MISSING"].includes(code)) return "sourceEvidence.snapshotHash / sourceEvidence.verificationState / sourceEvidence.canonicalUrl / sourceEvidence.offerId";
+    if (code === "SOURCE_SKU_BINDING_MISSING") return "sourceVariants[].offerId / sourceVariants[].skuId";
+    if (code === "CATEGORY_MATCH_MISSING") return "category.description_category_id / category.type_id";
+    if (code === "CATEGORY_EVIDENCE_MISSING") return "categoryEvidence.tree / categoryEvidence.attributes";
+    if (code === "SOURCE_SIZE_WEIGHT_MISSING") return "contentSummary.sizeWeightReady";
+    if (code === "CONTENT_ISSUE") return "contentSummary.contentIssues";
+    if (code === "DUPLICATE_LISTING") return "duplicate.duplicateJobId / duplicate.duplicateSku";
+    if (code === "RICH_CONTENT_MEDIA_APPROVAL_STALE") return "workflowRun.mediaApprovalDraft";
+    if (qualityCode === "PRODUCT_IMAGES_TOO_FEW") return `${itemPath}.images`;
+    if (["REQUIRED_ATTRIBUTE_MISSING", "DICTIONARY_VALUE_INVALID"].includes(qualityCode)) {
+      const attributeId = Number(issue.attributeId || 0);
+      return `${itemPath}.attributes${attributeId ? `[id=${attributeId}]` : ""}`;
+    }
+    return issue.source === "listing_quality" ? "listingQuality" : "payload";
+  };
+  const actionForIssue = (issue = {}) => {
+    const code = String(issue.code || "");
+    const qualityCode = String(issue.qualityCode || "").trim();
+    if (["SOURCE_EVIDENCE_MISSING", "SOURCE_EVIDENCE_NOT_VERIFIED", "SOURCE_IDENTITY_MISSING"].includes(code)) return "重新采集并人工确认 1688 来源商品身份、快照 URL 和 Offer，再回到草稿预检。";
+    if (code === "SOURCE_SKU_BINDING_MISSING") return "逐个绑定 1688 SKU 与 Ozon offer，再重新预检。";
+    if (["CATEGORY_MATCH_MISSING", "MISSING_CATEGORY"].includes(code)) return "选择并保存可信的 Ozon 类目和类型，再重新预检。";
+    if (code === "CATEGORY_EVIDENCE_MISSING") return "重新读取当前店铺的 Ozon 类目和属性证据，再重新预检；不会使用旧缓存冒充当前证据。";
+    if (code === "MISSING_PRICE") return "补齐当前 SKU 的售价和定价证据，再重新预检。";
+    if (["IMAGES_TOO_FEW", "SOURCE_IMAGES_TOO_FEW"].includes(code)) return "补齐至少 3 张合规商品图，再重新预检。";
+    if (["MISSING_BRAND", "MISSING_MODEL_NAME", "MISSING_VARIANT_ASPECT"].includes(code)) return "补齐对应属性或变体值，再重新预检。";
+    if (code === "DUPLICATE_VARIANT_ASPECTS") return "调整重复 SKU 的变体组合，确保每组属性唯一后重新预检。";
+    if (code === "DUPLICATE_LISTING") return "人工确认是否已有重复上架任务，取消或改用新的来源后再预检。";
+    if (code === "CONTENT_ISSUE") return "按内容问题修正俄文标题、描述或属性，再重新预检。";
+    if (code === "SOURCE_SIZE_WEIGHT_MISSING") return "补充有来源证据的包装尺重，再重新预检。";
+    if (qualityCode === "PRODUCT_IMAGES_TOO_FEW") return "为该 SKU 补齐至少 3 张产品图，再重新预检。";
+    if (qualityCode === "REQUIRED_ATTRIBUTE_MISSING") return "补齐该 SKU 标出的 Ozon 必填属性，再重新预检。";
+    if (qualityCode === "DICTIONARY_VALUE_INVALID") return "为该 SKU 的属性选择当前类目合法字典值，再重新预检。";
+    return "按字段提示修复本地草稿，再重新预检。";
+  };
+  const sideEffect = "仅本地预检，不会写入 Ozon 或扣费。按建议修复草稿后必须重新预检。";
+  const repairs = (Array.isArray(issues) ? issues : []).map((issue) => {
+    const fieldPath = fieldPathForIssue(issue);
+    const attributeId = Number(issue.attributeId || issue.attribute_id || 0) || null;
+    return {
+      code: String(issue.code || "PREFLIGHT_BLOCKED"),
+      offerId: String(issue.offerId || issue.offer_id || ""),
+      fieldPath,
+      // A compact, seller-facing target summary. It is deliberately a
+      // locator only: no value is inferred and no local/Ozon write occurs.
+      repairTarget: {
+        fieldPath,
+        attributeId,
+        enteredValues: Array.isArray(issue.enteredValues) ? issue.enteredValues.slice(0, 10) : [],
+        candidateCount: Array.isArray(issue.dictionaryCandidates) ? issue.dictionaryCandidates.length : 0,
+      },
+      message: String(issue.message || "预检发现需要人工处理的字段。"),
+      action: actionForIssue(issue),
+      sideEffect,
+      result: "本次未提交 Ozon；修复后需生成新的预检结果。",
+    };
+  });
+  const binding = sourceVariantBinding || buildSourceVariantBindingSummary({ payload, sourceVariants: [] });
+  const rows = Array.isArray(variantConfiguration?.rows) ? variantConfiguration.rows : items.map((item) => ({ offerId: String(item?.offer_id || ""), rowStatus: "unknown", sourceVariant: null }));
+  const variantCoverage = items.length <= 1
+    ? { status: "single_sku", sourceBinding: binding.summary, rows, nextAction: "单 SKU 通过字段预检后进入人工确认。" }
+    : { status: binding.summary.ready && rows.every((row) => row.rowStatus === "valid") ? "ready" : "blocked", sourceBinding: binding.summary, rows: rows.map((row) => ({ offerId: row.offerId, sourceSkuId: row.sourceVariant?.sourceSkuId || "", sourceSpec: row.sourceVariant?.spec || "", status: row.rowStatus || "unknown", blockers: row.rowStatus === "valid" ? [] : ["VARIANT_COVERAGE_INCOMPLETE"] })), nextAction: binding.summary.ready ? "补齐变体字段后重新预检，再进入人工确认。" : "逐条来源绑定 1688 SKU 并修复变体后重新预检。", sideEffect: "不会提交 Ozon 或写入库存。" };
+  if (!repairs.length && variantCoverage.status === "blocked") repairs.push({ code: "VARIANT_COVERAGE_INCOMPLETE", offerId: "", fieldPath: "items[*].attributes", message: "多 SKU 来源绑定或变体覆盖不完整。", action: variantCoverage.nextAction, sideEffect, result: "本次未提交 Ozon；修复后需重新预检。" });
+  const blocked = repairs.length > 0 || variantCoverage.status === "blocked";
+  const sourceHash = String(sourceEvidence?.snapshotHash || "").trim();
+  const sourceVerified = /^sha256:[a-f0-9]{64}$/i.test(sourceHash)
+    && String(sourceEvidence?.verificationState || "").trim() === "ok";
+  const sourceStatus = sourceVerified
+    ? "verified"
+    : sourceEvidenceRequired
+      ? (sourceHash ? "needs_review" : "missing")
+      : "not_required";
+  const sourceNextAction = sourceStatus === "verified"
+    ? "1688 来源快照已验证，可继续核对 SKU 与内容。"
+    : sourceStatus === "needs_review"
+      ? "人工打开 1688 页面并确认快照不是登录/验证码页，再重新预检。"
+      : sourceStatus === "missing"
+        ? "重新采集并人工验证 1688 来源快照，再回到草稿预检。"
+        : "当前预检未要求 1688 来源快照。";
+  const contentStatus = contentEvidence && typeof contentEvidence === "object"
+    ? (String(contentEvidence.status || "") === "reviewed" && !(contentEvidence.blockerCodes || []).length ? "verified" : "needs_review")
+    : "not_required";
+  const contentNextAction = contentStatus === "verified"
+    ? "俄文内容已完成逐字段事实复核。"
+    : contentStatus === "needs_review"
+      ? "逐字段核对俄文标题、描述和属性与 1688 来源事实，再重新预检。"
+      : "当前预检未返回俄文内容证据。";
+  const categoryEntries = [categoryEvidence?.tree, categoryEvidence?.attributes].filter(Boolean);
+  const categoryStatus = !categoryEvidenceRequired
+    ? "not_required"
+    : categoryEntries.length === 2 && categoryEntries.every((entry) => String(entry?.verificationLevel || "") === "server_observed")
+      ? "verified"
+      : "missing";
+  const categoryNextAction = categoryStatus === "verified"
+    ? "当前店铺类目与属性读取证据已记录。"
+    : categoryStatus === "missing"
+      ? "重新读取当前店铺的类目和属性证据，不能用旧缓存代替。"
+      : "当前预检未要求店铺类目读取证据。";
+  const evidenceSummary = {
+    source: { status: sourceStatus, snapshotHash: sourceHash, nextAction: sourceNextAction },
+    content: { status: contentStatus, blockerCodes: Array.isArray(contentEvidence?.blockerCodes) ? contentEvidence.blockerCodes.slice(0, 12) : [], nextAction: contentNextAction },
+    category: { status: categoryStatus, nextAction: categoryNextAction },
+    sku: { status: variantCoverage.status, nextAction: variantCoverage.nextAction },
+  };
+  const firstEvidenceBlocker = [evidenceSummary.source, evidenceSummary.content, evidenceSummary.category, evidenceSummary.sku]
+    .find((entry) => ["missing", "needs_review", "blocked"].includes(entry.status));
+  return {
+    status: blocked ? "blocked" : "ready_for_confirmation",
+    outcome: blocked ? "submission_not_started" : "preflight_passed",
+    blockerCount: repairs.length,
+    repairs,
+    repairSummary: {
+      total: repairs.length,
+      fieldTargets: [...new Set(repairs.map((repair) => repair.fieldPath).filter(Boolean))].slice(0, 20),
+      firstAction: blocked ? repairs[0]?.action || "按字段提示修复本地草稿，再重新预检。" : "检查草稿摘要并进入人工确认。",
+    },
+    nextAction: blocked
+      ? firstEvidenceBlocker?.nextAction || repairs[0].action
+      : firstEvidenceBlocker?.nextAction || "检查草稿摘要并进入人工确认；确认前不会写入 Ozon。",
+    sideEffect,
+    result: blocked ? "提交未执行，等待人工修复。" : "本地预检通过，可进入人工确认。",
+    verificationLevel: "locally_tested",
+    evidenceSummary,
+    variantCoverage,
   };
 }
 
@@ -1329,6 +1673,25 @@ export function buildPreflightGateNode(input = {}) {
   issues.push(...listingQualityIssues(listingQuality));
   issues.push(...listingAttributeMatrixIssues(attributeMatrix));
   issues.push(...variantConfigurationIssues(variantConfiguration));
+  const sourceVariantBinding = input.sourceVariantEvidenceRequired === true
+    ? buildSourceVariantBindingSummary({
+      payload: input.payload || {},
+      sourceVariants: input.sourceVariants || input.skuVariants || [],
+      sourceEvidence: input.sourceEvidence || null,
+      sourceVariantEvidenceRequired: true,
+    })
+    : (variantConfiguration.sourceVariantBinding || buildSourceVariantBindingSummary({
+    payload: input.payload || {},
+    sourceVariants: input.sourceVariants || input.skuVariants || [],
+    sourceEvidence: input.sourceEvidence || null,
+    sourceVariantEvidenceRequired: input.sourceVariantEvidenceRequired === true,
+  }));
+  const sourceVariantBindingReceipt = buildSourceVariantBindingReceipt({
+    payload: input.payload || {},
+    sourceVariants: input.sourceVariants || input.skuVariants || [],
+    sourceEvidence: input.sourceEvidence || null,
+    sourceVariantEvidenceRequired: input.sourceVariantEvidenceRequired === true,
+  });
   const duplicate = input.duplicate || null;
   if (duplicate?.duplicateJobId || duplicate?.duplicateSku) {
     issues.push({
@@ -1339,8 +1702,41 @@ export function buildPreflightGateNode(input = {}) {
     });
   }
   const contentSummary = input.contentSummary || {};
+  const pricingDiagnosis = input.pricing || input.pricingDiagnosis || null;
+  const pricingRisk = pricingDiagnosis ? evaluatePricingRisk(pricingDiagnosis) : null;
+  if (pricingRisk?.branch === "blocked") {
+    issues.push({
+      code: String(pricingRisk.diagnosis?.reasonCode || "PRICING_BLOCKED"),
+      message: String(pricingRisk.diagnosis?.messageZh || "当前定价证据不足，禁止进入 Ozon 提交。"),
+      pricingRisk: {
+        riskLevel: pricingRisk.riskLevel || "high",
+        reason: pricingRisk.reason || "定价风险需要人工处理。",
+        recommendedActions: Array.isArray(pricingRisk.recommendedActions) ? pricingRisk.recommendedActions.slice(0, 6) : [],
+      },
+    });
+  }
   for (const issue of contentSummary.contentIssues || []) {
     issues.push({ code: "CONTENT_ISSUE", message: String(issue || "") });
+  }
+  // Generated Russian text is not submission-ready merely because it has a
+  // title, description, or enough images.  The content evidence contract
+  // records whether every claim can be traced to the 1688 snapshot and whether
+  // a human has reviewed the result.  If the contract is present, keep the
+  // preflight gate fail-closed until it is explicitly reviewed.
+  const contentEvidence = contentSummary.contentEvidence || null;
+  if (contentEvidence && typeof contentEvidence === "object") {
+    const contentEvidenceStatus = String(contentEvidence.status || "").trim();
+    const contentEvidenceBlockers = Array.isArray(contentEvidence.blockerCodes)
+      ? contentEvidence.blockerCodes.map((code) => String(code || "").trim()).filter(Boolean)
+      : [];
+    if (contentEvidenceStatus !== "reviewed" || contentEvidenceBlockers.length > 0) {
+      issues.push({
+        code: "CONTENT_EVIDENCE_REVIEW_REQUIRED",
+        message: "俄文内容尚未完成逐字段事实复核，禁止进入 Ozon 提交。",
+        status: contentEvidenceStatus || "unknown",
+        blockerCodes: contentEvidenceBlockers.slice(0, 20),
+      });
+    }
   }
   if (Number(contentSummary.candidateImageCount || 0) > 0 && Number(contentSummary.candidateImageCount || 0) < 3) {
     issues.push({ code: "SOURCE_IMAGES_TOO_FEW", message: "候选源图片少于 3 张。" });
@@ -1348,13 +1744,118 @@ export function buildPreflightGateNode(input = {}) {
   if (contentSummary.sizeWeightReady === false) {
     issues.push({ code: "SOURCE_SIZE_WEIGHT_MISSING", message: "候选源缺少完整尺重。" });
   }
-  if (input.category === null || input.category === false) {
+  // `undefined` is also a missing category, unless the payload itself carries
+  // valid category/type ids. This keeps the gate compatible with confirmed
+  // drafts while still blocking a caller that omitted both sources.
+  const payloadCategory = categoryMatchFromPayload(input.payload || {});
+  const hasPayloadCategory = payloadCategory.description_category_id > 0 && payloadCategory.type_id > 0;
+  if (!input.category && !hasPayloadCategory) {
     issues.push({ code: "CATEGORY_MATCH_MISSING", message: "提交前没有可信 Ozon 类目匹配。" });
+  }
+  if (input.categoryEvidenceRequired === true) {
+    const evidence = input.categoryEvidence && typeof input.categoryEvidence === "object" ? input.categoryEvidence : {};
+    const expectedCategory = input.category || categoryMatchFromPayload(input.payload || {});
+    const expectedCategoryKey = `${Number(expectedCategory?.description_category_id || 0)}:${Number(expectedCategory?.type_id || 0)}`;
+    const expectedStoreId = String(input.categoryEvidenceStoreId || "").trim();
+    const expectedEnvironmentRefHash = String(input.categoryEvidenceEnvironmentRefHash || "").trim();
+    const maxAgeMs = Number.isFinite(Number(input.categoryEvidenceMaxAgeMs)) && Number(input.categoryEvidenceMaxAgeMs) > 0
+      ? Number(input.categoryEvidenceMaxAgeMs) : 30 * 24 * 60 * 60 * 1000;
+    const validEvidence = (entry, kind) => {
+      const checkedAtMs = Date.parse(String(entry?.checkedAt || ""));
+      const ageMs = Number.isFinite(checkedAtMs) ? Date.now() - checkedAtMs : Number.POSITIVE_INFINITY;
+      // A category read is only usable when its persisted receipt is bound to
+      // the exact store and environment requested by this preflight. Missing
+      // scope fields are not compatible fallbacks: accepting them would let
+      // an old or forged server_observed response cross store boundaries.
+      const storeMatches = Boolean(expectedStoreId && String(entry?.storeId || "") === expectedStoreId);
+      const environmentMatches = Boolean(expectedEnvironmentRefHash && String(entry?.environmentRefHash || "") === expectedEnvironmentRefHash);
+      const categoryMatches = kind !== "attributes"
+        ? true
+        : Boolean(expectedCategoryKey && String(entry?.cacheKey || "") === expectedCategoryKey);
+      return entry
+      && String(entry.verificationLevel || "") === "server_observed"
+      && /^sha256:[a-f0-9]{64}$/i.test(String(entry.responseHash || ""))
+      && Number(entry.statusCode || 0) >= 200
+      && Number(entry.statusCode || 0) < 300
+      && Number.isFinite(checkedAtMs)
+      && ageMs >= 0
+      && ageMs <= maxAgeMs
+      && storeMatches
+      && environmentMatches
+      && categoryMatches;
+    };
+    if (!validEvidence(evidence.tree, "tree") || !validEvidence(evidence.attributes, "attributes")) {
+      issues.push({
+        code: "CATEGORY_EVIDENCE_MISSING",
+        message: "当前店铺缺少可追溯的 Ozon 类目/属性读取回执，禁止使用旧缓存提交。",
+        missing: [
+          ...(validEvidence(evidence.tree, "tree") ? [] : ["tree"]),
+          ...(validEvidence(evidence.attributes, "attributes") ? [] : ["attributes"]),
+        ],
+      });
+    }
+  }
+  if (input.sourceEvidenceRequired === true) {
+    const sourceSnapshotHash = String(input.sourceEvidence?.snapshotHash || "").trim();
+    if (!/^sha256:[a-f0-9]{64}$/i.test(sourceSnapshotHash)) {
+      issues.push({ code: "SOURCE_EVIDENCE_MISSING", message: "1688 来源缺少有效快照证据，禁止进入 Ozon 提交。" });
+    } else if (String(input.sourceEvidence?.verificationState || "").trim() !== "ok") {
+      // A captured HTML hash is not proof that the seller page was actually
+      // accessible.  Captcha/login/rate-limit pages must stay waiting_human;
+      // otherwise a replay could appear to have source evidence and reach the
+      // confirmation step with no real product facts behind it.
+      issues.push({
+        code: "SOURCE_EVIDENCE_NOT_VERIFIED",
+        message: "1688 来源页面尚未通过人工验证，无法证明商品字段，禁止进入 Ozon 提交。",
+        verificationState: String(input.sourceEvidence?.verificationState || "unknown").trim() || "unknown",
+      });
+    }
+    if (input.sourceIdentityRequired === true) {
+      const canonicalUrl = String(input.sourceEvidence?.canonicalUrl || input.sourceEvidence?.url || "").trim();
+      const sourceOfferId = String(input.sourceEvidence?.offerId || "").trim();
+      const canonicalOfferId = canonical1688OfferId(canonicalUrl);
+      if (!canonicalUrl || !sourceOfferId || !canonicalOfferId) {
+        issues.push({
+          code: "SOURCE_IDENTITY_MISSING",
+          message: "1688 来源缺少严格可核对的商品 URL 或 Offer ID，禁止把快照当作当前商品证据。",
+          missing: [
+            ...(!canonicalOfferId ? ["canonicalUrl"] : []),
+            ...(!sourceOfferId ? ["offerId"] : []),
+          ],
+        });
+      } else if (canonicalOfferId !== sourceOfferId) {
+        issues.push({
+          code: "SOURCE_OFFER_URL_MISMATCH",
+          message: "1688 canonical URL 中的 Offer ID 与来源证据不一致，禁止继续预检或提交。",
+          canonicalOfferId,
+          sourceOfferId,
+        });
+      }
+    }
+  }
+  if (input.sourceVariantBindingRequired === true && !sourceVariantBinding.summary.ready) {
+    issues.push({
+      code: "SOURCE_SKU_BINDING_MISSING",
+      message: "1688 SKU 未完成逐条来源绑定或存在重复来源 SKU，禁止进入 Ozon 提交。",
+      missingOfferIds: sourceVariantBinding.summary.missingOfferIds,
+      duplicateSourceSkuIds: sourceVariantBinding.summary.duplicateSourceSkuIds,
+    });
   }
   if (Number(input.variantCount || 0) === 1 && Number(contentSummary.skuVariantCount || 0) > 1) {
     issues.push({ code: "VARIANT_COLLAPSED", message: "1688 有多个变体，但提交 payload 只保留 1 个 SKU。" });
   }
   const ok = issues.length === 0;
+  const sellerResult = buildPreflightSellerResult({
+    issues,
+    payload: input.payload || {},
+    sourceVariantBinding,
+    variantConfiguration,
+    sourceEvidence: input.sourceEvidence || null,
+    sourceEvidenceRequired: input.sourceEvidenceRequired === true,
+    categoryEvidence: input.categoryEvidence || null,
+    categoryEvidenceRequired: input.categoryEvidenceRequired === true,
+    contentEvidence: input.contentSummary?.contentEvidence || null,
+  });
   return {
     key: "preflight_check",
     name: "提交前总闸",
@@ -1364,6 +1865,27 @@ export function buildPreflightGateNode(input = {}) {
       ok,
       issueCount: issues.length,
       issues,
+      // Persist only the bounded policy inputs needed to re-run this same
+      // gate after a local draft edit.  This is evidence metadata/hashes, not
+      // an Ozon payload or credential, and prevents the generic validator
+      // from silently weakening the 1688 chain on the next request.
+      preflightPolicy: {
+        enforced: true,
+        sourceEvidence: input.sourceEvidence || null,
+        sourceEvidenceRequired: input.sourceEvidenceRequired === true,
+        sourceIdentityRequired: input.sourceIdentityRequired === true,
+        sourceVariantBindingRequired: input.sourceVariantBindingRequired === true,
+        sourceVariantEvidenceRequired: input.sourceVariantEvidenceRequired === true,
+        category: input.category || null,
+        categoryEvidence: input.categoryEvidence || null,
+        categoryEvidenceRequired: input.categoryEvidenceRequired === true,
+        categoryEvidenceStoreId: String(input.categoryEvidenceStoreId || ""),
+        categoryEvidenceEnvironmentRefHash: String(input.categoryEvidenceEnvironmentRefHash || ""),
+        categoryEvidenceMaxAgeMs: Number(input.categoryEvidenceMaxAgeMs || 0) || undefined,
+        contentSummary: input.contentSummary || {},
+        pricingDiagnosis,
+        variantCount: Number(input.variantCount || payloadItems(input.payload || {}).length || 0),
+      },
       payload: payloadValidation,
       listingQuality,
       listingQualityWarnings: Array.isArray(listingQuality.warnings) ? listingQuality.warnings : [],
@@ -1374,6 +1896,9 @@ export function buildPreflightGateNode(input = {}) {
       requiredAttributeRuleCandidateIndex,
       ...(requiredAttributeRuleCandidateHistory ? { requiredAttributeRuleCandidateHistory } : {}),
       variantConfiguration,
+      sourceVariantBinding,
+      sourceVariantBindingReceipt,
+      sellerResult,
       summary: {
         itemCount: payloadItems(input.payload || {}).length,
         variantCount: Number(input.variantCount || 0),
@@ -1382,6 +1907,13 @@ export function buildPreflightGateNode(input = {}) {
         skuVariantCount: Number(contentSummary.skuVariantCount || 0),
         sizeWeightReady: Boolean(contentSummary.sizeWeightReady),
         categoryPath: input.category?.path || "",
+        categoryEvidenceRequired: input.categoryEvidenceRequired === true,
+        categoryEvidence: input.categoryEvidence && typeof input.categoryEvidence === "object"
+          ? {
+            tree: input.categoryEvidence.tree?.verificationLevel || "missing",
+            attributes: input.categoryEvidence.attributes?.verificationLevel || "missing",
+          }
+          : { tree: "missing", attributes: "missing" },
       },
     },
     diagnosis: ok ? {} : {
@@ -1400,14 +1932,14 @@ export function buildPreflightGateNode(input = {}) {
 }
 
 async function updateRun(runId, updater) {
-  const store = await readStore();
-  const index = store.items.findIndex((item) => item.id === runId);
-  if (index < 0) throw new Error("工作流不存在: " + runId);
-  const next = updater({ ...store.items[index] });
-  next.updatedAt = nowIso();
-  store.items[index] = next;
-  await writeStore(store);
-  return next;
+  return mutateStore((store) => {
+    const index = store.items.findIndex((item) => item.id === runId);
+    if (index < 0) throw new Error("工作流不存在: " + runId);
+    const next = updater({ ...store.items[index] });
+    next.updatedAt = nowIso();
+    store.items[index] = next;
+    return { value: next };
+  });
 }
 
 export async function pauseWorkflowRun(runId) {
@@ -1426,6 +1958,32 @@ export async function pauseWorkflowRun(runId) {
       },
     ],
   }));
+}
+
+export async function requestWorkflowMediaReview(runId) {
+  const run = await getWorkflowRun(runId);
+  if (!run) return { ok: false, status: 404, reasonCode: "MEDIA_REVIEW_WORKFLOW_NOT_FOUND" };
+  const updated = await updateRun(runId, (current) => ({
+    ...current,
+    status: "waiting_human",
+    currentNode: "media_review",
+    locks: { ...(current.locks || {}), waitingHuman: true, paused: false },
+    events: [
+      ...(current.events || []),
+      { time: nowIso(), node: "media_review", type: "media_review_requested", message: "请求人工逐项审查媒体候选", data: {} },
+    ],
+  }));
+  await upsertWorkflowNode(runId, {
+    key: "media_review",
+    name: "媒体人工审查",
+    status: "waiting_human",
+    runStatus: "waiting_human",
+    branch: "manual_review",
+    reason: "媒体候选需要人工逐项确认；批准前不会进入富内容或提交。",
+    recommendedActions: ["查看媒体证据", "保存本地批准草稿", "发布本地批准后重新预检"],
+    actions: ["approve_media_draft", "validate_payload"],
+  });
+  return { ok: true, run: updated, nextAction: "逐项查看媒体候选并保存本地批准草稿；批准前不会提交 Ozon" };
 }
 
 export async function resumeWorkflowRun(runId) {
@@ -1640,14 +2198,398 @@ export async function requestWorkflowPricingRecalculation(runId, nodeKey, data =
 }
 
 export async function savePayloadDraft(runId, payloadDraft, options = {}) {
+  const payloadDraftHash = hashPayloadDraft(payloadDraft);
   return updateRun(runId, (run) => ({
     ...run,
     payloadDraft,
+    payloadDraftHash,
     payloadDraftAttrsMeta: Array.isArray(options.attrsMeta) ? options.attrsMeta : (run.payloadDraftAttrsMeta || []),
     payloadDraftSourceVariants: Array.isArray(options.sourceVariants) ? options.sourceVariants : (run.payloadDraftSourceVariants || []),
     payloadDraftValidation: null,
+    mediaApprovalDraft: run.mediaApprovalDraft?.expectedDraftHash
+      && run.mediaApprovalDraft.expectedDraftHash !== payloadDraftHash
+      ? {
+          ...run.mediaApprovalDraft,
+          status: "stale",
+          staleReason: "payload_draft_changed",
+          staleAt: nowIso(),
+        }
+      : run.mediaApprovalDraft,
     locks: { ...(run.locks || {}), submitLocked: true },
   }));
+}
+
+function mediaApprovalFailure(reasonCode, message) {
+  return { ok: false, status: 400, reasonCode, message, submittedToOzon: false, generatedMedia: false };
+}
+
+function sourceHashFromCandidateData(candidateData = {}) {
+  return String(candidateData?.sourceEvidence?.snapshotHash || "").trim();
+}
+
+function assetEvidenceSourceHash(asset = {}) {
+  const reference = String(asset?.evidenceRef || "").trim();
+  return reference.startsWith("snapshot:") ? `sha256:${reference.slice("snapshot:".length)}` : reference;
+}
+
+export async function approveWorkflowMediaCandidates(runId, input = {}, deps = {}) {
+  const run = await getWorkflowRun(runId);
+  if (!run) return mediaApprovalFailure("MEDIA_APPROVAL_WORKFLOW_NOT_FOUND", "工作流不存在。");
+  if (run.status !== "waiting_human" && run.locks?.waitingHuman !== true) {
+    return mediaApprovalFailure("MEDIA_APPROVAL_WAITING_HUMAN_REQUIRED", "只有等待人工处理的工作流才能记录媒体批准草稿。");
+  }
+  const actorId = String(input.actorId || "").trim();
+  if (input.confirmed !== true || !actorId || actorId.length > 128) {
+    return mediaApprovalFailure("MEDIA_APPROVAL_CONFIRMATION_REQUIRED", "需要明确 confirmed=true 和有效 actorId。");
+  }
+  const assetIds = [...new Set((Array.isArray(input.assetIds) ? input.assetIds : []).map((id) => String(id || "").trim()).filter(Boolean))];
+  if (!assetIds.length || assetIds.length > 100) {
+    return mediaApprovalFailure("MEDIA_APPROVAL_ASSET_IDS_INVALID", "需要选择 1 到 100 个媒体候选。");
+  }
+  const currentDraftHash = String(run.payloadDraftHash || hashPayloadDraft(run.payloadDraft || {}));
+  const expectedDraftHash = String(input.expectedDraftHash || "").trim();
+  if (!expectedDraftHash || expectedDraftHash !== currentDraftHash) {
+    return mediaApprovalFailure("MEDIA_APPROVAL_DRAFT_HASH_MISMATCH", "Payload 草稿已变化，请重新审查媒体候选。");
+  }
+  const candidateData = deps.candidateData && typeof deps.candidateData === "object" ? deps.candidateData : {};
+  const currentSourceHash = sourceHashFromCandidateData(candidateData);
+  const expectedSourceHash = String(input.expectedSourceHash || "").trim();
+  if (!currentSourceHash || !expectedSourceHash || expectedSourceHash !== currentSourceHash) {
+    return mediaApprovalFailure("MEDIA_APPROVAL_SOURCE_HASH_MISMATCH", "1688 来源证据已变化，请重新审查媒体候选。");
+  }
+  const mediaAssets = Array.isArray(candidateData.mediaAssets) ? candidateData.mediaAssets : [];
+  const assetById = new Map(mediaAssets.map((asset) => [String(asset?.id || ""), asset]));
+  const selectedAssets = assetIds.map((id) => assetById.get(id));
+  if (selectedAssets.some((asset) => !asset)) {
+    return mediaApprovalFailure("MEDIA_APPROVAL_ASSET_NOT_FOUND", "选择的媒体候选不属于当前商品来源。");
+  }
+  if (selectedAssets.some((asset) => assetEvidenceSourceHash(asset) !== currentSourceHash)) {
+    return mediaApprovalFailure("MEDIA_APPROVAL_ASSET_SOURCE_MISMATCH", "媒体候选不属于当前来源快照。");
+  }
+  if (typeof deps.persistCandidateData !== "function") {
+    return mediaApprovalFailure("MEDIA_APPROVAL_PERSISTENCE_REQUIRED", "缺少本地候选批准草稿保存依赖。");
+  }
+  const nowValue = typeof deps.now === "function" ? deps.now() : new Date();
+  const confirmedAt = (nowValue instanceof Date ? nowValue : new Date(nowValue)).toISOString();
+  const approvalDraft = {
+    status: "approved_draft",
+    confirmed: true,
+    confirmedAt,
+    actorId,
+    assetIds,
+    expectedDraftHash,
+    expectedSourceHash,
+  };
+  const nextCandidateData = {
+    ...candidateData,
+    mediaAssets: mediaAssets.map((asset) => assetIds.includes(String(asset?.id || ""))
+      ? {
+          ...asset,
+          checks: {
+            ...(asset.checks || {}),
+            approvalDraft: {
+              confirmed: true,
+              confirmedAt,
+              actorId,
+              expectedDraftHash,
+              expectedSourceHash,
+            },
+          },
+        }
+      : asset),
+    mediaApprovalDraft: approvalDraft,
+  };
+  const persisted = await deps.persistCandidateData(nextCandidateData, { expectedSourceHash });
+  if (persisted === false) {
+    return mediaApprovalFailure("MEDIA_APPROVAL_SOURCE_HASH_MISMATCH", "1688 来源证据在保存前发生变化，请重新审查媒体候选。");
+  }
+  const updated = await updateRun(runId, (current) => ({
+    ...current,
+    mediaApprovalDraft: String(current.payloadDraftHash || hashPayloadDraft(current.payloadDraft || {})) === expectedDraftHash
+      ? approvalDraft
+      : {
+          ...approvalDraft,
+          status: "stale",
+          staleReason: "payload_draft_changed_during_approval",
+          staleAt: confirmedAt,
+        },
+    locks: { ...(current.locks || {}), submitLocked: true, waitingHuman: true },
+    events: [
+      ...(current.events || []),
+      {
+        time: confirmedAt,
+        node: current.currentNode || "preflight_check",
+        type: "media_approval_draft_recorded",
+        message: "已记录本地媒体审查批准草稿；未生成图片、未上传、未提交 Ozon。",
+        data: {
+          actorId,
+          assetCount: assetIds.length,
+          draftHash: expectedDraftHash,
+          sourceHash: expectedSourceHash,
+          submittedToOzon: false,
+        },
+      },
+    ],
+  }));
+  if (updated.mediaApprovalDraft?.status === "stale") {
+    return mediaApprovalFailure("MEDIA_APPROVAL_DRAFT_HASH_MISMATCH", "Payload 草稿在保存批准时发生变化，请重新审查媒体候选。");
+  }
+  return {
+    ok: true,
+    status: "approved_draft",
+    submittedToOzon: false,
+    generatedMedia: false,
+    uploadedMedia: false,
+    approvalDraft,
+    workflowSummary: {
+      runId: String(updated.id || runId),
+      status: String(updated.status || "waiting_human"),
+      currentNode: String(updated.currentNode || ""),
+      submitLocked: updated.locks?.submitLocked === true,
+      waitingHuman: updated.locks?.waitingHuman === true,
+    },
+  };
+}
+
+function sortedMediaAssetIds(value) {
+  return [...new Set((Array.isArray(value) ? value : []).map((id) => String(id || "").trim()).filter(Boolean))].sort();
+}
+
+function sameMediaAssetIds(left, right) {
+  const a = sortedMediaAssetIds(left);
+  const b = sortedMediaAssetIds(right);
+  return a.length === b.length && a.every((value, index) => value === b[index]);
+}
+
+function richContentReferencedUrls(value) {
+  const urls = [];
+  const visit = (node) => {
+    if (!node) return;
+    if (Array.isArray(node)) {
+      node.forEach(visit);
+      return;
+    }
+    if (typeof node !== "object") return;
+    for (const [key, child] of Object.entries(node)) {
+      if ((key === "src" || key === "srcMobile") && typeof child === "string" && /^https?:\/\//i.test(child)) urls.push(child);
+      else visit(child);
+    }
+  };
+  try {
+    visit(typeof value === "string" ? JSON.parse(value) : value);
+  } catch {
+    return [];
+  }
+  return [...new Set(urls)];
+}
+
+export async function publishWorkflowMediaApproval(runId, input = {}, deps = {}) {
+  const run = await getWorkflowRun(runId);
+  if (!run) return mediaApprovalFailure("MEDIA_APPROVAL_WORKFLOW_NOT_FOUND", "工作流不存在。");
+  if (run.status !== "waiting_human" && run.locks?.waitingHuman !== true) {
+    return mediaApprovalFailure("MEDIA_APPROVAL_WAITING_HUMAN_REQUIRED", "只有等待人工处理的工作流才能发布本地媒体批准。");
+  }
+  if (input.publishConfirmed !== true) {
+    return mediaApprovalFailure("MEDIA_APPROVAL_PUBLISH_CONFIRMATION_REQUIRED", "需要明确 publishConfirmed=true。");
+  }
+  const approvalDraft = run.mediaApprovalDraft || {};
+  if (approvalDraft.status !== "approved_draft") {
+    return mediaApprovalFailure("MEDIA_APPROVAL_DRAFT_STALE", "媒体批准草稿不存在、已陈旧或已经发布。");
+  }
+  const actorId = String(input.actorId || "").trim();
+  const actorChanged = actorId !== String(approvalDraft.actorId || "");
+  if (!actorId || actorId.length > 128 || (actorChanged && input.reconfirmActorChange !== true)) {
+    return mediaApprovalFailure("MEDIA_APPROVAL_ACTOR_MISMATCH", "发布人必须与批准草稿一致；变更发布人需要明确重新确认。");
+  }
+  const currentDraftHash = String(run.payloadDraftHash || hashPayloadDraft(run.payloadDraft || {}));
+  const expectedDraftHash = String(input.expectedDraftHash || "").trim();
+  if (!expectedDraftHash
+    || expectedDraftHash !== currentDraftHash
+    || expectedDraftHash !== String(approvalDraft.expectedDraftHash || "")) {
+    return mediaApprovalFailure("MEDIA_APPROVAL_DRAFT_STALE", "Payload 草稿已变化，请重新创建媒体批准草稿。");
+  }
+  const candidateData = deps.candidateData && typeof deps.candidateData === "object" ? deps.candidateData : {};
+  const currentSourceHash = sourceHashFromCandidateData(candidateData);
+  const expectedSourceHash = String(input.expectedSourceHash || "").trim();
+  if (!currentSourceHash
+    || expectedSourceHash !== currentSourceHash
+    || expectedSourceHash !== String(approvalDraft.expectedSourceHash || "")) {
+    return mediaApprovalFailure("MEDIA_APPROVAL_SOURCE_HASH_MISMATCH", "1688 来源证据已变化，请重新创建媒体批准草稿。");
+  }
+  const assetIds = sortedMediaAssetIds(input.assetIds);
+  if (!sameMediaAssetIds(assetIds, approvalDraft.assetIds)) {
+    return mediaApprovalFailure("MEDIA_APPROVAL_ASSET_SET_MISMATCH", "发布的媒体候选集合必须与批准草稿完全一致。");
+  }
+  const candidateApprovalDraft = candidateData.mediaApprovalDraft || {};
+  if (candidateApprovalDraft.status !== "approved_draft"
+    || candidateApprovalDraft.expectedDraftHash !== expectedDraftHash
+    || candidateApprovalDraft.expectedSourceHash !== expectedSourceHash
+    || !sameMediaAssetIds(candidateApprovalDraft.assetIds, assetIds)) {
+    return mediaApprovalFailure("MEDIA_APPROVAL_DRAFT_STALE", "候选商品中的批准草稿已变化，请重新审查。");
+  }
+  const mediaAssets = Array.isArray(candidateData.mediaAssets) ? candidateData.mediaAssets : [];
+  const assetById = new Map(mediaAssets.map((asset) => [String(asset?.id || ""), asset]));
+  const selectedAssets = assetIds.map((id) => assetById.get(id));
+  if (selectedAssets.some((asset) => !asset)) {
+    return mediaApprovalFailure("MEDIA_APPROVAL_ASSET_NOT_FOUND", "批准草稿中的媒体候选已不存在。");
+  }
+  if (selectedAssets.some((asset) => assetEvidenceSourceHash(asset) !== currentSourceHash)) {
+    return mediaApprovalFailure("MEDIA_APPROVAL_ASSET_SOURCE_MISMATCH", "媒体候选不属于当前来源快照。");
+  }
+  if (typeof deps.persistCandidateData !== "function") {
+    return mediaApprovalFailure("MEDIA_APPROVAL_PERSISTENCE_REQUIRED", "缺少本地媒体批准保存依赖。");
+  }
+  const nowValue = typeof deps.now === "function" ? deps.now() : new Date();
+  const publishedAt = (nowValue instanceof Date ? nowValue : new Date(nowValue)).toISOString();
+  const publishedAssets = mediaAssets.map((asset) => assetIds.includes(String(asset?.id || ""))
+    ? {
+        ...asset,
+        checks: {
+          ...(asset.checks || {}),
+          humanApproved: true,
+          approvalBinding: { actorId, publishedAt, expectedDraftHash, expectedSourceHash },
+        },
+      }
+    : asset);
+  const richContentUrls = richContentReferencedUrls(candidateData.richContentJson || candidateData.rich_content_json);
+  const approvedDetailUrls = new Set(publishedAssets
+    .filter((asset) => asset?.role === "detail"
+      && assetEvidenceSourceHash(asset) === currentSourceHash
+      && asset?.checks?.humanApproved === true)
+    .map((asset) => String(asset.sourceUrl || ""))
+    .filter(Boolean));
+  const richContentDetailAssetsApproved = richContentUrls.length > 0
+    && richContentUrls.every((url) => approvedDetailUrls.has(url));
+  const publishedBinding = {
+    status: "published_local",
+    actorId,
+    actorChanged,
+    publishedAt,
+    assetIds,
+    expectedDraftHash,
+    expectedSourceHash,
+    richContentDetailAssetsApproved,
+  };
+  const nextCandidateData = {
+    ...candidateData,
+    mediaAssets: publishedAssets,
+    mediaIssues: (Array.isArray(candidateData.mediaIssues) ? candidateData.mediaIssues : [])
+      .filter((issue) => !(richContentDetailAssetsApproved && issue === "detail_images_require_human_review_before_rich_content")),
+    mediaApprovalDraft: publishedBinding,
+    mediaApprovalPublished: publishedBinding,
+  };
+  const persisted = await deps.persistCandidateData(nextCandidateData, {
+    expectedDraftHash,
+    expectedSourceHash,
+    assetIds,
+  });
+  if (persisted === false) {
+    return mediaApprovalFailure("MEDIA_APPROVAL_SOURCE_HASH_MISMATCH", "候选来源或批准草稿在发布前发生变化，请重新审查。");
+  }
+  const updated = await updateRun(runId, (current) => {
+    const stillCurrent = String(current.payloadDraftHash || hashPayloadDraft(current.payloadDraft || {})) === expectedDraftHash
+      && current.mediaApprovalDraft?.status === "approved_draft"
+      && sameMediaAssetIds(current.mediaApprovalDraft?.assetIds, assetIds);
+    return {
+      ...current,
+      mediaApprovalDraft: stillCurrent ? publishedBinding : {
+        ...publishedBinding,
+        status: "stale",
+        staleReason: "workflow_changed_during_publish",
+        staleAt: publishedAt,
+      },
+      locks: { ...(current.locks || {}), waitingHuman: true, submitLocked: true },
+      status: "waiting_human",
+      events: [
+        ...(current.events || []),
+        {
+          time: publishedAt,
+          node: current.currentNode || "preflight_check",
+          type: "media_approval_published_local",
+          message: "已发布本地媒体批准；未生成、上传或提交 Ozon，提交仍保持锁定。",
+          data: {
+            actorId,
+            actorChanged,
+            assetCount: assetIds.length,
+            draftHash: expectedDraftHash,
+            sourceHash: expectedSourceHash,
+            richContentDetailAssetsApproved,
+            submittedToOzon: false,
+          },
+        },
+      ],
+    };
+  });
+  if (updated.mediaApprovalDraft?.status === "stale") {
+    if (typeof deps.rollbackCandidateData !== "function") {
+      return mediaApprovalFailure("MEDIA_APPROVAL_ROLLBACK_REQUIRED", "工作流在发布期间发生变化，且缺少候选批准补偿依赖。");
+    }
+    const rolledBack = await deps.rollbackCandidateData({
+      expectedDraftHash,
+      expectedSourceHash,
+      assetIds,
+      reason: "workflow_changed_during_publish",
+      richContentDetailAssetsApproved,
+    });
+    if (rolledBack === false) {
+      return mediaApprovalFailure("MEDIA_APPROVAL_ROLLBACK_FAILED", "候选媒体批准补偿失败，发布绑定必须人工复核。");
+    }
+    return mediaApprovalFailure("MEDIA_APPROVAL_DRAFT_STALE", "工作流在发布期间发生变化，请重新审查。");
+  }
+  return {
+    ok: true,
+    status: "published_local",
+    submittedToOzon: false,
+    generatedMedia: false,
+    uploadedMedia: false,
+    richContentDetailAssetsApproved,
+    workflowSummary: {
+      runId: String(updated.id || runId),
+      status: String(updated.status || "waiting_human"),
+      currentNode: String(updated.currentNode || ""),
+      submitLocked: updated.locks?.submitLocked === true,
+      waitingHuman: updated.locks?.waitingHuman === true,
+    },
+  };
+}
+
+function canonicalJson(value) {
+  if (Array.isArray(value)) return `[${value.map(canonicalJson).join(",")}]`;
+  if (value && typeof value === "object") {
+    return `{${Object.keys(value).sort().map((key) => `${JSON.stringify(key)}:${canonicalJson(value[key])}`).join(",")}}`;
+  }
+  return JSON.stringify(value);
+}
+
+function hashPayloadDraft(payloadDraft = {}) {
+  return `sha256:${createHash("sha256").update(canonicalJson(payloadDraft || {}), "utf8").digest("hex")}`;
+}
+
+function buildPayloadSubmissionSummary(items = []) {
+  const offers = items.map((item) => String(item?.offer_id || ""));
+  const prices = items.map((item) => {
+    const numberOrNull = (value) => {
+      const parsed = Number(value);
+      return value === undefined || value === null || value === "" || !Number.isFinite(parsed) ? null : parsed;
+    };
+    return {
+      offerId: String(item?.offer_id || ""),
+      price: numberOrNull(item?.price),
+      oldPrice: numberOrNull(item?.old_price),
+      minPrice: numberOrNull(item?.min_price),
+      currencyCode: String(item?.currency_code || ""),
+    };
+  });
+  const numericPrices = prices.map((item) => item.price).filter(Number.isFinite);
+  return {
+    skuSummary: { count: items.length, offers },
+    priceSummary: {
+      currencyCodes: [...new Set(prices.map((item) => item.currencyCode).filter(Boolean))].sort(),
+      min: numericPrices.length ? Math.min(...numericPrices) : null,
+      max: numericPrices.length ? Math.max(...numericPrices) : null,
+      prices,
+    },
+  };
 }
 
 function clonePayload(payload = {}) {
@@ -1783,6 +2725,7 @@ export async function applyPayloadDraftAttributeRepair(runId, input = {}) {
   }
   const run = await getWorkflowRun(runId);
   if (!run) throw new Error("工作流不存在: " + runId);
+  const previousDraftHash = String(run.payloadDraftHash || hashPayloadDraft(run.payloadDraft || {})).trim();
   if (run.status !== "waiting_human" && run.locks?.waitingHuman !== true) {
     throw new Error("需要工作流处于等待人工状态，才能写回本地 Payload 草稿。");
   }
@@ -1850,6 +2793,7 @@ export async function applyPayloadDraftAttributeRepair(runId, input = {}) {
     sourceVariants: run.payloadDraftSourceVariants || [],
   });
   const validation = await validatePayloadDraft(runId);
+  const draftHash = String(validation?.draftHash || "").trim();
   const updated = await updateRun(runId, (current) => ({
     ...current,
     locks: {
@@ -1878,6 +2822,16 @@ export async function applyPayloadDraftAttributeRepair(runId, input = {}) {
     ok: Boolean(validation?.ok),
     submittedToOzon: false,
     validation,
+    draftHash,
+    previousDraftHash,
+    draftHashInvalidated: Boolean(previousDraftHash && draftHash && previousDraftHash !== draftHash),
+    preflight: {
+      status: validation?.ok ? "revalidated" : "blocked",
+      draftHash,
+      previousDraftHash,
+      confirmationInvalidated: Boolean(previousDraftHash && draftHash && previousDraftHash !== draftHash),
+      nextAction: validation?.ok ? "预检已针对新草稿通过；重新人工确认后才能提交。" : "修复剩余问题后再次运行预检。",
+    },
     run: updated,
     payloadDraft: updated.payloadDraft,
   };
@@ -1886,15 +2840,16 @@ export async function applyPayloadDraftAttributeRepair(runId, input = {}) {
 export async function validatePayloadDraft(runId) {
   const categoryCache = await loadCategoryCache();
   const run = await updateRun(runId, (current) => {
-    const validation = buildPayloadDraftValidation(current.payloadDraft || {}, {
-      attrsMeta: current.payloadDraftAttrsMeta || [],
-      sourceVariants: current.payloadDraftSourceVariants || [],
-      workflowRun: current,
-      dictionaryValueCache: categoryCache.attributeValues || {},
-    });
+    const { validation } = buildPayloadDraftValidationForRun(
+      current,
+      current.payloadDraft || {},
+      categoryCache.attributeValues || {},
+    );
+    const draftHash = hashPayloadDraft(current.payloadDraft || {});
     return {
       ...current,
-      payloadDraftValidation: validation,
+      payloadDraftHash: draftHash,
+      payloadDraftValidation: { ...validation, draftHash },
       locks: { ...(current.locks || {}), submitLocked: !validation.ok },
     };
   });
@@ -1910,47 +2865,169 @@ function extractTaskId(result = {}) {
   return result?.result?.task_id || result?.result?.taskId || result?.task_id || result?.taskId || "";
 }
 
+function reservePayloadSubmission(runId, draftHash, storeId) {
+  return mutateStore((store) => {
+    const index = store.items.findIndex((item) => item.id === runId);
+    if (index < 0) throw new Error("工作流不存在: " + runId);
+    const run = store.items[index];
+    const currentHash = hashPayloadDraft(run.payloadDraft || {});
+    if (currentHash !== draftHash) {
+      return { write: false, value: { acquired: false, status: "draft_changed", currentDraftHash: currentHash } };
+    }
+    const existing = run.submissionReservation;
+    if (existing) {
+      if (existing.draftHash !== draftHash) {
+        if (existing.state !== "completed") {
+          return { write: false, value: { acquired: false, status: "conflict" } };
+        }
+      } else {
+        return { write: false, value: { acquired: false, status: existing.state, reservation: existing } };
+      }
+    }
+    const reservation = {
+      state: "in_progress",
+      draftHash,
+      storeId,
+      reservedAt: nowIso(),
+    };
+    store.items[index] = {
+      ...run,
+      submissionReservation: reservation,
+      locks: { ...(run.locks || {}), submitLocked: true },
+      updatedAt: nowIso(),
+    };
+    return { value: { acquired: true, status: "in_progress", reservation } };
+  });
+}
+
+function finishPayloadSubmissionReservation(runId, draftHash, state, summary = {}) {
+  return mutateStore((store) => {
+    const index = store.items.findIndex((item) => item.id === runId);
+    if (index < 0) throw new Error("工作流不存在: " + runId);
+    const run = store.items[index];
+    const reservation = run.submissionReservation;
+    if (!reservation || reservation.draftHash !== draftHash || reservation.state !== "in_progress") {
+      return { write: false, value: null };
+    }
+    const nextReservation = {
+      ...reservation,
+      state,
+      finishedAt: nowIso(),
+      taskId: String(summary.taskId || ""),
+      reasonCode: String(summary.reasonCode || ""),
+    };
+    store.items[index] = {
+      ...run,
+      submissionReservation: nextReservation,
+      locks: {
+        ...(run.locks || {}),
+        submitLocked: true,
+        ...(state === "needs_review" ? { waitingHuman: true } : {}),
+      },
+      ...(state === "needs_review" ? { status: "waiting_human" } : {}),
+      updatedAt: nowIso(),
+    };
+    return { value: nextReservation };
+  });
+}
+
 export async function submitPayloadDraftToOzon(runId, input = {}, deps = {}) {
-  const run = await getWorkflowRun(runId);
+  let run = await getWorkflowRun(runId);
   if (!run) throw new Error("工作流不存在: " + runId);
   if (run.locks?.paused || run.status === "paused") {
     return { ok: false, status: "paused", message: "工作流已暂停，不能提交 Ozon。" };
   }
+  const existingReservation = run.submissionReservation;
+  const existingDraftHash = hashPayloadDraft(run.payloadDraft || {});
+  if (existingReservation?.draftHash === existingDraftHash) {
+    if (existingReservation.state === "needs_review") {
+      return {
+        ok: false,
+        status: "needs_review",
+        reasonCode: "OZON_SUBMISSION_OUTCOME_UNKNOWN",
+        message: "此前提交结果未知，必须人工回查 Ozon；不能自动重试。",
+      };
+    }
+    if (existingReservation.state === "completed") {
+      return {
+        ok: true,
+        status: "replay",
+        taskId: existingReservation.taskId || "",
+        storeId: existingReservation.storeId || "",
+        draftHash: existingDraftHash,
+      };
+    }
+  }
   if (run.locks?.waitingHuman || run.status === "waiting_human") {
     return { ok: false, status: "waiting_human", message: "工作流正在等待人工处理，不能提交 Ozon。" };
   }
+  const requestedStoreId = String(input.storeId || "").trim();
+  const boundStoreId = String(run.entity?.storeId || "").trim();
+  if (boundStoreId && requestedStoreId && requestedStoreId !== boundStoreId) {
+    return {
+      ok: false,
+      status: "blocked",
+      reasonCode: "WORKFLOW_STORE_MISMATCH",
+      message: "提交店铺与当前工作流绑定店铺不一致，已拒绝提交。",
+    };
+  }
+  if (!boundStoreId && !requestedStoreId) {
+    return {
+      ok: false,
+      status: "confirmation_required",
+      reasonCode: "WORKFLOW_STORE_REQUIRED",
+      message: "当前工作流尚未绑定店铺，请明确选择店铺后再提交。",
+    };
+  }
+  let storeId = boundStoreId || requestedStoreId;
+  if (!boundStoreId) {
+    let concurrentStoreId = "";
+    run = await updateRun(runId, (current) => {
+      const currentStoreId = String(current.entity?.storeId || "").trim();
+      if (currentStoreId && currentStoreId !== requestedStoreId) {
+        concurrentStoreId = currentStoreId;
+        return current;
+      }
+      return {
+        ...current,
+        entity: { ...(current.entity || {}), storeId: requestedStoreId },
+      };
+    });
+    if (concurrentStoreId) {
+      return {
+        ok: false,
+        status: "blocked",
+        reasonCode: "WORKFLOW_STORE_MISMATCH",
+        message: "工作流已被绑定到其他店铺，已拒绝提交。",
+      };
+    }
+    storeId = String(run.entity?.storeId || "").trim();
+  }
   const payloadDraft = run.payloadDraft || {};
+  const currentDraftHash = hashPayloadDraft(payloadDraft);
   const items = payloadItems(payloadDraft);
   const categoryCache = await loadCategoryCache();
   const dictionaryValueCache = categoryCache.attributeValues || {};
   if (!items.length) {
-    const validation = buildPayloadDraftValidation(payloadDraft, {
-      attrsMeta: run.payloadDraftAttrsMeta || [],
-      sourceVariants: run.payloadDraftSourceVariants || [],
-      workflowRun: run,
-      dictionaryValueCache,
-    });
+    const { validation, gateNode } = buildPayloadDraftValidationForRun(run, payloadDraft, dictionaryValueCache);
     await upsertWorkflowNode(runId, {
-      key: "preflight_check",
-      name: "提交前总闸",
-      status: "failed",
-      output: validation,
-      runStatus: "waiting_human",
-      reason: "没有可提交的 Payload 草稿。",
-      recommendedActions: ["保存 Payload 草稿", "重新校验 Payload"],
-      actions: ["edit_payload", "validate_payload"],
+      ...(gateNode || {
+        key: "preflight_check",
+        name: "提交前总闸",
+        status: "failed",
+        output: validation,
+        runStatus: "waiting_human",
+        reason: "没有可提交的 Payload 草稿。",
+        recommendedActions: ["保存 Payload 草稿", "重新校验 Payload"],
+        actions: ["edit_payload", "validate_payload"],
+      }),
     });
     return { ok: false, status: "blocked", validation };
   }
 
-  const validation = buildPayloadDraftValidation(payloadDraft, {
-    attrsMeta: run.payloadDraftAttrsMeta || [],
-    sourceVariants: run.payloadDraftSourceVariants || [],
-    workflowRun: run,
-    dictionaryValueCache,
-  });
+  const { validation, gateNode } = buildPayloadDraftValidationForRun(run, payloadDraft, dictionaryValueCache);
   if (!validation.ok) {
-    await upsertWorkflowNode(runId, buildPreflightGateNode({
+    await upsertWorkflowNode(runId, gateNode || buildPreflightGateNode({
       payload: payloadDraft,
       attrsMeta: run.payloadDraftAttrsMeta || [],
       sourceVariants: run.payloadDraftSourceVariants || [],
@@ -1966,7 +3043,7 @@ export async function submitPayloadDraftToOzon(runId, input = {}, deps = {}) {
     return { ok: false, status: "blocked", validation };
   }
 
-  await upsertWorkflowNode(runId, buildPreflightGateNode({
+  await upsertWorkflowNode(runId, gateNode || buildPreflightGateNode({
     payload: payloadDraft,
     attrsMeta: run.payloadDraftAttrsMeta || [],
     sourceVariants: run.payloadDraftSourceVariants || [],
@@ -1985,18 +3062,137 @@ export async function submitPayloadDraftToOzon(runId, input = {}, deps = {}) {
       ok: false,
       status: "confirmation_required",
       validation,
+      currentDraftHash,
       message: "需要人工二次确认后才能提交 Ozon。",
     };
   }
 
-  const storeId = String(input.storeId || run.entity?.storeId || "").trim();
-  if (!storeId) throw new Error("缺少店铺 ID，不能提交 Ozon。");
+  const expectedDraftHash = String(input.expectedDraftHash || "").trim();
+  if (!expectedDraftHash) {
+    return {
+      ok: false,
+      status: "confirmation_required",
+      reasonCode: "EXPECTED_DRAFT_HASH_REQUIRED",
+      validation: { ...validation, draftHash: currentDraftHash },
+      currentDraftHash,
+      message: "确认提交必须绑定当前 Payload 草稿版本。请重新检查并确认草稿。",
+    };
+  }
+  if (expectedDraftHash !== currentDraftHash) {
+    return {
+      ok: false,
+      status: "confirmation_required",
+      reasonCode: "DRAFT_HASH_MISMATCH",
+      validation: { ...validation, draftHash: currentDraftHash },
+      expectedDraftHash,
+      currentDraftHash,
+      message: "Payload 草稿已在确认后发生变化，请重新检查并确认。",
+    };
+  }
+
   const getStore = requireSubmitDep(deps, "getStore");
   const ozonRequest = requireSubmitDep(deps, "ozonRequest");
   const store = getStore(storeId);
+  const reservation = await reservePayloadSubmission(runId, currentDraftHash, storeId);
+  if (!reservation.acquired) {
+    if (reservation.status === "completed") {
+      return {
+        ok: true,
+        status: "replay",
+        taskId: reservation.reservation?.taskId || "",
+        storeId,
+        draftHash: currentDraftHash,
+      };
+    }
+    if (reservation.status === "needs_review") {
+      return {
+        ok: false,
+        status: "needs_review",
+        reasonCode: "OZON_SUBMISSION_OUTCOME_UNKNOWN",
+        message: "此前提交结果未知，必须人工回查 Ozon；不能自动重试。",
+      };
+    }
+    return {
+      ok: false,
+      status: reservation.status === "in_progress" ? "in_progress" : "conflict",
+      statusCode: 409,
+      reasonCode: reservation.status === "in_progress" ? "OZON_SUBMISSION_IN_PROGRESS" : "OZON_SUBMISSION_RESERVATION_CONFLICT",
+      message: "同一 Payload 草稿已有提交占位，不能重复提交。",
+    };
+  }
   const submitPayload = { items };
-  const result = await ozonRequest(store, "/v3/product/import", submitPayload);
+  const submissionSummary = buildPayloadSubmissionSummary(items);
+  let result;
+  try {
+    result = await ozonRequest(store, "/v3/product/import", submitPayload);
+  } catch {
+    await finishPayloadSubmissionReservation(runId, currentDraftHash, "needs_review", {
+      reasonCode: "OZON_SUBMISSION_OUTCOME_UNKNOWN",
+    });
+    return {
+      ok: false,
+      status: "needs_review",
+      reasonCode: "OZON_SUBMISSION_OUTCOME_UNKNOWN",
+      message: "Ozon 提交结果未知，必须人工回查；系统不会自动重试。",
+    };
+  }
   const taskId = extractTaskId(result);
+  // A 2xx response without a task id cannot be reconciled to an Ozon import
+  // job. Treat it as an unknown outcome and keep the reservation occupied;
+  // otherwise the UI would claim "submitted" while a retry could create a
+  // duplicate product.
+  if (!String(taskId || "").trim()) {
+    await finishPayloadSubmissionReservation(runId, currentDraftHash, "needs_review", {
+      reasonCode: "OZON_SUBMISSION_TASK_ID_MISSING",
+    });
+    await upsertWorkflowNode(runId, {
+      key: "ozon_submit",
+      name: "Ozon 提交",
+      status: "failed",
+      output: {
+        ok: false,
+        taskId: "",
+        storeId,
+        offerCount: items.length,
+        offers: items.map((item) => String(item.offer_id || "")),
+        draftHash: currentDraftHash,
+        ...submissionSummary,
+        responseReceived: true,
+        outcome: "unknown",
+        reasonCode: "OZON_SUBMISSION_TASK_ID_MISSING",
+      },
+      runStatus: "waiting_human",
+      branch: "needs_review",
+      riskScore: 95,
+      riskLevel: "high",
+      reason: "Ozon 返回成功响应但没有 task_id，无法确认本次提交结果。",
+      recommendedActions: ["使用当前店铺和草稿范围回查提交结果", "确认没有已创建商品前不要重试", "结果明确后再处理审核回执"],
+      actions: ["reconcile_submission", "manual_review"],
+    });
+    await appendWorkflowEvent(runId, {
+      node: "ozon_submit",
+      type: "payload_draft_submission_needs_review",
+      message: "Ozon 响应缺少 task_id，提交结果转人工复核；系统不会自动重试。",
+      data: {
+        reasonCode: "OZON_SUBMISSION_TASK_ID_MISSING",
+        storeId,
+        offerCount: items.length,
+        offers: items.map((item) => String(item.offer_id || "")),
+        draftHash: currentDraftHash,
+      },
+    });
+    const reviewRun = await getWorkflowRun(runId);
+    return {
+      ok: false,
+      status: "needs_review",
+      reasonCode: "OZON_SUBMISSION_TASK_ID_MISSING",
+      storeId,
+      draftHash: currentDraftHash,
+      message: "Ozon 返回了响应但没有 task_id，无法确认提交结果；系统不会自动重试。",
+      run: reviewRun,
+    };
+  }
+  await finishPayloadSubmissionReservation(runId, currentDraftHash, "completed", { taskId });
 
   await upsertWorkflowNode(runId, {
     key: "ozon_submit",
@@ -2008,6 +3204,8 @@ export async function submitPayloadDraftToOzon(runId, input = {}, deps = {}) {
       storeId,
       offerCount: items.length,
       offers: items.map((item) => String(item.offer_id || "")),
+      draftHash: currentDraftHash,
+      ...submissionSummary,
       result,
     },
     runStatus: "running",
@@ -2027,6 +3225,8 @@ export async function submitPayloadDraftToOzon(runId, input = {}, deps = {}) {
       storeId,
       offerCount: items.length,
       offers: items.map((item) => String(item.offer_id || "")),
+      draftHash: currentDraftHash,
+      ...submissionSummary,
     },
   });
   const updated = await updateRun(runId, (current) => ({
@@ -2062,11 +3262,14 @@ export async function findOrCreateWorkflowForAutoListingJob(job = {}) {
   const existing = store.items.find((run) => run.entity?.autoListingJobId === autoListingJobId);
   const entityPatch = {
     autoListingJobId,
+    source: String(job.source || job.candidateData?.source || "").trim(),
+    ...(job.candidateData?.sourceEvidence ? { sourceEvidence: job.candidateData.sourceEvidence } : {}),
     candidateId: job.bestMatch?.candidateId || job.bestMatch?.id || job.candidateId || "",
     candidateUrl: job.bestMatch?.candidateUrl || job.candidateData?.url || job.url || "",
     parentSku: job.listingResult?.sku || job.pendingParentSku || job.parentSku || "",
     taskId: job.listingResult?.taskId || job.taskId || "",
     storeId: job.listingResult?.storeId || job.storeId || "",
+    ...(job.listingResult?.stockReadiness ? { stockReadiness: job.listingResult.stockReadiness } : {}),
   };
   if (existing) {
     return updateRun(existing.id, (run) => ({
@@ -2174,6 +3377,31 @@ export function workflowNodeFromAutoListingStage(stage = "", data = {}) {
 
 function evaluatePricingRisk(pricingDiagnosis) {
   if (!pricingDiagnosis) return null;
+  if (pricingDiagnosis.procurementEvidence?.status === "blocked") {
+    return pricingRiskPayload({
+      branch: "blocked",
+      riskScore: 94,
+      riskLevel: "high",
+      reasonCode: "PRICING_PROCUREMENT_EVIDENCE_MISSING",
+      messageZh: "定价阻塞：缺少可信供应商、MOQ 或阶梯价证据。",
+      reason: "1688 展示价不能替代真实采购数量和阶梯成本，继续计算会伪造利润结论。",
+      recommendedActions: ["补充供应商与 MOQ", "读取数量绑定阶梯价", "人工确认采购成本证据"],
+    });
+  }
+  // Complete-but-manual procurement fields are still unverified.  Do not let
+  // a seller-entered MOQ/tier price reach the submit gate merely because the
+  // shape is complete; it would turn an assumed cost into a false margin.
+  if (pricingDiagnosis.procurementEvidence?.status === "needs_review") {
+    return pricingRiskPayload({
+      branch: "blocked",
+      riskScore: 93,
+      riskLevel: "high",
+      reasonCode: "PRICING_PROCUREMENT_EVIDENCE_REVIEW_REQUIRED",
+      messageZh: "定价阻塞：采购 MOQ 和阶梯价来自手工字段，尚未完成来源复核。",
+      reason: "手工采购字段不能证明当前供应商数量绑定成本，禁止进入 Ozon 提交。",
+      recommendedActions: ["回放当前 1688 快照", "核对 MOQ 与数量绑定阶梯价", "完成采购证据人工确认后重新预检"],
+    });
+  }
   const pkg = pricingDiagnosis.package || {};
   const price = Number(pricingDiagnosis.priceCny || 0);
   const minPrice = Number(pricingDiagnosis.minPriceCny || 0);
@@ -2217,6 +3445,36 @@ function evaluatePricingRisk(pricingDiagnosis) {
       messageZh: "定价阻塞：价格迭代未收敛。",
       reason: "价格在不同运费等级间跳变，不能安全生成最终售价。",
       recommendedActions: ["检查运费等级边界", "人工指定售价", "重新计算价格"],
+    });
+  }
+  const commissionSource = pricingDiagnosis.commissionSource || {};
+  const commissionRate = Number(pricingDiagnosis.commissionRate || 0);
+  // A category commission is only safe to use when the diagnosis can point
+  // back to the exact read/evidence snapshot and its effective date.  A
+  // caller-provided percentage without those fields is still an assumption;
+  // do not let it silently pass the pricing gate as current Ozon truth.
+  if (commissionSource.source === "ozon_category"
+    && (!String(commissionSource.evidenceRef || "").trim()
+      || !String(commissionSource.updatedAt || "").trim())) {
+    return pricingRiskPayload({
+      branch: "blocked",
+      riskScore: 94,
+      riskLevel: "high",
+      reasonCode: "PRICING_COMMISSION_EVIDENCE_UNTRACEABLE",
+      messageZh: "定价阻塞：类目佣金缺少可追溯证据或读取时间。",
+      reason: "类目佣金比例必须绑定当前读取回执和更新时间，不能只凭手填比例计算利润。",
+      recommendedActions: ["读取当前店铺/类目佣金", "补充佣金证据引用和更新时间", "确认后重新计算价格"],
+    });
+  }
+  if (!commissionRate || commissionSource.source === "manual_default" || commissionSource.confidence === "low") {
+    return pricingRiskPayload({
+      branch: "blocked",
+      riskScore: 93,
+      riskLevel: "high",
+      reasonCode: "PRICING_COMMISSION_SOURCE_MISSING",
+      messageZh: "定价阻塞：缺少当前类目的可信佣金证据。",
+      reason: "默认佣金率不能替代当前 Ozon 类目或商品的佣金读取，继续提交会伪造利润结论。",
+      recommendedActions: ["读取当前店铺商品佣金", "补充同类商品佣金证据", "确认后重新计算价格"],
     });
   }
   if (!price || minPrice <= 0 || minPrice >= price) {
@@ -2285,14 +3543,27 @@ function normalizeWorkflowPricingDiagnosis(input) {
     currencyCode: String(input.currencyCode || "CNY"),
     logisticsFee: Number(input.logisticsFee || 0),
     commission: Number(input.commission || 0),
+    commissionRate: Number(input.commissionRate || 0),
+    commissionSource: input.commissionSource && typeof input.commissionSource === "object"
+      ? { ...input.commissionSource }
+      : null,
     miscFee: Number(input.miscFee || 0),
     baseCost: Number(input.baseCost || 0),
     profit: Number(input.profit || 0),
     profitRate: Number(input.profitRate || 0),
+    profitStatus: String(input.profitStatus || "unknown"),
+    profitConclusion: String(input.profitConclusion || "unknown_without_cost_commission_and_settlement_rules"),
+    profitEvidence: input.profitEvidence && typeof input.profitEvidence === "object"
+      ? { ...input.profitEvidence }
+      : null,
     converged: input.converged !== false,
     level: input.level || null,
     package: input.package || {},
     packageInfoSource: String(input.packageInfoSource || input.package?.source || ""),
+    procurementEvidence:
+      input.procurementEvidence && typeof input.procurementEvidence === "object"
+        ? { ...input.procurementEvidence }
+        : null,
     steps: Array.isArray(input.steps) ? input.steps : [],
     variants: Array.isArray(input.variants) ? input.variants : [],
   };
@@ -2411,6 +3682,7 @@ export function workflowCurrentProductTask(run = {}) {
   const title = run.title || run.name || run.source?.title || run.entity?.candidateTitle || "当前商品";
   const reviewNode = nodes.find((node) => node.key === "review_reconcile");
   const stockNode = nodes.find((node) => node.key === "stock_sync");
+  const stockReadiness = run.entity?.stockReadiness || reviewNode?.output?.stockReadiness || null;
   const failedReview = reviewNode && (
     ["failed", "waiting_human"].includes(String(reviewNode.status || ""))
     || Number(reviewNode.output?.errorCount || 0) > 0
@@ -2429,6 +3701,70 @@ export function workflowCurrentProductTask(run = {}) {
       nextAction: reviewNode.recommendedActions?.[0] || "按诊断修复 Payload 后重新预检",
       view: "workflow-console",
       nodeKey: "review_reconcile",
+    };
+  }
+
+  // A preflight failure is a seller gate even when there is no review node
+  // yet.  Previously a run persisted as waiting_human (with a failed or
+  // waiting_human preflight node) fell through to the generic
+  // `listing_progress/running` task.  That made the workflow list tell the
+  // seller to "continue" instead of showing the actual repair and its safe
+  // next step.  Keep this mapping before moderation/stock branches so the
+  // server summary and the listing page agree on the same gate.
+  const waitingHuman = run.status === "waiting_human" || run.locks?.waitingHuman === true;
+  const preflightNode = nodes.find((node) => node.key === "preflight_check") || null;
+  const preflightWaiting = preflightNode && (
+    ["failed", "waiting_human"].includes(String(preflightNode.status || ""))
+    || String(preflightNode.runStatus || "") === "waiting_human"
+  );
+  if (waitingHuman && preflightWaiting) {
+    const sellerResult = preflightNode.output?.sellerResult || {};
+    const issueCount = Array.isArray(preflightNode.output?.issues)
+      ? preflightNode.output.issues.length
+      : Number(preflightNode.output?.issueCount || 0);
+    return {
+      stage: "preflight_review",
+      status: "waiting_human",
+      productTitle: title,
+      offerId: firstImportedOffer(preflightNode.output || {}),
+      blockedAt: preflightNode.name || "提交前预检",
+      reason: sellerResult.reason || preflightNode.reason || (issueCount
+        ? `提交前预检发现 ${issueCount} 个问题，需要人工修复。`
+        : "提交前预检需要人工确认后才能继续。"),
+      nextAction: sellerResult.action || preflightNode.recommendedActions?.[0] || "修复本地草稿后重新预检",
+      view: "listing",
+      nodeKey: "preflight_check",
+    };
+  }
+
+  const reviewReadinessState = String(reviewNode?.output?.readinessState || "");
+  if (reviewNode && String(reviewNode.status || "") === "running" && reviewReadinessState === "pending_moderation") {
+    return {
+      stage: "review_waiting",
+      status: "waiting",
+      productTitle: title,
+      offerId: firstImportedOffer(reviewNode.output || {}),
+      blockedAt: reviewNode.name || "审核回执",
+      reason: reviewNode.reason || "Ozon 商品已导入，状态回读尚未证明可售。",
+      nextAction: reviewNode.recommendedActions?.[0] || "稍后重新回查商品状态；在明确可售前不要写库存",
+      view: "workflow-console",
+      nodeKey: "review_reconcile",
+    };
+  }
+
+  if (stockReadiness && String(stockReadiness.status || "") === "blocked") {
+    return {
+      stage: "warehouse_queue",
+      status: "blocked",
+      productTitle: title,
+      offerId: String(stockReadiness.offerIds?.[0] || firstImportedOffer(reviewNode?.output || {})),
+      blockedAt: "库存就绪证据",
+      reason: String(stockReadiness.reasonCode || "STOCK_CURRENT_EVIDENCE_REQUIRED") === "STOCK_CURRENT_EVIDENCE_REQUIRED"
+        ? "提交结果不等于当前库存证据，必须先读取对应 Offer 与仓库的库存。"
+        : String(stockReadiness.reason || stockReadiness.reasonCode || "库存就绪证据不足。"),
+      nextAction: stockReadiness.nextAction || "先读取对应 offer_id/warehouse_id 的当前库存，再执行库存预检",
+      view: "warehouse",
+      nodeKey: "stock_readiness",
     };
   }
 
@@ -2609,11 +3945,38 @@ export function workflowReviewReconcileNode(input = {}) {
     originalPayload: input.repairPayload || input.submitPayload || {},
     skuOffers: input.skuOffers || [],
   }) : null;
+  // The import task response is not the final seller outcome.  When a later
+  // product-status read is available, keep that server-observed state on the
+  // same review node so the workflow cannot say “审核通过” while moderation
+  // is still pending (or has failed).
+  const readinessState = String(input.readinessState || "").trim();
+  const readinessEvidence = input.readinessEvidence && typeof input.readinessEvidence === "object"
+    ? input.readinessEvidence
+    : {};
+  const readinessFailed = readinessState === "moderation_failed";
+  // A claimed ready_for_sale state is not sufficient on its own. It must be
+  // backed by a complete, fresh, server-observed product read; otherwise an
+  // import response or hand-built node could advance directly to inventory.
+  const readinessClaimVerified = readinessState !== "ready_for_sale"
+    || (readinessEvidence.readStatus === "completed"
+      && readinessEvidence.coverageComplete === true
+      && readinessEvidence.freshnessStatus === "fresh"
+      && readinessEvidence.endpointAttempted === true
+      && Number(readinessEvidence.observedOfferCount || 0) > 0);
+  const readinessUnverified = readinessState === "ready_for_sale" && !readinessClaimVerified;
+  const readinessPending = Boolean(readinessState)
+    && (!['ready_for_sale', 'moderation_failed'].includes(readinessState) || readinessUnverified);
+  const effectiveFailed = failed || readinessFailed;
+  const reviewRepairDraft = effectiveFailed ? buildReviewRepairDraft({
+    taskId: input.taskId,
+    skuOffers: input.skuOffers,
+    importedItems,
+    importErrors: importErrors.length ? importErrors : (readinessFailed ? [{ code: "MODERATION_FAILED", message: "审核失败" }] : []),
+    submitPayload: input.submitPayload || {},
+  }) : null;
   return {
     key: "review_reconcile",
     name: "审核回执",
-    status: failed ? "failed" : "success",
-    runStatus: failed ? "waiting_human" : "running",
     output: {
       taskId: input.taskId || null,
       skuOffers: Array.isArray(input.skuOffers) ? input.skuOffers : [],
@@ -2629,14 +3992,110 @@ export function workflowReviewReconcileNode(input = {}) {
       firstError,
       variantGroupingDiagnosis,
       variantGroupingRepairDraft,
+      readinessState,
+      readinessEvidence: input.readinessEvidence || null,
+      readinessClaimVerified,
+      reviewRepairDraft,
     },
-    error: firstError || {},
-    diagnosis,
-    branch: groupingFailed ? "variant_grouping_fix" : (failed ? "ozon_feedback" : "continue"),
-    riskScore: failed ? 90 : (importWarnings.length ? 25 : 10),
-    riskLevel: failed ? "high" : (importWarnings.length ? "medium" : "low"),
-    reason: groupingFailed ? "Ozon 商品已导入，但变体合并失败，不能视为上架成功。" : (failed ? "Ozon 审核回执存在阻塞错误，需要人工或规则修复。" : "Ozon 回执未发现阻塞错误。"),
-    recommendedActions: groupingFailed ? ["修正变体特征后整组重提", "查看 Ozon 原文", "检查同型号 SKU 差异"] : (failed ? ["按诊断修复 Payload", "查看 Ozon 原文", "重试审核节点"] : ["查看节点输出", "继续库存写入"]),
-    actions: failed ? ["edit_payload", "retry_node", "auto_fix"] : ["view_output"],
+    status: effectiveFailed ? "failed" : (readinessPending ? "running" : "success"),
+    runStatus: effectiveFailed ? "waiting_human" : "running",
+    error: firstError || (readinessFailed ? { code: "MODERATION_FAILED", message: "Ozon 商品审核未通过" } : {}),
+    diagnosis: readinessFailed && !diagnosis.reasonCode ? {
+      reasonCode: "MODERATION_FAILED",
+      severity: "blocking",
+      messageZh: "Ozon 商品状态回读显示审核未通过，需要修复商品资料。",
+      fixHints: ["查看逐 Offer 审核错误", "修复商品草稿", "重新预检后人工确认提交"],
+    } : diagnosis,
+    branch: groupingFailed ? "variant_grouping_fix" : (effectiveFailed ? "ozon_feedback" : (readinessPending ? "waiting_review" : "continue")),
+    riskScore: effectiveFailed ? 90 : (readinessPending ? 45 : (importWarnings.length ? 25 : 10)),
+    riskLevel: effectiveFailed ? "high" : (readinessPending ? "medium" : (importWarnings.length ? "medium" : "low")),
+    reason: groupingFailed ? "Ozon 商品已导入，但变体合并失败，不能视为上架成功。" : (readinessFailed ? "商品状态回读显示审核未通过，需要修复后重新预检。" : (readinessUnverified ? "商品状态被标为可售，但缺少完整、新鲜的服务端回查证据，不能进入库存。" : (readinessPending ? "Ozon 商品已导入，但状态回读尚未证明可售，仍在审核中。" : (failed ? "Ozon 审核回执存在阻塞错误，需要人工或规则修复。" : "Ozon 回执未发现阻塞错误。")))),
+    recommendedActions: groupingFailed ? ["修正变体特征后整组重提", "查看 Ozon 原文", "检查同型号 SKU 差异"] : (effectiveFailed ? (readinessFailed ? ["按诊断逐 Offer 修复 Payload", "保存新草稿并重新预检", "按 task_id/product_id/Offer 再次只读回查"] : ["按诊断修复 Payload", "按 Offer 逐项定位并修复", "保存新草稿并重新预检", "按 task_id/product_id/Offer 再次只读回查"]) : (readinessPending ? ["重新执行完整商品状态回查", "核对新鲜度和 Offer 覆盖范围", "在明确可售前不要写库存"] : ["查看节点输出", "继续库存写入"])),
+    actions: effectiveFailed ? ["edit_payload", "retry_node", "auto_fix"] : ["view_output"],
+  };
+}
+
+/**
+ * Apply a server-observed /v1/product/import/info response to the workflow
+ * that submitted the task.  The legacy auto-listing reconciler updates only
+ * its job record; a payload-draft submission otherwise leaves the workflow's
+ * review_reconcile node stale forever.  This helper is deliberately
+ * readback-only: it never calls an Ozon write endpoint and always treats an
+ * import without product-status evidence as pending moderation.
+ */
+export async function reconcileWorkflowTaskReadback(runId, input = {}, deps = {}) {
+  const run = await getWorkflowRun(runId);
+  if (!run) return { ok: false, status: 404, reasonCode: "WORKFLOW_NOT_FOUND" };
+  const taskId = Number(input.taskId || input.task_id || 0);
+  if (!Number.isSafeInteger(taskId) || taskId <= 0) {
+    return { ok: false, status: 400, reasonCode: "PRODUCT_IMPORT_TASK_ID_INVALID" };
+  }
+  const expectedTaskId = Number(run.entity?.taskId
+    || run.submissionReservation?.taskId
+    || (run.nodes || []).find((node) => node.key === "ozon_submit")?.output?.taskId
+    || 0);
+  if (expectedTaskId > 0 && expectedTaskId !== taskId) {
+    return { ok: false, status: 409, reasonCode: "WORKFLOW_TASK_MISMATCH", expectedTaskId, taskId };
+  }
+  const requestedStoreId = String(input.storeId || "").trim();
+  const expectedStoreId = String(run.entity?.storeId || run.submissionReservation?.storeId || "").trim();
+  // The HTTP route already requires a store scope, but this helper is also
+  // callable by background/local operators. Do not let a direct caller attach
+  // import-info evidence while omitting the store binding.
+  if (expectedStoreId && !requestedStoreId) {
+    return { ok: false, status: 400, reasonCode: "WORKFLOW_STORE_REQUIRED" };
+  }
+  if (expectedStoreId && requestedStoreId && expectedStoreId !== requestedStoreId) {
+    return { ok: false, status: 409, reasonCode: "WORKFLOW_STORE_MISMATCH" };
+  }
+  const info = input.importInfo && typeof input.importInfo === "object" ? input.importInfo : {};
+  const items = Array.isArray(info?.result?.items) ? info.result.items : (Array.isArray(info.items) ? info.items : []);
+  const importedItems = items.filter((item) => Number(item?.product_id || item?.productId || 0) > 0
+    || String(item?.status || "").toLowerCase() === "imported");
+  const importErrors = items.flatMap((item) => Array.isArray(item?.errors) ? item.errors : []);
+  const importWarnings = items.flatMap((item) => Array.isArray(item?.warnings) ? item.warnings : []);
+  const skuOffers = (run.nodes || []).find((node) => node.key === "ozon_submit")?.output?.offers
+    || (run.payloadDraft?.items || []).map((item) => item.offer_id).filter(Boolean);
+  const submitPayload = run.payloadDraft || (run.nodes || []).find((node) => node.key === "ozon_submit")?.input || {};
+  const node = workflowReviewReconcileNode({
+    taskId,
+    importedItems,
+    importWarnings,
+    importErrors,
+    listingDefects: [],
+    skuOffers,
+    submitPayload,
+    // Import-info alone cannot prove moderation or sale readiness.
+    readinessState: importErrors.length ? "" : "pending_moderation",
+    readinessEvidence: {
+      source: "server_observed",
+      checkedAt: String(input.checkedAt || nowIso()),
+      responseHash: String(input.responseHash || ""),
+      taskId,
+    },
+  });
+  const updated = await upsertWorkflowNode(runId, node);
+  await appendWorkflowEvent(runId, {
+    node: "review_reconcile",
+    type: "task_readback_observed",
+    message: "已将 Ozon 商品导入任务回查结果写入审核回执节点；未执行写操作。",
+    data: {
+      taskId,
+      importedCount: importedItems.length,
+      errorCount: importErrors.length,
+      warningCount: importWarnings.length,
+      source: "server_observed",
+    },
+  });
+  return {
+    ok: true,
+    status: importErrors.length ? "failed" : "pending_moderation",
+    taskId,
+    importedCount: importedItems.length,
+    errorCount: importErrors.length,
+    warningCount: importWarnings.length,
+    reviewNode: node,
+    run: await getWorkflowRun(runId),
+    previousRun: updated,
   };
 }

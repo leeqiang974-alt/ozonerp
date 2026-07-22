@@ -1,0 +1,15 @@
+{
+  "fixtureKind": "mocked_redacted_product_import_info",
+  "synthetic": true,
+  "redacted": true,
+  "verificationLevel": "mocked",
+  "endpoint": "/v1/product/import/info",
+  "scenario": "pending",
+  "requestScope": { "task_id": 700101 },
+  "result": {
+    "task_id": 700101,
+    "items": [
+      { "offer_id": "FIXTURE-PENDING", "status": "accepted", "errors": [] }
+    ]
+  }
+}

@@ -1,16 +1,23 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import fs from "node:fs";
+import os from "node:os";
 import path from "node:path";
 import {
   acceptWorkflowPricingRisk,
   appendWorkflowEvent,
   applyPayloadDraftAttributeRepair,
+  approveWorkflowMediaCandidates,
+  publishWorkflowMediaApproval,
   buildListingAttributeMatrix,
   buildVariantConfigurationSummary,
+  buildSourceVariantBindingSummary,
+  buildSourceVariantBindingReceipt,
   buildVariantGroupingDiagnosis,
   buildVariantGroupingRepairDraft,
+  buildReviewRepairDraft,
   buildPreflightGateNode,
+  buildPreflightSellerResult,
   createWorkflowRun,
   diagnoseWorkflowError,
   findOrCreateWorkflowForAutoListingJob,
@@ -30,6 +37,7 @@ import {
   retryWorkflowNode,
   savePayloadDraft,
   submitPayloadDraftToOzon,
+  reconcileWorkflowTaskReadback,
   summarizeWorkflowRunList,
   summarizeWorkflowRun,
   upsertWorkflowNode,
@@ -38,8 +46,14 @@ import {
   workflowCurrentProductTask,
 } from "../src/workflowRuns.js";
 
-const tmpFile = path.join(process.cwd(), "data", "workflow-runs.test.json");
-const tmpCategoryCacheFile = path.join(process.cwd(), "data", "ozon-category-cache.test.json");
+const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "ozon-workflow-runs-test-"));
+const tmpFile = path.join(tmpDir, "workflow-runs.json");
+const tmpCategoryCacheFile = path.join(tmpDir, "ozon-category-cache.json");
+const multiSkuRepairFixture = JSON.parse(fs.readFileSync(new URL("./fixtures/1688/color-size-matrix/listing-repair.mocked.json", import.meta.url), "utf8"));
+
+test.after(() => {
+  fs.rmSync(tmpDir, { recursive: true, force: true });
+});
 
 function reset() {
   try { fs.unlinkSync(tmpFile); } catch {}
@@ -355,6 +369,407 @@ test("buildPreflightGateNode summarizes submit gate risks", () => {
   assert.equal(node.riskLevel, "high");
   assert.equal(node.branch, "manual_review");
   assert.ok(node.recommendedActions.includes("人工处理阻塞风险"));
+});
+
+test("preflight exposes seller result with repair field, action, side effect and outcome", () => {
+  const node = buildPreflightGateNode({
+    payload: { items: [{ offer_id: "OFFER-SELLER", price: 0, images: [] }] },
+    category: null,
+    contentSummary: { candidateImageCount: 0, skuVariantCount: 1, sizeWeightReady: false },
+    variantCount: 1,
+  });
+  const sellerResult = node.output.sellerResult;
+  assert.equal(sellerResult.status, "blocked");
+  assert.equal(sellerResult.outcome, "submission_not_started");
+  assert.match(sellerResult.nextAction, /修复/);
+  assert.equal(sellerResult.sideEffect, "仅本地预检，不会写入 Ozon 或扣费。按建议修复草稿后必须重新预检。");
+  assert.ok(sellerResult.repairs.some((repair) => repair.fieldPath === "items[0].price"));
+  assert.ok(sellerResult.repairs.every((repair) => repair.action && repair.sideEffect && repair.result));
+});
+
+test("preflight blocks an omitted category instead of treating undefined as selected", () => {
+  const node = buildPreflightGateNode({
+    payload: { items: [{ offer_id: "OFFER-NO-CATEGORY", price: 100, images: ["1", "2", "3"] }] },
+    contentSummary: { candidateImageCount: 3, skuVariantCount: 1, sizeWeightReady: true },
+    variantCount: 1,
+  });
+  assert.equal(node.output.ok, false);
+  assert.ok(node.output.issues.some((issue) => issue.code === "CATEGORY_MATCH_MISSING"));
+});
+
+test("preflight blocks Russian content evidence until human fact review", () => {
+  const node = buildPreflightGateNode({
+    payload: {
+      items: [{
+        offer_id: "OFFER-CONTENT-REVIEW",
+        name: "Товар",
+        description_category_id: 17028673,
+        type_id: 95183,
+        price: "100",
+        old_price: "120",
+        min_price: "90",
+        marketing_price: "100",
+        currency_code: "RUB",
+        model_info: { model_id: 1 },
+        images: ["1", "2", "3"],
+        attributes: [
+          { complex_id: 0, id: 8229, values: [{ dictionary_value_id: 0, value: "Model" }] },
+        ],
+      }],
+    },
+    category: { description_category_id: 17028673, type_id: 95183, path: "家居 / 收纳" },
+    contentSummary: {
+      candidateImageCount: 3,
+      skuVariantCount: 1,
+      sizeWeightReady: true,
+      contentEvidence: { status: "needs_review", blockerCodes: ["CONTENT_FACT_REVIEW_REQUIRED"] },
+    },
+    variantCount: 1,
+  });
+  assert.equal(node.output.ok, false);
+  const issue = node.output.issues.find((entry) => entry.code === "CONTENT_EVIDENCE_REVIEW_REQUIRED");
+  assert.ok(issue);
+  assert.equal(issue.status, "needs_review");
+  assert.deepEqual(issue.blockerCodes, ["CONTENT_FACT_REVIEW_REQUIRED"]);
+});
+
+test("preflight blocks 1688 listing when current Ozon category evidence is missing", () => {
+  const node = buildPreflightGateNode({
+    payload: {
+      items: [{
+        offer_id: "OFFER-CATEGORY-EVIDENCE",
+        name: "Товар",
+        description_category_id: 17028673,
+        type_id: 95183,
+        price: "100",
+        old_price: "120",
+        min_price: "90",
+        marketing_price: "100",
+        currency_code: "RUB",
+        model_info: { model_id: 1 },
+        images: ["1", "2", "3"],
+        attributes: [{ complex_id: 0, id: 8229, values: [{ dictionary_value_id: 0, value: "Model" }] }],
+      }],
+    },
+    category: { description_category_id: 17028673, type_id: 95183, path: "家居 / 收纳" },
+    contentSummary: { candidateImageCount: 3, skuVariantCount: 1, sizeWeightReady: true },
+    categoryEvidenceRequired: true,
+    categoryEvidence: { tree: null, attributes: null },
+    variantCount: 1,
+  });
+  assert.equal(node.output.ok, false);
+  const issue = node.output.issues.find((entry) => entry.code === "CATEGORY_EVIDENCE_MISSING");
+  assert.ok(issue);
+  assert.deepEqual(issue.missing, ["tree", "attributes"]);
+  assert.match(node.output.sellerResult.repairs.find((repair) => repair.code === "CATEGORY_EVIDENCE_MISSING").action, /重新读取/);
+});
+
+test("preflight accepts current same-store category evidence without affecting old draft compatibility", () => {
+  const evidence = (extra = {}) => ({
+    checkedAt: new Date().toISOString(),
+    statusCode: 200,
+    verificationLevel: "server_observed",
+    responseHash: `sha256:${"c".repeat(64)}`,
+    storeId: "2367028-1",
+    environmentRefHash: `sha256:${"e".repeat(64)}`,
+    ...extra,
+  });
+  const node = buildPreflightGateNode({
+    payload: {
+      items: [{
+        offer_id: "OFFER-CATEGORY-EVIDENCE-OK",
+        name: "Товар",
+        description_category_id: 17028673,
+        type_id: 95183,
+        price: "100",
+        old_price: "120",
+        min_price: "90",
+        marketing_price: "100",
+        currency_code: "RUB",
+        model_info: { model_id: 1 },
+        images: ["1", "2", "3"],
+        attributes: [{ complex_id: 0, id: 8229, values: [{ dictionary_value_id: 0, value: "Model" }] }],
+      }],
+    },
+    category: { description_category_id: 17028673, type_id: 95183, path: "家居 / 收纳" },
+    contentSummary: { candidateImageCount: 3, skuVariantCount: 1, sizeWeightReady: true },
+    categoryEvidenceRequired: true,
+    categoryEvidenceStoreId: "2367028-1",
+    categoryEvidenceEnvironmentRefHash: `sha256:${"e".repeat(64)}`,
+    categoryEvidence: {
+      tree: evidence(),
+      attributes: evidence({ cacheKey: "17028673:95183" }),
+    },
+    variantCount: 1,
+  });
+  assert.equal(node.output.issues.some((entry) => entry.code === "CATEGORY_EVIDENCE_MISSING"), false);
+  const oldDraft = buildPreflightGateNode({
+    payload: { items: [{ offer_id: "OLD-DRAFT", description_category_id: 17028673, type_id: 95183, price: 100, images: ["1", "2", "3"] }] },
+    category: { description_category_id: 17028673, type_id: 95183 },
+    contentSummary: { candidateImageCount: 3, skuVariantCount: 1, sizeWeightReady: true },
+    variantCount: 1,
+  });
+  assert.equal(oldDraft.output.issues.some((entry) => entry.code === "CATEGORY_EVIDENCE_MISSING"), false);
+});
+
+test("preflight rejects category evidence without strict store, environment, or attribute cache binding", () => {
+  const payload = {
+    items: [{
+      offer_id: "OFFER-CATEGORY-EVIDENCE-SCOPE",
+      name: "Товар",
+      description_category_id: 17028673,
+      type_id: 95183,
+      price: "100",
+      old_price: "120",
+      min_price: "90",
+      marketing_price: "100",
+      currency_code: "RUB",
+      model_info: { model_id: 1 },
+      images: ["1", "2", "3"],
+      attributes: [{ complex_id: 0, id: 8229, values: [{ dictionary_value_id: 0, value: "Model" }] }],
+    }],
+  };
+  const expectedEnvironment = `sha256:${"e".repeat(64)}`;
+  const baseEvidence = {
+    checkedAt: new Date().toISOString(),
+    statusCode: 200,
+    verificationLevel: "server_observed",
+    responseHash: `sha256:${"c".repeat(64)}`,
+    storeId: "2367028-1",
+    environmentRefHash: expectedEnvironment,
+  };
+  const run = (tree, attributes) => buildPreflightGateNode({
+    payload,
+    category: { description_category_id: 17028673, type_id: 95183, path: "家居 / 收纳" },
+    contentSummary: { candidateImageCount: 3, skuVariantCount: 1, sizeWeightReady: true },
+    categoryEvidenceRequired: true,
+    categoryEvidenceStoreId: "2367028-1",
+    categoryEvidenceEnvironmentRefHash: expectedEnvironment,
+    categoryEvidence: { tree, attributes },
+    variantCount: 1,
+  });
+
+  const missingStore = run(
+    { ...baseEvidence, storeId: "" },
+    { ...baseEvidence, cacheKey: "17028673:95183", storeId: "" },
+  );
+  assert.ok(missingStore.output.issues.some((entry) => entry.code === "CATEGORY_EVIDENCE_MISSING"));
+
+  const wrongEnvironment = run(
+    { ...baseEvidence, environmentRefHash: `sha256:${"f".repeat(64)}` },
+    { ...baseEvidence, cacheKey: "17028673:95183", environmentRefHash: `sha256:${"f".repeat(64)}` },
+  );
+  assert.ok(wrongEnvironment.output.issues.some((entry) => entry.code === "CATEGORY_EVIDENCE_MISSING"));
+
+  const missingCacheKey = run(baseEvidence, { ...baseEvidence });
+  assert.ok(missingCacheKey.output.issues.some((entry) => entry.code === "CATEGORY_EVIDENCE_MISSING"));
+});
+
+test("preflight seller result exposes multi-SKU source binding coverage", () => {
+  const payload = {
+    items: [
+      { offer_id: "OFFER-WHITE", attributes: [], images: [] },
+      { offer_id: "OFFER-BLUE", attributes: [], images: [] },
+    ],
+  };
+  const sourceVariantBinding = buildSourceVariantBindingSummary({
+    payload,
+    sourceVariants: [{ offerId: "OFFER-WHITE", sourceSkuId: "1688-WHITE", spec: "白色" }],
+  });
+  const sellerResult = buildPreflightSellerResult({
+    payload,
+    issues: [{ code: "SOURCE_SKU_BINDING_MISSING", offerId: "OFFER-BLUE", message: "缺少来源绑定" }],
+    sourceVariantBinding,
+    variantConfiguration: {
+      rows: [
+        { offerId: "OFFER-WHITE", rowStatus: "valid", sourceVariant: { sourceSkuId: "1688-WHITE", spec: "白色" } },
+        { offerId: "OFFER-BLUE", rowStatus: "missing_aspect", sourceVariant: null },
+      ],
+      summary: { itemCount: 2 },
+    },
+  });
+  assert.equal(sellerResult.variantCoverage.status, "blocked");
+  assert.equal(sellerResult.variantCoverage.sourceBinding.missingOfferIds[0], "OFFER-BLUE");
+  assert.equal(sellerResult.variantCoverage.rows.length, 2);
+  assert.match(sellerResult.variantCoverage.nextAction, /逐条来源绑定/);
+});
+
+test("multi-SKU source binding fails closed when Offer order changes", () => {
+  const summary = buildSourceVariantBindingSummary({
+    payload: { items: [{ offer_id: "OFFER-BLUE" }, { offer_id: "OFFER-WHITE" }] },
+    sourceVariants: [
+      { offerId: "OFFER-WHITE", sourceSkuId: "1688-WHITE", spec: "白色" },
+      { offerId: "OFFER-GREEN", sourceSkuId: "1688-GREEN", spec: "绿色" },
+    ],
+  });
+  assert.equal(summary.summary.ready, false);
+  assert.deepEqual(summary.summary.missingOfferIds, ["OFFER-BLUE"]);
+  assert.equal(summary.rows[0].sourceSkuId, "");
+  assert.equal(summary.rows[1].sourceSkuId, "1688-WHITE");
+});
+
+test("preflight seller repair summary points listing-quality issues to the concrete SKU field", () => {
+  const sellerResult = buildPreflightSellerResult({
+    payload: { items: [{ offer_id: "OFFER-QUALITY", images: ["1", "2", "3"] }] },
+    issues: [{
+      code: "LISTING_QUALITY_DICTIONARY_VALUE_INVALID",
+      qualityCode: "DICTIONARY_VALUE_INVALID",
+      source: "listing_quality",
+      offerId: "OFFER-QUALITY",
+      attributeId: 85,
+      enteredValues: ["旧值"],
+      dictionaryCandidates: [{ dictionary_value_id: 123, value: "合法值" }],
+      message: "字典值不合法",
+    }],
+  });
+  assert.equal(sellerResult.repairs[0].fieldPath, "items[0].attributes[id=85]");
+  assert.equal(sellerResult.repairs[0].repairTarget.attributeId, 85);
+  assert.equal(sellerResult.repairs[0].repairTarget.candidateCount, 1);
+  assert.match(sellerResult.repairs[0].action, /合法字典值/);
+  assert.deepEqual(sellerResult.repairSummary.fieldTargets, ["items[0].attributes[id=85]"]);
+});
+
+test("buildPreflightGateNode blocks a 1688 submission without a valid source snapshot", () => {
+  const node = buildPreflightGateNode({
+    payload: { items: [{ offer_id: "OFFER-SOURCE", price: 100, old_price: 120, min_price: 90, marketing_price: 100, currency_code: "RUB", model_info: { model_id: 1 }, attributes: [{ complex_id: 0, id: 8229, values: [{ dictionary_value_id: 0, value: "Модель" }] }] }] },
+    category: { path: "家居 / 收纳" },
+    contentSummary: { candidateImageCount: 3, skuVariantCount: 1, sizeWeightReady: true },
+    variantCount: 1,
+    sourceEvidenceRequired: true,
+    sourceEvidence: {},
+  });
+  assert.equal(node.output.ok, false);
+  assert.ok(node.output.issues.some((issue) => issue.code === "SOURCE_EVIDENCE_MISSING"));
+});
+
+test("buildPreflightGateNode blocks an unverified default commission before confirmation", () => {
+  const result = buildPreflightGateNode({
+    payload: { items: [{ offer_id: "PRICE-GATE-1", name: "商品", price: "100", images: ["https://img/1", "https://img/2", "https://img/3"], attributes: [] }] },
+    category: { description_category_id: 1, type_id: 2, path: "fixture/category" },
+    pricing: {
+      priceCny: 100,
+      minPriceCny: 80,
+      profit: 30,
+      package: { weightG: 100, lengthMm: 100, widthMm: 100, heightMm: 100 },
+      level: { id: "budget" },
+      commissionRate: 0.15,
+      commissionSource: { source: "manual_default", confidence: "low" },
+      procurementEvidence: { status: "verified" },
+      converged: true,
+    },
+  });
+  assert.equal(result.output.ok, false);
+  assert.ok(result.output.issues.some((issue) => issue.code === "PRICING_COMMISSION_SOURCE_MISSING"));
+});
+
+test("buildPreflightGateNode blocks a captured 1688 challenge page despite its HTML hash", () => {
+  const node = buildPreflightGateNode({
+    payload: { items: [{ offer_id: "OFFER-CHALLENGE", price: 100, old_price: 120, min_price: 90, marketing_price: 100, currency_code: "RUB", model_info: { model_id: 1 }, attributes: [{ complex_id: 0, id: 8229, values: [{ dictionary_value_id: 0, value: "Модель" }] }] }] },
+    category: { path: "家居 / 收纳" },
+    contentSummary: { candidateImageCount: 3, skuVariantCount: 1, sizeWeightReady: true },
+    variantCount: 1,
+    sourceEvidenceRequired: true,
+    sourceEvidence: { snapshotHash: `sha256:${"b".repeat(64)}`, verificationState: "waiting_human" },
+  });
+  assert.equal(node.output.ok, false);
+  const issue = node.output.issues.find((entry) => entry.code === "SOURCE_EVIDENCE_NOT_VERIFIED");
+  assert.ok(issue);
+  assert.equal(issue.verificationState, "waiting_human");
+});
+
+test("buildPreflightGateNode blocks an 1688 snapshot without product identity", () => {
+  const node = buildPreflightGateNode({
+    payload: { items: [{ offer_id: "OFFER-IDENTITY", price: 100, images: ["https://img/1", "https://img/2", "https://img/3"] }] },
+    contentSummary: { candidateImageCount: 3, skuVariantCount: 1, sizeWeightReady: true },
+    variantCount: 1,
+    sourceEvidenceRequired: true,
+    sourceIdentityRequired: true,
+    sourceEvidence: { snapshotHash: `sha256:${"f".repeat(64)}`, verificationState: "ok", canonicalUrl: "https://detail.1688.com/offer/identity.html" },
+  });
+  assert.equal(node.output.ok, false);
+  assert.ok(node.output.issues.some((issue) => issue.code === "SOURCE_IDENTITY_MISSING"));
+});
+
+test("buildPreflightGateNode exposes seller evidence gaps and the safe next action", () => {
+  const node = buildPreflightGateNode({
+    payload: { items: [{ offer_id: "OFFER-EVIDENCE" }] },
+    category: { path: "家居 / 收纳", description_category_id: 1, type_id: 2 },
+    sourceEvidenceRequired: true,
+    sourceEvidence: { snapshotHash: `sha256:${"c".repeat(64)}`, verificationState: "waiting_human" },
+    categoryEvidenceRequired: true,
+    categoryEvidence: {},
+    contentSummary: {
+      candidateImageCount: 3,
+      skuVariantCount: 1,
+      sizeWeightReady: true,
+      contentEvidence: { status: "needs_review", blockerCodes: ["CONTENT_FACT_UNSUPPORTED"] },
+    },
+    variantCount: 1,
+  });
+  const summary = node.output.sellerResult.evidenceSummary;
+  assert.equal(summary.source.status, "needs_review");
+  assert.match(summary.source.nextAction, /人工.*1688/);
+  assert.equal(summary.content.status, "needs_review");
+  assert.equal(summary.category.status, "missing");
+  assert.match(node.output.sellerResult.nextAction, /人工.*1688/);
+});
+
+test("buildSourceVariantBindingSummary exposes missing and duplicate 1688 SKU bindings", () => {
+  const summary = buildSourceVariantBindingSummary({
+    payload: { items: [{ offer_id: "SKU-WHITE" }, { offer_id: "SKU-BLUE" }, { offer_id: "SKU-RED" }] },
+    sourceVariants: [
+      { offerId: "SKU-WHITE", skuId: "source-1", spec: "白色" },
+      { offerId: "SKU-BLUE", skuId: "source-1", spec: "蓝色" },
+      { offerId: "SKU-RED", spec: "红色" },
+    ],
+  });
+  assert.equal(summary.summary.ready, false);
+  assert.deepEqual(summary.summary.missingOfferIds, ["SKU-RED"]);
+  assert.deepEqual(summary.summary.duplicateSourceSkuIds, ["source-1"]);
+});
+
+test("buildSourceVariantBindingReceipt hashes offer and source SKU bindings without raw ids", () => {
+  const receipt = buildSourceVariantBindingReceipt({
+    payload: { items: [{ offer_id: "OFFER-1" }] },
+    sourceVariants: [{ offerId: "OFFER-1", skuId: "SOURCE-1", spec: "白色" }],
+    sourceEvidence: { snapshotHash: `sha256:${"a".repeat(64)}` },
+  });
+  assert.equal(receipt.ready, true);
+  assert.equal(receipt.verificationLevel, "locally_tested");
+  assert.match(receipt.sourceSnapshotHash, /^sha256:/);
+  assert.match(receipt.rows[0].offerRef, /^sha256:/);
+  assert.doesNotMatch(JSON.stringify(receipt), /OFFER-1|SOURCE-1/);
+});
+
+test("buildPreflightGateNode blocks a source SKU bound to a different 1688 snapshot", () => {
+  const current = `sha256:${"a".repeat(64)}`;
+  const node = buildPreflightGateNode({
+    payload: { items: [{ offer_id: "OFFER-CURRENT", price: 100, old_price: 120, min_price: 90, marketing_price: 100, currency_code: "RUB", model_info: { model_id: 1 }, attributes: [{ complex_id: 0, id: 8229, values: [{ dictionary_value_id: 0, value: "Модель" }] }] }] },
+    category: { path: "家居 / 收纳" },
+    contentSummary: { candidateImageCount: 3, skuVariantCount: 1, sizeWeightReady: true },
+    variantCount: 1,
+    sourceEvidence: { snapshotHash: current, verificationState: "ok" },
+    sourceEvidenceRequired: true,
+    sourceVariantBindingRequired: true,
+    sourceVariantEvidenceRequired: true,
+    sourceVariants: [{ offerId: "OFFER-CURRENT", sourceSkuId: "SOURCE-OLD", sourceSnapshotHash: `sha256:${"b".repeat(64)}`, spec: "白色" }],
+  });
+  assert.equal(node.output.ok, false);
+  assert.ok(node.output.issues.some((issue) => issue.code === "SOURCE_SKU_BINDING_MISSING"));
+  assert.equal(node.output.sourceVariantBindingReceipt.ready, false);
+});
+
+test("buildPreflightGateNode blocks 1688 payload without complete source SKU binding", () => {
+  const node = buildPreflightGateNode({
+    payload: { items: [{ offer_id: "SKU-WHITE", price: 100, old_price: 120, min_price: 90, marketing_price: 100, currency_code: "RUB", model_info: { model_id: 1 }, attributes: [{ complex_id: 0, id: 8229, values: [{ dictionary_value_id: 0, value: "Модель" }] }] }] },
+    category: { path: "家居 / 收纳" },
+    contentSummary: { candidateImageCount: 3, skuVariantCount: 1, sizeWeightReady: true },
+    variantCount: 1,
+    sourceVariantBindingRequired: true,
+    sourceVariants: [{ offerId: "SKU-WHITE", spec: "白色" }],
+  });
+  assert.equal(node.output.ok, false);
+  assert.ok(node.output.issues.some((issue) => issue.code === "SOURCE_SKU_BINDING_MISSING"));
 });
 
 test("buildPreflightGateNode blocks duplicate Ozon aspect combinations", () => {
@@ -1036,6 +1451,347 @@ test("applyPayloadDraftAttributeRepair writes a confirmed dictionary repair and 
   assert.equal(updated.locks.submitLocked, true);
   assert.equal(updated.payloadDraftValidation.ok, true);
   assert.equal(updated.events.at(-1).type, "payload_attribute_repair_applied");
+});
+
+test("multi-SKU 1688 repair invalidates the old draft hash and returns a revalidated preflight contract", async () => {
+  reset();
+  fs.writeFileSync(tmpCategoryCacheFile, JSON.stringify({
+    attributeValues: {
+      "17028673:95183:85:ZH_HANS": {
+        values: [{ id: 971082, value: "Нет бренда" }],
+      },
+    },
+  }, null, 2));
+  assert.equal(multiSkuRepairFixture.synthetic, true);
+  assert.equal(multiSkuRepairFixture.redacted, true);
+  assert.equal(multiSkuRepairFixture.payload.items.length, 2);
+
+  const run = await createWorkflowRun({
+    title: "1688 多 SKU 属性修复 fixture",
+    status: "waiting_human",
+    currentNode: "preflight_check",
+    locks: { waitingHuman: true, submitLocked: true },
+  });
+  await savePayloadDraft(run.id, multiSkuRepairFixture.payload, {
+    attrsMeta: multiSkuRepairFixture.attrsMeta,
+    sourceVariants: multiSkuRepairFixture.sourceVariants,
+  });
+  const before = await validatePayloadDraft(run.id);
+  assert.equal(before.ok, false);
+
+  const result = await applyPayloadDraftAttributeRepair(run.id, {
+    confirmLocalDraftRepair: true,
+    repairType: "dictionary_value",
+    offerId: "FIXTURE-PARENT-white-s",
+    attributeId: 85,
+    dictionaryValueId: 971082,
+    value: "Нет бренда",
+    note: "fixture: 1688 SKU 颜色/尺寸变体逐项修复",
+  });
+  const updated = await getWorkflowRun(run.id);
+  const white = updated.payloadDraft.items.find((item) => item.offer_id === "FIXTURE-PARENT-white-s");
+  const blue = updated.payloadDraft.items.find((item) => item.offer_id === "FIXTURE-PARENT-blue-m");
+  assert.equal(result.previousDraftHash, before.draftHash);
+  assert.match(result.draftHash, /^sha256:[a-f0-9]{64}$/);
+  assert.notEqual(result.draftHash, before.draftHash);
+  assert.equal(result.draftHashInvalidated, true);
+  assert.equal(result.preflight.status, "revalidated");
+  assert.equal(result.preflight.confirmationInvalidated, true);
+  assert.equal(result.preflight.draftHash, result.draftHash);
+  assert.equal(result.preflight.previousDraftHash, before.draftHash);
+  assert.equal(result.validation.ok, true);
+  assert.equal(updated.payloadDraft.items.length, 2);
+  assert.equal(white.attributes.find((attribute) => attribute.id === 85).values[0].dictionary_value_id, 971082);
+  assert.equal(blue.attributes.find((attribute) => attribute.id === 85).values[0].dictionary_value_id, 971082);
+  assert.equal(updated.payloadDraftSourceVariants.length, 2);
+  assert.equal(updated.locks.submitLocked, true);
+  assert.match(result.preflight.nextAction, /重新人工确认/);
+});
+
+test("media candidate approval draft requires waiting human and current draft/source hashes", async () => {
+  reset();
+  const run = await createWorkflowRun({
+    title: "媒体审查",
+    status: "waiting_human",
+    currentNode: "preflight_check",
+    locks: { waitingHuman: true, submitLocked: true },
+  });
+  const saved = await savePayloadDraft(run.id, { items: [{ offer_id: "SKU-MEDIA", attributes: [] }] });
+  const sourceHash = `sha256:${"a".repeat(64)}`;
+  const candidateData = {
+    sourceEvidence: { snapshotHash: sourceHash },
+    mediaAssets: [{
+      id: "media:detail-1",
+      role: "detail",
+      sourceUrl: "https://example.com/detail.jpg",
+      evidenceRef: `snapshot:${"a".repeat(64)}`,
+      checks: { humanApproved: false },
+    }],
+  };
+  let persistedCandidate = null;
+  const result = await approveWorkflowMediaCandidates(run.id, {
+    confirmed: true,
+    actorId: "seller-7",
+    assetIds: ["media:detail-1"],
+    expectedDraftHash: saved.payloadDraftHash,
+    expectedSourceHash: sourceHash,
+  }, {
+    candidateData,
+    now: () => new Date("2026-07-12T10:00:00.000Z"),
+    persistCandidateData: async (value) => { persistedCandidate = value; },
+  });
+
+  assert.equal(result.ok, true);
+  assert.equal(result.submittedToOzon, false);
+  assert.equal(result.generatedMedia, false);
+  assert.equal(Object.hasOwn(result, "run"), false);
+  assert.deepEqual(result.workflowSummary, {
+    runId: run.id,
+    status: "waiting_human",
+    currentNode: "preflight_check",
+    submitLocked: true,
+    waitingHuman: true,
+  });
+  assert.equal(JSON.stringify(result).includes("payloadDraft"), false);
+  assert.equal(JSON.stringify(result).includes("sourceUrl"), false);
+  assert.equal(persistedCandidate.mediaAssets[0].checks.humanApproved, false);
+  assert.equal(persistedCandidate.mediaAssets[0].checks.approvalDraft.confirmed, true);
+  const updated = await getWorkflowRun(run.id);
+  assert.equal(updated.mediaApprovalDraft.status, "approved_draft");
+  assert.equal(updated.mediaApprovalDraft.expectedDraftHash, saved.payloadDraftHash);
+  assert.equal(updated.events.at(-1).type, "media_approval_draft_recorded");
+  assert.deepEqual(Object.keys(updated.events.at(-1).data).sort(), ["actorId", "assetCount", "draftHash", "sourceHash", "submittedToOzon"]);
+
+  await savePayloadDraft(run.id, { items: [{ offer_id: "SKU-MEDIA-CHANGED", attributes: [] }] });
+  const stale = await getWorkflowRun(run.id);
+  assert.equal(stale.mediaApprovalDraft.status, "stale");
+});
+
+test("media candidate approval draft rejects unsafe state, actor, foreign assets, and stale hashes", async () => {
+  reset();
+  const run = await createWorkflowRun({ status: "running", locks: { waitingHuman: false } });
+  const saved = await savePayloadDraft(run.id, { items: [{ offer_id: "SKU" }] });
+  const sourceHash = `sha256:${"b".repeat(64)}`;
+  const candidateData = {
+    sourceEvidence: { snapshotHash: sourceHash },
+    mediaAssets: [{ id: "media:owned", evidenceRef: `snapshot:${"b".repeat(64)}`, checks: {} }],
+  };
+  const base = {
+    confirmed: true,
+    actorId: "seller-1",
+    assetIds: ["media:owned"],
+    expectedDraftHash: saved.payloadDraftHash,
+    expectedSourceHash: sourceHash,
+  };
+  assert.equal((await approveWorkflowMediaCandidates(run.id, base, { candidateData })).reasonCode, "MEDIA_APPROVAL_WAITING_HUMAN_REQUIRED");
+  await upsertWorkflowNode(run.id, { key: "preflight_check", status: "waiting_human", runStatus: "waiting_human" });
+  assert.equal((await approveWorkflowMediaCandidates(run.id, { ...base, actorId: "" }, { candidateData })).reasonCode, "MEDIA_APPROVAL_CONFIRMATION_REQUIRED");
+  assert.equal((await approveWorkflowMediaCandidates(run.id, { ...base, assetIds: ["media:foreign"] }, { candidateData })).reasonCode, "MEDIA_APPROVAL_ASSET_NOT_FOUND");
+  assert.equal((await approveWorkflowMediaCandidates(run.id, { ...base, expectedSourceHash: `sha256:${"c".repeat(64)}` }, { candidateData })).reasonCode, "MEDIA_APPROVAL_SOURCE_HASH_MISMATCH");
+});
+
+test("publishing a current media approval marks only bound assets approved and keeps submit locked", async () => {
+  reset();
+  const run = await createWorkflowRun({
+    status: "waiting_human",
+    currentNode: "preflight_check",
+    locks: { waitingHuman: true, submitLocked: true },
+  });
+  const saved = await savePayloadDraft(run.id, { items: [{ offer_id: "SKU-MEDIA" }] });
+  const sourceHash = `sha256:${"d".repeat(64)}`;
+  const candidateData = {
+    sourceEvidence: { snapshotHash: sourceHash },
+    richContentJson: { content: [{ img: { src: "https://example.com/a.jpg" } }, { img: { src: "https://example.com/b.jpg" } }] },
+    mediaIssues: ["detail_images_require_human_review_before_rich_content", "another_media_issue"],
+    mediaAssets: [
+      { id: "media:a", role: "detail", sourceUrl: "https://example.com/a.jpg", evidenceRef: `snapshot:${"d".repeat(64)}`, checks: { humanApproved: false } },
+      { id: "media:b", role: "detail", sourceUrl: "https://example.com/b.jpg", evidenceRef: `snapshot:${"d".repeat(64)}`, checks: { humanApproved: false } },
+      { id: "media:main", role: "main", sourceUrl: "https://example.com/main.jpg", evidenceRef: `snapshot:${"d".repeat(64)}`, checks: { humanApproved: false } },
+    ],
+  };
+  let approvedCandidate = null;
+  await approveWorkflowMediaCandidates(run.id, {
+    confirmed: true,
+    actorId: "seller-8",
+    assetIds: ["media:a", "media:b"],
+    expectedDraftHash: saved.payloadDraftHash,
+    expectedSourceHash: sourceHash,
+  }, {
+    candidateData,
+    now: () => new Date("2026-07-12T10:10:00.000Z"),
+    persistCandidateData: async (value) => { approvedCandidate = value; },
+  });
+  let publishedCandidate = null;
+  const result = await publishWorkflowMediaApproval(run.id, {
+    publishConfirmed: true,
+    actorId: "seller-8",
+    assetIds: ["media:a", "media:b"],
+    expectedDraftHash: saved.payloadDraftHash,
+    expectedSourceHash: sourceHash,
+  }, {
+    candidateData: approvedCandidate,
+    now: () => new Date("2026-07-12T10:11:00.000Z"),
+    persistCandidateData: async (value) => { publishedCandidate = value; },
+  });
+
+  assert.equal(result.ok, true);
+  assert.equal(result.submittedToOzon, false);
+  assert.equal(Object.hasOwn(result, "run"), false);
+  assert.deepEqual(result.workflowSummary, {
+    runId: run.id,
+    status: "waiting_human",
+    currentNode: "preflight_check",
+    submitLocked: true,
+    waitingHuman: true,
+  });
+  assert.equal(JSON.stringify(result).includes("payloadDraft"), false);
+  assert.equal(publishedCandidate.mediaAssets[0].checks.humanApproved, true);
+  assert.equal(publishedCandidate.mediaAssets[1].checks.humanApproved, true);
+  assert.equal(publishedCandidate.mediaAssets[2].checks.humanApproved, false);
+  assert.equal(publishedCandidate.mediaAssets[0].checks.approvalBinding.expectedDraftHash, saved.payloadDraftHash);
+  assert.deepEqual(publishedCandidate.mediaIssues, ["another_media_issue"]);
+  const updated = await getWorkflowRun(run.id);
+  assert.equal(updated.status, "waiting_human");
+  assert.equal(updated.locks.waitingHuman, true);
+  assert.equal(updated.locks.submitLocked, true);
+  assert.equal(updated.mediaApprovalDraft.status, "published_local");
+  assert.equal(updated.events.at(-1).type, "media_approval_published_local");
+  assert.deepEqual(Object.keys(updated.events.at(-1).data).sort(), ["actorChanged", "actorId", "assetCount", "draftHash", "richContentDetailAssetsApproved", "sourceHash", "submittedToOzon"]);
+});
+
+test("rich content preflight blocks stale workflow media approval even if candidate approval may remain", async () => {
+  reset();
+  const run = await createWorkflowRun({
+    status: "waiting_human",
+    currentNode: "preflight_check",
+    locks: { waitingHuman: true, submitLocked: true },
+  });
+  const payload = {
+    items: [{
+      offer_id: "SKU-RICH-STALE",
+      name: "Товар с rich content",
+      description_category_id: 17028673,
+      type_id: 95183,
+      price: "100",
+      images: ["https://example.com/a.jpg", "https://example.com/b.jpg", "https://example.com/c.jpg"],
+      rich_content_json: JSON.stringify([{ widgetName: "raTextBlock", text: "Описание товара" }]),
+      attributes: [
+        { id: 85, values: [{ value: "Нет бренда" }] },
+        { id: 9048, values: [{ value: "SKU-RICH-STALE" }] },
+      ],
+    }],
+  };
+  const saved = await savePayloadDraft(run.id, payload);
+  const sourceHash = `sha256:${"f".repeat(64)}`;
+  const candidateData = {
+    sourceEvidence: { snapshotHash: sourceHash },
+    mediaAssets: [{
+      id: "media:detail",
+      role: "detail",
+      sourceUrl: "https://example.com/detail.jpg",
+      evidenceRef: `snapshot:${"f".repeat(64)}`,
+      checks: { humanApproved: false },
+    }],
+  };
+  await approveWorkflowMediaCandidates(run.id, {
+    confirmed: true,
+    actorId: "seller-safe",
+    assetIds: ["media:detail"],
+    expectedDraftHash: saved.payloadDraftHash,
+    expectedSourceHash: sourceHash,
+  }, { candidateData, persistCandidateData: async () => true });
+
+  await savePayloadDraft(run.id, { items: [{ ...payload.items[0], price: "101" }] });
+  const staleRun = await getWorkflowRun(run.id);
+  assert.equal(staleRun.mediaApprovalDraft.status, "stale");
+  const validation = await validatePayloadDraft(run.id);
+  assert.equal(validation.ok, false);
+  assert.equal(validation.issues.some((issue) => issue.code === "RICH_CONTENT_MEDIA_APPROVAL_STALE"), true);
+  await resumeWorkflowRun(run.id);
+  const submitResult = await submitPayloadDraftToOzon(run.id, {
+    confirmSubmit: true,
+    storeId: "store-media-stale",
+    expectedDraftHash: validation.draftHash,
+  }, {
+    getStore: () => ({ id: "store-media-stale" }),
+    ozonRequest: async () => assert.fail("stale rich content approval must not call Ozon"),
+  });
+  assert.equal(submitResult.ok, false);
+  assert.equal(submitResult.status, "blocked");
+  assert.equal(submitResult.validation.issues.some((issue) => issue.code === "RICH_CONTENT_MEDIA_APPROVAL_STALE"), true);
+});
+
+test("publishing media approval rejects stale bindings and actor changes without reconfirmation", async () => {
+  reset();
+  const run = await createWorkflowRun({ status: "waiting_human", locks: { waitingHuman: true, submitLocked: true } });
+  const saved = await savePayloadDraft(run.id, { items: [{ offer_id: "SKU" }] });
+  const sourceHash = `sha256:${"e".repeat(64)}`;
+  let candidateData = {
+    sourceEvidence: { snapshotHash: sourceHash },
+    mediaAssets: [{ id: "media:one", role: "detail", sourceUrl: "https://example.com/one.jpg", evidenceRef: `snapshot:${"e".repeat(64)}`, checks: {} }],
+    mediaIssues: ["detail_images_require_human_review_before_rich_content"],
+  };
+  await approveWorkflowMediaCandidates(run.id, {
+    confirmed: true, actorId: "seller-original", assetIds: ["media:one"],
+    expectedDraftHash: saved.payloadDraftHash, expectedSourceHash: sourceHash,
+  }, { candidateData, persistCandidateData: async (value) => { candidateData = value; } });
+  const base = {
+    publishConfirmed: true, actorId: "seller-new", assetIds: ["media:one"],
+    expectedDraftHash: saved.payloadDraftHash, expectedSourceHash: sourceHash,
+  };
+  assert.equal((await publishWorkflowMediaApproval(run.id, base, { candidateData })).reasonCode, "MEDIA_APPROVAL_ACTOR_MISMATCH");
+  assert.equal((await publishWorkflowMediaApproval(run.id, { ...base, assetIds: ["media:foreign"], reconfirmActorChange: true }, { candidateData })).reasonCode, "MEDIA_APPROVAL_ASSET_SET_MISMATCH");
+  await savePayloadDraft(run.id, { items: [{ offer_id: "SKU-CHANGED" }] });
+  assert.equal((await publishWorkflowMediaApproval(run.id, { ...base, reconfirmActorChange: true }, { candidateData })).reasonCode, "MEDIA_APPROVAL_DRAFT_STALE");
+});
+
+test("publishing media approval rolls candidate approval back when workflow changes concurrently", async () => {
+  reset();
+  const run = await createWorkflowRun({ status: "waiting_human", locks: { waitingHuman: true, submitLocked: true } });
+  const saved = await savePayloadDraft(run.id, { items: [{ offer_id: "SKU-RACE" }] });
+  const sourceHash = `sha256:${"f".repeat(64)}`;
+  let candidateData = {
+    sourceEvidence: { snapshotHash: sourceHash },
+    richContentJson: { content: [{ img: { src: "https://example.com/race.jpg" } }] },
+    mediaIssues: ["detail_images_require_human_review_before_rich_content"],
+    mediaAssets: [{ id: "media:race", role: "detail", sourceUrl: "https://example.com/race.jpg", evidenceRef: `snapshot:${"f".repeat(64)}`, checks: {} }],
+  };
+  await approveWorkflowMediaCandidates(run.id, {
+    confirmed: true, actorId: "seller-race", assetIds: ["media:race"],
+    expectedDraftHash: saved.payloadDraftHash, expectedSourceHash: sourceHash,
+  }, { candidateData, persistCandidateData: async (value) => { candidateData = value; } });
+  let rolledBack = null;
+  const result = await publishWorkflowMediaApproval(run.id, {
+    publishConfirmed: true, actorId: "seller-race", assetIds: ["media:race"],
+    expectedDraftHash: saved.payloadDraftHash, expectedSourceHash: sourceHash,
+  }, {
+    candidateData,
+    persistCandidateData: async (value) => {
+      candidateData = value;
+      await savePayloadDraft(run.id, { items: [{ offer_id: "SKU-RACE-CHANGED" }] });
+      return true;
+    },
+    rollbackCandidateData: async (binding) => {
+      candidateData = {
+        ...candidateData,
+        mediaApprovalPublished: { ...candidateData.mediaApprovalPublished, status: "stale", staleReason: binding.reason },
+        mediaAssets: candidateData.mediaAssets.map((asset) => ({
+          ...asset,
+          checks: asset.id === "media:race"
+            ? { ...asset.checks, humanApproved: false, approvalBinding: { ...asset.checks.approvalBinding, status: "stale" } }
+            : asset.checks,
+        })),
+      };
+      rolledBack = candidateData;
+      return true;
+    },
+  });
+
+  assert.equal(result.ok, false);
+  assert.equal(result.reasonCode, "MEDIA_APPROVAL_DRAFT_STALE");
+  assert.equal(rolledBack.mediaApprovalPublished.status, "stale");
+  assert.equal(rolledBack.mediaAssets[0].checks.humanApproved, false);
+  assert.equal(rolledBack.mediaAssets[0].checks.approvalBinding.status, "stale");
 });
 
 test("applyPayloadDraftAttributeRepair requires waiting human before local repair", async () => {
@@ -1815,6 +2571,12 @@ test("payload draft validation preserves Ozon aspect metadata across saves", asy
   const validation = await validatePayloadDraft(run.id);
   assert.equal(validation.ok, false);
   assert.ok(validation.issues.some((issue) => issue.code === "DUPLICATE_VARIANT_ASPECTS"));
+  assert.equal(validation.sellerResult.status, "blocked");
+  assert.ok(validation.sellerResult.repairs.some((repair) => repair.code === "DUPLICATE_VARIANT_ASPECTS"));
+  assert.match(validation.sellerResult.repairs[0].fieldPath, /items\[/);
+  assert.match(validation.sellerResult.repairs[0].action, /重新预检/);
+  assert.match(validation.sellerResult.repairs[0].sideEffect, /不会写入 Ozon/);
+  assert.match(validation.sellerResult.repairs[0].result, /未提交 Ozon/);
 
   await savePayloadDraft(run.id, duplicatePayload);
   const validationAfterPlainSave = await validatePayloadDraft(run.id);
@@ -1894,6 +2656,78 @@ test("payload draft validation blocks listing quality dictionary issues", async 
   assert.equal(validation.issues.some((issue) => issue.code === "LISTING_QUALITY_DICTIONARY_VALUE_INVALID"), true);
   const updated = await getWorkflowRun(run.id);
   assert.equal(updated.locks.submitLocked, true);
+});
+
+test("1688 workflow draft validation and submit reuse the persisted strong preflight policy", async () => {
+  reset();
+  const run = await createWorkflowRun({
+    title: "1688 强预检不能降级",
+    entity: { storeId: "store-1688", source: "1688" },
+  });
+  const payload = {
+    items: [{
+      offer_id: "SKU-1688-policy",
+      name: "Товар для дома",
+      description_category_id: 17028673,
+      type_id: 95183,
+      price: "100",
+      images: ["https://example.com/a.jpg", "https://example.com/b.jpg", "https://example.com/c.jpg"],
+      attributes: [
+        { id: 85, values: [{ value: "Нет бренда" }] },
+        { id: 9048, values: [{ value: "SKU-1688-policy" }] },
+      ],
+    }],
+  };
+  await savePayloadDraft(run.id, payload);
+  const sourceEvidence = { snapshotHash: "sha256:" + "a".repeat(64), verificationState: "unknown" };
+  const gate = buildPreflightGateNode({
+    payload,
+    sourceEvidence,
+    sourceEvidenceRequired: true,
+    sourceIdentityRequired: true,
+    sourceVariantBindingRequired: true,
+    categoryEvidenceRequired: false,
+    contentSummary: { contentEvidence: { status: "reviewed", blockerCodes: [] }, sizeWeightReady: true },
+    variantCount: 1,
+  });
+  await upsertWorkflowNode(run.id, gate);
+
+  const validation = await validatePayloadDraft(run.id);
+  assert.equal(validation.ok, false);
+  assert.equal(validation.issues.some((issue) => issue.code === "SOURCE_EVIDENCE_NOT_VERIFIED"), true);
+  assert.equal(validation.issues.some((issue) => issue.code === "SOURCE_IDENTITY_MISSING"), true);
+
+  const calls = [];
+  const result = await submitPayloadDraftToOzon(run.id, {
+    confirmSubmit: true,
+    storeId: "store-1688",
+    expectedDraftHash: (await getWorkflowRun(run.id)).payloadDraftHash,
+  }, {
+    getStore: () => ({ id: "store-1688" }),
+    ozonRequest: async (...args) => { calls.push(args); return { result: { task_id: 1 } }; },
+  });
+  assert.equal(result.ok, false);
+  assert.equal(result.status, "waiting_human");
+  assert.equal(calls.length, 0);
+});
+
+test("1688 preflight rechecks canonical URL Offer identity after draft edits", () => {
+  const hash = `sha256:${"b".repeat(64)}`;
+  const gate = buildPreflightGateNode({
+    payload: { items: [{ offer_id: "SKU-identity", name: "Товар", description_category_id: 1, type_id: 2, price: "100", images: ["https://example.com/a.jpg", "https://example.com/b.jpg", "https://example.com/c.jpg"], attributes: [] }] },
+    sourceEvidence: {
+      snapshotHash: hash,
+      verificationState: "ok",
+      canonicalUrl: "https://detail.1688.com/offer/123456.html",
+      offerId: "654321",
+    },
+    sourceEvidenceRequired: true,
+    sourceIdentityRequired: true,
+    contentSummary: { contentEvidence: { status: "reviewed", blockerCodes: [] }, sizeWeightReady: true },
+    variantCount: 1,
+  });
+  assert.equal(gate.output.ok, false);
+  assert.ok(gate.output.issues.some((issue) => issue.code === "SOURCE_OFFER_URL_MISMATCH"));
 });
 
 test("payload draft validation suggests cached legal dictionary candidates", async () => {
@@ -2208,7 +3042,7 @@ test("payload draft submit imports confirmed valid draft and records workflow ev
     title: "确认提交",
     entity: { storeId: "3815760-4", parentSku: "SKUlq00999" },
   });
-  await savePayloadDraft(run.id, {
+  const saved = await savePayloadDraft(run.id, {
     items: [{
       offer_id: "SKUlq00999-red",
       name: "Товар красный",
@@ -2224,7 +3058,14 @@ test("payload draft submit imports confirmed valid draft and records workflow ev
   });
   const calls = [];
 
-  const result = await submitPayloadDraftToOzon(run.id, { confirmSubmit: true, storeId: "3815760-4" }, {
+  const validation = await validatePayloadDraft(run.id);
+  assert.equal(validation.draftHash, saved.payloadDraftHash);
+
+  const result = await submitPayloadDraftToOzon(run.id, {
+    confirmSubmit: true,
+    storeId: "3815760-4",
+    expectedDraftHash: validation.draftHash,
+  }, {
     getStore: (storeId) => ({ id: storeId, name: "xymallc" }),
     ozonRequest: async (...args) => {
       calls.push(args);
@@ -2243,6 +3084,235 @@ test("payload draft submit imports confirmed valid draft and records workflow ev
   assert.equal(updated.nodes.find((node) => node.key === "ozon_submit")?.status, "success");
   assert.equal(updated.events.at(-1).type, "payload_draft_submitted");
   assert.equal(updated.events.at(-1).data.taskId, 472200001);
+  assert.equal(updated.events.at(-1).data.draftHash, validation.draftHash);
+  assert.equal(updated.events.at(-1).data.storeId, "3815760-4");
+  assert.deepEqual(updated.events.at(-1).data.skuSummary, {
+    count: 1,
+    offers: ["SKUlq00999-red"],
+  });
+  assert.deepEqual(updated.events.at(-1).data.priceSummary, {
+    currencyCodes: [],
+    min: 100,
+    max: 100,
+    prices: [{ offerId: "SKUlq00999-red", price: 100, oldPrice: null, minPrice: null, currencyCode: "" }],
+  });
+});
+
+test("concurrent confirmed submissions reserve one payload hash and call Ozon only once", async () => {
+  reset();
+  const run = await createWorkflowRun({ title: "并发提交保护", entity: { storeId: "store-concurrent" } });
+  const saved = await savePayloadDraft(run.id, {
+    items: [{
+      offer_id: "SKU-CONCURRENT",
+      name: "Товар concurrent",
+      description_category_id: 17028673,
+      type_id: 95183,
+      price: "100",
+      images: ["https://example.com/a.jpg", "https://example.com/b.jpg", "https://example.com/c.jpg"],
+      attributes: [
+        { id: 85, values: [{ value: "Нет бренда" }] },
+        { id: 9048, values: [{ value: "SKU-CONCURRENT" }] },
+      ],
+    }],
+  });
+  const validation = await validatePayloadDraft(run.id);
+  assert.equal(validation.ok, true);
+  let ozonCalls = 0;
+  let releaseFirst;
+  const firstPending = new Promise((resolve) => { releaseFirst = resolve; });
+  const deps = {
+    getStore: () => ({ id: "store-concurrent" }),
+    ozonRequest: async () => {
+      ozonCalls += 1;
+      await firstPending;
+      return { result: { task_id: 880001 } };
+    },
+  };
+  const input = {
+    confirmSubmit: true,
+    storeId: "store-concurrent",
+    expectedDraftHash: saved.payloadDraftHash,
+  };
+  const first = submitPayloadDraftToOzon(run.id, input, deps);
+  const second = submitPayloadDraftToOzon(run.id, input, deps);
+  await new Promise((resolve) => setTimeout(resolve, 20));
+  releaseFirst();
+  const results = await Promise.all([first, second]);
+
+  assert.equal(ozonCalls, 1);
+  assert.equal(results.filter((result) => result.status === "submitted").length, 1);
+  assert.equal(results.filter((result) => result.status === "in_progress" || result.status === "replay").length, 1);
+  const persisted = await getWorkflowRun(run.id);
+  assert.equal(persisted.submissionReservation.state, "completed");
+  assert.equal(persisted.submissionReservation.draftHash, validation.draftHash);
+  assert.equal(persisted.submissionReservation.taskId, "880001");
+});
+
+test("unknown Ozon submission outcome is reserved for manual review and never auto-retried", async () => {
+  reset();
+  const run = await createWorkflowRun({ title: "未知提交结果", entity: { storeId: "store-unknown" } });
+  const saved = await savePayloadDraft(run.id, { items: [{
+    offer_id: "SKU-UNKNOWN",
+    name: "Товар unknown",
+    description_category_id: 17028673,
+    type_id: 95183,
+    price: "100",
+    images: ["https://example.com/a.jpg", "https://example.com/b.jpg", "https://example.com/c.jpg"],
+    attributes: [
+      { id: 85, values: [{ value: "Нет бренда" }] },
+      { id: 9048, values: [{ value: "SKU-UNKNOWN" }] },
+    ],
+  }] });
+  await validatePayloadDraft(run.id);
+  let calls = 0;
+  const deps = {
+    getStore: () => ({ id: "store-unknown" }),
+    ozonRequest: async () => { calls += 1; throw new Error("socket closed after send"); },
+  };
+  const input = { confirmSubmit: true, storeId: "store-unknown", expectedDraftHash: saved.payloadDraftHash };
+  const first = await submitPayloadDraftToOzon(run.id, input, deps);
+  const second = await submitPayloadDraftToOzon(run.id, input, deps);
+
+  assert.equal(calls, 1);
+  assert.equal(first.status, "needs_review");
+  assert.equal(second.status, "needs_review");
+  assert.equal(second.reasonCode, "OZON_SUBMISSION_OUTCOME_UNKNOWN");
+  assert.doesNotMatch(JSON.stringify(second), /socket closed/);
+  const persisted = await getWorkflowRun(run.id);
+  assert.equal(persisted.submissionReservation.state, "needs_review");
+  assert.equal(persisted.status, "waiting_human");
+  assert.equal(persisted.locks.submitLocked, true);
+});
+
+test("successful Ozon response without task id stays needs_review and cannot retry", async () => {
+  reset();
+  const run = await createWorkflowRun({ title: "缺少任务号", entity: { storeId: "store-no-task" } });
+  const saved = await savePayloadDraft(run.id, { items: [{
+    offer_id: "SKU-NO-TASK",
+    name: "Товар без task",
+    description_category_id: 17028673,
+    type_id: 95183,
+    price: "100",
+    images: ["https://example.com/a.jpg", "https://example.com/b.jpg", "https://example.com/c.jpg"],
+    attributes: [
+      { id: 85, values: [{ value: "Нет бренда" }] },
+      { id: 9048, values: [{ value: "SKU-NO-TASK" }] },
+    ],
+  }] });
+  await validatePayloadDraft(run.id);
+  let calls = 0;
+  const deps = {
+    getStore: () => ({ id: "store-no-task" }),
+    ozonRequest: async () => { calls += 1; return { result: { status: "accepted" } }; },
+  };
+  const input = { confirmSubmit: true, storeId: "store-no-task", expectedDraftHash: saved.payloadDraftHash };
+  const first = await submitPayloadDraftToOzon(run.id, input, deps);
+  const second = await submitPayloadDraftToOzon(run.id, input, deps);
+
+  assert.equal(calls, 1);
+  assert.equal(first.status, "needs_review");
+  assert.equal(first.reasonCode, "OZON_SUBMISSION_TASK_ID_MISSING");
+  assert.equal(second.status, "needs_review");
+  assert.equal(second.reasonCode, "OZON_SUBMISSION_OUTCOME_UNKNOWN");
+  const persisted = await getWorkflowRun(run.id);
+  assert.equal(persisted.submissionReservation.state, "needs_review");
+  assert.equal(persisted.submissionReservation.taskId, "");
+  assert.equal(persisted.nodes.find((node) => node.key === "ozon_submit")?.status, "failed");
+});
+
+test("payload draft confirmation hash is stable and stale confirmation cannot submit", async () => {
+  reset();
+  const run = await createWorkflowRun({ title: "草稿确认绑定", entity: { storeId: "store-1" } });
+  const payload = {
+    offer_id: "SKU-hash",
+    name: "Товар для дома",
+    description_category_id: 17028673,
+    type_id: 95183,
+    price: "100",
+    images: ["https://example.com/a.jpg", "https://example.com/b.jpg", "https://example.com/c.jpg"],
+    attributes: [
+      { id: 85, values: [{ value: "Нет бренда" }] },
+      { id: 9048, values: [{ value: "SKU-hash" }] },
+    ],
+  };
+  const firstSave = await savePayloadDraft(run.id, payload);
+  const secondSave = await savePayloadDraft(run.id, JSON.parse(JSON.stringify(payload)));
+  assert.match(firstSave.payloadDraftHash, /^sha256:[a-f0-9]{64}$/);
+  assert.equal(secondSave.payloadDraftHash, firstSave.payloadDraftHash);
+  const validation = await validatePayloadDraft(run.id);
+  assert.equal(validation.draftHash, firstSave.payloadDraftHash);
+
+  const missingHash = await submitPayloadDraftToOzon(run.id, { confirmSubmit: true, storeId: "store-1" }, {
+    getStore: () => ({ id: "store-1" }),
+    ozonRequest: async () => assert.fail("missing hash must not call Ozon"),
+  });
+  assert.equal(missingHash.status, "confirmation_required");
+  assert.equal(missingHash.reasonCode, "EXPECTED_DRAFT_HASH_REQUIRED");
+
+  await savePayloadDraft(run.id, { ...payload, price: "120" });
+  const stale = await submitPayloadDraftToOzon(run.id, {
+    confirmSubmit: true,
+    storeId: "store-1",
+    expectedDraftHash: validation.draftHash,
+  }, {
+    getStore: () => ({ id: "store-1" }),
+    ozonRequest: async () => assert.fail("stale hash must not call Ozon"),
+  });
+  assert.equal(stale.status, "confirmation_required");
+  assert.equal(stale.reasonCode, "DRAFT_HASH_MISMATCH");
+  assert.notEqual(stale.currentDraftHash, validation.draftHash);
+});
+
+test("payload submit rejects store mismatch before Ozon and binds an unbound workflow store", async () => {
+  reset();
+  const payload = {
+    offer_id: "SKU-store-binding",
+    name: "Товар для проверки магазина",
+    description_category_id: 17028673,
+    type_id: 95183,
+    price: "100",
+    images: ["https://example.com/a.jpg", "https://example.com/b.jpg", "https://example.com/c.jpg"],
+    attributes: [
+      { id: 85, values: [{ value: "Нет бренда" }] },
+      { id: 9048, values: [{ value: "SKU-store-binding" }] },
+    ],
+  };
+  const bound = await createWorkflowRun({ title: "店铺绑定", entity: { storeId: "store-bound" } });
+  const boundSave = await savePayloadDraft(bound.id, payload);
+  const mismatch = await submitPayloadDraftToOzon(bound.id, {
+    confirmSubmit: true,
+    storeId: "store-other",
+    expectedDraftHash: boundSave.payloadDraftHash,
+  }, {
+    getStore: () => assert.fail("store mismatch must fail before store lookup"),
+    ozonRequest: async () => assert.fail("store mismatch must not call Ozon"),
+  });
+  assert.equal(mismatch.ok, false);
+  assert.equal(mismatch.reasonCode, "WORKFLOW_STORE_MISMATCH");
+
+  const missingStore = await createWorkflowRun({ title: "缺少店铺绑定" });
+  await savePayloadDraft(missingStore.id, payload);
+  const required = await submitPayloadDraftToOzon(missingStore.id, { confirmSubmit: true }, {});
+  assert.equal(required.ok, false);
+  assert.equal(required.reasonCode, "WORKFLOW_STORE_REQUIRED");
+
+  const unbound = await createWorkflowRun({ title: "待绑定店铺" });
+  const unboundSave = await savePayloadDraft(unbound.id, payload);
+  const calls = [];
+  const submitted = await submitPayloadDraftToOzon(unbound.id, {
+    confirmSubmit: true,
+    storeId: "store-input",
+    expectedDraftHash: unboundSave.payloadDraftHash,
+  }, {
+    getStore: (storeId) => ({ id: storeId }),
+    ozonRequest: async (store) => {
+      calls.push(store.id);
+      return { result: { task_id: 981 } };
+    },
+  });
+  assert.equal(submitted.ok, true);
+  assert.deepEqual(calls, ["store-input"]);
+  assert.equal((await getWorkflowRun(unbound.id)).entity.storeId, "store-input");
 });
 
 test("workflow node retry clears human wait lock and appends retry event", async () => {
@@ -2434,13 +3504,23 @@ test("findOrCreateWorkflowForAutoListingJob reuses workflow by autoListingJobId"
   const first = await findOrCreateWorkflowForAutoListingJob({
     id: "al_bind",
     bestMatch: { candidateTitle: "宠物喂食器", candidateUrl: "https://detail.1688.com/offer/1.html" },
-    listingResult: { sku: "SKUlq00998", taskId: 123 },
+    listingResult: {
+      sku: "SKUlq00998",
+      taskId: 123,
+      stockReadiness: {
+        status: "blocked",
+        reasonCode: "STOCK_CURRENT_EVIDENCE_REQUIRED",
+        offerIds: ["SKU-EVIDENCE"],
+      },
+    },
   });
   const second = await findOrCreateWorkflowForAutoListingJob({ id: "al_bind" });
 
   assert.equal(first.id, second.id);
   assert.equal(second.entity.autoListingJobId, "al_bind");
   assert.equal(second.entity.parentSku, "SKUlq00998");
+  assert.equal(second.entity.stockReadiness.status, "blocked");
+  assert.deepEqual(second.entity.stockReadiness.offerIds, ["SKU-EVIDENCE"]);
 });
 
 test("workflowNodeFromAutoListingStage maps early auto-listing stages", () => {
@@ -2541,6 +3621,8 @@ test("workflowNodeFromAutoListingStage carries pricing diagnosis for match profi
       baseCost: 61.98,
       profit: 24.62,
       profitRate: 0.3,
+      commissionRate: 0.18,
+      commissionSource: { source: "learned_product", confidence: "medium" },
       packageInfoSource: "1688_package",
       package: { weightG: 650, lengthMm: 220, widthMm: 160, heightMm: 80 },
       level: { id: "budget", name: "Budget" },
@@ -2557,6 +3639,103 @@ test("workflowNodeFromAutoListingStage carries pricing diagnosis for match profi
   assert.equal(node.diagnosis.reasonCode, "PRICING_DIAGNOSIS_READY");
   assert.match(node.diagnosis.messageZh, /售价 86.6 CNY/);
   assert.ok(node.diagnosis.fixHints.some((hint) => /运费等级/.test(hint)));
+});
+
+test("workflow pricing blocks collected costs without MOQ and tier evidence", () => {
+  const node = workflowNodeFromAutoListingStage("matching", {
+    bestMatch: { margin: 20, confidence: 80, purchasePriceCny: 12 },
+    pricingDiagnosis: {
+      priceCny: 100,
+      minPriceCny: 80,
+      logisticsFee: 10,
+      profit: 20,
+      level: { id: "small" },
+      package: { weightG: 100, lengthMm: 100, widthMm: 100, heightMm: 100 },
+      procurementEvidence: { status: "blocked", reasonCode: "PRICING_PROCUREMENT_EVIDENCE_MISSING" },
+    },
+    nodeStatus: "success",
+  });
+
+  assert.equal(node.branch, "blocked");
+  assert.equal(node.diagnosis.reasonCode, "PRICING_PROCUREMENT_EVIDENCE_MISSING");
+});
+
+test("submit preflight blocks complete procurement fields that are still manual", () => {
+  const node = buildPreflightGateNode({
+    payload: {
+      offer_id: "SKU-MANUAL-COST",
+      name: "Органайзер",
+      description: "Практичный органайзер для дома.",
+      price: "100",
+      old_price: "200",
+      min_price: "90",
+      currency_code: "CNY",
+      weight: 200,
+      depth: 120,
+      width: 100,
+      height: 80,
+      description_category_id: 1,
+      type_id: 2,
+      images: ["https://example.com/1.jpg", "https://example.com/2.jpg", "https://example.com/3.jpg"],
+    },
+    category: { description_category_id: 1, type_id: 2, path: "Хранение" },
+    contentSummary: { listingContentReady: true, titleRu: "Органайзер", descriptionLength: 30, candidateImageCount: 3, sizeWeightReady: true },
+    pricing: {
+      priceCny: 100,
+      minPriceCny: 90,
+      logisticsFee: 10,
+      commissionRate: 0.15,
+      commissionSource: { source: "manual_default" },
+      profit: 20,
+      level: { id: "small" },
+      package: { weightG: 200, lengthMm: 120, widthMm: 100, heightMm: 80 },
+      procurementEvidence: { status: "needs_review" },
+    },
+  });
+  assert.equal(node.output.ok, false);
+  assert.ok(node.output.issues.some((issue) => issue.code === "PRICING_PROCUREMENT_EVIDENCE_REVIEW_REQUIRED"));
+});
+
+test("workflow pricing blocks a default commission rate without current evidence", () => {
+  const node = workflowNodeFromAutoListingStage("matching", {
+    bestMatch: { margin: 20, confidence: 80, purchasePriceCny: 12 },
+    pricingDiagnosis: {
+      priceCny: 100,
+      minPriceCny: 80,
+      logisticsFee: 10,
+      commissionRate: 0.15,
+      commissionSource: { source: "manual_default", confidence: "low" },
+      profit: 20,
+      level: { id: "small" },
+      package: { weightG: 100, lengthMm: 100, widthMm: 100, heightMm: 100 },
+    },
+    nodeStatus: "success",
+  });
+
+  assert.equal(node.branch, "blocked");
+  assert.equal(node.diagnosis.reasonCode, "PRICING_COMMISSION_SOURCE_MISSING");
+  assert.ok(node.recommendedActions.some((action) => /佣金/.test(action)));
+});
+
+test("workflow pricing blocks an untraceable category commission", () => {
+  const node = workflowNodeFromAutoListingStage("matching", {
+    bestMatch: { margin: 20, confidence: 80, purchasePriceCny: 12 },
+    pricingDiagnosis: {
+      priceCny: 100,
+      minPriceCny: 80,
+      logisticsFee: 10,
+      commissionRate: 0.18,
+      commissionSource: { source: "ozon_category", confidence: "high", categoryKey: "17028673:95183" },
+      profit: 20,
+      level: { id: "small" },
+      package: { weightG: 100, lengthMm: 100, widthMm: 100, heightMm: 100 },
+    },
+    nodeStatus: "success",
+  });
+
+  assert.equal(node.branch, "blocked");
+  assert.equal(node.diagnosis.reasonCode, "PRICING_COMMISSION_EVIDENCE_UNTRACEABLE");
+  assert.ok(node.recommendedActions.some((action) => /证据|更新时间/.test(action)));
 });
 
 test("workflowNodeFromAutoListingStage blocks unsafe pricing diagnosis", () => {
@@ -2601,6 +3780,8 @@ test("workflowNodeFromAutoListingStage routes low-profit pricing to manual revie
       baseCost: 57.2,
       profit: 2.8,
       profitRate: 0.3,
+      commissionRate: 0.18,
+      commissionSource: { source: "learned_product", confidence: "medium" },
       converged: true,
       level: { id: "budget", name: "Budget" },
       package: { weightG: 650, lengthMm: 220, widthMm: 160, heightMm: 80 },
@@ -2775,6 +3956,91 @@ test("workflowReviewReconcileNode summarizes Ozon import feedback", () => {
   assert.ok(node.recommendedActions.includes("按诊断修复 Payload"));
 });
 
+test("review failure exposes per-offer repair draft and explicit re-preflight/readback chain", () => {
+  const draft = buildReviewRepairDraft({
+    taskId: 701,
+    skuOffers: ["SKU-RED", "SKU-BLUE"],
+    importedItems: [{ offer_id: "SKU-RED", product_id: 901 }],
+    importErrors: [{
+      offer_id: "SKU-RED",
+      attribute_id: 9048,
+      code: "ATTRIBUTE_REQUIRED",
+      message: "Название модели обязательное поле",
+    }],
+    submitPayload: { items: [{ offer_id: "SKU-RED", attributes: [] }] },
+  });
+
+  assert.equal(draft.ok, true);
+  assert.equal(draft.status, "pending_manual_repair");
+  assert.equal(draft.taskId, 701);
+  assert.deepEqual(draft.offerIds, ["SKU-RED", "SKU-BLUE"]);
+  assert.equal(draft.repairs[0].offerId, "SKU-RED");
+  assert.equal(draft.repairs[0].productId, 901);
+  assert.equal(draft.repairs[0].fieldPath, "items[offer_id=SKU-RED].attributes[id=9048]");
+  assert.equal(draft.repairs[0].valueProvided, false);
+  assert.match(draft.workflow.preflight, /重新预检/);
+  assert.match(draft.workflow.readback, /task_id/);
+  assert.match(draft.sideEffect, /不会修改 Ozon/);
+  assert.match(draft.result, /尚未重新预检/);
+});
+
+test("workflow review node carries repair contract for moderation failure without import error", () => {
+  const node = workflowReviewReconcileNode({
+    taskId: 702,
+    importedItems: [{ offer_id: "SKU-FAILED", product_id: 902 }],
+    readinessState: "moderation_failed",
+  });
+  assert.equal(node.output.reviewRepairDraft.status, "pending_manual_repair");
+  assert.equal(node.output.reviewRepairDraft.repairs[0].offerId, "");
+  assert.equal(node.output.reviewRepairDraft.repairs[0].productId, null);
+  assert.equal(node.output.reviewRepairDraft.repairs[0].code, "MODERATION_FAILED");
+  assert.ok(node.recommendedActions.some((action) => /逐 Offer/.test(action)));
+  assert.match(node.recommendedActions[2], /回查/);
+});
+
+test("workflowReviewReconcileNode reflects server-observed moderation state", () => {
+  const pending = workflowReviewReconcileNode({
+    taskId: 12347,
+    importedItems: [{ offer_id: "SKU-PENDING", product_id: 901 }],
+    readinessState: "pending_moderation",
+    readinessEvidence: { readStatus: "completed", observedOfferCount: 1 },
+  });
+  assert.equal(pending.status, "running");
+  assert.equal(pending.branch, "waiting_review");
+  assert.equal(pending.output.readinessState, "pending_moderation");
+  assert.match(pending.reason, /尚未证明可售/);
+  assert.ok(pending.recommendedActions.some((action) => /回查/.test(action)));
+  const pendingTask = workflowCurrentProductTask({ title: "Pending item", nodes: [pending] });
+  assert.equal(pendingTask.stage, "review_waiting");
+  assert.equal(pendingTask.status, "waiting");
+  assert.match(pendingTask.nextAction, /回查/);
+
+  const failed = workflowReviewReconcileNode({
+    taskId: 12347,
+    importedItems: [{ offer_id: "SKU-FAILED", product_id: 902 }],
+    readinessState: "moderation_failed",
+    readinessEvidence: { readStatus: "completed", observedOfferCount: 1 },
+  });
+  assert.equal(failed.status, "failed");
+  assert.equal(failed.runStatus, "waiting_human");
+  assert.equal(failed.diagnosis.reasonCode, "MODERATION_FAILED");
+  assert.equal(failed.output.readinessState, "moderation_failed");
+});
+
+test("workflowReviewReconcileNode does not advance an unverified ready state to inventory", () => {
+  const node = workflowReviewReconcileNode({
+    taskId: 12348,
+    importedItems: [{ offer_id: "SKU-READY", product_id: 903 }],
+    readinessState: "ready_for_sale",
+    readinessEvidence: { readStatus: "completed", coverageComplete: false, observedOfferCount: 1 },
+  });
+  assert.equal(node.status, "running");
+  assert.equal(node.branch, "waiting_review");
+  assert.equal(node.output.readinessClaimVerified, false);
+  assert.match(node.reason, /完整、新鲜.*回查证据/);
+  assert.ok(node.recommendedActions.some((action) => /不要写库存|完整商品状态回查/.test(action)));
+});
+
 test("workflowCurrentProductTask maps review failure to listing repair", () => {
   const reviewNode = workflowReviewReconcileNode({
     taskId: 12345,
@@ -2798,6 +4064,37 @@ test("workflowCurrentProductTask maps review failure to listing repair", () => {
   assert.equal(task.view, "workflow-console");
   assert.equal(task.nodeKey, "review_reconcile");
   assert.match(task.nextAction, /修复/);
+});
+
+test("workflowCurrentProductTask exposes a waiting preflight repair gate", () => {
+  const task = workflowCurrentProductTask({
+    title: "Preflight seller gate",
+    status: "waiting_human",
+    locks: { waitingHuman: true, submitLocked: true },
+    nodes: [{
+      key: "preflight_check",
+      name: "提交前总闸",
+      status: "failed",
+      runStatus: "waiting_human",
+      reason: "提交前校验发现 payload 问题，需修复后再提交。",
+      recommendedActions: ["查看 Payload 问题"],
+      output: {
+        issues: [{ code: "MISSING_PRICE", message: "缺少售价" }],
+        sellerResult: {
+          reason: "缺少售价，不能提交。",
+          action: "补齐售价后重新预检",
+        },
+      },
+    }],
+  });
+
+  assert.equal(task.stage, "preflight_review");
+  assert.equal(task.status, "waiting_human");
+  assert.equal(task.blockedAt, "提交前总闸");
+  assert.equal(task.view, "listing");
+  assert.equal(task.nodeKey, "preflight_check");
+  assert.equal(task.reason, "缺少售价，不能提交。");
+  assert.equal(task.nextAction, "补齐售价后重新预检");
 });
 
 test("summarizeWorkflowRun maps accepted low score products to content improvement", () => {
@@ -2858,6 +4155,34 @@ test("summarizeWorkflowRun maps stock waiting to warehouse queue task", () => {
   assert.equal(summary.currentProductTask.status, "waiting");
   assert.equal(summary.currentProductTask.blockedAt, "库存写入");
   assert.match(summary.currentProductTask.nextAction, /库存队列/);
+  assert.equal(summary.currentProductTask.view, "warehouse");
+});
+
+test("workflowCurrentProductTask keeps post-submit stock evidence blocked", () => {
+  const summary = summarizeWorkflowRun({
+    title: "Imported without stock evidence",
+    entity: {
+      stockReadiness: {
+        status: "blocked",
+        reasonCode: "STOCK_CURRENT_EVIDENCE_REQUIRED",
+        offerIds: ["SKU-EVIDENCE"],
+        nextAction: "先读取对应 offer_id/warehouse_id 的当前库存，再执行库存预检",
+      },
+    },
+    nodes: [{
+      key: "review_reconcile",
+      name: "审核回执",
+      status: "success",
+      output: { importedItems: [{ offer_id: "SKU-EVIDENCE", product_id: 91 }] },
+    }],
+  });
+
+  assert.equal(summary.currentProductTask.stage, "warehouse_queue");
+  assert.equal(summary.currentProductTask.status, "blocked");
+  assert.equal(summary.currentProductTask.nodeKey, "stock_readiness");
+  assert.equal(summary.currentProductTask.offerId, "SKU-EVIDENCE");
+  assert.match(summary.currentProductTask.reason, /当前库存证据/);
+  assert.match(summary.currentProductTask.nextAction, /读取对应/);
   assert.equal(summary.currentProductTask.view, "warehouse");
 });
 
@@ -2956,4 +4281,55 @@ test("workflowReviewReconcileNode diagnoses the failed payload but saves a corre
 
   assert.equal(node.output.variantGroupingDiagnosis.duplicateGroups.length, 1);
   assert.equal(node.output.variantGroupingRepairDraft.payload.items[1].attributes[0].values[0].value, "синий");
+});
+
+test("reconcileWorkflowTaskReadback binds import-info evidence to the submitting workflow", async () => {
+  reset();
+  const run = await createWorkflowRun({
+    id: "wr-readback",
+    status: "running",
+    entity: { storeId: "store-1", taskId: 12345 },
+    payloadDraft: { items: [{ offer_id: "offer-1" }] },
+  });
+  const result = await reconcileWorkflowTaskReadback(run.id, {
+    taskId: 12345,
+    storeId: "store-1",
+    importInfo: { result: { items: [{ offer_id: "offer-1", product_id: 987, status: "imported" }] } },
+    responseHash: "sha256:test",
+  });
+  assert.equal(result.ok, true);
+  assert.equal(result.status, "pending_moderation");
+  const saved = await getWorkflowRun(run.id);
+  const node = saved.nodes.find((item) => item.key === "review_reconcile");
+  assert.equal(node.status, "running");
+  assert.equal(node.output.readinessState, "pending_moderation");
+  assert.equal(node.output.importedItems[0].product_id, 987);
+  assert.equal(saved.events.at(-1).type, "task_readback_observed");
+});
+
+test("reconcileWorkflowTaskReadback rejects a task from another workflow", async () => {
+  reset();
+  const run = await createWorkflowRun({ id: "wr-readback-mismatch", entity: { storeId: "store-1", taskId: 12345 } });
+  const result = await reconcileWorkflowTaskReadback(run.id, {
+    taskId: 54321,
+    storeId: "store-1",
+    importInfo: { result: { items: [] } },
+  });
+  assert.equal(result.ok, false);
+  assert.equal(result.reasonCode, "WORKFLOW_TASK_MISMATCH");
+  const saved = await getWorkflowRun(run.id);
+  assert.equal(saved.nodes.some((item) => item.key === "review_reconcile"), false);
+});
+
+test("reconcileWorkflowTaskReadback requires the submitting workflow store scope", async () => {
+  reset();
+  const run = await createWorkflowRun({ id: "wr-readback-store-required", entity: { storeId: "store-1", taskId: 12345 } });
+  const result = await reconcileWorkflowTaskReadback(run.id, {
+    taskId: 12345,
+    importInfo: { result: { items: [] } },
+  });
+  assert.equal(result.ok, false);
+  assert.equal(result.reasonCode, "WORKFLOW_STORE_REQUIRED");
+  const saved = await getWorkflowRun(run.id);
+  assert.equal(saved.nodes.some((item) => item.key === "review_reconcile"), false);
 });

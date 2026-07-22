@@ -12,6 +12,7 @@ const workerStatus = document.querySelector("#workerStatus");
 const pollWorkerButton = document.querySelector("#pollWorkerButton");
 const skuList = document.querySelector("#skuList");
 const skuToggleButton = document.querySelector("#skuToggleButton");
+const openCaptureLink = document.querySelector("#openCaptureLink");
 let pendingPayload = null;
 let skuVariants = [];
 let selectedSkuKeys = new Set();
@@ -21,6 +22,17 @@ const ERP_BASES = ["http://127.0.0.1:5178", "http://localhost:5178"];
 function setStatus(message, type = "") {
   statusEl.textContent = message;
   statusEl.className = `status ${type}`.trim();
+}
+
+function showCaptureLink(captureId = "") {
+  if (!openCaptureLink) return;
+  const id = String(captureId || "").trim();
+  if (!id) {
+    openCaptureLink.hidden = true;
+    return;
+  }
+  openCaptureLink.href = `${ERP_BASES[0]}/?view=sourcing&captureId=${encodeURIComponent(id)}`;
+  openCaptureLink.hidden = false;
 }
 
 async function activeTab() {
@@ -71,10 +83,12 @@ async function collectCurrentProduct() {
     }
     pendingPayload = null;
     if (result.duplicate) {
+      showCaptureLink(result.id || result.collectionId || result.captureReceipt?.collectionId);
       setStatus(`已采集过：${result.title || "未命名商品"}\nERP 已保留原记录。`, "ok");
       return;
     }
-    setStatus(`采集成功：${result.title || "未命名商品"}\n回到 ERP 点“读取助手结果”。`, "ok");
+    showCaptureLink(result.id || result.collectionId || result.captureReceipt?.collectionId);
+    setStatus(`采集成功：${result.title || "未命名商品"}\n点击下方按钮继续生成本地草稿。`, "ok");
   } catch (error) {
     setStatus(error.message, "error");
   } finally {

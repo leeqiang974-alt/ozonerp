@@ -149,12 +149,15 @@ async function collect1688Product(tab) {
   }
   pendingPayload = null;
   const captureId = result.id || result.collectionId || result.captureReceipt?.collectionId;
-  await openCurrentCapture(captureId);
+  const opened = await openCurrentCapture(captureId);
+  const nextAction = opened
+    ? "ERP 已自动打开当前商品，可继续补资料或预检。"
+    : "ERP 自动打开失败，请点击下方链接继续处理当前商品。";
   if (result.duplicate) {
-    setStatus(`已采集过：${result.title || "未命名商品"}\nERP 已自动打开原记录，可继续补资料或预检。`, "ok");
+    setStatus(`已采集过：${result.title || "未命名商品"}\n${nextAction}`, "ok");
     return;
   }
-  setStatus(`采集成功：${result.title || "未命名商品"}\nERP 已自动打开当前商品，可继续生成本地草稿。`, "ok");
+  setStatus(`采集成功：${result.title || "未命名商品"}\n${opened ? "ERP 已自动打开当前商品，可继续生成本地草稿。" : "ERP 自动打开失败，请点击下方链接继续生成本地草稿。"}`, "ok");
 }
 
 async function collectPddProduct(tab) {

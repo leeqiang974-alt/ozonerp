@@ -1,6 +1,8 @@
 # Ozon ERP 历史计划状态索引
 
-更新日期：2026-07-17
+更新日期：2026-07-22
+
+当前唯一 active 执行计划是 `docs/TOP-LEVEL-DEVELOPMENT-PLAN.zh-CN.md`。`docs/ROADMAP.zh-CN.md` 负责记录交付和验证证据；以下历史计划不得自行恢复为当前任务。
 
 ## 1. 使用方法
 
@@ -32,7 +34,7 @@
 | `2026-07-07-erp-business-object-ia-phase1.md` | `completed` | 高频 tab 的业务对象契约、首屏业务面板、渐进披露和回归测试已实现。后续阶段必须用真实卖家任务验证。 | Roadmap Phase 0/1 UX 状态矩阵 |
 | `2026-07-07-ozon-erp-automation-cross-development.md` | `completed` | 计划内首轮详情图、rich content、parseIssues、外部 helper 对照与测试已实现；继续借鉴外仓必须重新走证据门，不能把该计划无限延伸。 | Roadmap Phase 0 fixture、Phase 1 媒体 |
 
-当前没有单独标为 `active` 的旧 superpowers plan。当前唯一 active 执行框架是 `docs/ROADMAP.zh-CN.md`；具体实现任务应从其阶段目标新建小型、可验收任务，而不是恢复旧计划的所有未勾选项。
+当前没有单独标为 `active` 的旧 superpowers plan。当前唯一 active 执行计划是 `docs/TOP-LEVEL-DEVELOPMENT-PLAN.zh-CN.md`；具体实现任务只能从其中标记为 `CURRENT` 的切片领取，不能恢复旧计划的未勾选项。
 
 ## 3. 设计规格状态
 

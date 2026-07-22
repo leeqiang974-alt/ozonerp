@@ -1,5 +1,7 @@
 # Ozon ERP 产品与交付路线图
 
+> 当前派工以 `docs/TOP-LEVEL-DEVELOPMENT-PLAN.zh-CN.md` 为准。本文件记录已交付内容和验证等级，不再从历史条目反向领取开发任务。当前唯一切片：G1-S1 手工采集输入契约与现状核对；G4 MVP 通过前冻结 FBS、活动、财务和售后扩建。
+
 > 2026-07-22 P0 本机恢复后的服务启动收口：补齐 `autoListing.js` 的只读任务快照与媒体批准草稿/发布/回滚持久化契约，修正误放到 FBS 订单读取中的回滚回调，并新增服务导入符号的运行时契约测试。服务真实启动、healthz、前端 runtime smoke、`npm test` `1237/1237`、lint 75 files 和 offline acceptance 均通过；未联网、未连接数据库、未调用 Seller API、未执行 Ozon 写入。验证等级 `locally_tested`；P0 启动阻断已解除，下一步回到 A 线，以真实 1688 快照和受控四店铺 Seller API 只读回放推进黄金链路。
 
 > 2026-07-20 C34 FBS 履约只读恢复收口：续页读取失败保留已读订单并标记 partial，允许按当前范围重试；争议筛选同时识别顶层 status/statusGroup 与 substatus 的 dispute 变体；订单权限/服务失败状态直接显示“重新读取当前范围”按钮；FBS 回执保存先经过签名 Seller 只读会话、principal 店铺范围和显式店铺校验，缺少范围不会读取或持久化回执。C 定向通过，前端静态 295/295，全量 `npm test` `1235/1235`，lint 75 files；离线验收检查通过但 git diff 检查受当前 worktree 元数据损坏影响；未联网、未连接数据库、未执行履约写入。验证等级 `locally_tested`；仍缺真实 FBS 订单/争议回放、履约写动作和写后回读。下一轮转 D。 

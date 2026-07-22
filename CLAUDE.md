@@ -6,7 +6,8 @@ This project is a seller operating system for Ozon, not a generic admin demo or 
 
 Before proposing or changing anything, read these files:
 
-- `docs/ROADMAP.zh-CN.md` as the single current source for phase priority, verification level, and completion criteria; check `docs/plan-status-index.zh-CN.md` before resuming an older plan.
+- `docs/TOP-LEVEL-DEVELOPMENT-PLAN.zh-CN.md` as the authoritative source for execution order, frozen scope, the sole current slice, and stage exit gates.
+- `docs/ROADMAP.zh-CN.md` as the delivery/verification evidence log; check `docs/plan-status-index.zh-CN.md` before resuming an older plan.
 - `docs/SESSION_HANDOFF.zh-CN.md`
 - `docs/erp-ui-information-architecture.zh-CN.md`
 - `docs/pricing-logic.zh-CN.md` when pricing, logistics, old_price, min_price, commission, or profit is involved.
@@ -18,7 +19,7 @@ Use the project root: `C:\Users\Administrator\Documents\ozonerp`.
 
 ## Operating Model
 
-开发按 `docs/DEVELOPMENT-FRAMEWORK.zh-CN.md` 的五条工作流轮转；同一工作流最多连续两个切片，完成后必须汇总并切换到其他最高优先级工作流。1688→Ozon 黄金链路是当前 P0 主线，FBS 只是 P1 支线。
+当前按 `docs/TOP-LEVEL-DEVELOPMENT-PLAN.zh-CN.md` 执行黄金链路阶段门，WIP=1。G4 MVP 通过前暂停五工作流轮转；只能领取标记为 `CURRENT` 的切片。FBS、活动、财务和售后冻结，生产化工作只处理黄金链路的直接阻断。只有启动失败、数据损坏/丢失、凭据泄露或真实写入安全门旁路可以中断当前切片。
 
 The ERP must be organized around seller decisions:
 

@@ -6,7 +6,8 @@ This file mirrors `CLAUDE.md` so Codex and Claude Code follow the same project r
 
 Read these before substantial Ozon ERP changes:
 
-- `docs/ROADMAP.zh-CN.md` as the single current source for phase priority, verification level, and completion criteria; use `docs/plan-status-index.zh-CN.md` before resuming an older implementation plan.
+- `docs/TOP-LEVEL-DEVELOPMENT-PLAN.zh-CN.md` as the authoritative source for execution order, frozen scope, the sole current slice, and stage exit gates.
+- `docs/ROADMAP.zh-CN.md` as the delivery/verification evidence log; use `docs/plan-status-index.zh-CN.md` before resuming an older implementation plan.
 - `docs/SESSION_HANDOFF.zh-CN.md`
 - `docs/erp-ui-information-architecture.zh-CN.md`
 - Relevant source and tests for the feature area.
@@ -45,9 +46,11 @@ Read these before substantial Ozon ERP changes:
 
 ## Development Governance
 
-- 按 `docs/DEVELOPMENT-FRAMEWORK.zh-CN.md` 的五条工作流轮转开发。不能围绕单个支线（例如 FBS）连续扩展到失去主线视角。
-- 同一工作流最多连续交付两个切片；每轮必须汇总代码、测试、验证等级、剩余缺口和下一轮轮转目标。
-- 1688→Ozon 黄金链路是当前 P0 主线；订单、活动和财务支线不能在主线存在阻塞时持续抢占开发重心。
+- 当前执行 `docs/TOP-LEVEL-DEVELOPMENT-PLAN.zh-CN.md` 的黄金链路阶段门；在 G4 MVP 通过前，暂停原五工作流轮转。
+- WIP 必须为 1，只能开发计划中标记为 `CURRENT` 的切片。无法映射到当前阶段退出条件的工作进入停车场，不得顺手扩建。
+- C/FBS 与 D/活动、财务、售后冻结；E 只处理黄金链路的直接阻断，B 只在提交后审核/库存交接阶段进入。
+- 只有服务无法启动、数据损坏/丢失、凭据泄露或真实写入安全门旁路可中断当前切片。
+- 每轮必须汇总代码、测试、验证等级、剩余缺口和下一阶段唯一入口；阶段退出门未通过不得前移。
 
 Ozon ERP is a seller operating workbench. UI and workflow changes must help the user answer:
 

@@ -5,6 +5,8 @@ import os from "node:os";
 import path from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { spawn } from "node:child_process";
+import { categoryReadPolicyForListing } from "../src/autoListing.js";
+import { buildPreflightGateNode } from "../src/workflowRuns.js";
 
 const projectRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const autoListingUrl = pathToFileURL(path.join(projectRoot, "src", "autoListing.js")).href;
@@ -317,6 +319,84 @@ test("capture workflow auto-binds a unique high-confidence category from current
   assert.equal(result.draftSkeleton.categoryDecision.attributeEvidenceReady, true);
   assert.equal(result.draftSkeleton.categoryDecision.selected.path, "小百货和配饰 / 服装首饰 / 胸针");
   assert.equal(result.draftSkeleton.blockers.some((entry) => entry.reasonCode.startsWith("DRAFT_CATEGORY_")), false);
+});
+
+test("reopening an older capture draft backfills a title-matched category before store evidence sync", async () => {
+  const tempDir = await fs.mkdtemp(path.join(os.tmpdir(), "ozonerp-capture-category-backfill-"));
+  const hash = `sha256:${"9".repeat(64)}`;
+  const item = candidate("capture-category-backfill", hash, "993570366569", "store-current");
+  item.parsed.captureReview = { status: "approved", humanConfirmed: true, reviewedSnapshotHash: hash };
+  item.parsed.title = "卡通小精灵胸针徽章服装背包饰品配饰别针跨境外贸热销合金胸章";
+  item.parsed.skuVariants = [{ skuId: "pin-backfill", spec: "卡通款", price: 2.3 }];
+  await fs.mkdir(path.join(tempDir, "data"), { recursive: true });
+  await fs.writeFile(path.join(tempDir, "data", "1688-collection-box.json"), JSON.stringify({ items: [{
+    id: item.id, storeId: item.storeId, parsed: item.parsed,
+  }] }, null, 2));
+  const foreignStoreCategoryCache = {
+    updatedAt: new Date().toISOString(),
+    storeId: "store-previous",
+    flat: [
+      { description_category_id: 17027899, type_id: 93762, path: "小百货和配饰 / 服装首饰 / 徽章", name: "徽章" },
+      { description_category_id: 17027899, type_id: 87458886, path: "小百货和配饰 / 服装首饰 / 胸针", name: "胸针" },
+    ],
+  };
+  await fs.writeFile(path.join(tempDir, "data", "ozon-category-cache.json"), JSON.stringify(foreignStoreCategoryCache, null, 2));
+
+  await runIsolatedCaptureWorkflowContract(tempDir, [{ id: item.id, storeId: item.storeId }]);
+  const jobsPath = path.join(tempDir, "data", "auto-listing-jobs.json");
+  const jobs = JSON.parse(await fs.readFile(jobsPath, "utf8"));
+  delete jobs.items[0].categoryDecision;
+  delete jobs.items[0].autoCategory;
+  jobs.items[0].draftSkeleton = {
+    ...(jobs.items[0].draftSkeleton || {}),
+    categoryDecision: null,
+    blockers: [{
+      reasonCode: "DRAFT_CATEGORY_REQUIRED",
+      title: "尚未匹配到可靠的 Ozon 类目",
+      nextAction: "系统继续根据商品核心类型匹配类目",
+    }],
+  };
+  await fs.writeFile(jobsPath, JSON.stringify(jobs, null, 2));
+
+  const output = await runIsolatedCaptureWorkflowContract(tempDir, [{ id: item.id, storeId: item.storeId }]);
+  const result = output.results[0];
+
+  assert.equal(result.duplicate, true);
+  assert.equal(result.job.autoCategory.type_id, 87458886);
+  assert.equal(result.draftSkeleton.categoryDecision.status, "auto_matched_evidence_pending");
+  assert.equal(result.draftSkeleton.categoryDecision.evidenceReady, false);
+  assert.equal(result.draftSkeleton.categoryDecision.selected.path, "小百货和配饰 / 服装首饰 / 胸针");
+  assert.ok(result.draftSkeleton.blockers.some((entry) => entry.reasonCode === "DRAFT_CATEGORY_EVIDENCE_REQUIRED"));
+  assert.equal(result.draftSkeleton.blockers.some((entry) => entry.reasonCode === "DRAFT_CATEGORY_REQUIRED"), false);
+
+  const policy = categoryReadPolicyForListing(result.job, foreignStoreCategoryCache, result.job.autoCategory);
+  assert.equal(policy.categoryEvidenceRequired, true);
+  assert.equal(policy.categoryEvidenceStoreId, "store-current");
+  assert.equal(policy.categoryEvidence.tree, null);
+  assert.equal(policy.categoryEvidence.attributes, null);
+  const preflight = buildPreflightGateNode({
+    payload: {
+      items: [{
+        offer_id: "PIN-BACKFILL",
+        name: "Брошь",
+        description_category_id: result.job.autoCategory.description_category_id,
+        type_id: result.job.autoCategory.type_id,
+        price: "100",
+        old_price: "120",
+        min_price: "90",
+        marketing_price: "100",
+        currency_code: "RUB",
+        model_info: { model_id: 1 },
+        images: ["1", "2", "3"],
+        attributes: [{ complex_id: 0, id: 8229, values: [{ dictionary_value_id: 0, value: "Pin" }] }],
+      }],
+    },
+    category: result.job.autoCategory,
+    contentSummary: { candidateImageCount: 3, skuVariantCount: 1, sizeWeightReady: true },
+    ...policy,
+    variantCount: 1,
+  });
+  assert.ok(preflight.output.issues.some((entry) => entry.code === "CATEGORY_EVIDENCE_MISSING"));
 });
 
 test("automatic category reruns never overwrite an existing seller category selection", async () => {

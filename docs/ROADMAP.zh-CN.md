@@ -2,6 +2,8 @@
 
 > 当前派工以 `docs/TOP-LEVEL-DEVELOPMENT-PLAN.zh-CN.md` 为准。本文件记录已交付内容和验证等级，不再从历史条目反向领取开发任务。G1 已完成；当前唯一切片：G2-S1 真实采集商品生成唯一草稿骨架；G4 MVP 通过前冻结 FBS、活动、财务和售后扩建。
 
+> 2026-07-23 G2-S1 商品工作台视觉系统重做：针对“像廉价内部后台”的真实反馈，保留三步业务逻辑和全部 fail-closed 安全门，重做品牌、浅色侧栏、SVG 导航图标、状态条、商品主卡、单一行动区、三段状态块、处理结果和响应式布局；主卡直接使用当前采集商品的首张 http(s) 图片，非 http(s) URL fail-closed，属性转义且不发送 referrer。修复窄屏侧栏参与文档流导致的 743px 顶部空白，并统一 901–1023px 的 sidebar/main/global-task-bar/padding 级联；浏览器逐一验证默认桌面、960×900 非首页、768×900 与 390×844。前端静态 308/308、全量 `npm test` 1265/1265、lint 76 files、offline acceptance 通过，最终独立复审无 Critical/Important；无 Seller API、数据库、付费模型或 Ozon 写入。
+
 > 2026-07-23 G2-S1 卖家界面第二轮减法：根据真实使用反馈，将首屏从 5 个内部节点压缩为“采集商品—检查商品—确认上架”3 个卖家步骤；snapshot、workflow、preflight、Fixture、证据绑定和 AI 推理过程继续保留在内部安全层/高级诊断，普通界面只显示处理结果、必须人工决定的异常和一个主动作。首页隐藏重复的全局任务按钮，离开首页后才显示该快捷入口。浏览器观察到真实商品 Offer `992997159052` 已进入“检查商品”，显示 9 个规格、28 张图片，不自动上架。前端静态 307/307、全量 `npm test` 1264/1264、lint 76 files、offline acceptance 通过；新增可执行测试覆盖有效待确认、已建立草稿、草稿 hash 过期和检查通过状态，阻止内部工作流原文透传，并确保旧检查结果不能显示“确认上架”；最终独立复审无 Critical/Important；无网络、数据库或 Ozon 写入。
 
 > 2026-07-23 G2-S1 当前商品工作台重构：基于 Ozon 官方文档、Shopify Polaris 和 Vendure/Ozon 开源后台实际代码，将卖家首屏收口为一个真实商品、5 步进度、系统已完成和一个安全动作；经营驾驶舱、完整编辑表、规则池与历史诊断默认折叠。工作台、全局任务条、商品草稿页和高级工作流动作统一按真实 `captureId + storeId` 精确匹配非 synthetic workflow；缺少 capture、无效 snapshot、未人工确认或绑定不匹配全部 fail-closed，禁止 Fixture/最近历史任务回退及提交。浏览器已验证 Offer `992997159052` 显示 9 个唯一 SKU、28 张图片；“去核对并确认”自动切换 xymallc 并永久高亮目标行，未点击人工确认。前端静态 305/305、全量 `npm test` 1262/1262、lint 76 files、runtime smoke、offline acceptance 通过；无网络、数据库或 Ozon 写入，G2-S1 仍等待真实人工快照回执。

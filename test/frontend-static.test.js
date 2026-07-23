@@ -4738,7 +4738,7 @@ test("three seller steps stay aligned across review, draft, and ready states", a
   const state = { stores: [{ id: "store-1", name: "Store 1" }] };
   let captureTask = {
     item: { id: "capture-1", storeId: "store-1" },
-    product: { title: "Real item", skuVariants: [] },
+    product: { title: "Real item", skuVariants: [], images: ["javascript:alert(1)"] },
     reviewApproved: false,
     reviewPossible: true,
     reviewNeeded: true,
@@ -4751,6 +4751,7 @@ test("three seller steps stay aligned across review, draft, and ready states", a
   const review = model();
   assert.deepEqual(review.stages.map((stage) => stage.status), ["complete", "current", "pending"]);
   assert.equal(review.actionLabel, "检查商品");
+  assert.equal(review.imageUrl, "");
 
   captureTask = { ...captureTask, reviewApproved: true, reviewNeeded: false, hasDraft: true };
   run = {
@@ -4783,6 +4784,26 @@ test("three seller steps stay aligned across review, draft, and ready states", a
   const ready = model();
   assert.deepEqual(ready.stages.map((stage) => stage.status), ["complete", "complete", "current"]);
   assert.equal(ready.actionLabel, "确认上架");
+});
+
+test("seller workspace uses a product-grade visual shell without changing the three-step contract", async () => {
+  const [html, js, css] = await Promise.all([
+    readFile(new URL("../public/index.html", import.meta.url), "utf8"),
+    readFile(new URL("../public/app.js", import.meta.url), "utf8"),
+    readFile(new URL("../public/styles.css", import.meta.url), "utf8"),
+  ]);
+  assert.match(html, /<svg viewBox="0 0 24 24"/);
+  assert.match(html, /商品运营中心/);
+  assert.match(html, />检查连接</);
+  assert.match(js, /const imageUrl = \/\^https\?:\\\/\\\//);
+  assert.match(js, /class="current-product-thumbnail"/);
+  assert.match(js, /referrerpolicy="no-referrer"/);
+  assert.match(css, /Premium seller shell/);
+  assert.match(css, /body\[data-active-view="dashboard"\]\.auto-ozon-erp-shell \.main[\s\S]*padding-top: 0/);
+  assert.match(css, /\.current-product-progress[\s\S]*grid-template-columns: repeat\(3, 1fr\)/);
+  assert.match(css, /\.current-product-thumbnail img[\s\S]*object-fit: cover/);
+  assert.match(css, /@media \(max-width: 1023px\)[\s\S]*\.auto-ozon-erp-shell \.main \{[\s\S]*margin-left: 0[\s\S]*padding-top: 0/);
+  assert.match(css, /@media \(max-width: 1023px\)[\s\S]*\.auto-ozon-erp-shell \.global-current-task-bar \{[\s\S]*position: static[\s\S]*inset: auto/);
 });
 
 test("dashboard and listing share one current product workspace", async () => {

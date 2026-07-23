@@ -6212,6 +6212,9 @@ function currentProductWorkspaceModel() {
   const source = product.sourceEvidenceRecord || product.sourceEvidence || {};
   const offerId = String(source.captureIdentity?.offerId || source.offerId || product.offerId || item.offerId || "").trim();
   const sourceVariants = Array.isArray(product.skuVariants) ? product.skuVariants : [];
+  const firstImage = Array.isArray(product.images) ? product.images[0] : "";
+  const rawImageUrl = String(typeof firstImage === "string" ? firstImage : firstImage?.url || "").trim();
+  const imageUrl = /^https?:\/\//i.test(rawImageUrl) ? rawImageUrl : "";
   const uniqueSourceSkuIds = new Set(sourceVariants
     .map((variant) => String(variant?.sourceSkuId || variant?.source_sku_id || variant?.skuId || variant?.sku_id || "").trim())
     .filter(Boolean));
@@ -6280,6 +6283,7 @@ function currentProductWorkspaceModel() {
     title: product.title || item.title || "未命名商品",
     storeLabel: store?.name || item.storeId || "店铺未绑定",
     offerId,
+    imageUrl,
     skuCount,
     imageCount,
     reviewNeeded,
@@ -6312,15 +6316,20 @@ function renderCurrentProductWorkspace() {
       : `data-cockpit-view="${escapeHtml(model.actionView || "sourcing")}"`;
   if (workspace) {
     workspace.innerHTML = `
-      <div class="current-product-identity">
-        <span class="current-product-status">${escapeHtml(model.status)}</span>
-        <h2>${escapeHtml(model.title)}</h2>
-        <p>${escapeHtml(model.reason)}</p>
-        <div class="current-product-meta">
-          ${model.storeLabel ? `<span>${escapeHtml(model.storeLabel)}</span>` : ""}
-          ${model.offerId ? `<span>货号 ${escapeHtml(model.offerId)}</span>` : ""}
-          ${model.skuCount ? `<span>${escapeHtml(model.skuCount)} 个规格</span>` : ""}
-          ${model.imageCount ? `<span>${escapeHtml(model.imageCount)} 张图片</span>` : ""}
+      <div class="current-product-main">
+        <div class="current-product-thumbnail">
+          ${model.imageUrl ? `<img src="${escapeHtml(model.imageUrl)}" alt="" loading="lazy" referrerpolicy="no-referrer" />` : `<span>OZ</span>`}
+        </div>
+        <div class="current-product-identity">
+          <span class="current-product-status">${escapeHtml(model.status)}</span>
+          <h2>${escapeHtml(model.title)}</h2>
+          <p>${escapeHtml(model.reason)}</p>
+          <div class="current-product-meta">
+            ${model.storeLabel ? `<span>${escapeHtml(model.storeLabel)}</span>` : ""}
+            ${model.offerId ? `<span>货号 ${escapeHtml(model.offerId)}</span>` : ""}
+            ${model.skuCount ? `<span>${escapeHtml(model.skuCount)} 个规格</span>` : ""}
+            ${model.imageCount ? `<span>${escapeHtml(model.imageCount)} 张图片</span>` : ""}
+          </div>
         </div>
       </div>
       <div class="current-product-primary-action">

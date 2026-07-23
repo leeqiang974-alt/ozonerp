@@ -27,19 +27,19 @@
         <div class="brand sidebar-brand">
           <span class="brand-mark">OZ</span>
           <div>
-            <strong>Ozon 自动化 ERP</strong>
-            <small>业务驾驶舱</small>
+            <strong>Ozon ERP</strong>
+            <small>商品运营中心</small>
           </div>
         </div>
 
         <nav class="tabs app-secondary-nav" aria-label="模块">
           <div class="seller-primary-nav" aria-label="日常主线">
             <span class="nav-group-label">日常主线</span>
-            <button class="tab active" data-view="dashboard"><span class="tab-icon">▦</span><span>工作台</span></button>
-            <button class="tab" data-view="sourcing"><span class="tab-icon">①</span><span>1688 采集</span></button>
-            <button class="tab" data-view="listing"><span class="tab-icon">②</span><span>商品草稿</span></button>
-            <button class="tab" data-view="products"><span class="tab-icon">③</span><span>商品状态</span></button>
-            <button class="tab" data-view="orders"><span class="tab-icon">④</span><span>订单履约</span></button>
+            <button class="tab active" data-view="dashboard"><span class="tab-icon"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 4h6v6H4zM14 4h6v6h-6zM4 14h6v6H4zM14 14h6v6h-6z"/></svg></span><span>工作台</span></button>
+            <button class="tab" data-view="sourcing"><span class="tab-icon"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 7.5 12 3l8 4.5v9L12 21l-8-4.5zM4 7.5l8 4.5 8-4.5M12 12v9"/></svg></span><span>1688 采集</span></button>
+            <button class="tab" data-view="listing"><span class="tab-icon"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M6 3h9l4 4v14H6zM14 3v5h5M9 12h7M9 16h7"/></svg></span><span>商品草稿</span></button>
+            <button class="tab" data-view="products"><span class="tab-icon"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 6h16v14H4zM8 6V4h8v2M8 11h8M8 15h5"/></svg></span><span>商品状态</span></button>
+            <button class="tab" data-view="orders"><span class="tab-icon"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M7 4h10v3H7zM5 6h14v15H5zM8 11h8M8 15h8"/></svg></span><span>订单履约</span></button>
           </div>
           <button id="secondaryNavToggle" class="secondary-nav-toggle" type="button" aria-expanded="false" aria-controls="sellerSecondaryNav">
             <span>更多功能</span><span aria-hidden="true">⌄</span>
@@ -62,7 +62,7 @@
             <select id="storeSelect"></select>
           </label>
           <div class="sidebar-store-actions">
-            <button id="testButton" class="ghost">测试 API</button>
+            <button id="testButton" class="ghost">检查连接</button>
             <span class="sidebar-api-dot" aria-hidden="true"></span>
           </div>
           <p id="storeHint" class="hint"></p>
@@ -96,7 +96,7 @@
             <h1>处理当前商品</h1>
             <p>采集、检查、上架。系统和 AI 在后台完成中间过程，只有需要你决定时才会停下来。</p>
           </div>
-          <button id="refreshCurrentProduct" class="ghost" type="button">刷新当前商品</button>
+          <button id="refreshCurrentProduct" class="ghost" type="button">刷新</button>
         </header>
         <section id="currentProductWorkspace" class="current-product-workspace" aria-label="当前商品上新工作台" aria-live="polite">
           <div class="current-product-loading">正在读取真实采集商品…</div>

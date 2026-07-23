@@ -4066,6 +4066,39 @@ test("workflowCurrentProductTask maps review failure to listing repair", () => {
   assert.match(task.nextAction, /修复/);
 });
 
+test("workflowCurrentProductTask exposes the capture draft skeleton blocker", () => {
+  const task = workflowCurrentProductTask({
+    title: "1688 captured product",
+    nodes: [{
+      key: "capture_handoff",
+      name: "真实货源进入草稿",
+      status: "success",
+      output: {
+        draftSkeleton: {
+          status: "needs_review",
+          offerId: "992997159052",
+          variantCount: 9,
+          blockers: [{
+            reasonCode: "DRAFT_SUPPLIER_EVIDENCE_REQUIRED",
+            title: "供应商身份待补齐",
+            nextAction: "补齐当前 1688 供应商名称或身份凭据",
+          }],
+          nextAction: "补齐当前 1688 供应商名称或身份凭据",
+        },
+      },
+    }],
+  });
+
+  assert.equal(task.stage, "draft_evidence_repair");
+  assert.equal(task.status, "blocked");
+  assert.equal(task.offerId, "992997159052");
+  assert.equal(task.blockedAt, "真实货源进入草稿");
+  assert.equal(task.reason, "供应商身份待补齐（另有 0 项）");
+  assert.equal(task.nextAction, "补齐当前 1688 供应商名称或身份凭据");
+  assert.equal(task.view, "listing");
+  assert.equal(task.nodeKey, "capture_handoff");
+});
+
 test("workflowCurrentProductTask exposes a waiting preflight repair gate", () => {
   const task = workflowCurrentProductTask({
     title: "Preflight seller gate",

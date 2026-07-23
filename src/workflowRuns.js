@@ -3258,8 +3258,6 @@ export async function submitPayloadDraftToOzon(runId, input = {}, deps = {}) {
 export async function findOrCreateWorkflowForAutoListingJob(job = {}) {
   const autoListingJobId = String(job.id || "").trim();
   if (!autoListingJobId) throw new Error("自动上架任务 ID 不能为空");
-  const store = await readStore();
-  const existing = store.items.find((run) => run.entity?.autoListingJobId === autoListingJobId);
   const entityPatch = {
     autoListingJobId,
     source: String(job.source || job.candidateData?.source || "").trim(),
@@ -3271,19 +3269,32 @@ export async function findOrCreateWorkflowForAutoListingJob(job = {}) {
     storeId: job.listingResult?.storeId || job.storeId || "",
     ...(job.listingResult?.stockReadiness ? { stockReadiness: job.listingResult.stockReadiness } : {}),
   };
-  if (existing) {
-    return updateRun(existing.id, (run) => ({
-      ...run,
-      entity: {
-        ...(run.entity || {}),
+  return mutateStore((store) => {
+    const existing = store.items.find((run) => run.entity?.autoListingJobId === autoListingJobId);
+    if (existing) {
+      existing.entity = {
+        ...(existing.entity || {}),
         ...Object.fromEntries(Object.entries(entityPatch).filter(([, value]) => value !== "")),
-      },
-    }));
-  }
-  return createWorkflowRun({
-    source: "auto_listing",
-    title: job.bestMatch?.candidateTitle || job.ozonTitle || job.title || autoListingJobId,
-    entity: entityPatch,
+      };
+      existing.updatedAt = nowIso();
+      return { value: existing };
+    }
+    const now = nowIso();
+    const run = {
+      id: makeId(),
+      source: "auto_listing",
+      status: "draft",
+      currentNode: "",
+      title: String(job.bestMatch?.candidateTitle || job.ozonTitle || job.title || autoListingJobId),
+      createdAt: now,
+      updatedAt: now,
+      entity: entityPatch,
+      nodes: [],
+      events: [],
+      locks: { paused: false, waitingHuman: false, submitLocked: false },
+    };
+    store.items.unshift(run);
+    return { value: run };
   });
 }
 
@@ -3682,6 +3693,23 @@ export function workflowCurrentProductTask(run = {}) {
   const title = run.title || run.name || run.source?.title || run.entity?.candidateTitle || "当前商品";
   const reviewNode = nodes.find((node) => node.key === "review_reconcile");
   const stockNode = nodes.find((node) => node.key === "stock_sync");
+  const captureHandoffNode = nodes.find((node) => node.key === "capture_handoff") || null;
+  const draftSkeleton = captureHandoffNode?.output?.draftSkeleton || null;
+  const draftBlockers = Array.isArray(draftSkeleton?.blockers) ? draftSkeleton.blockers : [];
+  if (draftSkeleton && draftBlockers.length) {
+    const firstBlocker = draftBlockers[0] || {};
+    return {
+      stage: "draft_evidence_repair",
+      status: "blocked",
+      productTitle: title,
+      offerId: String(draftSkeleton.offerId || ""),
+      blockedAt: captureHandoffNode.name || "真实货源进入草稿",
+      reason: `${firstBlocker.title || firstBlocker.reasonCode || "草稿资料待补齐"}（另有 ${Math.max(0, draftBlockers.length - 1)} 项）`,
+      nextAction: firstBlocker.nextAction || draftSkeleton.nextAction || "打开本地草稿补齐来源证据",
+      view: "listing",
+      nodeKey: "capture_handoff",
+    };
+  }
   const stockReadiness = run.entity?.stockReadiness || reviewNode?.output?.stockReadiness || null;
   const failedReview = reviewNode && (
     ["failed", "waiting_human"].includes(String(reviewNode.status || ""))

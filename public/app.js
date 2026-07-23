@@ -7207,17 +7207,45 @@ async function reviewCaptureSnapshot(id, storeId = "", button = null) {
   if (!window.confirm(`确认你已核对当前 1688 商品，并确认快照 ${shortHash} 就是目标商品？`)) return;
   setBusy(button, true);
   try {
-    await api(`/api/1688/captures/${encodeURIComponent(id)}/review`, {
+    const reviewResult = await api(`/api/1688/captures/${encodeURIComponent(id)}/review`, {
       method: "POST",
       body: JSON.stringify({ storeId }),
     });
-    await loadCaptureBox();
-    toast("当前 1688 快照已确认；现在可以生成草稿并预检", "ok");
+    const itemIndex = state.captureRows.findIndex((entry) => String(entry.id || "") === String(id || ""));
+    if (itemIndex >= 0 && reviewResult.item) state.captureRows[itemIndex] = reviewResult.item;
+    await openCaptureDraftSkeleton(id, storeId);
+    toast("已确认当前快照并创建本地草稿骨架；未提交 Ozon", "ok");
   } catch (error) {
-    toast(error.message || "来源快照确认失败", "error");
+    toast(error.message || "来源快照确认或本地草稿创建失败", "error");
   } finally {
     setBusy(button, false);
   }
+}
+
+async function openCaptureDraftSkeleton(id, storeId = "") {
+  const data = await api(`/api/1688/captures/${encodeURIComponent(id)}/workflow`, {
+    method: "POST",
+    body: JSON.stringify({ storeId }),
+  });
+  const draftSkeleton = data.draftSkeleton || {};
+  const workflowRunId = String(data.workflowRunId || data.job?.workflowRunId || "").trim();
+  if (!workflowRunId) throw new Error("本地草稿骨架已创建，但没有绑定商品工作流；请重试当前交接");
+  state.selectedWorkflowRunId = workflowRunId;
+  state.selectedWorkflowNodeKey = "capture_handoff";
+  state.currentCaptureId = id;
+  const capture = state.captureRows.find((entry) => String(entry.id || "") === String(id || ""));
+  if (capture?.parsed) state.collected1688 = capture.parsed;
+  const blockerCount = Array.isArray(draftSkeleton.blockers) ? draftSkeleton.blockers.length : 0;
+  state.listingHandoffNotice = blockerCount
+    ? `本地草稿已建立：保留 ${draftSkeleton.variantCount || 0} 个唯一 SKU，集中列出 ${blockerCount} 项待补资料；未提交 Ozon。`
+    : `本地草稿已建立：保留 ${draftSkeleton.variantCount || 0} 个唯一 SKU；下一步运行提交前预检。`;
+  showResponse(data);
+  await loadWorkflowRuns();
+  await loadAutoListJobs();
+  await loadCaptureBox();
+  activateErpView("listing");
+  renderListingSellerTaskSummary();
+  return data;
 }
 
 async function createDraftFromCapture(id, storeId = "", button = null) {

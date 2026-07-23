@@ -2360,6 +2360,113 @@ async function saveWorkflowPayloadDraftForListingJob(job = {}) {
   return { workflowRunId: workflowRun.id, draft, categoryMatch, parentSku };
 }
 
+function capturedVariantIdentity(variant = {}, index = 0) {
+  const sourceSkuId = String(variant?.sourceSkuId || variant?.source_sku_id || variant?.skuId || variant?.sku_id || "").trim();
+  if (sourceSkuId) return `sku:${sourceSkuId}`;
+  const spec = String(variant?.spec || variant?.skuSpec || variant?.name || "").trim().toLowerCase();
+  const image = String(variant?.image || variant?.imageUrl || "").trim().split(/[?#]/)[0].toLowerCase();
+  const price = Number(variant?.price || 0);
+  if (spec || image) return `fallback:${spec}|${image}|${Number.isFinite(price) ? price : ""}`;
+  return `row:${index}`;
+}
+
+function capturedVariantCompleteness(variant = {}) {
+  return [
+    variant?.spec,
+    variant?.image || variant?.imageUrl,
+    variant?.weightG,
+    variant?.lengthMm,
+    variant?.widthMm,
+    variant?.heightMm,
+    Array.isArray(variant?.specPairs) && variant.specPairs.length ? variant.specPairs : null,
+  ].filter((value) => value !== undefined && value !== null && value !== "" && value !== false).length;
+}
+
+export function normalizeCapturedSkuVariants(variants = []) {
+  const rows = Array.isArray(variants) ? variants.filter(Boolean) : [];
+  const byIdentity = new Map();
+  rows.forEach((variant, index) => {
+    const identity = capturedVariantIdentity(variant, index);
+    const existing = byIdentity.get(identity);
+    if (!existing) {
+      byIdentity.set(identity, { ...variant });
+      return;
+    }
+    const preferred = capturedVariantCompleteness(variant) > capturedVariantCompleteness(existing) ? variant : existing;
+    const fallback = preferred === variant ? existing : variant;
+    byIdentity.set(identity, {
+      ...fallback,
+      ...preferred,
+      specPairs: Array.isArray(preferred.specPairs) && preferred.specPairs.length ? preferred.specPairs : (fallback.specPairs || []),
+    });
+  });
+  return [...byIdentity.values()];
+}
+
+function captureDraftBlocker(reasonCode, title, nextAction) {
+  return { reasonCode, title, nextAction };
+}
+
+function exactPackageEvidence(candidate = {}) {
+  const sourceEvidence = candidate.sourceEvidence || {};
+  const field = sourceEvidence.fields?.package || {};
+  const snapshotHash = String(sourceEvidence.snapshotHash || "").trim();
+  const expectedRef = /^sha256:[a-f0-9]{64}$/i.test(snapshotHash) ? `snapshot:${snapshotHash.slice("sha256:".length)}` : "";
+  const values = field.values || {};
+  const current = candidate.sizeWeight || {};
+  const same = ["weightG", "lengthMm", "widthMm", "heightMm"].every((key) => (
+    Number(values[key]) > 0 && Number(values[key]) === Number(current[key])
+  ));
+  return field.source === "1688_package" && expectedRef && String(field.evidenceRef || "") === expectedRef && same;
+}
+
+export function buildCaptureDraftSkeleton({ captureId = "", candidate = {}, job = {}, workflowRunId = "" } = {}) {
+  const variants = normalizeCapturedSkuVariants(candidate.skuVariants || []);
+  const normalization = candidate.captureVariantNormalization || {};
+  const rawVariantCount = Number(normalization.rawCount ?? (Array.isArray(candidate.skuVariants) ? candidate.skuVariants.length : 0));
+  const sourceSkuIds = variants.map((variant) => String(variant?.sourceSkuId || variant?.source_sku_id || variant?.skuId || variant?.sku_id || "").trim()).filter(Boolean);
+  const evidenceFields = candidate.sourceEvidence?.fields || {};
+  const supplierPresent = evidenceFields.supplier?.source && evidenceFields.supplier.source !== "missing"
+    && Boolean(evidenceFields.supplier.id || evidenceFields.supplier.name);
+  const procurementPresent = evidenceFields.procurement?.source && evidenceFields.procurement.source !== "missing"
+    && Number(evidenceFields.procurement.moq || 0) > 0
+    && Number(evidenceFields.procurement.priceTierCount || 0) > 0;
+  const mediaReady = String(candidate.mediaCompliance?.status || "") === "ready";
+  const blockers = [];
+  if (!variants.length || sourceSkuIds.length !== variants.length) {
+    blockers.push(captureDraftBlocker("DRAFT_SOURCE_SKU_BINDING_REQUIRED", "来源 SKU 身份不完整", "重新采集并确保每个规格都带有唯一的 1688 SKU ID"));
+  }
+  if (!supplierPresent) blockers.push(captureDraftBlocker("DRAFT_SUPPLIER_EVIDENCE_REQUIRED", "供应商身份待补齐", "补齐当前 1688 供应商名称或身份凭据"));
+  if (!procurementPresent) blockers.push(captureDraftBlocker("DRAFT_PROCUREMENT_EVIDENCE_REQUIRED", "采购 MOQ 与阶梯价待补齐", "补齐并核对当前商品的起订量和采购阶梯价"));
+  if (!exactPackageEvidence(candidate)) blockers.push(captureDraftBlocker("DRAFT_PACKAGE_EVIDENCE_REQUIRED", "包装尺重缺少可信来源", "补录实测包装尺重，或重新采集带 1688 包装证据的快照"));
+  if (!mediaReady) blockers.push(captureDraftBlocker("DRAFT_MEDIA_REVIEW_REQUIRED", "图片尚未通过合规检查", "完成图片 OCR、尺寸和来源风险检查"));
+  if (!String(job.listingContent?.title_ru || "").trim() || !String(job.listingContent?.description_ru || "").trim()) {
+    blockers.push(captureDraftBlocker("DRAFT_RUSSIAN_CONTENT_REQUIRED", "俄文标题和描述待生成或确认", "进入上架草稿补齐俄文标题和描述"));
+  }
+  if (!Number(job.manualCategory?.description_category_id || 0) || !Number(job.manualCategory?.type_id || 0)) {
+    blockers.push(captureDraftBlocker("DRAFT_CATEGORY_REQUIRED", "Ozon 类目与类型待确认", "在当前店铺真实类目证据可用后选择类目和类型"));
+  }
+  return {
+    status: blockers.length ? "needs_review" : "draft_ready",
+    captureId: String(captureId || job.candidateId || ""),
+    draftId: String(job.id || ""),
+    workflowRunId: String(workflowRunId || job.workflowRunId || ""),
+    storeId: String(job.storeId || ""),
+    title: String(candidate.title || job.bestMatch?.candidateTitle || "").trim(),
+    offerId: String(candidate.capture?.offerId || candidate.sourceEvidence?.offerId || "").trim(),
+    snapshotHash: String(candidate.sourceEvidence?.snapshotHash || "").trim(),
+    rawVariantCount,
+    variantCount: variants.length,
+    duplicateVariantCount: Math.max(0, rawVariantCount - variants.length),
+    sourceSkuIds,
+    imageCount: Array.isArray(candidate.images) ? candidate.images.length : 0,
+    attributeCount: Array.isArray(candidate.attributes) ? candidate.attributes.length : 0,
+    blockers,
+    nextAction: blockers[0]?.nextAction || "打开本地草稿检查自动带入字段并准备预检",
+    sideEffect: "仅创建并复用本地草稿骨架；不会调用 Ozon、不会生成付费内容、不会提交商品。",
+  };
+}
+
 export async function createListingWorkflowFrom1688Capture(captureId, { parsed = {}, storeId = "", captureReview = {} } = {}) {
   const id = String(captureId || "").trim();
   const item = await getCollectionItem(id, { storeId: String(storeId || "").trim() });
@@ -2372,31 +2479,110 @@ export async function createListingWorkflowFrom1688Capture(captureId, { parsed =
   // must return its existing local draft/workflow instead of creating a second
   // seller task for every click or page refresh.
   const effectiveStoreId = String(storeId || item.storeId || "").trim();
-  const existingJobs = await readJobs();
-  const existing = existingJobs.find((job) => (
-    String(job?.candidateId || "").trim() === id
-      && listingDraftStoreMatches(job, effectiveStoreId)
-  ));
-  if (existing) {
-    const workflowRun = await findOrCreateWorkflowForAutoListingJob(existing).catch(() => null);
-    return {
-      ok: true,
-      duplicate: true,
-      job: existing,
-      workflowRunId: String(workflowRun?.id || existing.workflowRunId || ""),
-      captureReview: review,
-      nextAction: "打开已有商品草稿继续补齐资料并运行预检",
-    };
-  }
-  const job = {
-    id: makeId("al_"), candidateId: id, storeId: effectiveStoreId, source: "1688",
-    status: "draft_pending", stage: "capture_handoff", steps: [], candidateData: { ...candidate, source: "1688", sourceEvidence: candidate.sourceEvidence || {} },
-    bestMatch: { candidateTitle: candidate.title || "", candidateUrl: candidate.url || candidate.sourceEvidence?.canonicalUrl || "", source: "1688" },
-    listingContent: {}, createdAt: nowIso(), updatedAt: nowIso(), sourceEvidenceReview: review,
+  const normalizedVariants = normalizeCapturedSkuVariants(candidate.skuVariants || []);
+  const variantNormalization = {
+    rawCount: Array.isArray(candidate.skuVariants) ? candidate.skuVariants.length : 0,
+    uniqueCount: normalizedVariants.length,
+    duplicateCount: Math.max(0, (Array.isArray(candidate.skuVariants) ? candidate.skuVariants.length : 0) - normalizedVariants.length),
   };
-  await mutateJobs((jobs) => { jobs.push(job); });
+  let duplicate = false;
+  let snapshotConflict = null;
+  let job = null;
+  await mutateJobs((jobs) => {
+    const existing = jobs.find((entry) => (
+      String(entry?.candidateId || "").trim() === id
+        && listingDraftStoreMatches(entry, effectiveStoreId)
+    ));
+    if (existing) {
+      duplicate = true;
+      job = existing;
+      return;
+    }
+    const createdAt = nowIso();
+    job = {
+      id: makeId("al_"), candidateId: id, storeId: effectiveStoreId, source: "1688",
+      status: "draft_pending", stage: "capture_handoff", steps: [],
+      candidateData: {
+        ...candidate,
+        source: "1688",
+        sourceEvidence: candidate.sourceEvidence || {},
+        skuVariants: normalizedVariants,
+        captureVariantNormalization: variantNormalization,
+      },
+      bestMatch: { candidateTitle: candidate.title || "", candidateUrl: candidate.url || candidate.sourceEvidence?.canonicalUrl || "", source: "1688" },
+      listingContent: {}, createdAt, updatedAt: createdAt, sourceEvidenceReview: review,
+    };
+    jobs.push(job);
+  });
+  if (duplicate) {
+    const previousSnapshotHash = String(job?.candidateData?.sourceEvidence?.snapshotHash || "").trim();
+    const currentSnapshotHash = String(candidate?.sourceEvidence?.snapshotHash || "").trim();
+    const snapshotChanged = Boolean(previousSnapshotHash && currentSnapshotHash && previousSnapshotHash !== currentSnapshotHash);
+    const progressedBeyondHandoff = !["", "capture_handoff"].includes(String(job?.stage || ""))
+      || !["", "draft", "draft_pending"].includes(String(job?.status || ""))
+      || Boolean(job?.payloadDraftHash || job?.listingResult?.taskId);
+    if (snapshotChanged && progressedBeyondHandoff) {
+      snapshotConflict = {
+        ok: false,
+        reasonCode: "CAPTURE_DRAFT_SNAPSHOT_CHANGED",
+        error: "当前采集快照已变化，旧草稿已有后续处理，不能自动覆盖。",
+        nextAction: "返回采集箱核对新快照，并显式新建或重置当前草稿后再继续。",
+      };
+      return snapshotConflict;
+    }
+    const existingVariantRows = Array.isArray(job?.candidateData?.skuVariants) ? job.candidateData.skuVariants : [];
+    const currentVariants = normalizeCapturedSkuVariants(snapshotChanged || !existingVariantRows.length
+      ? (candidate.skuVariants || [])
+      : existingVariantRows);
+    await updateJob(job.id, {
+      candidateData: {
+        ...(snapshotChanged ? candidate : (job.candidateData || candidate)),
+        source: "1688",
+        sourceEvidence: snapshotChanged ? (candidate.sourceEvidence || {}) : (job.candidateData?.sourceEvidence || candidate.sourceEvidence || {}),
+        skuVariants: currentVariants,
+        captureVariantNormalization: snapshotChanged ? variantNormalization : (job.candidateData?.captureVariantNormalization || variantNormalization),
+      },
+      ...(snapshotChanged ? {
+        listingContent: {},
+        manualCategory: {},
+        draftSkeleton: null,
+        sourceEvidenceReview: review,
+      } : {}),
+    });
+    job = await getAutoListingJob(job.id) || job;
+  }
+  if (snapshotConflict) return snapshotConflict;
   const workflowRun = await findOrCreateWorkflowForAutoListingJob(job).catch(() => null);
-  return { ok: true, duplicate: false, job, workflowRunId: workflowRun?.id || "", captureReview: review, nextAction: "补齐俄文内容、类目、采购成本和媒体后运行预检" };
+  const draftSkeleton = buildCaptureDraftSkeleton({ captureId: id, candidate: job.candidateData || candidate, job, workflowRunId: workflowRun?.id || "" });
+  await updateJob(job.id, { workflowRunId: workflowRun?.id || "", draftSkeleton });
+  job = await getAutoListingJob(job.id) || { ...job, workflowRunId: workflowRun?.id || "", draftSkeleton };
+  if (workflowRun) {
+    await upsertWorkflowNode(workflowRun.id, {
+      key: "capture_handoff",
+      name: "真实货源进入草稿",
+      status: "success",
+      input: { captureId: id, storeId: effectiveStoreId, snapshotHash: draftSkeleton.snapshotHash },
+      output: { draftSkeleton },
+      branch: draftSkeleton.blockers.length ? "seller_repair" : "draft_ready",
+      riskScore: draftSkeleton.blockers.length ? 55 : 10,
+      riskLevel: draftSkeleton.blockers.length ? "medium" : "low",
+      reason: draftSkeleton.blockers.length
+        ? `本地草稿骨架已创建，仍有 ${draftSkeleton.blockers.length} 项资料需要补齐。`
+        : "本地草稿骨架已创建，来源字段已完整绑定。",
+      recommendedActions: [draftSkeleton.nextAction],
+      actions: ["open_listing_draft"],
+      runStatus: "running",
+    });
+  }
+  return {
+    ok: true,
+    duplicate,
+    job,
+    workflowRunId: workflowRun?.id || "",
+    draftSkeleton,
+    captureReview: review,
+    nextAction: draftSkeleton.nextAction,
+  };
 }
 
 export async function createListingDraftFrom1688Candidate(candidateId, { storeId = "", storeIds = [], captureReview = {} } = {}) {

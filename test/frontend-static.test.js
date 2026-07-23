@@ -226,6 +226,26 @@ test("collection box requires exact snapshot confirmation before draft handoff",
   assert.match(source, /未访问 1688、未调用 Ozon/);
 });
 
+test("snapshot confirmation immediately opens the unique local draft skeleton", async () => {
+  const js = await readFile(new URL("../public/app.js", import.meta.url), "utf8");
+  const reviewStart = js.indexOf("async function reviewCaptureSnapshot");
+  const reviewEnd = js.indexOf("async function createDraftFromCapture", reviewStart);
+  const reviewBody = js.slice(reviewStart, reviewEnd);
+  assert.match(reviewBody, /openCaptureDraftSkeleton\(id, storeId\)/);
+  assert.match(reviewBody, /确认当前快照并创建本地草稿骨架/);
+
+  const openStart = js.indexOf("async function openCaptureDraftSkeleton");
+  const openEnd = js.indexOf("async function createDraftFromCapture", openStart);
+  const openBody = js.slice(openStart, openEnd);
+  assert.match(openBody, /\/api\/1688\/captures\/\$\{encodeURIComponent\(id\)\}\/workflow/);
+  assert.match(openBody, /data\.draftSkeleton/);
+  assert.match(openBody, /state\.selectedWorkflowRunId = workflowRunId/);
+  assert.match(openBody, /state\.selectedWorkflowNodeKey = "capture_handoff"/);
+  assert.match(openBody, /activateErpView\("listing"\)/);
+  assert.match(openBody, /loadAutoListJobs/);
+  assert.doesNotMatch(openBody, /submitListing\s*\(/);
+});
+
 test("capture batch actions cannot bypass snapshot review", async () => {
   const js = await readFile(new URL("../public/app.js", import.meta.url), "utf8");
   const generateStart = js.indexOf("async function batchGenerateDrafts");

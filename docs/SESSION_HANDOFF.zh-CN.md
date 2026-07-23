@@ -1,9 +1,20 @@
 # Ozon ERP 会话接管与恢复记录
 
+## 2026-07-23 G2-S1 唯一本地草稿骨架（等待真实确认）
+
+- `createListingWorkflowFrom1688Capture` 现在按 capture/store 原子复用唯一 auto-listing job，并复用精确绑定的 workflow；重复点击或刷新不会产生重复商品任务。
+- 真实样本暴露出采集器返回 18 行 SKU、但仅 9 个唯一 `skuId`。草稿入口按来源 SKU 身份去重、优先保留字段更完整的行，并持久化原始/唯一/重复计数；此前文档中的“18 个 SKU”已纠正为“18 行采集结果、9 个唯一来源 SKU”。
+- 草稿骨架将供应商、MOQ/阶梯价、可信包装尺重、媒体合规、俄文内容、Ozon 类目集中为卖家阻塞任务；`capture_hint` 尺重不会被升级为 `1688_package`。
+- 界面在用户确认精确 snapshot hash 后立即创建/复用本地草稿骨架、进入当前商品上架中心，并展示唯一下一步；确认动作仍不可绕过，整个交接不调用 Seller API、付费模型或 Ozon 写入。
+- 修复测试隔离：capture/workflow 集成测试显式把 `WORKFLOW_RUNS_FILE` 指向临时目录，避免隔离测试把 workflow 数据写进项目 `data`。
+- 提交前代码审查补齐三项重要边界：跨快照不能沿用旧候选数据，workflow 创建改为同一存储事务内 find-or-create，并发 8 次仍只有 1 个；缺少来源 SKU ID 的规格必须加入阻塞，不能显示为草稿就绪。
+- 验证：capture 集成 7/7、新增 workflow/前端定向通过、`npm test` 1253/1253、lint 76 文件、5178 healthz 与 frontend runtime smoke 通过、offline acceptance 通过；`networkAccessed=false`、`databaseObserved=false`、`writesExecuted=false`。
+- 当前阶段仍是 G2-S1 `CURRENT`。下一步唯一入口：用户在真实 capture `c178476424685142rv6` 点击“确认当前快照”，随后核对生成的 9 SKU 草稿与集中阻塞项；未完成该真实人工回执前不得进入 G3。
+
 ## 2026-07-23 G1-S3 首个真实 1688 商品回放完成
 
 - Chrome 扩展已成功采集真实 Offer `992997159052` 到店铺 `3815760-4`，持久化 ID `c178476424685142rv6`；界面返回“已采集过”，同店同 Offer 仍只有 1 条记录。
-- 真实回执包含 18 个 SKU、28 张图片、19 个属性和绑定快照；来源校验为 `ok`。供应商身份、采购 MOQ/阶梯价仍为明确的 `needs_review`，没有被默认值升级为可信证据。
+- 真实回执包含 18 行 SKU 采集结果（归一化后为 9 个唯一来源 SKU）、28 张图片、19 个属性和绑定快照；来源校验为 `ok`。供应商身份、采购 MOQ/阶梯价仍为明确的 `needs_review`，没有被默认值升级为可信证据。
 - 修复两个真实阻断：扩展不再通过 runtime message 传递整页 HTML；本地回环 ERP 只允许格式合法的 Chrome 扩展 Origin，外部绑定和普通网站来源仍拒绝。
 - 验证：全量 `npm test` 1247/1247、lint 76 文件、runtime smoke（7 views、13 nav bindings、4 stores）及 offline acceptance 通过；未连接 Ozon、未执行付费模型或写入。
 - G1 已完成。当前 WIP=1 唯一切片转为 G2-S1：从该真实 capture 生成或复用唯一的店铺绑定本地草稿骨架；不得提前进入真实类目属性、FBS、活动或财务。

@@ -1900,24 +1900,25 @@ test("frontend exposes the flow cockpit application shell", async () => {
   assert.match(css, /\.app-shell/);
 });
 
-test("frontend exposes the redesigned ERP information architecture", async () => {
+test("frontend exposes the seller-first ERP information architecture", async () => {
   const [html, js, css] = await Promise.all([
     readFile(new URL("../public/index.html", import.meta.url), "utf8"),
     readFile(new URL("../public/app.js", import.meta.url), "utf8"),
     readFile(new URL("../public/styles.css", import.meta.url), "utf8"),
   ]);
 
-  assert.match(html, /店铺总览/);
-  assert.match(html, /商品管理/);
-  assert.match(html, /选品采购/);
-  assert.match(html, /上架中心/);
+  assert.match(html, /工作台/);
+  assert.match(html, /1688 采集/);
+  assert.match(html, /商品草稿/);
+  assert.match(html, /商品状态/);
   assert.match(html, /订单履约/);
-  assert.match(html, /库存仓库/);
+  assert.match(html, /更多功能/);
+  assert.match(html, /仓库与库存/);
   assert.match(html, /营销活动/);
-  assert.match(html, /财务利润/);
-  assert.match(html, /客户售后/);
-  assert.match(html, /数据报表/);
-  assert.match(html, /系统配置/);
+  assert.match(html, /利润核算/);
+  assert.match(html, /售后风险/);
+  assert.match(html, /经营报表/);
+  assert.match(html, /API 与系统/);
   assert.match(html, /erpArchitectureMap/);
   assert.match(html, /listingPrimaryFlow/);
   assert.match(html, /店铺经营总览/);
@@ -2396,19 +2397,28 @@ test("frontend exposes a seller operating model instead of hidden developer navi
   assert.match(css, /nav-group-always-visible/);
 });
 
-test("frontend uses a readable business theme and keeps all module labels visible", async () => {
-  const [html, css] = await Promise.all([
+test("frontend keeps the golden path primary and moves secondary modules behind more functions", async () => {
+  const [html, js, css] = await Promise.all([
     readFile(new URL("../public/index.html", import.meta.url), "utf8"),
+    readFile(new URL("../public/app.js", import.meta.url), "utf8"),
     readFile(new URL("../public/styles.css", import.meta.url), "utf8"),
   ]);
 
-  assert.match(html, /app-rail-wide/);
+  assert.match(html, /seller-primary-nav/);
+  assert.match(html, /1688 采集/);
+  assert.match(html, /商品草稿/);
+  assert.match(html, /id="secondaryNavToggle"/);
+  assert.match(html, /aria-controls="sellerSecondaryNav"/);
+  assert.match(html, /seller-secondary-nav/);
+  assert.match(js, /function toggleSecondaryNavigation/);
+  assert.match(html, /data-nav-group="sourcing-procurement" data-view="sourcing"/);
+  assert.match(html, /data-nav-group="listing-center" data-view="listing"/);
+  assert.match(js, /if \(button\.dataset\.view\)[\s\S]*activateErpView\(button\.dataset\.view\)/);
   assert.match(css, /business-erp-theme/);
   assert.match(css, /--business-bg:/);
   assert.match(css, /--business-panel:/);
   assert.match(css, /--business-text:/);
-  assert.match(css, /\.nav-group \{ display: block; \}/);
-  assert.doesNotMatch(css, /\.nav-group \{ display: none; \}/);
+  assert.match(css, /\.seller-secondary-nav:not\(\.is-open\)/);
 });
 
 test("business ERP sidebar keeps text labels visible on desktop widths", async () => {
@@ -4190,6 +4200,58 @@ test("ordinary seller dashboard exposes the golden-path task summary", async () 
   assert.match(js, /blockedStageLabel/);
   assert.match(js, /1688 货源采集/);
   assert.match(js, /不会调用 Ozon 写接口/);
+});
+
+test("every view exposes one current product task with capture review taking priority", async () => {
+  const [html, js, css] = await Promise.all([
+    readFile(new URL("../public/index.html", import.meta.url), "utf8"),
+    readFile(new URL("../public/app.js", import.meta.url), "utf8"),
+    readFile(new URL("../public/styles.css", import.meta.url), "utf8"),
+  ]);
+  assert.match(html, /id="globalCurrentTaskBar"/);
+  assert.match(html, /id="globalCurrentTaskBody"/);
+  assert.match(js, /function currentCaptureSellerTask/);
+  assert.match(js, /function renderGlobalCurrentTaskBar/);
+  assert.match(js, /function openCurrentCaptureTask/);
+  assert.match(js, /data-global-capture-id/);
+  assert.match(js, /state\.currentCaptureId \|\| new URLSearchParams\(window\.location\.search\)\.get\("captureId"\)/);
+  assert.match(js, /extension_browser\|browser_extension/);
+  assert.doesNotMatch(js, /const rank = reviewNeeded \?/);
+  assert.match(js, /await switchStoreContext\(storeId, \{ loadWarehouses: false \}\)/);
+  assert.match(js, /async function switchStoreContext\(storeId, \{ loadWarehouses = true \} = \{\}\)/);
+  assert.match(js, /if \(loadWarehouses\) await loadListingWarehouses\(\)/);
+  assert.match(js, /dispatchEvent\(new Event\("change"\)\)/);
+  assert.match(css, /\.global-current-task-bar/);
+});
+
+test("capture table keeps the source compact and the action column visible", async () => {
+  const [html, js, css] = await Promise.all([
+    readFile(new URL("../public/index.html", import.meta.url), "utf8"),
+    readFile(new URL("../public/app.js", import.meta.url), "utf8"),
+    readFile(new URL("../public/styles.css", import.meta.url), "utf8"),
+  ]);
+  assert.match(html, /capture-table-wrap/);
+  assert.match(html, /capture-box-table/);
+  assert.match(js, /capture-source-url/);
+  assert.match(css, /\.capture-box-table[\s\S]*table-layout:\s*fixed/);
+  assert.match(css, /\.capture-box-table \.row-actions[\s\S]*position:\s*sticky/);
+  assert.match(css, /\.capture-source-url[\s\S]*text-overflow:\s*ellipsis/);
+});
+
+test("seller workflow console hides fixture runs unless advanced data is requested", async () => {
+  const [html, js] = await Promise.all([
+    readFile(new URL("../public/index.html", import.meta.url), "utf8"),
+    readFile(new URL("../public/app.js", import.meta.url), "utf8"),
+  ]);
+  assert.match(html, /id="toggleSyntheticWorkflows"/);
+  assert.match(html, /id="syntheticWorkflowNotice"/);
+  assert.match(js, /showSyntheticWorkflows:\s*false/);
+  assert.match(js, /function isSyntheticWorkflowRun/);
+  assert.match(js, /function sellerWorkflowRuns/);
+  assert.match(js, /sourceMarkers\.some/);
+  assert.match(js, /\^\(fixture product\|test product\|测试商品\|demo product\)/);
+  assert.doesNotMatch(js, /fixture\\b\|test\[_ -\]workflow/);
+  assert.match(js, /测试数据已隐藏/);
 });
 
 test("listing category workbench exposes current-store evidence status", async () => {

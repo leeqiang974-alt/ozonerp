@@ -120,6 +120,7 @@ const state = {
   reverseGuidanceCards: [],
   workflowRuns: [],
   workflowSummary: null,
+  showSyntheticWorkflows: false,
   ruleApprovalAuditIntents: [],
   ruleApprovalAuditSummary: null,
   rulePublishReviewIntents: [],
@@ -3482,7 +3483,7 @@ function renderListingAutomationGuardrails() {
 }
 
 function singleListingOutcomeState() {
-  const latestRun = [...(state.workflowRuns || [])]
+  const latestRun = sellerWorkflowRuns()
     .sort((left, right) => String(right.updatedAt || right.createdAt || "").localeCompare(String(left.updatedAt || left.createdAt || "")))[0];
   const nodes = Array.isArray(latestRun?.nodes) ? latestRun.nodes : [];
   const blockingNode = nodes.find((node) => node.status === "failed" || node.status === "waiting_human")
@@ -3563,7 +3564,7 @@ function latestCurrentProductTask() {
     ready: 4,
     done: 5,
   };
-  return [...(state.workflowRuns || [])]
+  return sellerWorkflowRuns()
     .map((run) => ({
       task: run.summary?.currentProductTask || null,
       updatedAt: run.updatedAt || run.createdAt || "",
@@ -3763,7 +3764,7 @@ function cockpitWorkflowPhases() {
 // expose currentProductTask, so the fallback is deliberately labelled as a
 // workflow-derived summary rather than pretending it is an Ozon response.
 function latestGoldenPathSellerTask() {
-  const runs = [...(state.workflowRuns || [])]
+  const runs = sellerWorkflowRuns()
     .sort((left, right) => String(right.updatedAt || right.createdAt || "").localeCompare(String(left.updatedAt || left.createdAt || "")));
   for (const run of runs) {
     const explicit = run?.goldenPathSellerTask || run?.summary?.goldenPathSellerTask;
@@ -3843,8 +3844,8 @@ function renderStoreOperatingOverview() {
   const orders = state.orderRows || [];
   const products = state.productRows || [];
   const promotions = state.promotionRows || [];
-  const workflows = state.workflowRuns || [];
-  const summary = state.workflowSummary || {};
+  const workflows = sellerWorkflowRuns();
+  const summary = sellerWorkflowSummary();
   const currentProductTask = latestCurrentProductTask();
   renderGoldenPathSellerTask();
   // The dashboard must not derive a sales number from whatever order rows are
@@ -3874,7 +3875,7 @@ function renderStoreOperatingOverview() {
   const activePromotions = promotionCoverageKnown
     ? promotions.filter((item) => !/inactive|closed|finished/i.test(String(item.status || ""))).length
     : null;
-  const waitingHuman = Number(summary.waitingHuman || workflows.filter((run) => run.status === "waiting_human").length);
+  const waitingHuman = Number(summary.waitingHuman || 0);
   if ($("#workflowStatusCount")) $("#workflowStatusCount").textContent = String(workflows.length || 0);
   if ($("#erpDashboardOrderCell")) $("#erpDashboardOrderCell").textContent = String(orders.length || "-");
   if ($("#erpDashboardProductCell")) $("#erpDashboardProductCell").textContent = String(products.length || "-");
@@ -4044,8 +4045,8 @@ function domainPanelSnapshot() {
   const orders = state.orderRows || [];
   const products = state.productRows || [];
   const promotions = state.promotionRows || [];
-  const workflows = state.workflowRuns || [];
-  const summary = state.workflowSummary || {};
+  const workflows = sellerWorkflowRuns();
+  const summary = sellerWorkflowSummary();
   const orderBatch = state.orderBatch || null;
   const orderCoverageKnown = orderBatch?.loaded === true
     && orderBatch.failed !== true
@@ -5085,7 +5086,7 @@ async function logoutErpSession() {
 
 function renderCockpitDashboard() {
   renderStoreOperatingOverview();
-  const summary = state.workflowSummary || {};
+  const summary = sellerWorkflowSummary();
   const riskBanner = $("#cockpitRiskBanner");
   const waitingHuman = Number(summary.waitingHuman || 0);
   const blocking = Number(summary.blocking || 0);
@@ -5099,7 +5100,7 @@ function renderCockpitDashboard() {
   const kpis = $("#cockpitKpis");
   if (kpis) {
     kpis.innerHTML = `
-      <article><span>运行中工作流</span><strong>${Number(summary.running || 0)}</strong><small>总计 ${Number(summary.total || state.workflowRuns.length || 0)}</small></article>
+      <article><span>运行中工作流</span><strong>${Number(summary.running || 0)}</strong><small>真实任务 ${Number(summary.total || 0)}</small></article>
       <article class="${waitingHuman ? "is-warning" : ""}"><span>等待人工</span><strong>${waitingHuman}</strong><small>高风险 ${Number(summary.highRisk || 0)}</small></article>
       <article><span>近 14 天 FBS 单</span><strong id="orderCount">${escapeHtml($("#orderCount")?.textContent || "-")}</strong><small>订单履约</small></article>
       <article><span>系统状态</span><strong id="healthStatus">${escapeHtml($("#healthStatus")?.textContent || "未测试")}</strong><small><span id="storeCount">${state.stores.length}</span> 店铺 · <span id="warehouseCount">${escapeHtml($("#warehouseCount")?.textContent || "-")}</span> 仓库</small></article>
@@ -5107,13 +5108,13 @@ function renderCockpitDashboard() {
   }
   const focus = $("#cockpitWorkflowFocus");
   if (focus) {
-    const runs = [...(state.workflowRuns || [])].sort((left, right) => {
+    const runs = sellerWorkflowRuns().sort((left, right) => {
       const leftRisk = left.status === "waiting_human" ? 2 : (left.summary?.riskLevel === "high" ? 1 : 0);
       const rightRisk = right.status === "waiting_human" ? 2 : (right.summary?.riskLevel === "high" ? 1 : 0);
       return rightRisk - leftRisk;
     }).slice(0, 4);
     focus.innerHTML = `
-      <div class="section-headline"><div><h2>当前工作流焦点</h2><p class="hint">优先显示等待人工和高风险任务。</p></div><button class="ghost" type="button" data-cockpit-view="workflow-console">查看全部 ${state.workflowRuns.length}</button></div>
+      <div class="section-headline"><div><h2>当前工作流焦点</h2><p class="hint">优先显示真实业务中等待人工和高风险的任务。</p></div><button class="ghost" type="button" data-cockpit-view="workflow-console">查看真实任务 ${summary.total}</button></div>
       <div class="cockpit-focus-list">${runs.length ? runs.map((run) => `
         <button type="button" class="cockpit-focus-item" data-cockpit-run-id="${escapeHtml(run.id)}">
           <span><strong>${escapeHtml(run.title || run.id)}</strong><small>${escapeHtml(run.currentNode || run.summary?.currentNodeName || "等待节点")}</small></span>
@@ -6117,9 +6118,10 @@ async function loadCaptureBox() {
   const data = await api("/api/1688/captures");
   state.captureRows = data.items || [];
   renderCaptureBox();
+  renderGlobalCurrentTaskBar();
 }
 
-function openCaptureFromDeepLink() {
+async function openCaptureFromDeepLink() {
   const captureId = String(new URLSearchParams(window.location.search).get("captureId") || "").trim();
   if (!captureId) return false;
   const item = state.captureRows.find((row) => String(row.id || "") === captureId);
@@ -6127,14 +6129,75 @@ function openCaptureFromDeepLink() {
     toast("采集结果已回传，但当前店铺看不到这条采集记录，请先检查店铺范围。", "error");
     return false;
   }
-  document.querySelector('[data-view="sourcing"]')?.click();
-  window.setTimeout(() => {
-    const row = document.querySelector(`#captureBoxTable tr[data-id="${CSS.escape(captureId)}"]`);
-    row?.scrollIntoView({ behavior: "smooth", block: "center" });
-    row?.classList.add("capture-deep-link-focus");
-    window.setTimeout(() => row?.classList.remove("capture-deep-link-focus"), 2200);
-  }, 0);
-  toast("已定位刚采集的商品；下一步生成本地草稿，不会自动提交 Ozon。", "ok");
+  await openCurrentCaptureTask(captureId, item.storeId);
+  return true;
+}
+
+function isSyntheticCapture(item = {}) {
+  const product = item.parsed || {};
+  const fixture = product.sourceEvidenceRecord?.fixtureProvenance || product.fixtureProvenance || item.fixtureProvenance || {};
+  const captureMode = String(fixture.captureMode || product.capture?.captureMode || item.captureMode || "").toLowerCase();
+  const title = String(product.title || item.title || "").toLowerCase();
+  return fixture.manifestHash || /fixture|replay|test/.test(captureMode) || /fixture product|test product|测试商品/.test(title);
+}
+
+function currentCaptureSellerTask() {
+  const realCaptures = (state.captureRows || []).filter((item) => !isSyntheticCapture(item));
+  const requestedId = String(state.currentCaptureId || new URLSearchParams(window.location.search).get("captureId") || "").trim();
+  const ranked = realCaptures.map((item) => {
+    const product = item.parsed || {};
+    const snapshotHash = String(product.sourceEvidenceRecord?.snapshot?.hash || product.sourceEvidence?.snapshotHash || "").trim();
+    const review = product.captureReview || item.captureReview || {};
+    const reviewApproved = review.humanConfirmed === true
+      && String(review.reviewedSnapshotHash || "").trim() === snapshotHash
+      && /^sha256:[a-f0-9]{64}$/i.test(snapshotHash);
+    const reviewNeeded = !reviewApproved && /^sha256:[a-f0-9]{64}$/i.test(snapshotHash);
+    const hasDraft = Boolean(item.draft?.parentSku || item.draft?.payloadDraftHash || item.draft?.categoryId || item.draft?.typeId);
+    const captureMode = String(product.sourceEvidenceRecord?.captureIdentity?.captureMode || product.capture?.captureMode || item.captureMode || "").toLowerCase();
+    const rank = String(item.id || "") === requestedId ? 0 : /extension_browser|browser_extension/.test(captureMode) ? 1 : 2;
+    return { item, product, reviewNeeded, hasDraft, rank };
+  }).sort((left, right) => left.rank - right.rank
+    || String(right.item.updatedAt || right.item.receivedAt || "").localeCompare(String(left.item.updatedAt || left.item.receivedAt || "")));
+  return ranked[0] || null;
+}
+
+function renderGlobalCurrentTaskBar() {
+  const target = $("#globalCurrentTaskBody");
+  if (!target) return;
+  const task = currentCaptureSellerTask();
+  if (!task) {
+    target.innerHTML = `<div><strong>暂无真实采集商品</strong><small>先在 1688 商品页使用采集插件；测试数据不会占用这里。</small></div><button type="button" class="primary" data-cockpit-view="sourcing">去 1688 采集</button>`;
+    return;
+  }
+  const { item, product, reviewNeeded, hasDraft } = task;
+  const store = state.stores.find((row) => row.id === item.storeId);
+  const status = reviewNeeded ? "等待你确认当前 1688 快照" : hasDraft ? "本地草稿已建立，继续补资料与预检" : "采集完成，继续生成本地草稿";
+  target.innerHTML = `
+    <div class="global-current-task-copy">
+      <strong title="${escapeHtml(product.title || "未命名商品")}">${escapeHtml(product.title || "未命名商品")}</strong>
+      <small>${escapeHtml(store?.name || item.storeId || "店铺未绑定")} · ${escapeHtml(status)}</small>
+    </div>
+    <button type="button" class="primary" data-global-capture-id="${escapeHtml(item.id)}" data-global-capture-store-id="${escapeHtml(item.storeId || "")}">${reviewNeeded ? "去确认快照" : "继续当前商品"}</button>
+  `;
+}
+
+async function openCurrentCaptureTask(captureId = "", storeId = "") {
+  const id = String(captureId || "").trim();
+  const item = state.captureRows.find((row) => String(row.id || "") === id);
+  if (!item) {
+    toast("当前采集商品已不存在，请刷新采集箱。", "error");
+    return false;
+  }
+  storeId = String(storeId || item.storeId || "").trim();
+  activateErpView("sourcing");
+  await switchStoreContext(storeId, { loadWarehouses: false });
+  if ($("#captureStoreSelect")) $("#captureStoreSelect").value = storeId;
+  state.currentCaptureId = id;
+  const row = document.querySelector(`#captureBoxTable tr[data-id="${CSS.escape(id)}"]`);
+  row?.scrollIntoView({ behavior: "smooth", block: "center" });
+  row?.classList.add("capture-deep-link-focus");
+  window.setTimeout(() => row?.classList.remove("capture-deep-link-focus"), 2200);
+  toast("已打开当前真实商品；操作按钮固定在右侧，不需要横向查找。", "ok");
   return true;
 }
 
@@ -7032,7 +7095,7 @@ function renderCaptureBox() {
         const draftStatus = captureDraftVariantStatuses(item);
         const sellerTask = captureSellerTaskView(item, { sourceEvidenceStatus, evidenceIssues });
         return `
-          <tr data-id="${item.id}">
+          <tr data-id="${item.id}" data-store-id="${escapeHtml(item.storeId || "")}">
             <td><input class="capture-check" type="checkbox" /></td>
             <td>${formatDateTime(item.updatedAt || item.receivedAt)}</td>
             <td>
@@ -7042,7 +7105,7 @@ function renderCaptureBox() {
             </td>
             <td>
               <strong>${escapeHtml(product.title || "未命名商品")}</strong>
-              <div class="status-sub">${escapeHtml(product.url || "")}</div>
+              <div class="status-sub capture-source-url" title="${escapeHtml(product.url || "")}">${escapeHtml(product.url || "")}</div>
               ${warningBadge}
               ${evidenceBadge}
               <div class="status-sub capture-source-evidence" data-source-evidence-status="${escapeHtml(sourceEvidenceStatus)}">下一步：${escapeHtml(sourceEvidenceNextAction)}</div>
@@ -7084,16 +7147,16 @@ function selectedCaptureSelections() {
     }));
 }
 
-async function switchStoreContext(storeId) {
+async function switchStoreContext(storeId, { loadWarehouses = true } = {}) {
   if (!storeId) throw new Error("采集记录没有归属店铺，请先在采集箱选择店铺");
   if (!state.stores.some((store) => store.id === storeId)) {
     throw new Error(`找不到采集记录归属店铺：${storeId}`);
   }
   if ($("#storeSelect").value !== storeId) {
     $("#storeSelect").value = storeId;
-    updateStoreHint();
+    $("#storeSelect").dispatchEvent(new Event("change"));
   }
-  await loadListingWarehouses();
+  if (loadWarehouses) await loadListingWarehouses();
 }
 
 function captureDraftVariantStatuses(item = {}) {
@@ -10693,8 +10756,50 @@ function workflowRunMatchesFilter(run = {}, filter = "all") {
   return true;
 }
 
+function isSyntheticWorkflowRun(run = {}) {
+  if (run.synthetic === true || run.fixture === true || run.summary?.synthetic === true) return true;
+  const sourceMarkers = [
+    run.sourceType,
+    run.summary?.sourceType,
+    run.fixtureProvenance?.captureMode,
+  ].filter(Boolean).map((value) => String(value).trim().toLowerCase());
+  if (sourceMarkers.some((value) => ["fixture", "fixture_replay", "synthetic", "synthetic_fixture", "test"].includes(value))) return true;
+  const titles = [
+    run.title,
+    run.name,
+    run.summary?.productTitle,
+    run.currentProductTask?.title,
+    run.summary?.currentProductTask?.title,
+    run.goldenPathSellerTask?.title,
+  ].filter(Boolean).map((value) => String(value).trim().toLowerCase());
+  return titles.some((value) => /^(fixture product|test product|测试商品|demo product)(?:\b|\s|$)/.test(value));
+}
+
+function sellerWorkflowRuns() {
+  return state.showSyntheticWorkflows
+    ? [...(state.workflowRuns || [])]
+    : (state.workflowRuns || []).filter((run) => !isSyntheticWorkflowRun(run));
+}
+
+function sellerWorkflowSummary() {
+  const runs = sellerWorkflowRuns();
+  return {
+    total: runs.length,
+    running: runs.filter((run) => run.status === "running").length,
+    waitingHuman: runs.filter((run) => run.status === "waiting_human" || run.summary?.status === "waiting_human").length,
+    blocking: runs.filter((run) => Boolean(run.summary?.blockingNodeKey) || run.status === "blocked").length,
+    highRisk: runs.filter((run) => run.summary?.riskLevel === "high").length,
+    live: runs.filter((run) => run.status === "live" || run.summary?.status === "live").length,
+    failed: runs.filter((run) => run.status === "failed").length,
+    lockedWaitingHuman: runs.filter((run) => run.locks?.waitingHuman === true || run.locks?.waiting_human === true).length,
+    submitLocked: runs.filter((run) => run.locks?.submit === true || run.locks?.submitLocked === true).length,
+    lockedPaused: runs.filter((run) => run.locks?.paused === true).length,
+  };
+}
+
 function selectedWorkflowRun() {
-  return state.workflowRuns.find((run) => run.id === state.selectedWorkflowRunId) || state.workflowRuns[0] || null;
+  const runs = sellerWorkflowRuns();
+  return runs.find((run) => run.id === state.selectedWorkflowRunId) || runs[0] || null;
 }
 
 function selectedWorkflowNode(run) {
@@ -10707,11 +10812,12 @@ async function loadWorkflowRuns() {
     const data = await api("/api/workflows");
     state.workflowRuns = data.items || data.runs || [];
     state.workflowSummary = data.summary || null;
-    if (!state.selectedWorkflowRunId && state.workflowRuns.length) {
-      state.selectedWorkflowRunId = state.workflowRuns[0].id;
+    const sellerRuns = sellerWorkflowRuns();
+    if (!state.selectedWorkflowRunId && sellerRuns.length) {
+      state.selectedWorkflowRunId = sellerRuns[0].id;
     }
-    if (!state.workflowRuns.some((run) => run.id === state.selectedWorkflowRunId)) {
-      state.selectedWorkflowRunId = state.workflowRuns[0]?.id || "";
+    if (!sellerRuns.some((run) => run.id === state.selectedWorkflowRunId)) {
+      state.selectedWorkflowRunId = sellerRuns[0]?.id || "";
       state.selectedWorkflowNodeKey = "";
     }
     renderWorkflowConsole();
@@ -10721,6 +10827,7 @@ async function loadWorkflowRuns() {
     // summary as well; otherwise the upload queue may keep showing the prior
     // product's blocker and safe next action.
     renderListingSellerTaskSummary();
+    renderGlobalCurrentTaskBar();
   } catch (error) {
     state.promotionProducts = [];
     state.promotionCandidates = [];
@@ -10761,14 +10868,22 @@ async function loadRulePublishReviewIntents() {
 function renderWorkflowRunList(run) {
   const list = $("#workflowRunList");
   if (!list) return;
-  if (!state.workflowRuns.length) {
+  const sellerRuns = sellerWorkflowRuns();
+  const hiddenCount = Math.max(0, (state.workflowRuns || []).length - sellerRuns.length);
+  const notice = $("#syntheticWorkflowNotice");
+  if (notice) notice.textContent = state.showSyntheticWorkflows
+    ? `正在显示全部 ${(state.workflowRuns || []).length} 条记录，其中包含测试数据。`
+    : `测试数据已隐藏 ${hiddenCount} 条，只显示真实业务记录。`;
+  const toggle = $("#toggleSyntheticWorkflows");
+  if (toggle) toggle.textContent = state.showSyntheticWorkflows ? "隐藏测试数据" : "显示测试数据";
+  if (!sellerRuns.length) {
     list.innerHTML = `<p class="hint">暂无工作流记录。跑一次自动上架后，这里会显示每个节点。</p>`;
     return;
   }
-  const filteredRuns = state.workflowRuns.filter((item) => workflowRunMatchesFilter(item, state.workflowFilter));
+  const filteredRuns = sellerRuns.filter((item) => workflowRunMatchesFilter(item, state.workflowFilter));
   list.innerHTML = `
     <h2>运行记录</h2>
-    <p class="hint">当前筛选：${escapeHtml(state.workflowFilter)} · ${filteredRuns.length}/${state.workflowRuns.length} 条</p>
+    <p class="hint">当前筛选：${escapeHtml(state.workflowFilter)} · ${filteredRuns.length}/${sellerRuns.length} 条真实业务记录</p>
     <div class="workflow-run-items">
       ${filteredRuns.length ? filteredRuns.map((item) => `
         <button class="workflow-run-card ${item.id === run?.id ? "active" : ""}" data-run-id="${escapeHtml(item.id)}">
@@ -10788,7 +10903,7 @@ function renderWorkflowRunList(run) {
 function renderWorkflowSummaryCards() {
   const el = $("#workflowSummaryCards");
   if (!el) return;
-  const summary = state.workflowSummary || {};
+  const summary = sellerWorkflowSummary();
   el.innerHTML = `
     <article>
       <span>工作流</span>
@@ -10808,7 +10923,7 @@ function renderWorkflowSummaryCards() {
     <article>
       <span>阻塞节点</span>
       <strong>${Number(summary.blocking || 0)}</strong>
-      <small>${escapeHtml((summary.topNextActions || [])[0]?.action || "暂无推荐动作")}</small>
+      <small>选择任务后查看安全下一步</small>
     </article>
   `;
 }
@@ -15406,6 +15521,9 @@ function activateErpView(view, sourceTab = null) {
   syncNavigationForView(view, tab);
   targetView.classList.add("active");
   document.body.dataset.activeView = view;
+  if (!["dashboard", "sourcing", "listing", "products", "orders"].includes(view)) {
+    toggleSecondaryNavigation(true);
+  }
   return true;
 }
 
@@ -15420,9 +15538,24 @@ function toggleMobileNavigation(force) {
   return shouldOpen;
 }
 
+function toggleSecondaryNavigation(force) {
+  const nav = $("#sellerSecondaryNav");
+  const button = $("#secondaryNavToggle");
+  if (!nav || !button) return false;
+  const shouldOpen = typeof force === "boolean" ? force : !nav.classList.contains("is-open");
+  nav.classList.toggle("is-open", shouldOpen);
+  button.setAttribute("aria-expanded", String(shouldOpen));
+  button.classList.toggle("is-open", shouldOpen);
+  return shouldOpen;
+}
+
 function bindApplicationNavigation() {
   document.querySelectorAll("[data-nav-group]").forEach((button) => {
     button.addEventListener("click", () => {
+      if (button.dataset.view) {
+        activateErpView(button.dataset.view);
+        return;
+      }
       const groupKey = button.dataset.navGroup;
       const panel = document.querySelector(`[data-nav-group-panel="${groupKey}"]`);
       if (!panel) return;
@@ -15431,7 +15564,18 @@ function bindApplicationNavigation() {
     });
   });
   on("#mobileNavToggle", "click", () => toggleMobileNavigation());
+  on("#secondaryNavToggle", "click", () => toggleSecondaryNavigation());
   on("#sidebarBackdrop", "click", () => toggleMobileNavigation(false));
+  $("#globalCurrentTaskBar")?.addEventListener("click", (event) => {
+    const captureButton = event.target.closest("[data-global-capture-id]");
+    if (captureButton) {
+      openCurrentCaptureTask(captureButton.dataset.globalCaptureId, captureButton.dataset.globalCaptureStoreId)
+        .catch((error) => toast(error.message || "打开当前商品失败", "error"));
+      return;
+    }
+    const viewButton = event.target.closest("[data-cockpit-view]");
+    if (viewButton) activateErpView(viewButton.dataset.cockpitView);
+  });
   document.addEventListener("keydown", (event) => {
     if (event.key === "Escape") toggleMobileNavigation(false);
   });
@@ -16514,6 +16658,15 @@ $("#ozonManualParse")?.addEventListener("click", parseOzonSearchHtml);
     const chip = event.target.closest(".workflow-filter-chip");
     if (!chip) return;
     state.workflowFilter = chip.dataset.filter || "all";
+    renderWorkflowConsole();
+  });
+  $("#toggleSyntheticWorkflows")?.addEventListener("click", () => {
+    state.showSyntheticWorkflows = !state.showSyntheticWorkflows;
+    const runs = sellerWorkflowRuns();
+    if (!runs.some((run) => run.id === state.selectedWorkflowRunId)) {
+      state.selectedWorkflowRunId = runs[0]?.id || "";
+      state.selectedWorkflowNodeKey = "";
+    }
     renderWorkflowConsole();
   });
   $("#listingRulePoolWorkbench")?.addEventListener("input", (event) => {

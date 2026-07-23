@@ -5428,6 +5428,177 @@ body.auto-ozon-erp-shell {
   color: #1f2937;
 }
 
+/* Seller-facing shell: keep the daily 1688 → draft → status path visible and
+   move diagnostic/business-support modules behind an explicit disclosure. */
+.seller-primary-nav {
+  display: grid;
+  gap: 4px;
+}
+
+.secondary-nav-toggle {
+  width: 100%;
+  min-height: 40px;
+  margin-top: 12px;
+  padding: 0 12px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  border: 1px solid rgba(255, 255, 255, .08);
+  border-radius: 8px;
+  background: rgba(255, 255, 255, .035);
+  color: #aebbd0;
+  font-weight: 800;
+}
+
+.secondary-nav-toggle.is-open {
+  color: #fff;
+  background: rgba(255, 255, 255, .08);
+}
+
+.seller-secondary-nav:not(.is-open) {
+  display: none;
+}
+
+.seller-secondary-nav.is-open {
+  display: grid;
+  gap: 4px;
+  padding-top: 6px;
+}
+
+.seller-secondary-nav .nav-group,
+.seller-secondary-nav .nav-group.active {
+  display: block;
+  margin: 0;
+}
+
+.global-current-task-bar {
+  position: sticky;
+  top: 0;
+  z-index: 24;
+  min-height: 72px;
+  padding: 10px 28px;
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr);
+  gap: 14px;
+  align-items: center;
+  border-bottom: 1px solid #c7d2fe;
+  background: linear-gradient(90deg, #eef2ff, #fff);
+  box-shadow: 0 6px 16px rgba(15, 23, 42, .06);
+}
+
+.global-current-task-kicker {
+  padding: 5px 8px;
+  border-radius: 6px;
+  background: #4338ca;
+  color: #fff;
+  font-size: 12px;
+  font-weight: 900;
+}
+
+#globalCurrentTaskBody {
+  min-width: 0;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+}
+
+.global-current-task-copy {
+  min-width: 0;
+  display: grid;
+  gap: 4px;
+}
+
+.global-current-task-copy strong {
+  overflow: hidden;
+  color: #111827;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.global-current-task-copy small {
+  color: #64748b;
+}
+
+.synthetic-workflow-control {
+  margin: 0 0 12px;
+  padding: 10px 12px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  border: 1px solid #e5e7eb;
+  border-radius: 8px;
+  background: #f8fafc;
+  color: #64748b;
+  font-size: 13px;
+}
+
+.capture-table-wrap {
+  max-width: 100%;
+  overflow-x: auto;
+}
+
+.capture-box-table {
+  width: 100%;
+  min-width: 980px;
+  table-layout: fixed;
+}
+
+.capture-box-table th:nth-child(1),
+.capture-box-table td:nth-child(1) { width: 42px; }
+.capture-box-table th:nth-child(2),
+.capture-box-table td:nth-child(2) { width: 116px; }
+.capture-box-table th:nth-child(3),
+.capture-box-table td:nth-child(3) { width: 130px; }
+.capture-box-table th:nth-child(5),
+.capture-box-table td:nth-child(5),
+.capture-box-table th:nth-child(6),
+.capture-box-table td:nth-child(6) { width: 58px; }
+.capture-box-table th:nth-child(8),
+.capture-box-table td:nth-child(8) { width: 176px; }
+
+.capture-source-url {
+  max-width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.capture-box-table .row-actions {
+  position: sticky;
+  right: 0;
+  z-index: 3;
+  padding: 10px;
+  background: #fff;
+  box-shadow: -8px 0 14px rgba(15, 23, 42, .08);
+}
+
+.capture-box-table th:last-child {
+  position: sticky;
+  right: 0;
+  z-index: 4;
+  background: #f8fafc;
+  box-shadow: -8px 0 14px rgba(15, 23, 42, .08);
+}
+
+.capture-box-table .row-actions button {
+  width: 100%;
+  margin: 0 0 6px;
+  white-space: normal;
+}
+
+@media (max-width: 760px) {
+  .global-current-task-bar {
+    position: static;
+    padding: 10px 16px;
+  }
+  #globalCurrentTaskBody {
+    align-items: stretch;
+    flex-direction: column;
+  }
+}
+
 .auto-ozon-erp-shell .app-rail {
   display: none;
 }
@@ -5995,6 +6166,10 @@ body.auto-ozon-erp-shell {
     margin-left: 0;
   }
 
+  .global-current-task-bar {
+    position: static;
+  }
+
   .auto-ozon-erp-shell .view {
     padding: 16px;
   }
@@ -6151,4 +6326,16 @@ body.auto-ozon-erp-shell {
 .listing-seller-evidence-item small { line-height: 1.35; }
 @media (max-width: 900px) {
   .listing-seller-evidence-summary { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+}
+
+@media (min-width: 901px) {
+  .auto-ozon-erp-shell .main {
+    padding-top: 72px;
+  }
+
+  .global-current-task-bar {
+    position: fixed;
+    inset: 0 0 auto 248px;
+    height: 72px;
+  }
 }

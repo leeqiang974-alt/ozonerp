@@ -93,11 +93,22 @@
         <header class="page-head current-product-page-head">
           <div>
             <span class="page-eyebrow">商品上新</span>
-            <h1>处理当前商品</h1>
-            <p>采集、检查、上架。系统和 AI 在后台完成中间过程，只有需要你决定时才会停下来。</p>
+            <h1>今天只处理一件商品</h1>
+            <p>不用学习 ERP 流程。首页只会在需要你决定时，给出一个明确动作。</p>
           </div>
           <button id="refreshCurrentProduct" class="ghost" type="button">刷新</button>
         </header>
+        <section class="seller-responsibility-strip" aria-label="上新分工">
+          <div class="seller-responsibility-item is-user">
+            <span>你只负责</span>
+            <strong>选商品、确认必要资料、最后决定是否上架</strong>
+          </div>
+          <div class="seller-responsibility-divider" aria-hidden="true"></div>
+          <div class="seller-responsibility-item is-system">
+            <span>系统和 AI 负责</span>
+            <strong>整理现有资料、检查风险；任何付费 AI 生成都需你另行授权</strong>
+          </div>
+        </section>
         <section id="currentProductWorkspace" class="current-product-workspace" aria-label="当前商品上新工作台" aria-live="polite">
           <div class="current-product-loading">正在读取真实采集商品…</div>
         </section>

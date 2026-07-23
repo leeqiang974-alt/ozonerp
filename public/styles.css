@@ -6980,14 +6980,74 @@ body[data-active-view="dashboard"].auto-ozon-erp-shell .main {
 }
 
 .auto-ozon-erp-shell .current-product-primary-action {
-  align-content: center;
-  gap: 13px;
+  align-content: start;
+  gap: 12px;
   min-height: 164px;
   padding: 24px;
   border: 1px solid #dce7fb;
   border-radius: 19px;
   color: #344054;
   background: #f5f8ff;
+}
+
+.auto-ozon-erp-shell .seller-responsibility-strip {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 1px minmax(0, 1fr);
+  gap: 22px;
+  margin: 0 0 18px;
+  padding: 17px 20px;
+  border: 1px solid #e3e8ef;
+  border-radius: 16px;
+  background: rgba(255, 255, 255, .88);
+  box-shadow: 0 8px 22px rgba(16, 24, 40, .035);
+}
+
+.auto-ozon-erp-shell .seller-responsibility-item {
+  display: grid;
+  gap: 5px;
+  min-width: 0;
+}
+
+.auto-ozon-erp-shell .seller-responsibility-item span {
+  color: #98a2b3;
+  font-size: 10px;
+  font-weight: 750;
+  letter-spacing: .08em;
+}
+
+.auto-ozon-erp-shell .seller-responsibility-item strong {
+  color: #344054;
+  font-size: 12px;
+  font-weight: 650;
+  line-height: 1.55;
+}
+
+.auto-ozon-erp-shell .seller-responsibility-item.is-user span {
+  color: #005bff;
+}
+
+.auto-ozon-erp-shell .seller-responsibility-item.is-system span {
+  color: #047857;
+}
+
+.auto-ozon-erp-shell .seller-responsibility-divider {
+  width: 1px;
+  background: #e6eaf0;
+}
+
+.auto-ozon-erp-shell .current-product-action-kicker {
+  color: #005bff;
+  font-size: 10px;
+  font-weight: 800;
+  letter-spacing: .1em;
+}
+
+.auto-ozon-erp-shell .current-product-user-instruction {
+  margin: 0;
+  color: #172033;
+  font-size: 14px;
+  font-weight: 700;
+  line-height: 1.55;
 }
 
 .auto-ozon-erp-shell .current-product-primary-action .primary {
@@ -7004,11 +7064,41 @@ body[data-active-view="dashboard"].auto-ozon-erp-shell .main {
   transform: translateY(-1px);
 }
 
-.auto-ozon-erp-shell .current-product-primary-action small {
+.auto-ozon-erp-shell .current-product-action-explanation {
+  display: grid;
+  gap: 8px;
+  padding-top: 2px;
+}
+
+.auto-ozon-erp-shell .current-product-action-explanation div {
+  display: grid;
+  gap: 3px;
+  padding: 9px 10px;
+  border-radius: 10px;
+  background: rgba(255, 255, 255, .72);
+}
+
+.auto-ozon-erp-shell .current-product-action-explanation span {
   color: #667085;
   font-size: 11px;
-  line-height: 1.55;
-  text-align: center;
+  font-weight: 750;
+  letter-spacing: .06em;
+}
+
+.auto-ozon-erp-shell .current-product-action-explanation strong {
+  color: #475467;
+  font-size: 12px;
+  font-weight: 600;
+  line-height: 1.5;
+}
+
+.auto-ozon-erp-shell .current-product-action-explanation .is-safe {
+  background: #eefbf5;
+}
+
+.auto-ozon-erp-shell .current-product-action-explanation .is-safe span,
+.auto-ozon-erp-shell .current-product-action-explanation .is-safe strong {
+  color: #047857;
 }
 
 .auto-ozon-erp-shell .current-product-progress {
@@ -7205,6 +7295,16 @@ body[data-active-view="dashboard"].auto-ozon-erp-shell .main {
 
   .auto-ozon-erp-shell .current-product-progress li:not(:last-child)::after {
     display: none;
+  }
+
+  .auto-ozon-erp-shell .seller-responsibility-strip {
+    grid-template-columns: 1fr;
+    gap: 12px;
+  }
+
+  .auto-ozon-erp-shell .seller-responsibility-divider {
+    width: 100%;
+    height: 1px;
   }
 
   .auto-ozon-erp-shell .current-product-main {

@@ -6169,12 +6169,17 @@ function isSyntheticCapture(item = {}) {
   return fixture.manifestHash || /fixture|replay|test/.test(captureMode) || /fixture product|test product|测试商品/.test(title);
 }
 
+function captureSnapshotHash(item = {}) {
+  const product = item.parsed || item;
+  return String(product.sourceEvidenceRecord?.snapshot?.hash || product.sourceEvidence?.snapshotHash || "").trim();
+}
+
 function currentCaptureSellerTask() {
   const realCaptures = (state.captureRows || []).filter((item) => !isSyntheticCapture(item));
   const requestedId = String(state.currentCaptureId || new URLSearchParams(window.location.search).get("captureId") || "").trim();
   const ranked = realCaptures.map((item) => {
     const product = item.parsed || {};
-    const snapshotHash = String(product.sourceEvidenceRecord?.snapshot?.hash || product.sourceEvidence?.snapshotHash || "").trim();
+    const snapshotHash = captureSnapshotHash(item);
     const review = product.captureReview || item.captureReview || {};
     const reviewApproved = review.humanConfirmed === true
       && String(review.reviewedSnapshotHash || "").trim() === snapshotHash
@@ -6199,8 +6204,12 @@ function currentProductWorkspaceModel() {
       status: "等待采集商品",
       reason: "请先采集一个准备上架的真实商品。",
       actionLabel: "去采集商品",
+      actionKind: "view",
       actionView: "sourcing",
       actionEffect: "打开采集页面，不会自动上架或产生费用。",
+      userInstruction: "去 1688 选择一个商品，用 Ozon ERP 插件完成采集。",
+      systemNext: "采集成功后，商品会自动回到这个首页并开始整理。",
+      safetyBoundary: "现在不会提交到 Ozon，也不会调用任何付费 AI；两者都需你另行确认。",
       completed: [],
       required: ["采集一个真实 1688 商品"],
       stages: ["采集商品", "检查商品", "确认上架"].map((label, index) => ({ label, status: index === 0 ? "current" : "pending" })),
@@ -6238,21 +6247,31 @@ function currentProductWorkspaceModel() {
 
   let status = "等待你确认商品";
   let reason = "请确认标题、规格和图片属于你刚刚采集的商品。";
-  let actionLabel = "检查商品";
+  let actionLabel = "确认这是我的商品";
+  let actionKind = "capture_review";
   let actionView = "sourcing";
-  let actionEffect = `打开 ${store?.name || item.storeId || "目标店铺"} 的当前商品；确认后系统和 AI 会继续整理资料，不会自动上架。`;
+  let actionEffect = `确认 ${store?.name || item.storeId || "目标店铺"} 的当前商品；确认后建立本地草稿，不会自动上架。`;
+  let userInstruction = "确认标题、规格和图片是你刚刚采集的商品。";
+  let systemNext = "系统会建立本地商品草稿并打开资料页；只有无法判断的内容才会再问你。";
+  let safetyBoundary = "现在不会提交到 Ozon，也不会调用任何付费 AI；两者都需你另行确认。";
   let required = ["确认标题、规格和图片是否正确"];
   if (!reviewPossible) {
     status = "商品资料不完整";
     reason = "这次采集缺少必要信息，系统无法安全处理。";
     actionLabel = "重新采集商品";
+    actionKind = "capture";
     actionEffect = `打开 ${store?.name || item.storeId || "目标店铺"} 的采集记录；重新采集不会自动上架。`;
+    userInstruction = "回到这个 1688 商品页面，用插件重新采集一次。";
+    systemNext = "系统会检查新数据，完整后自动回到商品确认。";
     required = ["重新打开商品页面并采集"];
   } else if (!reviewNeeded && !draftReady) {
     status = "商品正在整理";
     reason = "商品已经确认，系统正在准备商品资料。";
-    actionLabel = "继续处理";
-    actionEffect = "继续整理当前商品，不会自动上架。";
+    actionLabel = "建立商品草稿";
+    actionKind = "capture_workflow";
+    actionEffect = "建立或恢复当前商品的唯一本地草稿，不会自动上架。";
+    userInstruction = "点击建立当前商品的本地草稿。";
+    systemNext = "系统会整理已有规格和图片，并打开需要你确认的资料。";
     required = ["继续当前商品"];
   } else if (draftReady && !preflightPassed) {
     status = validationStale ? "商品有更新，需要重新检查" : issueCount ? `需要补充 ${issueCount} 项资料` : "商品资料待完善";
@@ -6262,17 +6281,31 @@ function currentProductWorkspaceModel() {
         ? `还有 ${issueCount} 项资料无法自动判断，需要你确认。`
         : "系统和 AI 已完成可自动处理的内容，只留下必须确认的资料。";
     actionLabel = validationStale ? "重新检查商品" : "完善商品资料";
+    actionKind = run ? "workflow" : "capture_workflow";
+    if (!run) actionLabel = "打开商品资料";
     actionView = "listing";
     actionEffect = validationStale
       ? "重新检查当前版本，检查通过前不会上架。"
       : "只处理当前商品缺少的资料，检查通过前不会上架。";
+    userInstruction = !run
+      ? "打开当前商品资料，只处理系统无法确定的内容。"
+      : validationStale
+      ? "重新核对发生变化的商品资料。"
+      : "只补充系统无法确定的内容，不需要重做已经完成的资料。";
+    systemNext = run
+      ? "系统会重新检查商品；通过后再通知你确认是否上架。"
+      : "系统会恢复当前商品的唯一任务并打开资料页，不会让你寻找其他控件。";
     required = [actionLabel];
   } else if (preflightPassed) {
     status = "商品已准备好";
     reason = "系统检查已经通过，最后由你决定是否上架。";
     actionLabel = "确认上架";
+    actionKind = "workflow";
     actionView = "listing";
     actionEffect = "先展示价格和商品摘要，只有你再次确认才会提交。";
+    userInstruction = "核对商品摘要和价格，决定是否进入最后确认。";
+    systemNext = "系统会先展示本次提交内容；仍需你再次确认才会提交。";
+    safetyBoundary = "点击这里不会直接提交；Ozon 提交和任何付费 AI 都需你另行确认。";
     required = ["确认商品信息和价格后决定是否上架"];
   }
   return {
@@ -6290,8 +6323,12 @@ function currentProductWorkspaceModel() {
     status,
     reason,
     actionLabel,
+    actionKind,
     actionView,
     actionEffect,
+    userInstruction,
+    systemNext,
+    safetyBoundary,
     completed,
     required,
     stages: [
@@ -6302,6 +6339,29 @@ function currentProductWorkspaceModel() {
   };
 }
 
+function currentProductActionAttributes(model = {}) {
+  const captureId = String(model.captureId || "").trim();
+  const storeId = String(model.storeId || "").trim();
+  const runId = String(model.runId || "").trim();
+  if (model.actionKind === "capture_review") {
+    if (!captureId) throw new Error("当前商品确认动作缺少采集记录");
+    return `data-current-capture-review="${escapeHtml(captureId)}" data-current-capture-store-id="${escapeHtml(storeId)}"`;
+  }
+  if (model.actionKind === "capture_workflow") {
+    if (!captureId) throw new Error("当前商品草稿动作缺少采集记录");
+    return `data-current-capture-workflow="${escapeHtml(captureId)}" data-current-capture-store-id="${escapeHtml(storeId)}"`;
+  }
+  if (model.actionKind === "capture") {
+    if (!captureId) throw new Error("当前商品采集动作缺少采集记录");
+    return `data-current-capture-id="${escapeHtml(captureId)}" data-current-capture-store-id="${escapeHtml(storeId)}"`;
+  }
+  if (model.actionKind === "workflow") {
+    if (!runId) throw new Error("当前商品动作缺少工作流");
+    return `data-current-workflow-id="${escapeHtml(runId)}" data-current-workflow-store-id="${escapeHtml(storeId)}"`;
+  }
+  return `data-cockpit-view="${escapeHtml(model.actionView || "sourcing")}"`;
+}
+
 function renderCurrentProductWorkspace() {
   const model = currentProductWorkspaceModel();
   const workspace = $("#currentProductWorkspace");
@@ -6309,11 +6369,7 @@ function renderCurrentProductWorkspace() {
   const completed = $("#currentProductCompleted");
   const required = $("#currentProductRequired");
   const listingGate = $("#listingCurrentProductGate");
-  const actionAttributes = model.captureId && (model.reviewNeeded || !model.runId)
-    ? `data-current-capture-id="${escapeHtml(model.captureId)}" data-current-capture-store-id="${escapeHtml(model.storeId || "")}"`
-    : model.runId
-      ? `data-current-workflow-id="${escapeHtml(model.runId)}"`
-      : `data-cockpit-view="${escapeHtml(model.actionView || "sourcing")}"`;
+  const actionAttributes = currentProductActionAttributes(model);
   if (workspace) {
     workspace.innerHTML = `
       <div class="current-product-main">
@@ -6333,8 +6389,13 @@ function renderCurrentProductWorkspace() {
         </div>
       </div>
       <div class="current-product-primary-action">
-        <button class="primary" type="button" ${actionAttributes}>${escapeHtml(model.actionLabel)}</button>
-        <small>${escapeHtml(model.actionEffect)}</small>
+        <span class="current-product-action-kicker">现在只做这一步</span>
+        <p class="current-product-user-instruction">${escapeHtml(model.userInstruction)}</p>
+        <button class="primary" type="button" aria-describedby="currentProductActionDescription currentProductActionSafety" ${actionAttributes}>${escapeHtml(model.actionLabel)}</button>
+        <div class="current-product-action-explanation">
+          <div><span>点完以后</span><strong id="currentProductActionDescription">${escapeHtml(model.systemNext)}</strong></div>
+          <div class="is-safe"><span>安全边界</span><strong id="currentProductActionSafety">${escapeHtml(model.safetyBoundary)}</strong></div>
+        </div>
       </div>`;
   }
   if (progress) progress.innerHTML = model.stages.map((stage, index) => `<li class="${escapeHtml(stage.status)}"><span>${index + 1}</span><strong>${escapeHtml(stage.label)}</strong></li>`).join("");
@@ -7460,13 +7521,12 @@ async function openCaptureHumanTask(taskId = "") {
 
 async function reviewCaptureSnapshot(id, storeId = "", button = null) {
   const item = state.captureRows.find((entry) => String(entry.id || "") === String(id || ""));
-  const hash = String(item?.parsed?.sourceEvidence?.snapshotHash || "").trim();
+  const hash = captureSnapshotHash(item);
   if (!/^sha256:[a-f0-9]{64}$/i.test(hash)) {
-    toast("当前采集没有有效快照 hash，不能确认", "error");
+    toast("当前采集缺少可核对的来源记录，请重新采集商品", "error");
     return;
   }
-  const shortHash = `${hash.slice(0, 15)}…${hash.slice(-8)}`;
-  if (!window.confirm(`确认你已核对当前 1688 商品，并确认快照 ${shortHash} 就是目标商品？`)) return;
+  if (!window.confirm("确认标题、规格和图片属于你刚刚采集的商品？确认后系统会建立本地草稿；不会提交到 Ozon，也不会调用付费 AI。")) return;
   setBusy(button, true);
   try {
     const reviewResult = await api(`/api/1688/captures/${encodeURIComponent(id)}/review`, {
@@ -7482,6 +7542,30 @@ async function reviewCaptureSnapshot(id, storeId = "", button = null) {
   } finally {
     setBusy(button, false);
   }
+}
+
+async function reviewCurrentProductFromWorkspace(id, storeId = "", button = null) {
+  const item = state.captureRows.find((entry) => String(entry.id || "") === String(id || ""));
+  storeId = String(storeId || item?.storeId || "").trim();
+  await switchStoreContext(storeId, { loadWarehouses: false });
+  state.currentCaptureId = String(id || "");
+  return reviewCaptureSnapshot(id, storeId, button);
+}
+
+async function openCurrentProductDraftFromWorkspace(id, storeId = "") {
+  const item = state.captureRows.find((entry) => String(entry.id || "") === String(id || ""));
+  storeId = String(storeId || item?.storeId || "").trim();
+  await switchStoreContext(storeId, { loadWarehouses: false });
+  state.currentCaptureId = String(id || "");
+  return openCaptureDraftSkeleton(id, storeId);
+}
+
+async function openCurrentProductWorkflowFromWorkspace(runId, storeId = "") {
+  await switchStoreContext(String(storeId || "").trim(), { loadWarehouses: false });
+  state.selectedWorkflowRunId = String(runId || "").trim();
+  state.selectedWorkflowNodeKey = "";
+  activateErpView("listing");
+  renderListingSellerTaskSummary();
 }
 
 async function openCaptureDraftSkeleton(id, storeId = "") {
@@ -16409,6 +16493,26 @@ async function init() {
     }
   });
   document.addEventListener("click", (event) => {
+    const currentCaptureReviewTarget = event.target.closest("[data-current-capture-review]");
+    if (currentCaptureReviewTarget) {
+      reviewCurrentProductFromWorkspace(
+        currentCaptureReviewTarget.dataset.currentCaptureReview,
+        currentCaptureReviewTarget.dataset.currentCaptureStoreId,
+        currentCaptureReviewTarget,
+      ).catch((error) => toast(error.message || "确认当前商品失败", "error"));
+      return;
+    }
+    const currentCaptureWorkflowTarget = event.target.closest("[data-current-capture-workflow]");
+    if (currentCaptureWorkflowTarget) {
+      setBusy(currentCaptureWorkflowTarget, true);
+      openCurrentProductDraftFromWorkspace(
+        currentCaptureWorkflowTarget.dataset.currentCaptureWorkflow,
+        currentCaptureWorkflowTarget.dataset.currentCaptureStoreId,
+      )
+        .catch((error) => toast(error.message || "打开当前商品资料失败", "error"))
+        .finally(() => setBusy(currentCaptureWorkflowTarget, false));
+      return;
+    }
     const currentCaptureTarget = event.target.closest("[data-current-capture-id]");
     if (currentCaptureTarget) {
       openCurrentCaptureTask(currentCaptureTarget.dataset.currentCaptureId, currentCaptureTarget.dataset.currentCaptureStoreId)
@@ -16417,10 +16521,10 @@ async function init() {
     }
     const currentWorkflowTarget = event.target.closest("[data-current-workflow-id]");
     if (currentWorkflowTarget) {
-      state.selectedWorkflowRunId = currentWorkflowTarget.dataset.currentWorkflowId || "";
-      state.selectedWorkflowNodeKey = "";
-      activateErpView("listing");
-      renderListingSellerTaskSummary();
+      openCurrentProductWorkflowFromWorkspace(
+        currentWorkflowTarget.dataset.currentWorkflowId,
+        currentWorkflowTarget.dataset.currentWorkflowStoreId,
+      ).catch((error) => toast(error.message || "打开当前商品资料失败", "error"));
       return;
     }
     const reviewRepairLocateTarget = event.target.closest("[data-review-repair-locate]");

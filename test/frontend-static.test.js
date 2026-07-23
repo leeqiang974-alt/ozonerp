@@ -4724,6 +4724,7 @@ test("invalid source snapshot remains blocked behind seller language", async () 
   const model = build(state, () => captureTask, () => ({ id: "old-run", payloadDraftValidation: { ok: true } }))();
   assert.equal(model.status, "商品资料不完整");
   assert.equal(model.actionLabel, "重新采集商品");
+  assert.equal(model.actionKind, "capture");
   assert.equal(model.stages.length, 3);
   assert.equal(model.stages[0].status, "current");
   assert.equal(model.stages[1].status, "pending");
@@ -4750,8 +4751,19 @@ test("three seller steps stay aligned across review, draft, and ready states", a
 
   const review = model();
   assert.deepEqual(review.stages.map((stage) => stage.status), ["complete", "current", "pending"]);
-  assert.equal(review.actionLabel, "检查商品");
+  assert.equal(review.actionLabel, "确认这是我的商品");
+  assert.equal(review.actionKind, "capture_review");
   assert.equal(review.imageUrl, "");
+
+  captureTask = { ...captureTask, reviewApproved: true, reviewNeeded: false, hasDraft: false };
+  const pendingDraft = model();
+  assert.equal(pendingDraft.actionLabel, "建立商品草稿");
+  assert.equal(pendingDraft.actionKind, "capture_workflow");
+
+  captureTask = { ...captureTask, hasDraft: true };
+  const detachedDraft = model();
+  assert.equal(detachedDraft.actionLabel, "打开商品资料");
+  assert.equal(detachedDraft.actionKind, "capture_workflow");
 
   captureTask = { ...captureTask, reviewApproved: true, reviewNeeded: false, hasDraft: true };
   run = {
@@ -4763,7 +4775,11 @@ test("three seller steps stay aligned across review, draft, and ready states", a
   const draft = model();
   assert.deepEqual(draft.stages.map((stage) => stage.status), ["complete", "current", "pending"]);
   assert.equal(draft.status, "需要补充 2 项资料");
+  assert.equal(draft.actionKind, "workflow");
   assert.equal(draft.reason, "还有 2 项资料无法自动判断，需要你确认。");
+  assert.equal(draft.userInstruction, "只补充系统无法确定的内容，不需要重做已经完成的资料。");
+  assert.equal(draft.systemNext, "系统会重新检查商品；通过后再通知你确认是否上架。");
+  assert.equal(draft.safetyBoundary, "现在不会提交到 Ozon，也不会调用任何付费 AI；两者都需你另行确认。");
   assert.doesNotMatch(draft.reason, /Payload|预检|证据|workflow|snapshot/i);
 
   run = {
@@ -4784,6 +4800,38 @@ test("three seller steps stay aligned across review, draft, and ready states", a
   const ready = model();
   assert.deepEqual(ready.stages.map((stage) => stage.status), ["complete", "complete", "current"]);
   assert.equal(ready.actionLabel, "确认上架");
+  assert.equal(ready.actionKind, "workflow");
+  assert.equal(ready.userInstruction, "核对商品摘要和价格，决定是否进入最后确认。");
+  assert.equal(ready.systemNext, "系统会先展示本次提交内容；仍需你再次确认才会提交。");
+});
+
+test("capture confirmation accepts canonical and legacy snapshot evidence", async () => {
+  const js = await readFile(new URL("../public/app.js", import.meta.url), "utf8");
+  const start = js.indexOf("function captureSnapshotHash");
+  const end = js.indexOf("function currentCaptureSellerTask", start);
+  assert.ok(start >= 0 && end > start);
+  const helper = new Function(`${js.slice(start, end)}\nreturn captureSnapshotHash;`)();
+  const canonical = `sha256:${"a".repeat(64)}`;
+  const legacy = `sha256:${"b".repeat(64)}`;
+  assert.equal(helper({ parsed: { sourceEvidenceRecord: { snapshot: { hash: canonical } } } }), canonical);
+  assert.equal(helper({ parsed: { sourceEvidence: { snapshotHash: legacy } } }), legacy);
+});
+
+test("current product action attributes match the business action promised by every state", async () => {
+  const js = await readFile(new URL("../public/app.js", import.meta.url), "utf8");
+  const start = js.indexOf("function currentProductActionAttributes");
+  const end = js.indexOf("function renderCurrentProductWorkspace", start);
+  assert.ok(start >= 0 && end > start);
+  const build = new Function("escapeHtml", `${js.slice(start, end)}\nreturn currentProductActionAttributes;`);
+  const attrs = build((value) => String(value));
+  assert.match(attrs({ actionKind: "view", actionView: "sourcing" }), /data-cockpit-view="sourcing"/);
+  assert.match(attrs({ actionKind: "capture", captureId: "c1", storeId: "s1" }), /data-current-capture-id="c1"/);
+  assert.match(attrs({ actionKind: "capture_review", captureId: "c1", storeId: "s1" }), /data-current-capture-review="c1"/);
+  assert.match(attrs({ actionKind: "capture_workflow", captureId: "c1", storeId: "s1" }), /data-current-capture-workflow="c1"/);
+  const workflowAttrs = attrs({ actionKind: "workflow", runId: "r1", storeId: "s1" });
+  assert.match(workflowAttrs, /data-current-workflow-id="r1"/);
+  assert.match(workflowAttrs, /data-current-workflow-store-id="s1"/);
+  assert.throws(() => attrs({ actionKind: "workflow", runId: "" }), /当前商品动作缺少工作流/);
 });
 
 test("seller workspace uses a product-grade visual shell without changing the three-step contract", async () => {
@@ -4804,6 +4852,32 @@ test("seller workspace uses a product-grade visual shell without changing the th
   assert.match(css, /\.current-product-thumbnail img[\s\S]*object-fit: cover/);
   assert.match(css, /@media \(max-width: 1023px\)[\s\S]*\.auto-ozon-erp-shell \.main \{[\s\S]*margin-left: 0[\s\S]*padding-top: 0/);
   assert.match(css, /@media \(max-width: 1023px\)[\s\S]*\.auto-ozon-erp-shell \.global-current-task-bar \{[\s\S]*position: static[\s\S]*inset: auto/);
+});
+
+test("dashboard explains user responsibility, automation responsibility, and the next safe action", async () => {
+  const [html, js, css] = await Promise.all([
+    readFile(new URL("../public/index.html", import.meta.url), "utf8"),
+    readFile(new URL("../public/app.js", import.meta.url), "utf8"),
+    readFile(new URL("../public/styles.css", import.meta.url), "utf8"),
+  ]);
+  assert.match(html, /class="seller-responsibility-strip"/);
+  assert.match(html, /你只负责/);
+  assert.match(html, /系统和 AI 负责/);
+  assert.match(html, /选商品、确认必要资料、最后决定是否上架/);
+  assert.match(js, /现在只做这一步/);
+  assert.match(js, /点完以后/);
+  assert.match(js, /安全边界/);
+  assert.match(js, /model\.userInstruction/);
+  assert.match(js, /model\.systemNext/);
+  assert.match(js, /model\.safetyBoundary/);
+  assert.match(js, /aria-describedby="currentProductActionDescription currentProductActionSafety"/);
+  assert.match(js, /reviewCurrentProductFromWorkspace/);
+  assert.match(js, /openCurrentProductDraftFromWorkspace/);
+  assert.match(js, /openCurrentProductWorkflowFromWorkspace/);
+  assert.match(js, /switchStoreContext\(storeId, \{ loadWarehouses: false \}\)/);
+  assert.doesNotMatch(js, /确认快照 \$\{shortHash\}/);
+  assert.match(css, /\.seller-responsibility-strip/);
+  assert.match(css, /\.current-product-action-explanation/);
 });
 
 test("dashboard and listing share one current product workspace", async () => {
@@ -4834,8 +4908,8 @@ test("ordinary current product workspace exposes three seller steps and hides in
   const modelStart = js.indexOf("function currentProductWorkspaceModel");
   const modelEnd = js.indexOf("function renderCurrentProductWorkspace", modelStart);
   const model = js.slice(modelStart, modelEnd);
-  assert.match(ordinaryDashboard, /处理当前商品/);
-  assert.match(ordinaryDashboard, /系统和 AI 在后台完成中间过程/);
+  assert.match(ordinaryDashboard, /今天只处理一件商品/);
+  assert.match(ordinaryDashboard, /系统和 AI 负责/);
   assert.match(ordinaryDashboard, /class="current-product-task-card required-card" hidden/);
   assert.match(html, /<body[^>]+data-active-view="dashboard"/);
   assert.match(css, /body\[data-active-view="dashboard"\] \.global-current-task-bar[\s\S]*display: none/);
@@ -4852,8 +4926,9 @@ test("unconfirmed real capture remains the only seller action before a workflow 
   assert.ok(start >= 0 && end > start);
   const model = js.slice(start, end);
   assert.match(model, /等待你确认商品/);
-  assert.match(model, /检查商品/);
-  assert.match(model, /确认后系统和 AI 会继续整理资料，不会自动上架/);
+  assert.match(model, /确认这是我的商品/);
+  assert.match(model, /系统会建立本地商品草稿并打开资料页/);
+  assert.match(model, /actionKind = "capture_review"/);
   assert.match(model, /reviewNeeded/);
   assert.match(model, /currentListingWorkflowRun\(\)/);
 });

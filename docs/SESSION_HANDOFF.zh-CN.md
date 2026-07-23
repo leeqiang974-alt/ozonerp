@@ -1,5 +1,15 @@
 # Ozon ERP 会话接管与恢复记录
 
+## 2026-07-23 G2-S1 零学习成本使用引导
+
+- 用户反馈“仍不知道 ERP 怎么使用”。根因不是缺少教程，而是首页只给出“完善商品资料”等抽象动作，没有解释用户责任、自动化责任和点击后的业务结果。
+- 首页新增固定分工：用户只负责选商品、确认必要资料和最后决定是否上架；现有规格/图片整理和风险检查由系统与 AI 负责，任何付费生成仍需另行授权。
+- 当前商品模型为等待采集、来源确认、重新采集、自动整理、资料补充和确认上架分别提供 `userInstruction`、`systemNext`、`safetyBoundary`。唯一主动作同屏显示“现在只做这一步”“点完以后”“安全边界”。
+- 当前动作显式区分 `view/capture/capture_review/capture_workflow/workflow`，确认商品、建立/恢复草稿和打开已有 workflow 都先切换到当前 capture 的精确店铺。来源确认同时接受 canonical `sourceEvidenceRecord.snapshot.hash` 和旧 `sourceEvidence.snapshotHash`，确认框只显示卖家业务语言，不暴露 snapshot/hash。
+- 当前真实 Offer `992997159052` 实测显示：只补充系统无法确定的内容；点击后直接进入绑定 workflow `wr_mrwy5u1frz3nr` 的商品资料页，不再回到采集箱寻找第二个控件；此时不提交 Ozon、不调用付费 AI。桌面视口 `scrollWidth === clientWidth`，无横向溢出。
+- 稳定规则已提升到 `AGENTS.md`：普通卖家不能依赖说明书理解 ERP，每个当前动作必须说明用户现在做什么、系统接下来做什么、何时真实提交或产生费用。
+- 验证：前端静态 311/311、全量 `npm test` 1268/1268、lint 76 files、offline acceptance 通过，最终独立复审无 Critical/Important；`networkAccessed=false`、`databaseObserved=false`、`writesExecuted=false`。
+
 ## 2026-07-23 G2-S1 商品工作台视觉系统重做
 
 - 用户明确纠正：三步逻辑虽然已收口，但视觉仍像廉价内部后台。该反馈已提升到 `AGENTS.md`：普通卖家首屏必须是商品运营产品，优先展示真实商品图、身份、状态和单一动作，禁止序号字符导航和大面积深色动作块。

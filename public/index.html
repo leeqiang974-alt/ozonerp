@@ -89,7 +89,31 @@
           <div id="globalCurrentTaskBody"><strong>正在读取真实采集任务…</strong></div>
         </section>
         <section id="appBootstrapRecovery" class="app-bootstrap-recovery" hidden aria-live="polite"></section>
-      <section id="dashboard" class="view active">
+      <section id="dashboard" class="view active" data-progressive-disclosure-ready="1">
+        <header class="page-head current-product-page-head">
+          <div>
+            <span class="page-eyebrow">1688 → OZON</span>
+            <h1>商品上新工作台</h1>
+            <p>一次只推进一个真实商品。系统完成可自动完成的步骤，只把当前必须由你决定的动作留在这里。</p>
+          </div>
+          <button id="refreshCurrentProduct" class="ghost" type="button">刷新当前商品</button>
+        </header>
+        <section id="currentProductWorkspace" class="current-product-workspace" aria-label="当前商品上新工作台" aria-live="polite">
+          <div class="current-product-loading">正在读取真实采集商品…</div>
+        </section>
+        <ol id="currentProductProgress" class="current-product-progress" aria-label="商品上新进度"></ol>
+        <div class="current-product-task-columns">
+          <section class="current-product-task-card completed-card">
+            <span class="current-product-card-kicker">系统已完成</span>
+            <div id="currentProductCompleted"><p>正在核对来源数据…</p></div>
+          </section>
+          <section class="current-product-task-card required-card">
+            <span class="current-product-card-kicker">现在需要你处理</span>
+            <div id="currentProductRequired"><p>正在判断唯一安全动作…</p></div>
+          </section>
+        </div>
+        <details class="dashboard-advanced-workbench">
+          <summary>店铺经营与系统诊断（当前阶段暂不展开）</summary>
         <header class="page-head store-dashboard-head" data-legacy-title="店铺经营总览">
           <div>
             <span class="page-eyebrow">OPERATING DASHBOARD</span>
@@ -253,6 +277,7 @@
           <section class="panel api-coverage-panel"><div class="section-headline"><div><h2>Ozon Seller API 对齐概览</h2></div><span class="module-map-badge soft">API 边界</span></div><div id="sellerApiCoverageGrid" class="seller-api-coverage-grid"></div></section>
           <section class="panel api-gap-panel"><div class="section-headline"><div><h2>Seller API 缺口开发清单</h2></div><span class="module-map-badge warning">缺口优先级</span></div><div id="sellerApiGapGrid" class="seller-api-gap-grid"></div></section>
           <section class="panel"><h2>最近响应</h2><pre id="lastResponse">等待操作...</pre></section>
+        </details>
         </details>
       </section>
       <section id="workflow-console" class="view">
@@ -1369,14 +1394,15 @@
 
       </section>
 
-      <section id="listing" class="view">
+      <section id="listing" class="view" data-progressive-disclosure-ready="1">
         <label class="field listing-read-environment-field">读取环境
           <input id="listingReadEnvironment" type="text" minlength="3" maxlength="120" autocomplete="off" placeholder="例如 seller-production-cn-1" />
         </label>
         <header class="page-head">
           <div>
-            <h1>上传管理</h1>
-            <p>管理准备上传的商品草稿、上传状态和最少必要修复项；完整编辑表默认后置。</p>
+            <span class="page-eyebrow">CURRENT PRODUCT</span>
+            <h1>商品草稿</h1>
+            <p>只推进当前真实商品；未完成来源确认时，不展示其他商品的草稿或提交工具。</p>
           </div>
           <div class="actions listing-action-groups">
             <div class="action-group">
@@ -1400,6 +1426,10 @@
           </div>
         </header>
 
+        <section id="listingCurrentProductGate" class="listing-current-product-gate" aria-live="polite">
+          <div class="current-product-loading">正在绑定当前真实商品…</div>
+        </section>
+
         <section id="listingSellerTaskSummary" class="panel business-primary-panel" aria-label="单商品卖家任务摘要">
           <div class="section-headline">
             <div>
@@ -1413,6 +1443,8 @@
           </div>
         </section>
 
+        <details class="listing-advanced-workbench">
+          <summary>高级编辑、流程诊断与历史工具</summary>
         <section id="listingUploadQueuePanel" class="panel business-primary-panel listing-upload-queue-panel">
           <div class="section-headline">
             <div>
@@ -1865,6 +1897,7 @@
   }
 ]</textarea>
         </div>
+        </details>
       </section>
 
       <section id="finance" class="view erp-domain-view">

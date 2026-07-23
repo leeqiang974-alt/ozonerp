@@ -4352,7 +4352,7 @@ test("store switching clears product rows before inventory handoff can reuse an 
 
 test("candidate handoff without a workflow cannot fall back to another product", async () => {
   const js = await readFile(new URL("../public/app.js", import.meta.url), "utf8");
-  assert.match(js, /state\.selectedWorkflowRunId === "__no_workflow__"/);
+  assert.match(js, /state\.selectedWorkflowRunId = "__no_workflow__"/);
   assert.match(js, /if \(!data\.workflowRunId\)/);
   assert.match(js, /不能进入预检/);
 });
@@ -4659,4 +4659,117 @@ test("general Seller reads prefer the system environment over a stale listing en
   const body = js.slice(start, end);
   assert.match(body, /readOperatorEnvironment.*listingReadEnvironment/);
   assert.match(body, /stale listing value must not poison unrelated/);
+});
+
+test("current product workspace never falls back to an unrelated or synthetic workflow", async () => {
+  const js = await readFile(new URL("../public/app.js", import.meta.url), "utf8");
+  const start = js.indexOf("function canonicalCurrentCaptureWorkflowRun");
+  const end = js.indexOf("function currentListingAutoListJob", start);
+  assert.ok(start >= 0 && end > start);
+  const helper = js.slice(start, end);
+  assert.match(helper, /currentCaptureSellerTask\(\)/);
+  assert.match(helper, /filter\(\(run\) => !isSyntheticWorkflowRun\(run\)\)/);
+  assert.match(helper, /entity\?\.candidateId/);
+  assert.match(helper, /entity\?\.storeId/);
+  assert.doesNotMatch(helper, /sort\([\s\S]*\)\[0\]/);
+});
+
+test("canonical current product resolver fails closed for synthetic, stale, and unconfirmed workflows", async () => {
+  const js = await readFile(new URL("../public/app.js", import.meta.url), "utf8");
+  const syntheticStart = js.indexOf("function isSyntheticWorkflowRun");
+  const syntheticEnd = js.indexOf("function sellerWorkflowRuns", syntheticStart);
+  const resolverStart = js.indexOf("function canonicalCurrentCaptureWorkflowRun");
+  const resolverEnd = js.indexOf("function currentListingAutoListJob", resolverStart);
+  assert.ok(syntheticStart >= 0 && syntheticEnd > syntheticStart && resolverStart >= 0 && resolverEnd > resolverStart);
+  const state = {
+    selectedWorkflowRunId: "stale-real",
+    workflowRuns: [
+      { id: "stale-real", entity: { candidateId: "other", storeId: "store-1" } },
+      { id: "synthetic-exact", synthetic: true, entity: { candidateId: "capture-1", storeId: "store-1" } },
+      { id: "real-exact", entity: { candidateId: "capture-1", storeId: "store-1" } },
+    ],
+  };
+  let captureTask = { item: { id: "capture-1", storeId: "store-1" }, reviewApproved: false };
+  const build = new Function("state", "currentCaptureSellerTask", `${js.slice(syntheticStart, syntheticEnd)}\n${js.slice(resolverStart, resolverEnd)}\nreturn { canonicalCurrentCaptureWorkflowRun, currentListingWorkflowRun, workflowCanActForCurrentProduct };`);
+  const resolver = build(state, () => captureTask);
+  assert.equal(resolver.currentListingWorkflowRun()?.id, "real-exact");
+  assert.equal(resolver.workflowCanActForCurrentProduct(state.workflowRuns[2]), false);
+  captureTask = { ...captureTask, reviewApproved: true };
+  assert.equal(resolver.workflowCanActForCurrentProduct(state.workflowRuns[2]), true);
+  assert.equal(resolver.workflowCanActForCurrentProduct(state.workflowRuns[1]), false);
+  captureTask = null;
+  assert.equal(resolver.workflowCanActForCurrentProduct(state.workflowRuns[2]), false);
+  assert.equal(resolver.currentListingWorkflowRun(), null);
+  captureTask = { item: { id: "capture-1", storeId: "store-1" }, reviewApproved: true };
+  state.workflowRuns = state.workflowRuns.filter((run) => run.id !== "real-exact");
+  assert.equal(resolver.currentListingWorkflowRun(), null);
+});
+
+test("invalid source snapshot remains blocked instead of becoming confirmed", async () => {
+  const js = await readFile(new URL("../public/app.js", import.meta.url), "utf8");
+  const start = js.indexOf("function currentProductWorkspaceModel");
+  const end = js.indexOf("function renderCurrentProductWorkspace", start);
+  assert.ok(start >= 0 && end > start);
+  const state = { stores: [{ id: "store-1", name: "Store 1" }] };
+  const captureTask = {
+    item: { id: "capture-1", storeId: "store-1" },
+    product: { title: "Real item", skuVariants: [] },
+    reviewApproved: false,
+    reviewPossible: false,
+    reviewNeeded: true,
+    hasDraft: true,
+  };
+  const build = new Function("state", "currentCaptureSellerTask", "currentListingWorkflowRun", `${js.slice(start, end)}\nreturn currentProductWorkspaceModel;`);
+  const model = build(state, () => captureTask, () => ({ id: "old-run", payloadDraftValidation: { ok: true } }))();
+  assert.equal(model.status, "来源快照无效，必须重新采集");
+  assert.equal(model.actionLabel, "重新采集来源");
+  assert.equal(model.stages[1].status, "current");
+  assert.equal(model.stages[2].status, "pending");
+  assert.equal(model.completed.some((item) => item.includes("人工确认")), false);
+});
+
+test("dashboard and listing share one current product workspace", async () => {
+  const [html, js] = await Promise.all([
+    readFile(new URL("../public/index.html", import.meta.url), "utf8"),
+    readFile(new URL("../public/app.js", import.meta.url), "utf8"),
+  ]);
+  assert.match(html, /id="currentProductWorkspace"/);
+  assert.match(html, /id="currentProductProgress"/);
+  assert.match(html, /id="currentProductCompleted"/);
+  assert.match(html, /id="currentProductRequired"/);
+  assert.match(html, /id="listingCurrentProductGate"/);
+  assert.match(html, /class="listing-advanced-workbench"/);
+  assert.match(js, /function currentProductWorkspaceModel/);
+  assert.match(js, /function renderCurrentProductWorkspace/);
+  assert.match(js, /renderCurrentProductWorkspace\(\)/);
+});
+
+test("unconfirmed real capture remains the only seller action before a workflow exists", async () => {
+  const js = await readFile(new URL("../public/app.js", import.meta.url), "utf8");
+  const start = js.indexOf("function currentProductWorkspaceModel");
+  const end = js.indexOf("function renderCurrentProductWorkspace", start);
+  assert.ok(start >= 0 && end > start);
+  const model = js.slice(start, end);
+  assert.match(model, /等待确认来源快照/);
+  assert.match(model, /去核对并确认/);
+  assert.match(model, /只有你再次确认后才建立草稿，不会调用 Ozon 或产生费用/);
+  assert.match(model, /reviewNeeded/);
+  assert.match(model, /currentListingWorkflowRun\(\)/);
+});
+
+test("current capture row stays highlighted and reports unique source SKUs", async () => {
+  const [js, css] = await Promise.all([
+    readFile(new URL("../public/app.js", import.meta.url), "utf8"),
+    readFile(new URL("../public/styles.css", import.meta.url), "utf8"),
+  ]);
+  const start = js.indexOf("function renderCaptureBox");
+  const end = js.indexOf("function selectedCaptureSelections", start);
+  assert.ok(start >= 0 && end > start);
+  const renderer = js.slice(start, end);
+  assert.match(renderer, /capture-current-product/);
+  assert.match(renderer, /当前要处理的商品/);
+  assert.match(renderer, /uniqueSkuIds/);
+  assert.match(renderer, /现在只做这一步/);
+  assert.match(css, /\.capture-current-product \.review-capture/);
+  assert.match(css, /\.capture-current-product \.preflight-capture[\s\S]*display: none/);
 });

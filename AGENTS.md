@@ -48,6 +48,7 @@ Read these before substantial Ozon ERP changes:
 ## Development Governance
 
 - 当前执行 `docs/TOP-LEVEL-DEVELOPMENT-PLAN.zh-CN.md` 的黄金链路阶段门；在 G4 MVP 通过前，暂停原五工作流轮转。
+- 工作台、全局任务条和商品草稿页必须共用同一个 canonical 当前商品上下文。存在真实 capture 时，只能使用与其 `captureId + storeId` 精确绑定的 workflow；没有精确绑定就停在该 capture 的来源确认/草稿交接状态，禁止回退到最近历史任务或 Fixture workflow。
 - WIP 必须为 1，只能开发计划中标记为 `CURRENT` 的切片。无法映射到当前阶段退出条件的工作进入停车场，不得顺手扩建。
 - C/FBS 与 D/活动、财务、售后冻结；E 只处理黄金链路的直接阻断，B 只在提交后审核/库存交接阶段进入。
 - 只有服务无法启动、数据损坏/丢失、凭据泄露或真实写入安全门旁路可中断当前切片。

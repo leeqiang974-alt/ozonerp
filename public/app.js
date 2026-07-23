@@ -1171,13 +1171,30 @@ function renderSellerOperatingModel() {
   `).join("");
 }
 
+function canonicalCurrentCaptureWorkflowRun() {
+  const captureTask = currentCaptureSellerTask();
+  if (!captureTask?.item) return null;
+  const captureId = String(captureTask.item.id || "").trim();
+  const storeId = String(captureTask.item.storeId || "").trim();
+  return (state.workflowRuns || [])
+    .filter((run) => !isSyntheticWorkflowRun(run))
+    .find((run) => String(run?.entity?.candidateId || "").trim() === captureId
+      && String(run?.entity?.storeId || "").trim() === storeId) || null;
+}
+
 function currentListingWorkflowRun() {
-  if (state.selectedWorkflowRunId === "__no_workflow__") return null;
-  const runs = Array.isArray(state.workflowRuns) ? state.workflowRuns : [];
-  if (!runs.length) return null;
-  const selected = runs.find((run) => run.id === state.selectedWorkflowRunId);
-  if (selected) return selected;
-  return [...runs].sort((left, right) => String(right.updatedAt || right.createdAt || "").localeCompare(String(left.updatedAt || left.createdAt || "")))[0] || null;
+  const captureTask = currentCaptureSellerTask();
+  if (captureTask?.item) return canonicalCurrentCaptureWorkflowRun();
+  return null;
+}
+
+function workflowCanActForCurrentProduct(run = null) {
+  if (!run || isSyntheticWorkflowRun(run)) return false;
+  const captureTask = currentCaptureSellerTask();
+  if (!captureTask?.item) return false;
+  return captureTask.reviewApproved === true
+    && String(run?.entity?.candidateId || "").trim() === String(captureTask.item.id || "").trim()
+    && String(run?.entity?.storeId || "").trim() === String(captureTask.item.storeId || "").trim();
 }
 
 function currentListingAutoListJob(run = null) {
@@ -2096,7 +2113,16 @@ async function saveMediaApprovalDraft(button) {
 function renderListingSellerTaskSummary() {
   const body = $("#listingSellerTaskSummaryBody");
   if (!body) return;
+  const panel = $("#listingSellerTaskSummary");
   const run = currentListingWorkflowRun();
+  const captureTask = currentCaptureSellerTask();
+  renderCurrentProductWorkspace();
+  if (!run || captureTask?.reviewApproved !== true) {
+    if (panel) panel.hidden = true;
+    body.innerHTML = "";
+    return;
+  }
+  if (panel) panel.hidden = false;
   const autoListJob = currentListingAutoListJob(run);
   const linkedCandidate = autoListJob?.candidateData || null;
   const mediaAssets = run
@@ -6119,6 +6145,8 @@ async function loadCaptureBox() {
   state.captureRows = data.items || [];
   renderCaptureBox();
   renderGlobalCurrentTaskBar();
+  renderCurrentProductWorkspace();
+  renderListingSellerTaskSummary();
 }
 
 async function openCaptureFromDeepLink() {
@@ -6151,14 +6179,159 @@ function currentCaptureSellerTask() {
     const reviewApproved = review.humanConfirmed === true
       && String(review.reviewedSnapshotHash || "").trim() === snapshotHash
       && /^sha256:[a-f0-9]{64}$/i.test(snapshotHash);
-    const reviewNeeded = !reviewApproved && /^sha256:[a-f0-9]{64}$/i.test(snapshotHash);
+    const reviewPossible = /^sha256:[a-f0-9]{64}$/i.test(snapshotHash);
+    const reviewNeeded = !reviewApproved;
     const hasDraft = Boolean(item.draft?.parentSku || item.draft?.payloadDraftHash || item.draft?.categoryId || item.draft?.typeId);
     const captureMode = String(product.sourceEvidenceRecord?.captureIdentity?.captureMode || product.capture?.captureMode || item.captureMode || "").toLowerCase();
     const rank = String(item.id || "") === requestedId ? 0 : /extension_browser|browser_extension/.test(captureMode) ? 1 : 2;
-    return { item, product, reviewNeeded, hasDraft, rank };
+    return { item, product, reviewApproved, reviewPossible, reviewNeeded, hasDraft, rank };
   }).sort((left, right) => left.rank - right.rank
     || String(right.item.updatedAt || right.item.receivedAt || "").localeCompare(String(left.item.updatedAt || left.item.receivedAt || "")));
   return ranked[0] || null;
+}
+
+function currentProductWorkspaceModel() {
+  const captureTask = currentCaptureSellerTask();
+  if (!captureTask) {
+    return {
+      empty: true,
+      title: "还没有真实采集商品",
+      status: "等待 1688 采集",
+      reason: "测试数据不会占用当前商品。请先在 1688 商品详情页使用采集插件。",
+      actionLabel: "打开 1688 采集箱",
+      actionView: "sourcing",
+      actionEffect: "只打开本地采集入口，不会调用 Ozon 或产生费用。",
+      completed: [],
+      required: ["采集一个真实 1688 商品"],
+      stages: ["采集", "来源确认", "本地草稿", "补全资料", "提交前预检"].map((label) => ({ label, status: "pending" })),
+    };
+  }
+  const { item, product, reviewApproved, reviewPossible, reviewNeeded, hasDraft } = captureTask;
+  const run = currentListingWorkflowRun();
+  const store = state.stores.find((row) => String(row.id || "") === String(item.storeId || ""));
+  const source = product.sourceEvidenceRecord || product.sourceEvidence || {};
+  const offerId = String(source.captureIdentity?.offerId || source.offerId || product.offerId || item.offerId || "").trim();
+  const sourceVariants = Array.isArray(product.skuVariants) ? product.skuVariants : [];
+  const uniqueSourceSkuIds = new Set(sourceVariants
+    .map((variant) => String(variant?.sourceSkuId || variant?.source_sku_id || variant?.skuId || variant?.sku_id || "").trim())
+    .filter(Boolean));
+  const skuCount = Number(item.draft?.uniqueSourceSkuCount || uniqueSourceSkuIds.size || sourceVariants.length || item.skuCount || 0);
+  const imageCount = Number(product.images?.length || product.imageCount || item.imageCount || 0);
+  const draftReady = reviewApproved === true && Boolean(run || hasDraft);
+  const preflightPassed = reviewApproved === true && run?.payloadDraftValidation?.ok === true;
+  const issueCount = Array.isArray(run?.payloadDraftValidation?.issues) ? run.payloadDraftValidation.issues.length : 0;
+  const confirmed = reviewApproved === true;
+  const completed = [
+    `已采集真实 1688 商品${offerId ? ` · Offer ${offerId}` : ""}`,
+    `已解析 ${skuCount || "-"} 个唯一 SKU${imageCount ? `、${imageCount} 张图片` : ""}`,
+  ];
+  if (confirmed) completed.push("来源快照已人工确认并绑定当前商品");
+  if (draftReady) completed.push("已建立当前店铺唯一的本地草稿骨架");
+  if (preflightPassed) completed.push("当前草稿已通过提交前预检");
+
+  let status = "等待确认来源快照";
+  let reason = "系统已完成采集与解析，但必须由你确认这就是当前 1688 页面快照。";
+  let actionLabel = "去核对并确认";
+  let actionView = "sourcing";
+  let actionEffect = `自动切换到 ${store?.name || item.storeId || "目标店铺"} 并定位真实采集行；只有你再次确认后才建立草稿，不会调用 Ozon 或产生费用。`;
+  let required = ["核对商品标题、SKU 数量和来源页面，然后确认当前快照"];
+  if (!reviewPossible) {
+    status = "来源快照无效，必须重新采集";
+    reason = "当前记录没有可核对的有效 snapshot hash，不能视为已确认，也不能进入草稿或提交。";
+    actionLabel = "重新采集来源";
+    actionEffect = `自动切换到 ${store?.name || item.storeId || "目标店铺"} 并定位记录；只补齐来源证据，不会创建草稿或调用 Ozon。`;
+    required = ["重新打开真实 1688 商品页并采集有效快照"];
+  } else if (!reviewNeeded && !draftReady) {
+    status = "等待建立本地草稿";
+    reason = "来源已确认，但当前商品尚未绑定唯一草稿。";
+    actionLabel = "返回采集箱继续";
+    actionEffect = "只恢复本地草稿交接，不会提交 Ozon。";
+    required = ["继续当前采集商品并建立本地草稿"];
+  } else if (draftReady && !preflightPassed) {
+    status = issueCount ? `草稿待修复 · ${issueCount} 项预检问题` : "本地草稿待补资料";
+    reason = run?.summary?.currentProductTask?.reason || "系统已建立草稿，下一步只处理阻塞预检的必要资料。";
+    actionLabel = run?.summary?.currentProductTask?.nextAction || "打开当前商品草稿";
+    actionView = "listing";
+    actionEffect = "只编辑并校验当前本地草稿；通过预检前不能提交 Ozon。";
+    required = [actionLabel];
+  } else if (preflightPassed) {
+    status = "预检通过，等待人工提交确认";
+    reason = "自动处理已到安全边界；真实提交仍需你明确确认。";
+    actionLabel = "检查并确认提交";
+    actionView = "listing";
+    actionEffect = "先展示提交影响和确认门；不会绕过人工确认。";
+    required = ["检查价格、媒体、类目与库存准备状态后决定是否提交"];
+  }
+  return {
+    empty: false,
+    captureId: String(item.id || ""),
+    storeId: String(item.storeId || ""),
+    runId: String(run?.id || ""),
+    title: product.title || item.title || "未命名商品",
+    storeLabel: store?.name || item.storeId || "店铺未绑定",
+    offerId,
+    skuCount,
+    imageCount,
+    reviewNeeded,
+    status,
+    reason,
+    actionLabel,
+    actionView,
+    actionEffect,
+    completed,
+    required,
+    stages: [
+      { label: "采集", status: "complete" },
+      { label: "来源确认", status: confirmed ? "complete" : "current" },
+      { label: "本地草稿", status: draftReady ? "complete" : confirmed ? "current" : "pending" },
+      { label: "补全资料", status: preflightPassed ? "complete" : draftReady ? "current" : "pending" },
+      { label: "提交前预检", status: preflightPassed ? "complete" : "pending" },
+    ],
+  };
+}
+
+function renderCurrentProductWorkspace() {
+  const model = currentProductWorkspaceModel();
+  const workspace = $("#currentProductWorkspace");
+  const progress = $("#currentProductProgress");
+  const completed = $("#currentProductCompleted");
+  const required = $("#currentProductRequired");
+  const listingGate = $("#listingCurrentProductGate");
+  const actionAttributes = model.captureId && (model.reviewNeeded || !model.runId)
+    ? `data-current-capture-id="${escapeHtml(model.captureId)}" data-current-capture-store-id="${escapeHtml(model.storeId || "")}"`
+    : model.runId
+      ? `data-current-workflow-id="${escapeHtml(model.runId)}"`
+      : `data-cockpit-view="${escapeHtml(model.actionView || "sourcing")}"`;
+  if (workspace) {
+    workspace.innerHTML = `
+      <div class="current-product-identity">
+        <span class="current-product-status">${escapeHtml(model.status)}</span>
+        <h2>${escapeHtml(model.title)}</h2>
+        <p>${escapeHtml(model.reason)}</p>
+        <div class="current-product-meta">
+          ${model.storeLabel ? `<span>${escapeHtml(model.storeLabel)}</span>` : ""}
+          ${model.offerId ? `<span>1688 Offer ${escapeHtml(model.offerId)}</span>` : ""}
+          ${model.skuCount ? `<span>${escapeHtml(model.skuCount)} 个唯一 SKU</span>` : ""}
+          ${model.imageCount ? `<span>${escapeHtml(model.imageCount)} 张图片</span>` : ""}
+        </div>
+      </div>
+      <div class="current-product-primary-action">
+        <button class="primary" type="button" ${actionAttributes}>${escapeHtml(model.actionLabel)}</button>
+        <small>点击后：${escapeHtml(model.actionEffect)}</small>
+      </div>`;
+  }
+  if (progress) progress.innerHTML = model.stages.map((stage, index) => `<li class="${escapeHtml(stage.status)}"><span>${index + 1}</span><strong>${escapeHtml(stage.label)}</strong></li>`).join("");
+  if (completed) completed.innerHTML = model.completed.length
+    ? `<ul>${model.completed.map((item) => `<li>${escapeHtml(item)}</li>`).join("")}</ul>`
+    : `<p>采集完成后，系统会在这里列出已自动完成的步骤。</p>`;
+  if (required) required.innerHTML = `<strong>${escapeHtml(model.status)}</strong><p>${escapeHtml(model.required.join("；"))}</p><small>${escapeHtml(model.actionEffect)}</small>`;
+  if (listingGate) {
+    listingGate.classList.toggle("is-blocked", model.reviewNeeded || model.empty);
+    listingGate.innerHTML = `
+      <div><span>当前商品</span><strong>${escapeHtml(model.title)}</strong><small>${escapeHtml(model.storeLabel || "尚未绑定店铺")}${model.offerId ? ` · Offer ${escapeHtml(model.offerId)}` : ""}</small></div>
+      <div><span>当前状态</span><strong>${escapeHtml(model.status)}</strong><small>${escapeHtml(model.reason)}</small></div>
+      <button class="primary" type="button" ${actionAttributes}>${escapeHtml(model.actionLabel)}</button>`;
+  }
 }
 
 function renderGlobalCurrentTaskBar() {
@@ -6193,6 +6366,7 @@ async function openCurrentCaptureTask(captureId = "", storeId = "") {
   await switchStoreContext(storeId, { loadWarehouses: false });
   if ($("#captureStoreSelect")) $("#captureStoreSelect").value = storeId;
   state.currentCaptureId = id;
+  renderCaptureBox();
   const row = document.querySelector(`#captureBoxTable tr[data-id="${CSS.escape(id)}"]`);
   row?.scrollIntoView({ behavior: "smooth", block: "center" });
   row?.classList.add("capture-deep-link-focus");
@@ -7094,8 +7268,14 @@ function renderCaptureBox() {
           : `<span class="ok-badge capture-evidence-badge" title="${escapeHtml(sourceEvidenceNextAction)}">来源证据完整</span>`;
         const draftStatus = captureDraftVariantStatuses(item);
         const sellerTask = captureSellerTaskView(item, { sourceEvidenceStatus, evidenceIssues });
+        const sourceVariants = Array.isArray(product.skuVariants) ? product.skuVariants : [];
+        const uniqueSkuIds = new Set(sourceVariants
+          .map((variant) => String(variant?.sourceSkuId || variant?.source_sku_id || variant?.skuId || variant?.sku_id || "").trim())
+          .filter(Boolean));
+        const uniqueSkuCount = uniqueSkuIds.size || sourceVariants.length;
+        const isCurrentProduct = String(item.id || "") === String(state.currentCaptureId || "");
         return `
-          <tr data-id="${item.id}" data-store-id="${escapeHtml(item.storeId || "")}">
+          <tr class="${isCurrentProduct ? "capture-current-product" : "capture-other-product"}" data-id="${item.id}" data-store-id="${escapeHtml(item.storeId || "")}">
             <td><input class="capture-check" type="checkbox" /></td>
             <td>${formatDateTime(item.updatedAt || item.receivedAt)}</td>
             <td>
@@ -7104,6 +7284,7 @@ function renderCaptureBox() {
               </select>
             </td>
             <td>
+              ${isCurrentProduct ? `<span class="capture-current-label">当前要处理的商品</span>` : ""}
               <strong>${escapeHtml(product.title || "未命名商品")}</strong>
               <div class="status-sub capture-source-url" title="${escapeHtml(product.url || "")}">${escapeHtml(product.url || "")}</div>
               ${warningBadge}
@@ -7113,7 +7294,7 @@ function renderCaptureBox() {
               <div class="status-sub capture-source-domain-coverage" data-missing-domains="${escapeHtml(missingDomains.join(","))}">证据覆盖：${escapeHtml(domainText)}</div>
               <div class="status-sub capture-identity-summary" data-capture-task-id="${escapeHtml(captureIdentity.taskId || "")}" data-capture-offer-id="${escapeHtml(captureIdentity.offerId || "")}">回传身份：${escapeHtml(captureIdentityText)}</div>
             </td>
-            <td>${product.skuVariants?.length || 0}</td>
+            <td title="${sourceVariants.length !== uniqueSkuCount ? `采集 ${sourceVariants.length} 行，去重后 ${uniqueSkuCount} 个` : `${uniqueSkuCount} 个唯一 SKU`}">${uniqueSkuCount}</td>
             <td>${product.video?.url ? "有" : "无"}</td>
             <td>
               <div class="capture-seller-task" data-capture-task-state="${escapeHtml(sellerTask.state)}">
@@ -7124,6 +7305,7 @@ function renderCaptureBox() {
               ${draftStatus ? `<div class="status-sub">${escapeHtml(draftStatus)}</div>` : ""}
             </td>
             <td class="row-actions">
+              ${isCurrentProduct && captureReviewNeeded ? `<span class="capture-current-action-guide">现在只做这一步</span>` : ""}
               <button class="small-blue edit-capture" type="button">${escapeHtml(sellerTask.actionLabel)}</button>
               ${sellerTask.state === "waiting_human" && captureTaskId ? `<button class="small-blue resume-capture-human" type="button" data-task-id="${escapeHtml(captureTaskId)}">打开采集任务</button>` : ""}
               ${captureReviewNeeded ? `<button class="small-blue review-capture" type="button">确认当前快照</button>` : ""}
@@ -10798,8 +10980,9 @@ function sellerWorkflowSummary() {
 }
 
 function selectedWorkflowRun() {
-  const runs = sellerWorkflowRuns();
-  return runs.find((run) => run.id === state.selectedWorkflowRunId) || runs[0] || null;
+  const captureTask = currentCaptureSellerTask();
+  if (!captureTask?.item || captureTask.reviewApproved !== true) return null;
+  return canonicalCurrentCaptureWorkflowRun();
 }
 
 function selectedWorkflowNode(run) {
@@ -10813,12 +10996,17 @@ async function loadWorkflowRuns() {
     state.workflowRuns = data.items || data.runs || [];
     state.workflowSummary = data.summary || null;
     const sellerRuns = sellerWorkflowRuns();
-    if (!state.selectedWorkflowRunId && sellerRuns.length) {
-      state.selectedWorkflowRunId = sellerRuns[0].id;
-    }
-    if (!sellerRuns.some((run) => run.id === state.selectedWorkflowRunId)) {
-      state.selectedWorkflowRunId = sellerRuns[0]?.id || "";
+    const captureTask = currentCaptureSellerTask();
+    if (captureTask?.item) {
+      const canonicalRun = canonicalCurrentCaptureWorkflowRun();
+      state.selectedWorkflowRunId = canonicalRun?.id || "__no_workflow__";
       state.selectedWorkflowNodeKey = "";
+    } else {
+      if (!state.selectedWorkflowRunId && sellerRuns.length) state.selectedWorkflowRunId = sellerRuns[0].id;
+      if (!sellerRuns.some((run) => run.id === state.selectedWorkflowRunId)) {
+        state.selectedWorkflowRunId = sellerRuns[0]?.id || "";
+        state.selectedWorkflowNodeKey = "";
+      }
     }
     renderWorkflowConsole();
     renderCockpitDashboard();
@@ -10828,6 +11016,7 @@ async function loadWorkflowRuns() {
     // product's blocker and safe next action.
     renderListingSellerTaskSummary();
     renderGlobalCurrentTaskBar();
+    renderCurrentProductWorkspace();
   } catch (error) {
     state.promotionProducts = [];
     state.promotionCandidates = [];
@@ -12690,7 +12879,8 @@ function renderWorkflowDetail(run, node) {
   const validatedDraftHash = String(run.validatedDraftHash || run.payloadDraftValidation?.draftHash || "").trim();
   const preflightPassed = run.payloadDraftValidation?.ok === true;
   const validationHashMatches = Boolean(currentDraftHash && validatedDraftHash && currentDraftHash === validatedDraftHash);
-  const submissionGateBlocked = !preflightPassed || !validationHashMatches;
+  const currentProductBindingReady = workflowCanActForCurrentProduct(run);
+  const submissionGateBlocked = !preflightPassed || !validationHashMatches || !currentProductBindingReady;
   const submissionButtonLabel = submissionState === "completed"
     ? "已提交，等待审核回查"
     : submissionState === "needs_review"
@@ -12702,7 +12892,9 @@ function renderWorkflowDetail(run, node) {
           : !validationHashMatches
             ? "草稿已修改，先重新预检"
             : "确认提交 Ozon";
-  const submissionButtonHint = submissionState === "completed"
+  const submissionButtonHint = !currentProductBindingReady
+    ? "当前工作流没有绑定已人工确认的真实商品；禁止保存、预检或提交另一个历史/测试商品。"
+    : submissionState === "completed"
     ? "当前草稿已提交过；请使用 task_id 回查审核，不要再次提交。"
     : submissionState === "needs_review"
       ? "上次提交结果未知；先人工回查 Ozon，不能自动重试。"
@@ -12736,7 +12928,7 @@ function renderWorkflowDetail(run, node) {
       <button class="primary" data-workflow-action="continue-node">从此继续</button>
       <button class="primary" data-workflow-action="controlled-chain">受控跑到总闸</button>
     </div>
-    ${run.status === "waiting_human" || run.locks?.waitingHuman ? `
+    ${currentProductBindingReady && (run.status === "waiting_human" || run.locks?.waitingHuman) ? `
       <section class="workflow-manual-panel">
         <strong>人工介入</strong>
         <p class="hint">当前流程已安全暂停，请选择一个处理结果，系统会记录事件并更新锁状态。</p>
@@ -12941,6 +13133,11 @@ async function handleWorkflowAction(action, button) {
   const run = selectedWorkflowRun();
   const node = selectedWorkflowNode(run);
   if (!run) return;
+  const readOnlyActions = new Set(["copy-run-summary", "focus-payload-draft"]);
+  if (!workflowCanActForCurrentProduct(run) && !readOnlyActions.has(action)) {
+    toast("当前没有精确绑定且已确认的真实商品；该工作流动作已阻断。", "error");
+    return;
+  }
   if (action === "pause") await api(`/api/workflows/${encodeURIComponent(run.id)}/pause`, { method: "POST", body: "{}" });
   if (action === "resume") await api(`/api/workflows/${encodeURIComponent(run.id)}/resume`, { method: "POST", body: "{}" });
   if (action === "request-new-source") {
@@ -12972,6 +13169,10 @@ async function handleWorkflowAction(action, button) {
     toast(`受控链路已跑 ${result.steps?.length || 0} 步，未触发 Ozon 提交`);
   }
   if (action === "confirm-continue" && node) {
+    if (!workflowCanActForCurrentProduct(run)) {
+      toast("当前商品尚未完成来源确认，不能确认继续提交。", "error");
+      return;
+    }
     const ok = window.confirm("确认继续提交风险较高。请确认你已判断不是重复货源/重复卡片，是否继续？");
     if (!ok) return;
     await api(`/api/workflows/${encodeURIComponent(run.id)}/nodes/${encodeURIComponent(node.key)}/confirm-continue`, {
@@ -13132,6 +13333,10 @@ async function handleWorkflowAction(action, button) {
     return;
   }
   if (action === "submit-payload-draft") {
+    if (!workflowCanActForCurrentProduct(run)) {
+      toast("当前工作流未精确绑定已确认的真实商品，禁止提交。请回到当前商品完成来源确认。", "error");
+      return;
+    }
     const payloadText = $("#workflowPayloadEditor")?.value || "{}";
     if (!workflowPayloadDraftMatchesRun(run, payloadText)) {
       toast("草稿内容已修改。请先保存草稿并重新预检，再确认提交。", "error");
@@ -16187,6 +16392,20 @@ async function init() {
     }
   });
   document.addEventListener("click", (event) => {
+    const currentCaptureTarget = event.target.closest("[data-current-capture-id]");
+    if (currentCaptureTarget) {
+      openCurrentCaptureTask(currentCaptureTarget.dataset.currentCaptureId, currentCaptureTarget.dataset.currentCaptureStoreId)
+        .catch((error) => toast(error.message || "打开当前商品失败", "error"));
+      return;
+    }
+    const currentWorkflowTarget = event.target.closest("[data-current-workflow-id]");
+    if (currentWorkflowTarget) {
+      state.selectedWorkflowRunId = currentWorkflowTarget.dataset.currentWorkflowId || "";
+      state.selectedWorkflowNodeKey = "";
+      activateErpView("listing");
+      renderListingSellerTaskSummary();
+      return;
+    }
     const reviewRepairLocateTarget = event.target.closest("[data-review-repair-locate]");
     if (reviewRepairLocateTarget) {
       event.preventDefault();
@@ -16381,6 +16600,11 @@ async function init() {
       updateDataFreshness("#dashboardDataFreshness", "error", message);
       updateDataFreshness("#erpDataFreshness", "error", "数据可能已过期");
     }
+  });
+  on("#refreshCurrentProduct", "click", async () => {
+    await loadCaptureBox();
+    await loadWorkflowRuns();
+    toast("当前真实商品已刷新", "ok");
   });
   on("#refreshWriteCommandAttention", "click", loadWriteCommandAttention);
   on("#loadWarehouses", "click", loadWarehouses);

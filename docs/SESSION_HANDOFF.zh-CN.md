@@ -1,5 +1,14 @@
 # Ozon ERP 会话接管与恢复记录
 
+## 2026-07-23 G2-S1 当前商品工作台重构（等待真实确认）
+
+- 依据 Ozon 官方商品内容文档、Shopify Polaris 资源/动作模式和 Vendure/Ozon 开源后台实际代码，将首页从全域数据驾驶舱改为单商品上新工作台：真实商品、5 步进度、系统已完成、卖家唯一动作同屏显示；经营模块和系统诊断默认折叠。
+- 修复三个界面各选不同当前商品的根因：工作台、全局任务条、商品草稿页和高级工作流动作现在共用 canonical capture 上下文；存在真实 capture 时，只能匹配同一 `captureId + storeId` 的非 synthetic workflow，不能回退到最近历史或 Fixture workflow。缺少 capture、无效 snapshot hash、未人工确认或绑定不匹配时，所有工作流变更/提交动作 fail-closed。
+- 当前真实商品准确显示 Offer `992997159052`、9 个唯一 SKU 和 28 张图片。商品草稿页在来源未确认前只显示该商品的确认门，不再显示 Fixture 草稿、提交按钮或完整编辑墙。
+- “去核对并确认”已在浏览器实测：自动切换到 xymallc (`3815760-4`)、定位 capture `c178476424685142rv6`；目标行永久橙色高亮，SKU 显示去重后的 9，未确认阶段只突出“确认当前快照”和次要的“补齐采集”。未代替用户点击人工确认。
+- 外部证据和采用/不采用决策记录在 `docs/frontend-current-product-workbench-research.zh-CN.md`；稳定的当前商品绑定规则已提升到 `AGENTS.md`。
+- 验证：前端静态 305/305、全量 `npm test` 1262/1262、lint 76 files、5178 frontend runtime smoke、offline acceptance 通过；新增可执行场景覆盖 synthetic/历史 workflow、无 capture、未确认和无效 snapshot hash；`networkAccessed=false`、`databaseObserved=false`、`writesExecuted=false`。G2-S1 仍等待用户确认真实快照，未进入 G3。
+
 ## 2026-07-23 G2-S1 前端主线收口（等待真实确认）
 
 - 13 个平铺模块改为 5 个日常主线入口：工作台、1688 采集、商品草稿、商品状态、订单履约；其余模块保留在“更多功能”，没有删除业务能力。

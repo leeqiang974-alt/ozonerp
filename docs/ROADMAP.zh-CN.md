@@ -2,6 +2,8 @@
 
 > 当前派工以 `docs/TOP-LEVEL-DEVELOPMENT-PLAN.zh-CN.md` 为准。本文件记录已交付内容和验证等级，不再从历史条目反向领取开发任务。G1 已完成；当前唯一切片：G2-S1 真实采集商品生成唯一草稿骨架；G4 MVP 通过前冻结 FBS、活动、财务和售后扩建。
 
+> 2026-07-23 G2-S1 当前商品工作台重构：基于 Ozon 官方文档、Shopify Polaris 和 Vendure/Ozon 开源后台实际代码，将卖家首屏收口为一个真实商品、5 步进度、系统已完成和一个安全动作；经营驾驶舱、完整编辑表、规则池与历史诊断默认折叠。工作台、全局任务条、商品草稿页和高级工作流动作统一按真实 `captureId + storeId` 精确匹配非 synthetic workflow；缺少 capture、无效 snapshot、未人工确认或绑定不匹配全部 fail-closed，禁止 Fixture/最近历史任务回退及提交。浏览器已验证 Offer `992997159052` 显示 9 个唯一 SKU、28 张图片；“去核对并确认”自动切换 xymallc 并永久高亮目标行，未点击人工确认。前端静态 305/305、全量 `npm test` 1262/1262、lint 76 files、runtime smoke、offline acceptance 通过；无网络、数据库或 Ozon 写入，G2-S1 仍等待真实人工快照回执。
+
 > 2026-07-23 G2-S1 前端人工确认阻断解除：日常导航由 13 个同级模块收口为工作台、1688 采集、商品草稿、商品状态、订单履约 5 个入口，其余能力进入“更多功能”。全局当前商品条优先选择真实 capture，准确显示 `c178476424685142rv6`，一键切换到店铺 `3815760-4` 并定位目标行；采集 URL 截断，操作列固定，确认按钮无需横向查找。803 条 fixture workflow 默认隐藏且不进入卖家统计，诊断页高度由约 220,449px 降至 654px。浏览器验证五个主线入口、固定任务条、目标按钮和零控制台错误；`npm test` 1256/1256、lint 76 files 通过。未点击人工确认、未调用 Seller API、未执行 Ozon 写入；G2-S1 仍等待该真实快照确认回执。
 
 > 2026-07-23 G2-S1 本地草稿骨架已实现、等待真实人工确认：同一 capture/store 只创建或复用一个 auto-listing job 与 workflow；真实样本的 18 行 SKU 采集结果会归一化为 9 个唯一来源 SKU，并保留原始/唯一/重复计数。草稿骨架集中列出来源 SKU、供应商、采购、可信包装尺重、媒体、俄文内容和类目阻塞；确认快照后界面自动进入当前商品和唯一下一步。并发 8 次仍只有 1 个 job/1 个 workflow，跨快照刷新与缺少来源 SKU ID 都安全阻断。`npm test` 1253/1253、lint 76 files、loopback runtime smoke、offline acceptance 通过；未联网、未连接数据库、未调用 Seller API、付费模型或 Ozon 写入。验证等级 `locally_tested`；仍需用户对真实 capture `c178476424685142rv6` 点击一次“确认当前快照”，形成真实草稿回执后才能完成 G2-S1。

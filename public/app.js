@@ -4,6 +4,7 @@ const state = {
   categoryTree: [],
   categoryEvidence: { tree: null, attributes: null },
   categoryAutoSyncKeys: new Set(),
+  categoryAutoSyncPromises: new Map(),
   categoryAutoSyncRetryAt: new Map(),
   categoryAttributeRequestToken: 0,
   productStatus: "all",
@@ -102,6 +103,8 @@ const state = {
   crawlerCandidateRequestToken: 0,
   listingHandoffNotice: "",
   listingStoreSyncId: "",
+  listingAutoCompletionAttempts: new Set(),
+  listingAutoCompletionInFlight: new Set(),
   crawlerWorkerStatus: null,
   open1688Status: null,
   selectedCrawlerTaskId: "",
@@ -2246,8 +2249,7 @@ function renderListingSellerTaskSummary() {
   const listingStoreId = String(captureTask?.item?.storeId || autoListJob?.storeId || selectedStoreId() || "").trim();
   const store = state.stores.find((item) => String(item.id) === listingStoreId);
   const storeLabel = store?.name || listingStoreId || "店铺未绑定";
-  const aiNode = (run?.nodes || []).find((node) => ["content_generation", "content_review"].includes(node.key));
-  const aiFillAvailable = Boolean(autoListJob?.id && listingProductSource?.title && summary.contentStatus !== "reviewed");
+  const autoCompletionAvailable = Boolean(autoListJob?.id && run?.id && listingProductSource?.title);
   const categoryState = summary.categoryReady ? "ready" : summary.categoryText.includes("多个") ? "review" : "pending";
   const attributeState = !summary.categoryReady ? "pending" : summary.attributeIssueCount > 0 ? "blocked" : "ready";
   const contentState = summary.contentStatus === "reviewed" ? "ready" : summary.contentStatus === "blocked" ? "blocked" : "pending";
@@ -2261,6 +2263,13 @@ function renderListingSellerTaskSummary() {
   const manualCategory = summary.categoryReady || categorySyncIsAutomatic ? "" : renderListingSellerEvidenceActions(run, autoListJob, listingProductSource);
   const payloadRepairs = summary.validationIssueCount > 0 ? renderListingSellerPayloadIssues(run) : "";
   const repairSections = [manualCategory, manualContent, manualProcurement, manualPackage, payloadRepairs].filter(Boolean);
+  const autoCompletionAttempted = state.listingAutoCompletionAttempts.has(autoListJob?.id);
+  const autoCompletionInFlight = state.listingAutoCompletionInFlight.has(autoListJob?.id);
+  const currentDraftHash = String(run?.payloadDraftHash || "").trim();
+  const validatedDraftHash = String(run?.validatedDraftHash || run?.payloadDraftValidation?.draftHash || "").trim();
+  const preflightReady = run?.payloadDraftValidation?.ok === true
+    && Boolean(currentDraftHash)
+    && currentDraftHash === validatedDraftHash;
   renderListingUploadQueueSummary(summary, run);
   body.innerHTML = `
     <div class="listing-simple-sheet">
@@ -2270,10 +2279,7 @@ function renderListingSellerTaskSummary() {
           <h3>${escapeHtml(summary.title)}</h3>
           <p>${escapeHtml(storeLabel)} · Parent SKU ${escapeHtml(parentSku)} · ${escapeHtml(summary.skuCount || "-")} 个规格</p>
         </div>
-        <div class="listing-simple-actions">
-          <button class="ghost" type="button" data-listing-ai-fill data-listing-ai-run-id="${escapeHtml(summary.runId)}" data-listing-ai-node-key="${escapeHtml(aiNode?.key || "")}" ${aiFillAvailable ? "" : "disabled"}>AI 一键补齐文案</button>
-          <button class="primary" type="button" data-listing-seller-primary-view="${escapeHtml(summary.action.view)}" data-listing-seller-run-id="${escapeHtml(summary.runId)}" data-listing-seller-node-key="${escapeHtml(summary.action.nodeKey || "")}">${escapeHtml(summary.action.label)}</button>
-        </div>
+        <span class="listing-sheet-automation">中间步骤由系统自动执行</span>
       </header>
 
       <div class="listing-fixed-defaults">
@@ -2285,7 +2291,7 @@ function renderListingSellerTaskSummary() {
         <div class="listing-auto-field-grid">
           ${renderListingAutoField("Ozon 类目", summary.categoryText, summary.categoryStatusText, categoryState)}
           ${renderListingAutoField("必填属性", summary.attributeText, "按当前店铺类目字典自动检查", attributeState)}
-          ${renderListingAutoField("俄文文案", summary.contentText, "可点击右上角让 AI 一次补齐", contentState)}
+          ${renderListingAutoField("俄文文案", summary.contentText, "自动处理会调用 AI 一次生成", contentState)}
           ${renderListingAutoField("包装尺重", summary.packageText, "可信采集值自动带入，缺失才手填", packageState)}
           ${renderListingAutoField("定价与利润", summary.pricingText, "按采购、物流和佣金规则自动计算", pricingState)}
           ${renderListingAutoField("商品图片", summary.mediaText, "采集图自动带入，风险图才要求检查", mediaState)}
@@ -2302,14 +2308,21 @@ function renderListingSellerTaskSummary() {
         </div>
       </section>
 
-      <section class="listing-simple-section listing-repair-section ${repairSections.length ? "has-repairs" : "is-clear"}">
-        <div class="listing-simple-section-title"><div><span>03</span><h4>${repairSections.length ? `只需补充 ${repairSections.length} 组资料` : "商品资料已齐"}</h4></div><small>${repairSections.length ? "这里只出现系统确实无法确定的内容。" : "可以直接进入提交前预检。"}</small></div>
-        <div class="listing-visible-repairs">${repairSections.join("") || `<div class="listing-no-repairs">没有需要人工填写的商品字段。</div>`}</div>
+      <section class="listing-simple-section listing-repair-section ${autoCompletionAttempted && repairSections.length ? "has-repairs" : "is-clear"}">
+        ${autoCompletionAttempted
+          ? `<div class="listing-simple-section-title"><div><span>03</span><h4>${repairSections.length ? `系统仍缺 ${repairSections.length} 组原始数据` : "商品资料已自动完成"}</h4></div><small>${repairSections.length ? "只显示来源没有、系统不能可靠推断的数据。" : "已自动完成并预检，可以进入最终确认。"}</small></div>
+             <div class="listing-visible-repairs">${repairSections.join("") || `<div class="listing-no-repairs">没有需要人工填写的商品字段。</div>`}</div>`
+          : `<div class="listing-auto-start">
+               <span>03</span>
+               <div><h4>无需逐项处理</h4><p>系统将连续完成类目证据、必填属性、AI 俄文文案、草稿刷新和提交前预检。</p><small>本次动作可能调用一次付费 AI，但不会提交 Ozon。</small></div>
+             </div>`}
       </section>
 
       <footer class="listing-simple-footer">
-        <div><strong>${escapeHtml(summary.action.label)}</strong><small>${escapeHtml(summary.action.effect)}</small></div>
-        <button class="primary" type="button" data-listing-seller-primary-view="${escapeHtml(summary.action.view)}" data-listing-seller-run-id="${escapeHtml(summary.runId)}" data-listing-seller-node-key="${escapeHtml(summary.action.nodeKey || "")}">${escapeHtml(summary.action.label)}</button>
+        <div><strong>${preflightReady ? "商品资料已通过预检" : "系统自动处理到提交前"}</strong><small>${preflightReady ? "下一步只确认最终提交内容。" : "不再逐项确认；有真实缺口时才会停下。"}</small></div>
+        ${preflightReady
+          ? `<button class="primary" type="button" data-listing-seller-primary-view="${escapeHtml(summary.action.view)}" data-listing-seller-run-id="${escapeHtml(summary.runId)}" data-listing-seller-node-key="${escapeHtml(summary.action.nodeKey || "")}">进入最终提交确认</button>`
+          : `<button class="primary listing-auto-complete-button" type="button" data-listing-auto-complete ${autoCompletionAvailable && !autoCompletionInFlight ? "" : "disabled"}>${autoCompletionInFlight ? "系统自动处理中…" : "自动完成商品资料（含 AI）"}</button>`}
       </footer>
     </div>
 
@@ -2329,27 +2342,12 @@ function renderListingSellerTaskSummary() {
   body.querySelector("[data-manual-content-save]")?.addEventListener("click", () => saveManualListingContentFromUi(autoListJob));
   body.querySelector("[data-manual-procurement-save]")?.addEventListener("click", () => saveManualProcurementFromUi(autoListJob));
   body.querySelector("[data-manual-package-save]")?.addEventListener("click", () => saveManualPackageFromUi(autoListJob));
-  body.querySelector("[data-listing-ai-fill]")?.addEventListener("click", async (event) => {
-    const button = event.currentTarget;
-    setBusy(button, true);
-    try {
-      const generated = await generateListingContent(listingProductSource);
-      if (!generated.title || !generated.description) throw new Error("AI 没有生成可用俄文文案，请检查模型配置后重试");
-      const titleInput = body.querySelector("[data-manual-content-title]");
-      const descriptionInput = body.querySelector("[data-manual-content-description]");
-      const annotationInput = body.querySelector("[data-manual-content-annotation]");
-      if (!titleInput || !descriptionInput) throw new Error("当前商品文案表单不可用，请刷新后重试");
-      titleInput.value = generated.title;
-      descriptionInput.value = generated.description;
-      if (annotationInput) annotationInput.value = generated.tags || "";
-      await saveManualListingContentFromUi(autoListJob, { rethrow: true });
-      toast("AI 文案已回填并保存，请继续检查橙色待补项。", "ok");
-    } catch (error) {
-      toast(error.message || "AI 文案处理未完成", "error");
-    } finally {
-      setBusy(button, false);
-    }
-  });
+  body.querySelector("[data-listing-auto-complete]")?.addEventListener("click", (event) => runListingAutoCompletion({
+    run,
+    job: autoListJob,
+    productSource: listingProductSource,
+    button: event.currentTarget,
+  }));
   body.querySelector("[data-seller-validate-payload]")?.addEventListener("click", () => validateListingSellerPayload(body.querySelector("[data-seller-validate-payload]").dataset.runId));
   body.querySelectorAll("[data-seller-payload-issue]").forEach((button) => {
     button.addEventListener("click", () => openSellerPayloadIssue(button.dataset.runId, button));
@@ -2370,17 +2368,17 @@ function renderListingSellerTaskSummary() {
 }
 
 async function autoSyncListingCategoryEvidence(run = null, job = null) {
-  const handoff = run?.nodes?.find((node) => node.key === "capture_handoff")?.output?.draftSkeleton || null;
+  const handoff = run?.nodes?.find((node) => ["candidate_handoff", "capture_handoff"].includes(node.key))?.output?.draftSkeleton || null;
   const decision = job?.categoryDecision || handoff?.categoryDecision || null;
   if (decision?.status !== "auto_matched_evidence_pending" || !decision?.selected) return false;
   const captureId = String(job?.candidateId || handoff?.captureId || "").trim();
   const storeId = String(job?.storeId || handoff?.storeId || selectedStoreId() || "").trim();
   if (!captureId || !storeId) return false;
   const syncKey = `${captureId}:${storeId}:${decision.selected.description_category_id}:${decision.selected.type_id}`;
-  if (state.categoryAutoSyncKeys.has(syncKey)) return false;
+  if (state.categoryAutoSyncPromises.has(syncKey)) return state.categoryAutoSyncPromises.get(syncKey);
   if (Number(state.categoryAutoSyncRetryAt.get(syncKey) || 0) > Date.now()) return false;
   state.categoryAutoSyncKeys.add(syncKey);
-  try {
+  const syncPromise = (async () => {
     const environment = currentSellerReadEnvironment();
     await api("/api/ozon/category-cache/refresh", {
       method: "POST",
@@ -2403,11 +2401,108 @@ async function autoSyncListingCategoryEvidence(run = null, job = null) {
     await loadWorkflowRuns();
     toast(`已自动匹配并同步类目：${decision.selected.path || decision.selected.name}`, "ok");
     return true;
+  })();
+  state.categoryAutoSyncPromises.set(syncKey, syncPromise);
+  try {
+    return await syncPromise;
   } catch (error) {
-    state.categoryAutoSyncKeys.delete(syncKey);
     state.categoryAutoSyncRetryAt.set(syncKey, Date.now() + 5 * 60 * 1000);
     console.warn("自动同步当前店铺类目证据失败", error);
     return false;
+  } finally {
+    state.categoryAutoSyncPromises.delete(syncKey);
+    state.categoryAutoSyncKeys.delete(syncKey);
+  }
+}
+
+async function runListingAutoCompletion({ run = null, job = null, productSource = null, button = null } = {}) {
+  const runId = String(run?.id || "").trim();
+  const jobId = String(job?.id || "").trim();
+  const captureId = String(job?.candidateId || run?.entity?.candidateId || "").trim();
+  const storeId = String(job?.storeId || run?.entity?.storeId || "").trim();
+  if (!runId || !jobId || !productSource?.title) {
+    toast("当前商品尚未形成可自动处理的本地草稿。", "error");
+    return;
+  }
+  if (state.listingAutoCompletionInFlight.has(jobId)) {
+    toast("当前商品正在自动处理，请等待本次结果。", "warning");
+    return;
+  }
+  const bindingMatches = () => {
+    const currentCapture = currentCaptureSellerTask();
+    const currentRun = currentListingWorkflowRun();
+    const currentJob = currentListingAutoListJob(currentRun);
+    return String(currentCapture?.item?.id || "") === captureId
+      && String(currentCapture?.item?.storeId || "") === storeId
+      && String(selectedStoreId() || "") === storeId
+      && String(currentRun?.id || "") === runId
+      && String(currentRun?.entity?.autoListingJobId || "") === jobId
+      && String(currentJob?.id || "") === jobId;
+  };
+  if (!bindingMatches()) {
+    toast("当前商品或店铺已经切换，自动处理未启动。", "error");
+    return;
+  }
+  state.listingAutoCompletionAttempts.add(jobId);
+  state.listingAutoCompletionInFlight.add(jobId);
+  setBusy(button, true);
+  if (button) button.textContent = "系统自动处理中…";
+  try {
+    const handoffDecision = (run?.nodes || [])
+      .find((node) => ["candidate_handoff", "capture_handoff"].includes(node.key))
+      ?.output?.draftSkeleton?.categoryDecision || null;
+    const categoryDecision = job?.categoryDecision || handoffDecision || null;
+    const categorySyncRequired = categoryDecision?.status === "auto_matched_evidence_pending";
+    const categorySynced = await autoSyncListingCategoryEvidence(run, job);
+    if (categorySyncRequired && !categorySynced) {
+      throw new Error("当前店铺类目证据尚未同步成功，已在调用 AI 前停止。");
+    }
+    if (!bindingMatches()) {
+      throw new Error("等待类目证据期间商品或店铺已切换，已在调用 AI 前停止。");
+    }
+    const result = await api(`/api/workflows/${encodeURIComponent(runId)}/controlled-chain`, {
+      method: "POST",
+      body: JSON.stringify({
+        startNode: "content_generate",
+        note: "卖家一次点击：自动完成类目、AI 文案、草稿刷新和提交前预检",
+      }),
+    });
+    showResponse(result);
+    await loadAutoListJobs();
+    await loadWorkflowRuns();
+    const refreshedRun = currentListingWorkflowRun();
+    const refreshedJob = currentListingAutoListJob(refreshedRun);
+    const resultBoundToOriginal = bindingMatches()
+      && String(refreshedRun?.id || "") === runId
+      && String(refreshedRun?.entity?.autoListingJobId || "") === jobId
+      && String(refreshedJob?.id || "") === jobId;
+    if (!result.completed || !resultBoundToOriginal) {
+      throw new Error("自动处理未完整到达提交前预检，未宣称商品资料完成。");
+    }
+    const remaining = Array.isArray(refreshedRun?.payloadDraftValidation?.issues)
+      ? refreshedRun.payloadDraftValidation.issues.length
+      : 0;
+    const refreshedDraftHash = String(refreshedRun?.payloadDraftHash || "").trim();
+    const refreshedValidatedHash = String(
+      refreshedRun?.validatedDraftHash
+      || refreshedRun?.payloadDraftValidation?.draftHash
+      || "",
+    ).trim();
+    const freshPreflightPassed = refreshedRun?.payloadDraftValidation?.ok === true
+      && Boolean(refreshedDraftHash)
+      && refreshedDraftHash === refreshedValidatedHash;
+    toast(freshPreflightPassed
+      ? "商品资料已自动完成并通过预检；下一步只需最终提交确认。"
+      : `自动处理已完成；系统只保留 ${remaining || "仍无法推断的"} 项真实缺口。`,
+    freshPreflightPassed ? "ok" : "warning");
+  } catch (error) {
+    await loadAutoListJobs().catch(() => {});
+    await loadWorkflowRuns().catch(() => {});
+    toast(error.message || "自动处理未完成；已停在安全状态，可直接重试。", "error");
+  } finally {
+    state.listingAutoCompletionInFlight.delete(jobId);
+    setBusy(button, false);
+    renderListingSellerTaskSummary();
   }
 }
 

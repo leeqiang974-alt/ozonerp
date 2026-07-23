@@ -24,6 +24,7 @@ Use the project root: `C:\Users\Administrator\Documents\ozonerp`.
 The ERP must be organized around seller decisions:
 
 - The ordinary listing surface is one product sheet: auto-fill every field that can be safely derived, apply stable seller defaults directly, expose paid AI as one explicit click, and show only unresolved inputs. Keep evidence, workflow nodes, JSON, prompts, receipts, and safety diagnostics collapsed. Stable site/language/unit defaults may be fixed; dynamic Ozon categories, required attributes, dictionary values, and real-store evidence may not be hard-coded.
+- Do not split category evidence sync, attribute fill, AI copy, media preparation, pricing, and preflight into seller-by-seller confirmations. One explicit “auto-complete product” action should run every automatable stage continuously and stop only for unavailable source facts, genuine ambiguity, or a safety failure; retain one final confirmation for the real Ozon submit.
 
 1. What should be handled today.
 2. Which product or workflow is blocked.

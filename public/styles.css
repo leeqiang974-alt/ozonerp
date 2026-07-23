@@ -326,6 +326,17 @@ body[data-active-view="listing"] #globalCurrentTaskBar { display: none; }
   gap: 10px;
 }
 
+.listing-sheet-automation {
+  align-self: flex-start;
+  padding: 8px 12px;
+  border: 1px solid #cdebd9;
+  border-radius: 999px;
+  color: #18794e;
+  background: #f0fbf5;
+  font-size: 12px;
+  font-weight: 700;
+}
+
 .listing-fixed-defaults {
   display: flex;
   flex-wrap: wrap;
@@ -516,6 +527,48 @@ body[data-active-view="listing"] #globalCurrentTaskBar { display: none; }
   color: #247554;
   font-weight: 800;
   text-align: center;
+}
+
+.listing-auto-start {
+  display: grid;
+  grid-template-columns: 38px minmax(0, 1fr);
+  gap: 14px;
+  align-items: start;
+  padding: 18px;
+  border: 1px solid #d7e4ff;
+  border-radius: 16px;
+  background: linear-gradient(135deg, #f4f8ff, #fbfdff);
+}
+
+.listing-auto-start > span {
+  display: grid;
+  place-items: center;
+  width: 34px;
+  height: 34px;
+  border-radius: 10px;
+  color: #fff;
+  background: #2764ff;
+  font-weight: 800;
+}
+
+.listing-auto-start h4,
+.listing-auto-start p {
+  margin: 0;
+}
+
+.listing-auto-start p {
+  margin-top: 5px;
+  color: #41516f;
+}
+
+.listing-auto-start small {
+  display: block;
+  margin-top: 8px;
+  color: #7a879d;
+}
+
+.listing-auto-complete-button {
+  min-width: 230px;
 }
 
 .listing-simple-footer {

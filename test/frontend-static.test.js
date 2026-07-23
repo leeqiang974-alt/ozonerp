@@ -70,22 +70,33 @@ test("frontend shell presents the product as seller ERP rather than FBS-only", a
   assert.match(html, /<title>Ozon Seller ERP<\/title>/);
 });
 
-test("listing keeps the seller surface as one auto-filled product sheet", async () => {
+test("listing keeps the seller surface as one-click automatic product completion", async () => {
   const [html, js, css] = await Promise.all([
     readFile(new URL("../public/index.html", import.meta.url), "utf8"),
     readFile(new URL("../public/app.js", import.meta.url), "utf8"),
     readFile(new URL("../public/styles.css", import.meta.url), "utf8"),
   ]);
 
-  assert.match(html, /系统先填，你只处理橙色待补项/);
+  assert.match(html, /点一次自动处理到预检/);
   assert.match(js, /listing-simple-sheet/);
   assert.match(js, /listing-auto-field-grid/);
   assert.match(js, /系统自动填写/);
-  assert.match(js, /AI 一键补齐文案/);
-  assert.match(js, /data-listing-ai-fill/);
-  assert.match(js, /generateListingContent\(listingProductSource\)/);
-  assert.match(js, /saveManualListingContentFromUi\(autoListJob, \{ rethrow: true \}\)/);
-  assert.match(js, /if \(options\.rethrow\) throw error/);
+  assert.match(js, /自动完成商品资料（含 AI）/);
+  assert.match(js, /data-listing-auto-complete/);
+  assert.match(js, /runListingAutoCompletion/);
+  assert.match(js, /listingAutoCompletionInFlight\.has\(jobId\)/);
+  assert.match(js, /listingAutoCompletionInFlight\.add\(jobId\)/);
+  assert.match(js, /listingAutoCompletionInFlight\.delete\(jobId\)/);
+  assert.match(js, /if \(categorySyncRequired && !categorySynced\)/);
+  assert.match(js, /已在调用 AI 前停止/);
+  assert.match(js, /if \(!bindingMatches\(\)\)/);
+  assert.match(js, /encodeURIComponent\(runId\)\}\/controlled-chain/);
+  assert.match(js, /if \(!result\.completed \|\| !resultBoundToOriginal\)/);
+  assert.match(js, /refreshedDraftHash === refreshedValidatedHash/);
+  assert.match(js, /startNode: "content_generate"/);
+  assert.match(js, /\/controlled-chain/);
+  assert.match(js, /下一步只需最终提交确认/);
+  assert.doesNotMatch(js, /data-listing-ai-fill/);
   assert.match(js, /effectiveCategoryDecision\?\.status === "auto_matched_evidence_pending"/);
   assert.match(js, /renderListingSellerEvidenceActions\(run, autoListJob, listingProductSource\)/);
   assert.match(js, /listingSourceEvidence\?\.captureIdentity\?\.offerId/);

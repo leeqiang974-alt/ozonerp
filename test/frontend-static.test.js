@@ -5011,3 +5011,33 @@ test("current capture row stays highlighted and reports unique source SKUs", asy
   assert.match(css, /\.capture-current-product \.review-capture/);
   assert.match(css, /\.capture-current-product \.preflight-capture[\s\S]*display: none/);
 });
+
+test("1688 sourcing is a plugin inbox instead of an expanded engineering console", async () => {
+  const [html, js, css] = await Promise.all([
+    readFile(new URL("../public/index.html", import.meta.url), "utf8"),
+    readFile(new URL("../public/app.js", import.meta.url), "utf8"),
+    readFile(new URL("../public/styles.css", import.meta.url), "utf8"),
+  ]);
+  const sourcingStart = html.indexOf('<section id="sourcing"');
+  const advancedStart = html.indexOf('class="sourcing-advanced-disclosure"', sourcingStart);
+  const ordinarySourcing = html.slice(sourcingStart, advancedStart);
+  assert.ok(sourcingStart >= 0 && advancedStart > sourcingStart);
+  assert.match(ordinarySourcing, /1688 商品采集/);
+  assert.match(ordinarySourcing, /补齐后入箱/);
+  assert.match(ordinarySourcing, /id="crawlerWorkerStatus"/);
+  assert.match(ordinarySourcing, /id="sourcingCurrentProduct"/);
+  assert.doesNotMatch(ordinarySourcing, /fixture|反向单入口|任务配置|自动铺货记录/);
+  assert.match(html, /高级采集工具与历史记录（通常不用）/);
+  assert.match(js, /function renderSourcingInbox/);
+  assert.match(js, /renderSourcingInbox\(\)/);
+  assert.match(js, /function initializeSourcingAdvancedDisclosure/);
+  assert.match(js, /content\.append\(sibling\)/);
+  assert.match(js, /on\("#refreshCaptureBox", "click", refreshCaptureBox\)/);
+  assert.match(js, /on\("#refreshCaptureBoxTop", "click", refreshCaptureBox\)/);
+  assert.match(js, /progressLabel = validationStale \? "需要重新检查" : "需要你补充"/);
+  assert.match(js, /model\.progressLabel \|\| "系统处理结果"/);
+  assert.match(js, /latest\?\.needsHuman \? "needs-human" : latest\?\.online \? "online"/);
+  assert.match(css, /body\[data-active-view="sourcing"\] \.global-current-task-bar[\s\S]*display: none/);
+  assert.match(css, /#sourcing > \.sourcing-advanced-disclosure ~ \*[\s\S]*display: none/);
+  assert.doesNotMatch(css, /sourcing-advanced-disclosure\[open\]/);
+});

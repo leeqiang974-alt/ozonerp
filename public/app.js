@@ -6475,6 +6475,7 @@ async function loadCaptureBox() {
   const data = await api("/api/1688/captures");
   state.captureRows = data.items || [];
   renderCaptureBox();
+  renderSourcingInbox();
   renderGlobalCurrentTaskBar();
   renderCurrentProductWorkspace();
   renderListingSellerTaskSummary();
@@ -6580,6 +6581,7 @@ function currentProductWorkspaceModel() {
   let reason = "请确认标题、规格和图片属于你刚刚采集的商品。";
   let actionLabel = "确认这是我的商品";
   let actionKind = "capture_review";
+  let progressLabel = "等待你确认";
   let actionView = "sourcing";
   let actionEffect = `确认 ${store?.name || item.storeId || "目标店铺"} 的当前商品；确认后建立本地草稿，不会自动上架。`;
   let userInstruction = "确认标题、规格和图片是你刚刚采集的商品。";
@@ -6591,6 +6593,7 @@ function currentProductWorkspaceModel() {
     reason = "这次采集缺少必要信息，系统无法安全处理。";
     actionLabel = "重新采集商品";
     actionKind = "capture";
+    progressLabel = "需要重新采集";
     actionEffect = `打开 ${store?.name || item.storeId || "目标店铺"} 的采集记录；重新采集不会自动上架。`;
     userInstruction = "回到这个 1688 商品页面，用插件重新采集一次。";
     systemNext = "系统会检查新数据，完整后自动回到商品确认。";
@@ -6600,6 +6603,7 @@ function currentProductWorkspaceModel() {
     reason = "商品已经确认，系统正在准备商品资料。";
     actionLabel = "建立商品草稿";
     actionKind = "capture_workflow";
+    progressLabel = "准备建立草稿";
     actionEffect = "建立或恢复当前商品的唯一本地草稿，不会自动上架。";
     userInstruction = "点击建立当前商品的本地草稿。";
     systemNext = "系统会整理已有规格和图片，并打开需要你确认的资料。";
@@ -6613,6 +6617,7 @@ function currentProductWorkspaceModel() {
         : "系统和 AI 已完成可自动处理的内容，只留下必须确认的资料。";
     actionLabel = validationStale ? "重新检查商品" : "完善商品资料";
     actionKind = run ? "workflow" : "capture_workflow";
+    progressLabel = validationStale ? "需要重新检查" : "需要你补充";
     if (!run) actionLabel = "打开商品资料";
     actionView = "listing";
     actionEffect = validationStale
@@ -6632,6 +6637,7 @@ function currentProductWorkspaceModel() {
     reason = "系统检查已经通过，最后由你决定是否上架。";
     actionLabel = "确认上架";
     actionKind = "workflow";
+    progressLabel = "等待你确认";
     actionView = "listing";
     actionEffect = "先展示价格和商品摘要，只有你再次确认才会提交。";
     userInstruction = "核对商品摘要和价格，决定是否进入最后确认。";
@@ -6655,6 +6661,7 @@ function currentProductWorkspaceModel() {
     reason,
     actionLabel,
     actionKind,
+    progressLabel,
     actionView,
     actionEffect,
     userInstruction,
@@ -6691,6 +6698,46 @@ function currentProductActionAttributes(model = {}) {
     return `data-current-workflow-id="${escapeHtml(runId)}" data-current-workflow-store-id="${escapeHtml(storeId)}"`;
   }
   return `data-cockpit-view="${escapeHtml(model.actionView || "sourcing")}"`;
+}
+
+function renderSourcingInbox() {
+  const target = $("#sourcingCurrentProduct");
+  if (!target) return;
+  const model = currentProductWorkspaceModel();
+  if (model.empty) {
+    target.innerHTML = `
+      <div class="sourcing-current-empty">
+        <span>当前商品</span>
+        <strong>等待第一件 1688 商品</strong>
+        <p>完成上面的插件操作后，商品会自动出现在这里，不需要先配置任务或创建候选池。</p>
+      </div>`;
+    return;
+  }
+  const actionAttributes = currentProductActionAttributes(model);
+  target.innerHTML = `
+    <div class="sourcing-current-media">
+      ${model.imageUrl ? `<img src="${escapeHtml(model.imageUrl)}" alt="" loading="lazy" referrerpolicy="no-referrer" />` : `<span>OZ</span>`}
+    </div>
+    <div class="sourcing-current-copy">
+      <span class="sourcing-current-kicker">当前采集商品 · 系统已接收</span>
+      <h2>${escapeHtml(model.title)}</h2>
+      <div class="sourcing-current-meta">
+        ${model.storeLabel ? `<span>${escapeHtml(model.storeLabel)}</span>` : ""}
+        ${model.offerId ? `<span>1688 货号 ${escapeHtml(model.offerId)}</span>` : ""}
+        ${model.skuCount ? `<span>${escapeHtml(model.skuCount)} 个规格</span>` : ""}
+        ${model.imageCount ? `<span>${escapeHtml(model.imageCount)} 张图片</span>` : ""}
+      </div>
+      <div class="sourcing-auto-result">
+        <span>${escapeHtml(model.progressLabel || "系统处理结果")}</span>
+        <strong>${escapeHtml(model.status)}</strong>
+        <p>${escapeHtml(model.reason)}</p>
+      </div>
+    </div>
+    <div class="sourcing-current-action">
+      <span>需要你时只显示一个动作</span>
+      <button class="primary" type="button" ${actionAttributes}>${escapeHtml(model.actionLabel)}</button>
+      <small>${escapeHtml(model.actionEffect)}</small>
+    </div>`;
 }
 
 function renderCurrentProductWorkspace() {
@@ -6867,14 +6914,35 @@ function renderOpen1688Status() {
 
 function renderCrawlerWorkerStatus() {
   const box = $("#crawlerWorkerStatus");
-  if (!box) return;
+  const technicalBox = $("#crawlerWorkerStatusTechnical");
   const workers = state.crawlerWorkerStatus?.items || [];
   const latest = workers[0] || null;
   const statusText = latest?.online ? "在线" : "离线";
   const currentJob = latest?.currentJobId
     ? `${latest.currentJobKind || "job"} / ${latest.currentTaskId || "-"}`
     : "空闲";
-  box.innerHTML = `
+  if (box) {
+    const headline = latest?.needsHuman
+      ? "1688 正在等待你完成人机验证"
+      : latest?.online
+        ? "插件已连接，可以开始采集"
+        : "暂未检测到插件连接";
+    const help = latest?.needsHuman
+      ? "回到 1688 页面完成验证，插件会从原任务继续。"
+      : latest?.online
+        ? "现在去 1688 商品页点击“补齐后入箱”。"
+        : "请确认浏览器扩展已启用，并保持 1688 登录状态。";
+    box.innerHTML = `
+      <span class="sourcing-plugin-status-dot ${latest?.needsHuman ? "needs-human" : latest?.online ? "online" : "offline"}" aria-hidden="true"></span>
+      <div>
+        <span>采集插件</span>
+        <strong>${escapeHtml(headline)}</strong>
+        <small>${escapeHtml(help)}</small>
+      </div>
+    `;
+  }
+  if (!technicalBox) return;
+  technicalBox.innerHTML = `
     <article class="${latest?.online ? "online" : "offline"}">
       <span>插件状态</span>
       <strong>${statusText}</strong>
@@ -16104,6 +16172,21 @@ function renderTabTaskCards() {
   });
 }
 
+function initializeSourcingAdvancedDisclosure() {
+  const view = $("#sourcing");
+  const details = view?.querySelector(".sourcing-advanced-disclosure");
+  if (!view || !details || details.querySelector(".sourcing-advanced-content")) return;
+  const content = document.createElement("div");
+  content.className = "sourcing-advanced-content";
+  let sibling = details.nextElementSibling;
+  while (sibling) {
+    const next = sibling.nextElementSibling;
+    content.append(sibling);
+    sibling = next;
+  }
+  details.append(content);
+}
+
 function applyProgressiveDisclosure() {
   document.querySelectorAll(".view").forEach((view) => {
     if (view.dataset.progressiveDisclosureReady === "1") return;
@@ -16726,6 +16809,7 @@ async function init() {
   initDefaultDates();
   renderViewOwnershipBars();
   renderTabTaskCards();
+  initializeSourcingAdvancedDisclosure();
   applyProgressiveDisclosure();
   renderErpWorkflowNavigator();
   await loadStores();
@@ -17211,10 +17295,12 @@ async function init() {
   // 库存写入不再从原始 JSON 直通；必须先完成只读证据、dry-run 和受控确认流程。
   on("#collect1688", "click", collect1688);
   on("#import1688Fixture", "click", import1688Fixture);
-  on("#refreshCaptureBox", "click", async () => {
+  const refreshCaptureBox = async () => {
     await loadCaptureBox();
     toast(`采集箱已刷新：${state.captureRows.length} 个商品`);
-  });
+  };
+  on("#refreshCaptureBox", "click", refreshCaptureBox);
+  on("#refreshCaptureBoxTop", "click", refreshCaptureBox);
   $("#crawlerTaskStart")?.addEventListener("click", createCrawlerTask);
   $("#ozonLearningStart")?.addEventListener("click", createOzonLearningTask);
   $("#ozonBlindStart")?.addEventListener("click", createOzonBlindRun);

@@ -998,17 +998,43 @@
         </div>
       </section>
 
-      <section id="sourcing" class="view">
+      <section id="sourcing" class="view" data-progressive-disclosure-ready="1">
         <header class="page-head">
           <div>
-            <h1>选品采集</h1>
-            <p>从 1688/PDD/外部来源采集新商品，先进入候选池，再生成上传草稿。</p>
+            <span class="page-eyebrow">1688 → ERP</span>
+            <h1>1688 商品采集</h1>
+            <p>你只在 1688 商品页点一次插件；采集、整理和后续处理结果都回到这里。</p>
           </div>
           <div class="actions">
-            <button id="refreshCaptureBoxTop" class="ghost" type="button">刷新采集箱</button>
-            <button class="primary" type="button" data-cockpit-view="listing">生成上传草稿</button>
+            <button id="refreshCaptureBoxTop" class="ghost" type="button">刷新采集结果</button>
           </div>
         </header>
+
+        <section class="sourcing-plugin-inbox" aria-labelledby="sourcingPluginGuideTitle">
+          <div class="sourcing-plugin-guide">
+            <span class="sourcing-guide-kicker">你只需要做一次</span>
+            <h2 id="sourcingPluginGuideTitle">在 1688 商品页点击“补齐后入箱”</h2>
+            <p>插件会把当前商品送回 ERP。系统随后自动整理规格、图片、类目和上架资料；只有来源没有的真实数据才会请你补充。</p>
+            <ol class="sourcing-three-steps">
+              <li><span>1</span><div><strong>打开商品</strong><small>进入准备采购的 1688 商品详情页</small></div></li>
+              <li><span>2</span><div><strong>点插件</strong><small>点击橙色插件里的“补齐后入箱”</small></div></li>
+              <li><span>3</span><div><strong>等待结果</strong><small>成功后会自动打开这件商品</small></div></li>
+            </ol>
+          </div>
+          <div id="crawlerWorkerStatus" class="sourcing-plugin-status" aria-live="polite">正在检查插件连接...</div>
+        </section>
+
+        <section id="sourcingCurrentProduct" class="sourcing-current-product" aria-live="polite">
+          <div class="sourcing-current-empty">
+            <span>当前商品</span>
+            <strong>正在读取采集结果...</strong>
+          </div>
+        </section>
+
+        <details class="sourcing-advanced-disclosure">
+          <summary>高级采集工具与历史记录（通常不用）</summary>
+          <p>只有排查插件、回放测试数据或管理批量任务时才需要展开。这里不会影响日常采集。</p>
+        </details>
 
         <section id="sourcingOperatingPanel" class="panel business-primary-panel sourcing-operating-panel">
           <div class="section-headline">
@@ -1086,7 +1112,7 @@
           <div class="erp-section">
             <header>插件状态</header>
             <div class="erp-body">
-              <div id="crawlerWorkerStatus">加载中...</div>
+              <div id="crawlerWorkerStatusTechnical">加载中...</div>
             </div>
           </div>
 

@@ -6,7 +6,7 @@
     <title>Ozon Seller ERP</title>
     <link rel="stylesheet" href="/styles.css" />
   </head>
-  <body class="business-erp-theme auto-ozon-erp-shell">
+  <body class="business-erp-theme auto-ozon-erp-shell" data-active-view="dashboard">
     <div class="app-shell auto-ozon-erp-shell">
       <aside class="app-rail app-rail-wide" aria-label="一级导航">
         <button class="app-rail-logo" type="button" data-nav-group="store-overview" data-view="dashboard" aria-label="Ozon ERP">OZ</button>
@@ -81,8 +81,8 @@
           <span id="erpExchangeRateStatus">汇率未同步</span>
           <span id="erpDataFreshness" data-sync-state="idle">数据尚未同步</span>
           <span>店铺 <b id="erpStoreCount">0</b></span>
-          <span>自动化：观察模式</span>
-          <span>工作流 <b id="workflowStatusCount">0</b></span>
+          <span class="internal-status-only">自动化：观察模式</span>
+          <span class="internal-status-only">工作流 <b id="workflowStatusCount">0</b></span>
         </div>
         <section id="globalCurrentTaskBar" class="global-current-task-bar" aria-label="当前商品任务" aria-live="polite">
           <span class="global-current-task-kicker">当前商品</span>
@@ -92,9 +92,9 @@
       <section id="dashboard" class="view active" data-progressive-disclosure-ready="1">
         <header class="page-head current-product-page-head">
           <div>
-            <span class="page-eyebrow">1688 → OZON</span>
-            <h1>商品上新工作台</h1>
-            <p>一次只推进一个真实商品。系统完成可自动完成的步骤，只把当前必须由你决定的动作留在这里。</p>
+            <span class="page-eyebrow">商品上新</span>
+            <h1>处理当前商品</h1>
+            <p>采集、检查、上架。系统和 AI 在后台完成中间过程，只有需要你决定时才会停下来。</p>
           </div>
           <button id="refreshCurrentProduct" class="ghost" type="button">刷新当前商品</button>
         </header>
@@ -104,16 +104,16 @@
         <ol id="currentProductProgress" class="current-product-progress" aria-label="商品上新进度"></ol>
         <div class="current-product-task-columns">
           <section class="current-product-task-card completed-card">
-            <span class="current-product-card-kicker">系统已完成</span>
+            <span class="current-product-card-kicker">处理结果</span>
             <div id="currentProductCompleted"><p>正在核对来源数据…</p></div>
           </section>
-          <section class="current-product-task-card required-card">
-            <span class="current-product-card-kicker">现在需要你处理</span>
+          <section class="current-product-task-card required-card" hidden>
+            <span class="current-product-card-kicker">需要你决定</span>
             <div id="currentProductRequired"><p>正在判断唯一安全动作…</p></div>
           </section>
         </div>
         <details class="dashboard-advanced-workbench">
-          <summary>店铺经营与系统诊断（当前阶段暂不展开）</summary>
+          <summary>更多信息</summary>
         <header class="page-head store-dashboard-head" data-legacy-title="店铺经营总览">
           <div>
             <span class="page-eyebrow">OPERATING DASHBOARD</span>

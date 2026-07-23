@@ -6196,14 +6196,14 @@ function currentProductWorkspaceModel() {
     return {
       empty: true,
       title: "还没有真实采集商品",
-      status: "等待 1688 采集",
-      reason: "测试数据不会占用当前商品。请先在 1688 商品详情页使用采集插件。",
-      actionLabel: "打开 1688 采集箱",
+      status: "等待采集商品",
+      reason: "请先采集一个准备上架的真实商品。",
+      actionLabel: "去采集商品",
       actionView: "sourcing",
-      actionEffect: "只打开本地采集入口，不会调用 Ozon 或产生费用。",
+      actionEffect: "打开采集页面，不会自动上架或产生费用。",
       completed: [],
       required: ["采集一个真实 1688 商品"],
-      stages: ["采集", "来源确认", "本地草稿", "补全资料", "提交前预检"].map((label) => ({ label, status: "pending" })),
+      stages: ["采集商品", "检查商品", "确认上架"].map((label, index) => ({ label, status: index === 0 ? "current" : "pending" })),
     };
   }
   const { item, product, reviewApproved, reviewPossible, reviewNeeded, hasDraft } = captureTask;
@@ -6218,49 +6218,59 @@ function currentProductWorkspaceModel() {
   const skuCount = Number(item.draft?.uniqueSourceSkuCount || uniqueSourceSkuIds.size || sourceVariants.length || item.skuCount || 0);
   const imageCount = Number(product.images?.length || product.imageCount || item.imageCount || 0);
   const draftReady = reviewApproved === true && Boolean(run || hasDraft);
-  const preflightPassed = reviewApproved === true && run?.payloadDraftValidation?.ok === true;
+  const currentDraftHash = String(run?.payloadDraftHash || "").trim();
+  const validatedDraftHash = String(run?.validatedDraftHash || run?.payloadDraftValidation?.draftHash || "").trim();
+  const validationReportedPassed = run?.payloadDraftValidation?.ok === true;
+  const validationHashMatches = Boolean(currentDraftHash && validatedDraftHash && currentDraftHash === validatedDraftHash);
+  const preflightPassed = reviewApproved === true && validationReportedPassed && validationHashMatches;
+  const validationStale = validationReportedPassed && !validationHashMatches;
   const issueCount = Array.isArray(run?.payloadDraftValidation?.issues) ? run.payloadDraftValidation.issues.length : 0;
   const confirmed = reviewApproved === true;
   const completed = [
-    `已采集真实 1688 商品${offerId ? ` · Offer ${offerId}` : ""}`,
-    `已解析 ${skuCount || "-"} 个唯一 SKU${imageCount ? `、${imageCount} 张图片` : ""}`,
+    `已读取商品${offerId ? ` · 货号 ${offerId}` : ""} · ${skuCount || "-"} 个规格${imageCount ? ` · ${imageCount} 张图片` : ""}`,
   ];
-  if (confirmed) completed.push("来源快照已人工确认并绑定当前商品");
-  if (draftReady) completed.push("已建立当前店铺唯一的本地草稿骨架");
-  if (preflightPassed) completed.push("当前草稿已通过提交前预检");
+  if (preflightPassed) completed.push("商品资料检查通过");
+  else if (draftReady) completed.push("系统和 AI 正在整理商品资料");
+  else if (confirmed) completed.push("商品已确认，等待系统继续处理");
 
-  let status = "等待确认来源快照";
-  let reason = "系统已完成采集与解析，但必须由你确认这就是当前 1688 页面快照。";
-  let actionLabel = "去核对并确认";
+  let status = "等待你确认商品";
+  let reason = "请确认标题、规格和图片属于你刚刚采集的商品。";
+  let actionLabel = "检查商品";
   let actionView = "sourcing";
-  let actionEffect = `自动切换到 ${store?.name || item.storeId || "目标店铺"} 并定位真实采集行；只有你再次确认后才建立草稿，不会调用 Ozon 或产生费用。`;
-  let required = ["核对商品标题、SKU 数量和来源页面，然后确认当前快照"];
+  let actionEffect = `打开 ${store?.name || item.storeId || "目标店铺"} 的当前商品；确认后系统和 AI 会继续整理资料，不会自动上架。`;
+  let required = ["确认标题、规格和图片是否正确"];
   if (!reviewPossible) {
-    status = "来源快照无效，必须重新采集";
-    reason = "当前记录没有可核对的有效 snapshot hash，不能视为已确认，也不能进入草稿或提交。";
-    actionLabel = "重新采集来源";
-    actionEffect = `自动切换到 ${store?.name || item.storeId || "目标店铺"} 并定位记录；只补齐来源证据，不会创建草稿或调用 Ozon。`;
-    required = ["重新打开真实 1688 商品页并采集有效快照"];
+    status = "商品资料不完整";
+    reason = "这次采集缺少必要信息，系统无法安全处理。";
+    actionLabel = "重新采集商品";
+    actionEffect = `打开 ${store?.name || item.storeId || "目标店铺"} 的采集记录；重新采集不会自动上架。`;
+    required = ["重新打开商品页面并采集"];
   } else if (!reviewNeeded && !draftReady) {
-    status = "等待建立本地草稿";
-    reason = "来源已确认，但当前商品尚未绑定唯一草稿。";
-    actionLabel = "返回采集箱继续";
-    actionEffect = "只恢复本地草稿交接，不会提交 Ozon。";
-    required = ["继续当前采集商品并建立本地草稿"];
+    status = "商品正在整理";
+    reason = "商品已经确认，系统正在准备商品资料。";
+    actionLabel = "继续处理";
+    actionEffect = "继续整理当前商品，不会自动上架。";
+    required = ["继续当前商品"];
   } else if (draftReady && !preflightPassed) {
-    status = issueCount ? `草稿待修复 · ${issueCount} 项预检问题` : "本地草稿待补资料";
-    reason = run?.summary?.currentProductTask?.reason || "系统已建立草稿，下一步只处理阻塞预检的必要资料。";
-    actionLabel = run?.summary?.currentProductTask?.nextAction || "打开当前商品草稿";
+    status = validationStale ? "商品有更新，需要重新检查" : issueCount ? `需要补充 ${issueCount} 项资料` : "商品资料待完善";
+    reason = validationStale
+      ? "商品资料在上次检查后发生了变化，系统需要重新确认。"
+      : issueCount
+        ? `还有 ${issueCount} 项资料无法自动判断，需要你确认。`
+        : "系统和 AI 已完成可自动处理的内容，只留下必须确认的资料。";
+    actionLabel = validationStale ? "重新检查商品" : "完善商品资料";
     actionView = "listing";
-    actionEffect = "只编辑并校验当前本地草稿；通过预检前不能提交 Ozon。";
+    actionEffect = validationStale
+      ? "重新检查当前版本，检查通过前不会上架。"
+      : "只处理当前商品缺少的资料，检查通过前不会上架。";
     required = [actionLabel];
   } else if (preflightPassed) {
-    status = "预检通过，等待人工提交确认";
-    reason = "自动处理已到安全边界；真实提交仍需你明确确认。";
-    actionLabel = "检查并确认提交";
+    status = "商品已准备好";
+    reason = "系统检查已经通过，最后由你决定是否上架。";
+    actionLabel = "确认上架";
     actionView = "listing";
-    actionEffect = "先展示提交影响和确认门；不会绕过人工确认。";
-    required = ["检查价格、媒体、类目与库存准备状态后决定是否提交"];
+    actionEffect = "先展示价格和商品摘要，只有你再次确认才会提交。";
+    required = ["确认商品信息和价格后决定是否上架"];
   }
   return {
     empty: false,
@@ -6281,11 +6291,9 @@ function currentProductWorkspaceModel() {
     completed,
     required,
     stages: [
-      { label: "采集", status: "complete" },
-      { label: "来源确认", status: confirmed ? "complete" : "current" },
-      { label: "本地草稿", status: draftReady ? "complete" : confirmed ? "current" : "pending" },
-      { label: "补全资料", status: preflightPassed ? "complete" : draftReady ? "current" : "pending" },
-      { label: "提交前预检", status: preflightPassed ? "complete" : "pending" },
+      { label: "采集商品", status: reviewPossible ? "complete" : "current" },
+      { label: "检查商品", status: preflightPassed ? "complete" : reviewPossible ? "current" : "pending" },
+      { label: "确认上架", status: preflightPassed ? "current" : "pending" },
     ],
   };
 }
@@ -6310,26 +6318,26 @@ function renderCurrentProductWorkspace() {
         <p>${escapeHtml(model.reason)}</p>
         <div class="current-product-meta">
           ${model.storeLabel ? `<span>${escapeHtml(model.storeLabel)}</span>` : ""}
-          ${model.offerId ? `<span>1688 Offer ${escapeHtml(model.offerId)}</span>` : ""}
-          ${model.skuCount ? `<span>${escapeHtml(model.skuCount)} 个唯一 SKU</span>` : ""}
+          ${model.offerId ? `<span>货号 ${escapeHtml(model.offerId)}</span>` : ""}
+          ${model.skuCount ? `<span>${escapeHtml(model.skuCount)} 个规格</span>` : ""}
           ${model.imageCount ? `<span>${escapeHtml(model.imageCount)} 张图片</span>` : ""}
         </div>
       </div>
       <div class="current-product-primary-action">
         <button class="primary" type="button" ${actionAttributes}>${escapeHtml(model.actionLabel)}</button>
-        <small>点击后：${escapeHtml(model.actionEffect)}</small>
+        <small>${escapeHtml(model.actionEffect)}</small>
       </div>`;
   }
   if (progress) progress.innerHTML = model.stages.map((stage, index) => `<li class="${escapeHtml(stage.status)}"><span>${index + 1}</span><strong>${escapeHtml(stage.label)}</strong></li>`).join("");
   if (completed) completed.innerHTML = model.completed.length
     ? `<ul>${model.completed.map((item) => `<li>${escapeHtml(item)}</li>`).join("")}</ul>`
-    : `<p>采集完成后，系统会在这里列出已自动完成的步骤。</p>`;
+    : `<p>采集完成后，系统会在这里显示处理结果。</p>`;
   if (required) required.innerHTML = `<strong>${escapeHtml(model.status)}</strong><p>${escapeHtml(model.required.join("；"))}</p><small>${escapeHtml(model.actionEffect)}</small>`;
   if (listingGate) {
     listingGate.classList.toggle("is-blocked", model.reviewNeeded || model.empty);
     listingGate.innerHTML = `
       <div><span>当前商品</span><strong>${escapeHtml(model.title)}</strong><small>${escapeHtml(model.storeLabel || "尚未绑定店铺")}${model.offerId ? ` · Offer ${escapeHtml(model.offerId)}` : ""}</small></div>
-      <div><span>当前状态</span><strong>${escapeHtml(model.status)}</strong><small>${escapeHtml(model.reason)}</small></div>
+      <div><span>下一步</span><strong>${escapeHtml(model.status)}</strong><small>${escapeHtml(model.reason)}</small></div>
       <button class="primary" type="button" ${actionAttributes}>${escapeHtml(model.actionLabel)}</button>`;
   }
 }
@@ -6339,18 +6347,18 @@ function renderGlobalCurrentTaskBar() {
   if (!target) return;
   const task = currentCaptureSellerTask();
   if (!task) {
-    target.innerHTML = `<div><strong>暂无真实采集商品</strong><small>先在 1688 商品页使用采集插件；测试数据不会占用这里。</small></div><button type="button" class="primary" data-cockpit-view="sourcing">去 1688 采集</button>`;
+    target.innerHTML = `<div><strong>还没有商品</strong><small>先采集一个准备上架的商品。</small></div><button type="button" class="primary" data-cockpit-view="sourcing">去采集商品</button>`;
     return;
   }
   const { item, product, reviewNeeded, hasDraft } = task;
   const store = state.stores.find((row) => row.id === item.storeId);
-  const status = reviewNeeded ? "等待你确认当前 1688 快照" : hasDraft ? "本地草稿已建立，继续补资料与预检" : "采集完成，继续生成本地草稿";
+  const status = reviewNeeded ? "等待你确认商品" : hasDraft ? "继续完善商品资料" : "商品正在整理";
   target.innerHTML = `
     <div class="global-current-task-copy">
       <strong title="${escapeHtml(product.title || "未命名商品")}">${escapeHtml(product.title || "未命名商品")}</strong>
       <small>${escapeHtml(store?.name || item.storeId || "店铺未绑定")} · ${escapeHtml(status)}</small>
     </div>
-    <button type="button" class="primary" data-global-capture-id="${escapeHtml(item.id)}" data-global-capture-store-id="${escapeHtml(item.storeId || "")}">${reviewNeeded ? "去确认快照" : "继续当前商品"}</button>
+    <button type="button" class="primary" data-global-capture-id="${escapeHtml(item.id)}" data-global-capture-store-id="${escapeHtml(item.storeId || "")}">${reviewNeeded ? "检查商品" : "继续处理"}</button>
   `;
 }
 

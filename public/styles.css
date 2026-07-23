@@ -6624,3 +6624,10 @@ body.auto-ozon-erp-shell {
     height: 72px;
   }
 }
+.internal-status-only {
+  display: none !important;
+}
+
+body[data-active-view="dashboard"] .global-current-task-bar {
+  display: none;
+}

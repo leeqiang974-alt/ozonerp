@@ -64,6 +64,7 @@ Ozon ERP is a seller operating workbench. UI and workflow changes must help the 
 Do not turn ordinary seller screens into developer logs, long unscannable forms, or generic diagnostic walls.
 
 - 普通卖家前端必须始终显示一个全局“当前商品”任务条；真实 capture/store 要一键定位并切换到精确店铺，人工动作不能藏在横向滚动区或开发者工作流里。
+- 普通卖家前端只展示业务结果、需要人工决定的异常和唯一下一步；snapshot、evidence、workflow、preflight、Fixture、AI 推理过程等内部机制必须留在高级诊断中。商品上新主流程固定使用“采集商品—检查商品—确认上架”三步，不能把内部节点数量直接映射成卖家步骤。
 - 1688 fixture、测试 workflow 和演示商品默认不参与卖家任务数量、当前商品选择或首页风险统计；只能在明确的“显示测试数据”高级入口中查看。
 - G4 前日常主导航只保留黄金链路及必要经营入口；诊断、竞品、仓库、活动、财务、售后、报表和系统配置归入“更多功能”，不得再次平铺成十几个同级 tab。
 

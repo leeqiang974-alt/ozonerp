@@ -2117,7 +2117,8 @@ test("1688 capture deep links focus the exact sourcing row", async () => {
   assert.match(body, /captureId/);
   assert.match(body, /state\.captureRows\.find/);
   assert.match(body, /captureBoxTable/);
-  assert.match(body, /生成本地草稿/);
+  assert.match(body, /openCurrentCaptureTask/);
+  assert.match(body, /检查商品/);
 });
 
 test("missing multi-SKU source binding offers a direct seller repair entry", async () => {
@@ -4705,7 +4706,7 @@ test("canonical current product resolver fails closed for synthetic, stale, and 
   assert.equal(resolver.currentListingWorkflowRun(), null);
 });
 
-test("invalid source snapshot remains blocked instead of becoming confirmed", async () => {
+test("invalid source snapshot remains blocked behind seller language", async () => {
   const js = await readFile(new URL("../public/app.js", import.meta.url), "utf8");
   const start = js.indexOf("function currentProductWorkspaceModel");
   const end = js.indexOf("function renderCurrentProductWorkspace", start);
@@ -4721,11 +4722,67 @@ test("invalid source snapshot remains blocked instead of becoming confirmed", as
   };
   const build = new Function("state", "currentCaptureSellerTask", "currentListingWorkflowRun", `${js.slice(start, end)}\nreturn currentProductWorkspaceModel;`);
   const model = build(state, () => captureTask, () => ({ id: "old-run", payloadDraftValidation: { ok: true } }))();
-  assert.equal(model.status, "来源快照无效，必须重新采集");
-  assert.equal(model.actionLabel, "重新采集来源");
-  assert.equal(model.stages[1].status, "current");
-  assert.equal(model.stages[2].status, "pending");
+  assert.equal(model.status, "商品资料不完整");
+  assert.equal(model.actionLabel, "重新采集商品");
+  assert.equal(model.stages.length, 3);
+  assert.equal(model.stages[0].status, "current");
+  assert.equal(model.stages[1].status, "pending");
   assert.equal(model.completed.some((item) => item.includes("人工确认")), false);
+});
+
+test("three seller steps stay aligned across review, draft, and ready states", async () => {
+  const js = await readFile(new URL("../public/app.js", import.meta.url), "utf8");
+  const start = js.indexOf("function currentProductWorkspaceModel");
+  const end = js.indexOf("function renderCurrentProductWorkspace", start);
+  assert.ok(start >= 0 && end > start);
+  const state = { stores: [{ id: "store-1", name: "Store 1" }] };
+  let captureTask = {
+    item: { id: "capture-1", storeId: "store-1" },
+    product: { title: "Real item", skuVariants: [] },
+    reviewApproved: false,
+    reviewPossible: true,
+    reviewNeeded: true,
+    hasDraft: false,
+  };
+  let run = null;
+  const build = new Function("state", "currentCaptureSellerTask", "currentListingWorkflowRun", `${js.slice(start, end)}\nreturn currentProductWorkspaceModel;`);
+  const model = build(state, () => captureTask, () => run);
+
+  const review = model();
+  assert.deepEqual(review.stages.map((stage) => stage.status), ["complete", "current", "pending"]);
+  assert.equal(review.actionLabel, "检查商品");
+
+  captureTask = { ...captureTask, reviewApproved: true, reviewNeeded: false, hasDraft: true };
+  run = {
+    id: "run-1",
+    payloadDraftHash: "sha256:draft-v1",
+    payloadDraftValidation: { ok: false, issues: [{ code: "MISSING" }, { code: "MISSING_2" }] },
+    summary: { currentProductTask: { reason: "Payload 提交前预检缺少证据" } },
+  };
+  const draft = model();
+  assert.deepEqual(draft.stages.map((stage) => stage.status), ["complete", "current", "pending"]);
+  assert.equal(draft.status, "需要补充 2 项资料");
+  assert.equal(draft.reason, "还有 2 项资料无法自动判断，需要你确认。");
+  assert.doesNotMatch(draft.reason, /Payload|预检|证据|workflow|snapshot/i);
+
+  run = {
+    ...run,
+    validatedDraftHash: "sha256:old-draft",
+    payloadDraftValidation: { ok: true, draftHash: "sha256:old-draft", issues: [] },
+  };
+  const stale = model();
+  assert.deepEqual(stale.stages.map((stage) => stage.status), ["complete", "current", "pending"]);
+  assert.equal(stale.status, "商品有更新，需要重新检查");
+  assert.equal(stale.actionLabel, "重新检查商品");
+
+  run = {
+    ...run,
+    validatedDraftHash: "sha256:draft-v1",
+    payloadDraftValidation: { ok: true, draftHash: "sha256:draft-v1", issues: [] },
+  };
+  const ready = model();
+  assert.deepEqual(ready.stages.map((stage) => stage.status), ["complete", "complete", "current"]);
+  assert.equal(ready.actionLabel, "确认上架");
 });
 
 test("dashboard and listing share one current product workspace", async () => {
@@ -4744,15 +4801,38 @@ test("dashboard and listing share one current product workspace", async () => {
   assert.match(js, /renderCurrentProductWorkspace\(\)/);
 });
 
+test("ordinary current product workspace exposes three seller steps and hides internal process language", async () => {
+  const [html, js, css] = await Promise.all([
+    readFile(new URL("../public/index.html", import.meta.url), "utf8"),
+    readFile(new URL("../public/app.js", import.meta.url), "utf8"),
+    readFile(new URL("../public/styles.css", import.meta.url), "utf8"),
+  ]);
+  const headerStart = html.indexOf('<section id="dashboard"');
+  const headerEnd = html.indexOf('<details class="dashboard-advanced-workbench"', headerStart);
+  const ordinaryDashboard = html.slice(headerStart, headerEnd);
+  const modelStart = js.indexOf("function currentProductWorkspaceModel");
+  const modelEnd = js.indexOf("function renderCurrentProductWorkspace", modelStart);
+  const model = js.slice(modelStart, modelEnd);
+  assert.match(ordinaryDashboard, /处理当前商品/);
+  assert.match(ordinaryDashboard, /系统和 AI 在后台完成中间过程/);
+  assert.match(ordinaryDashboard, /class="current-product-task-card required-card" hidden/);
+  assert.match(html, /<body[^>]+data-active-view="dashboard"/);
+  assert.match(css, /body\[data-active-view="dashboard"\] \.global-current-task-bar[\s\S]*display: none/);
+  assert.match(model, /采集商品/);
+  assert.match(model, /检查商品/);
+  assert.match(model, /确认上架/);
+  assert.doesNotMatch(model, /来源快照|snapshot hash|提交前预检|本地草稿骨架/);
+});
+
 test("unconfirmed real capture remains the only seller action before a workflow exists", async () => {
   const js = await readFile(new URL("../public/app.js", import.meta.url), "utf8");
   const start = js.indexOf("function currentProductWorkspaceModel");
   const end = js.indexOf("function renderCurrentProductWorkspace", start);
   assert.ok(start >= 0 && end > start);
   const model = js.slice(start, end);
-  assert.match(model, /等待确认来源快照/);
-  assert.match(model, /去核对并确认/);
-  assert.match(model, /只有你再次确认后才建立草稿，不会调用 Ozon 或产生费用/);
+  assert.match(model, /等待你确认商品/);
+  assert.match(model, /检查商品/);
+  assert.match(model, /确认后系统和 AI 会继续整理资料，不会自动上架/);
   assert.match(model, /reviewNeeded/);
   assert.match(model, /currentListingWorkflowRun\(\)/);
 });

@@ -70,6 +70,32 @@ test("frontend shell presents the product as seller ERP rather than FBS-only", a
   assert.match(html, /<title>Ozon Seller ERP<\/title>/);
 });
 
+test("listing keeps the seller surface as one auto-filled product sheet", async () => {
+  const [html, js, css] = await Promise.all([
+    readFile(new URL("../public/index.html", import.meta.url), "utf8"),
+    readFile(new URL("../public/app.js", import.meta.url), "utf8"),
+    readFile(new URL("../public/styles.css", import.meta.url), "utf8"),
+  ]);
+
+  assert.match(html, /系统先填，你只处理橙色待补项/);
+  assert.match(js, /listing-simple-sheet/);
+  assert.match(js, /listing-auto-field-grid/);
+  assert.match(js, /系统自动填写/);
+  assert.match(js, /AI 一键补齐文案/);
+  assert.match(js, /data-listing-ai-fill/);
+  assert.match(js, /generateListingContent\(listingProductSource\)/);
+  assert.match(js, /saveManualListingContentFromUi\(autoListJob, \{ rethrow: true \}\)/);
+  assert.match(js, /if \(options\.rethrow\) throw error/);
+  assert.match(js, /effectiveCategoryDecision\?\.status === "auto_matched_evidence_pending"/);
+  assert.match(js, /renderListingSellerEvidenceActions\(run, autoListJob, listingProductSource\)/);
+  assert.match(js, /listingSourceEvidence\?\.captureIdentity\?\.offerId/);
+  assert.match(js, /displayedOfferLabel = offerId \? "Ozon Offer" : "1688 Offer"/);
+  assert.doesNotMatch(js, /\$\{escapeHtml\(offerId \|\| parentSku\)\} 首个 Offer/);
+  assert.match(js, /listing-technical-details/);
+  assert.match(css, /\.listing-simple-sheet/);
+  assert.match(css, /\.listing-current-product-gate:not\(\.is-blocked\)/);
+});
+
 test("frontend exposes workflow console shell", async () => {
   const [html, js] = await Promise.all([
     readFile(new URL("../public/index.html", import.meta.url), "utf8"),

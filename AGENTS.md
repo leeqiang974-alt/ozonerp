@@ -46,6 +46,8 @@ Read these before substantial Ozon ERP changes:
 
 ## Product Principle
 
+- 普通上架页必须是一张“单商品编辑单”：稳定默认值直接写入，来源、类目、属性、SKU、图片、定价等可自动确定的字段直接回填，AI 能完成的内容由一次明确点击生成；页面只展开系统确实无法确定的输入。证据、workflow、JSON、prompt、回执和安全门进入折叠高级区。可以写死站点、语言、单位和经过确认的经营默认值，但不得写死 Ozon 动态类目、必填属性、字典值或真实店铺证据。
+
 ## Development Governance
 
 - 当前执行 `docs/TOP-LEVEL-DEVELOPMENT-PLAN.zh-CN.md` 的黄金链路阶段门；在 G4 MVP 通过前，暂停原五工作流轮转。

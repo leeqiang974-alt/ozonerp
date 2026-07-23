@@ -101,6 +101,7 @@ const state = {
   crawlerCandidates: [],
   crawlerCandidateRequestToken: 0,
   listingHandoffNotice: "",
+  listingStoreSyncId: "",
   crawlerWorkerStatus: null,
   open1688Status: null,
   selectedCrawlerTaskId: "",
@@ -1528,10 +1529,12 @@ function listingSellerTaskSummaryModel(run = null, context = {}) {
   const nodes = Array.isArray(run?.nodes) ? run.nodes : [];
   const task = run?.summary?.currentProductTask || null;
   const reviewNode = nodes.find((node) => node.key === "review_reconcile") || null;
-  const handoffNode = nodes.find((node) => node.key === "candidate_handoff") || null;
+  const handoffNode = nodes.find((node) => ["candidate_handoff", "capture_handoff"].includes(node.key)) || null;
   const stockNode = nodes.find((node) => node.key === "stock_sync") || null;
   const sourceEvidence = run?.sourceEvidence || run?.source?.sourceEvidence || context.sourceEvidence || null;
   const procurementEvidence = run?.source?.procurementEvidence || context.procurementEvidence || null;
+  const procurementReady = Boolean(procurementEvidence?.moq?.source && procurementEvidence.moq.source !== "missing"
+    && Number(procurementEvidence.priceTiers?.values?.length || 0) > 0);
   const mediaAssets = run?.source?.mediaAssets || context.mediaAssets || [];
   const mediaIssues = Array.isArray(context.mediaIssues)
     ? context.mediaIssues.filter(Boolean).map(String)
@@ -1544,9 +1547,10 @@ function listingSellerTaskSummaryModel(run = null, context = {}) {
   const pricingDiagnosis = run?.pricingDiagnosis || pricingNode?.output?.pricingDiagnosis || null;
   const pricingDiagnosisResult = pricingNode?.output?.diagnosis || null;
   const title = task?.productTitle || run?.source?.title || run?.payloadDraft?.items?.[0]?.name || context.title || "";
-  const skuCount = Array.isArray(run?.payloadDraft?.items) && run.payloadDraft.items.length
-    ? run.payloadDraft.items.length
-    : Number(sourceEvidence?.fields?.variants?.count || context.skuCount || 0);
+  const skuCount = Number(context.uniqueSkuCount || 0)
+    || (Array.isArray(run?.payloadDraft?.items) && run.payloadDraft.items.length
+      ? run.payloadDraft.items.length
+      : Number(sourceEvidence?.fields?.variants?.count || context.skuCount || 0));
   const validation = run?.payloadDraftValidation || null;
   const validationIssues = Array.isArray(validation?.issues) ? validation.issues.length : 0;
   const firstPayloadItem = run?.payloadDraft?.items?.[0] || null;
@@ -1559,6 +1563,7 @@ function listingSellerTaskSummaryModel(run = null, context = {}) {
     || null;
   const categoryIdsAvailable = Number(category?.description_category_id || 0) > 0 && Number(category?.type_id || 0) > 0;
   const categoryReady = categoryIdsAvailable && (!categoryDecision || categoryDecision.evidenceReady === true);
+  const categoryNeedsHuman = !categoryIdsAvailable || categoryDecision?.status === "ambiguous";
   const categoryText = categoryIdsAvailable
     ? String(category.path || `${category.description_category_id} / ${category.type_id}`)
     : categoryDecision?.status === "ambiguous"
@@ -1575,7 +1580,9 @@ function listingSellerTaskSummaryModel(run = null, context = {}) {
     ? validation.issues.filter((issue) => /ATTRIBUTE|属性|CATEGORY/i.test(String(issue?.code || issue?.message || ""))).length
     : 0;
   const attributeText = !categoryReady
-    ? "先确认类目后检查必填属性"
+    ? categoryIdsAvailable
+      ? "类目证据同步后自动检查"
+      : "先确认类目后检查必填属性"
     : !validation
       ? "尚未运行属性预检"
       : attributeIssueCount
@@ -1586,7 +1593,7 @@ function listingSellerTaskSummaryModel(run = null, context = {}) {
     ? "俄文内容被来源事实阻塞"
     : contentStatus === "reviewed"
       ? "俄文内容已人工复核"
-      : "俄文内容待人工核对";
+      : "等待 AI 一键补齐";
   const packageInfo = pricingDiagnosis?.package || run?.source?.sizeWeight || context.sizeWeight || {};
   const packageReady = [packageInfo.weightG, packageInfo.lengthMm, packageInfo.widthMm, packageInfo.heightMm]
     .every((value) => Number(value || 0) > 0);
@@ -1665,21 +1672,22 @@ function listingSellerTaskSummaryModel(run = null, context = {}) {
   let action = actions[stateName];
   if (stateName === "listing_progress") {
     const missingSourceDomains = Array.isArray(sourceEvidence?.missingDomains)
-      ? sourceEvidence.missingDomains.length
-      : 0;
-    const sourceReady = Boolean(
+      ? sourceEvidence.missingDomains.map((item) => String(item || "").toLowerCase())
+      : [];
+    const sourceIdentityReady = Boolean(
       sourceEvidence?.snapshotHash
       && sourceEvidence?.verificationState === "ok"
-      && missingSourceDomains === 0,
     );
-    if (!sourceReady) {
+    const sourceCanBeCompletedInDraft = sourceIdentityReady
+      && missingSourceDomains.every((item) => ["supplier", "procurement"].includes(item));
+    if (!sourceIdentityReady || (!sourceCanBeCompletedInDraft && missingSourceDomains.length > 0)) {
       action = {
         label: "补齐来源证据",
         view: "sourcing",
         nodeKey: "candidate_parse",
         effect: "打开来源采集与证据修复；不会提交 Ozon。",
       };
-    } else if (!categoryReady) {
+    } else if (!categoryReady && categoryNeedsHuman) {
       action = {
         label: "确认 Ozon 类目",
         view: "listing",
@@ -1692,6 +1700,13 @@ function listingSellerTaskSummaryModel(run = null, context = {}) {
         view: "listing",
         nodeKey: "content_generation",
         effect: "打开俄文内容和来源事实冲突；不会提交 Ozon。",
+      };
+    } else if (!procurementReady) {
+      action = {
+        label: "补齐采购成本",
+        view: "listing",
+        nodeKey: "match_profit",
+        effect: "填写供应商、MOQ 和真实采购阶梯价；保存后系统自动重算，不会提交 Ozon。",
       };
     } else if (mediaBlocked) {
       action = {
@@ -1788,6 +1803,18 @@ function listingSellerTaskSummaryModel(run = null, context = {}) {
     preflightStatus,
     preflightNextStep,
     validationIssueCount: validationIssues,
+    sourceReady: Boolean(
+      sourceEvidence?.snapshotHash
+      && sourceEvidence?.verificationState === "ok"
+      && (!Array.isArray(sourceEvidence?.missingDomains) || sourceEvidence.missingDomains.length === 0)
+    ),
+    categoryReady,
+    attributeIssueCount,
+    contentStatus,
+    procurementReady,
+    packageReady,
+    pricingBlocked,
+    mediaBlocked,
     skuCount,
     stage: task?.blockedAt || task?.stage || (stateName === "no_product" ? "选择货源" : "上架准备"),
     reason: task?.reason || reviewNode?.reason || defaultReasons[stateName],
@@ -1796,6 +1823,31 @@ function listingSellerTaskSummaryModel(run = null, context = {}) {
     action,
     runId: run?.id || "",
   };
+}
+
+function renderListingAutoField(label, value, detail, stateName = "ready") {
+  const labels = {
+    ready: "已自动填写",
+    pending: "系统处理中",
+    review: "需要检查",
+    blocked: "需要补充",
+  };
+  return `<article class="listing-auto-field is-${escapeHtml(stateName)}">
+    <div><span>${escapeHtml(label)}</span><em>${escapeHtml(labels[stateName] || labels.pending)}</em></div>
+    <strong>${escapeHtml(value || "-")}</strong>
+    <small>${escapeHtml(detail || "")}</small>
+  </article>`;
+}
+
+function renderListingMediaStrip(mediaAssets = []) {
+  const items = (Array.isArray(mediaAssets) ? mediaAssets : [])
+    .map((asset) => typeof asset === "string" ? { sourceUrl: asset } : asset)
+    .filter((asset) => asset?.sourceUrl || asset?.url)
+    .slice(0, 8);
+  if (!items.length) return `<div class="listing-media-strip is-empty"><span>图片由采集结果自动带入</span></div>`;
+  return `<div class="listing-media-strip">${items.map((asset, index) => `
+    <img src="${escapeHtml(asset.sourceUrl || asset.url)}" alt="商品图 ${index + 1}" loading="lazy" referrerpolicy="no-referrer" />
+  `).join("")}</div>`;
 }
 
 // Keep the compact upload-queue card truthful to the same seller summary as
@@ -2144,57 +2196,160 @@ function renderListingSellerTaskSummary() {
   if (panel) panel.hidden = false;
   const autoListJob = currentListingAutoListJob(run);
   void autoSyncListingCategoryEvidence(run, autoListJob);
+  const handoffDraft = (run?.nodes || [])
+    .find((node) => ["candidate_handoff", "capture_handoff"].includes(node.key))
+    ?.output?.draftSkeleton || null;
+  const effectiveCategoryDecision = autoListJob?.categoryDecision || handoffDraft?.categoryDecision || null;
   const linkedCandidate = autoListJob?.candidateData || null;
+  const listingProductSource = linkedCandidate
+    || captureTask?.product
+    || run?.source
+    || state.collected1688
+    || state.currentCaptureDraft
+    || null;
+  const sourceVariants = Array.isArray(listingProductSource?.skuVariants) ? listingProductSource.skuVariants : [];
+  const uniqueSourceSkuCount = new Set(sourceVariants
+    .map((variant) => String(variant?.sourceSkuId || variant?.source_sku_id || variant?.skuId || variant?.sku_id || "").trim())
+    .filter(Boolean)).size || Number(captureTask?.item?.draft?.uniqueSourceSkuCount || sourceVariants.length || 0);
   const mediaAssets = run
-    ? (linkedCandidate?.mediaAssets || run.source?.mediaAssets || [])
-    : (state.collected1688?.mediaAssets || state.currentCaptureDraft?.mediaAssets || []);
+    ? (listingProductSource?.mediaAssets || listingProductSource?.images || run.source?.mediaAssets || [])
+    : (listingProductSource?.mediaAssets || listingProductSource?.images || []);
   const mediaIssues = run
-    ? (linkedCandidate?.mediaIssues || run.source?.mediaIssues || [])
-    : (state.collected1688?.mediaIssues || state.currentCaptureDraft?.mediaIssues || []);
+    ? (listingProductSource?.mediaIssues || run.source?.mediaIssues || [])
+    : (listingProductSource?.mediaIssues || []);
   const summary = listingSellerTaskSummaryModel(run, {
-    title: state.collected1688?.title || state.currentCaptureDraft?.title || "",
-    sourceEvidence: state.collected1688?.sourceEvidence || state.currentCaptureDraft?.sourceEvidence || null,
-    procurementEvidence: state.collected1688?.procurementEvidence || state.currentCaptureDraft?.procurementEvidence || null,
-    mediaAssets: state.collected1688?.mediaAssets || state.currentCaptureDraft?.mediaAssets || [],
+    title: listingProductSource?.title || "",
+    sourceEvidence: listingProductSource?.sourceEvidence || listingProductSource?.sourceEvidenceRecord || null,
+    procurementEvidence: listingProductSource?.procurementEvidence || null,
+    mediaAssets,
     mediaIssues,
-    skuCount: state.collected1688?.skuVariants?.length || state.currentCaptureDraft?.skuVariants?.length || 0,
-    categoryMatch: autoListJob?.manualCategory || autoListJob?.autoCategory || autoListJob?.categoryDecision?.selected || null,
+    skuCount: listingProductSource?.skuVariants?.length || 0,
+    uniqueSkuCount: uniqueSourceSkuCount,
+    categoryMatch: autoListJob?.manualCategory || autoListJob?.autoCategory || effectiveCategoryDecision?.selected || null,
   });
+  const firstPayloadItem = run?.payloadDraft?.items?.[0] || {};
+  const offerId = String(firstPayloadItem.offer_id || autoListJob?.offerId || "").trim();
+  const parentSku = String(firstPayloadItem.parent_sku || captureTask?.item?.draft?.parentSku || autoListJob?.parentSku || offerId || "系统生成中").trim();
+  const listingSourceEvidence = listingProductSource?.sourceEvidenceRecord || listingProductSource?.sourceEvidence || {};
+  const sourceOfferId = String(
+    listingSourceEvidence?.captureIdentity?.offerId
+    || listingSourceEvidence?.offerId
+    || listingProductSource?.offerId
+    || captureTask?.item?.offerId
+    || "",
+  ).trim();
+  const displayedOfferId = offerId || sourceOfferId;
+  const displayedOfferLabel = offerId ? "Ozon Offer" : "1688 Offer";
+  const displayImages = Array.isArray(listingProductSource?.images) && listingProductSource.images.length
+    ? listingProductSource.images
+    : mediaAssets;
+  const listingStoreId = String(captureTask?.item?.storeId || autoListJob?.storeId || selectedStoreId() || "").trim();
+  const store = state.stores.find((item) => String(item.id) === listingStoreId);
+  const storeLabel = store?.name || listingStoreId || "店铺未绑定";
+  const aiNode = (run?.nodes || []).find((node) => ["content_generation", "content_review"].includes(node.key));
+  const aiFillAvailable = Boolean(autoListJob?.id && listingProductSource?.title && summary.contentStatus !== "reviewed");
+  const categoryState = summary.categoryReady ? "ready" : summary.categoryText.includes("多个") ? "review" : "pending";
+  const attributeState = !summary.categoryReady ? "pending" : summary.attributeIssueCount > 0 ? "blocked" : "ready";
+  const contentState = summary.contentStatus === "reviewed" ? "ready" : summary.contentStatus === "blocked" ? "blocked" : "pending";
+  const packageState = summary.packageReady ? "ready" : "blocked";
+  const pricingState = summary.pricingBlocked ? "blocked" : summary.pricingText.includes("尚未") ? "pending" : "ready";
+  const mediaState = summary.mediaBlocked ? "review" : mediaAssets.length ? "ready" : "pending";
+  const manualContent = renderManualListingContentForm(autoListJob);
+  const manualProcurement = renderManualProcurementForm(autoListJob);
+  const manualPackage = renderManualPackageForm(autoListJob);
+  const categorySyncIsAutomatic = effectiveCategoryDecision?.status === "auto_matched_evidence_pending";
+  const manualCategory = summary.categoryReady || categorySyncIsAutomatic ? "" : renderListingSellerEvidenceActions(run, autoListJob, listingProductSource);
+  const payloadRepairs = summary.validationIssueCount > 0 ? renderListingSellerPayloadIssues(run) : "";
+  const repairSections = [manualCategory, manualContent, manualProcurement, manualPackage, payloadRepairs].filter(Boolean);
   renderListingUploadQueueSummary(summary, run);
   body.innerHTML = `
-    <article><span>当前商品</span><strong>${escapeHtml(summary.title)}</strong><small>${escapeHtml(summary.status)}</small></article>
-    <article><span>来源证据</span><strong>${escapeHtml(summary.sourceText)}</strong><small>SKU ${escapeHtml(summary.skuCount || "-")} 个</small></article>
-    <article><span>Ozon 类目</span><strong>${escapeHtml(summary.categoryText)}</strong><small>${escapeHtml(summary.categoryStatusText)}</small></article>
-    <article><span>必填属性</span><strong>${escapeHtml(summary.attributeText)}</strong><small>字典值和敏感属性仍需按字段确认</small></article>
-     <article><span>俄文内容</span><strong>${escapeHtml(summary.contentText)}</strong><small>模型建议不能替代来源事实或人工确认</small></article>
-     <article><span>采购证据</span><strong>${escapeHtml(summary.procurementText)}</strong><small>展示价不能替代真实采购阶梯价</small></article>
-     <article><span>包装尺重</span><strong>${escapeHtml(summary.packageText)}</strong><small>缺少可信尺重时不能确认运费和利润</small></article>
-     <article><span>定价与利润</span><strong>${escapeHtml(summary.pricingText)}</strong><small>风险状态不会绕过预检或人工确认</small></article>
-     <article><span>媒体候选</span><strong>${escapeHtml(summary.mediaText)}</strong><small>未经人工批准不能作为可提交富内容</small></article>
-    <article><span>提交前预检</span><strong>${escapeHtml(summary.preflightStatus)}</strong><small>${escapeHtml(summary.preflightNextStep)}</small></article>
-    <article><span>当前阶段</span><strong>${escapeHtml(summary.stage)}</strong><small>${escapeHtml(summary.reason)}</small></article>
-    <article><span>审核状态</span><strong>${escapeHtml(summary.reviewStatus)}</strong><small>库存就绪：${escapeHtml(summary.stockStatus)}</small></article>
-    <article>
-      <span>安全下一步</span>
-      <strong>${escapeHtml(summary.action.label)}</strong>
-      <button class="primary" type="button" data-listing-seller-primary-view="${escapeHtml(summary.action.view)}" data-listing-seller-run-id="${escapeHtml(summary.runId)}" data-listing-seller-node-key="${escapeHtml(summary.action.nodeKey || "")}">${escapeHtml(summary.action.label)}</button>
-      <small>点击后：${escapeHtml(summary.action.effect)}</small>
-    </article>
-    ${renderListingSellerPayloadValidation(run)}
-    ${renderListingSellerContentEvidence(run)}
-    ${renderListingSellerPreflightResult(run)}
-    ${renderListingSellerPayloadIssues(run)}
-    ${renderListingSellerSourceBinding(run)}
-    ${renderListingSellerEvidenceActions(run, autoListJob)}
-    ${renderListingMediaReview(mediaAssets, mediaIssues, { run, sourceEvidence: linkedCandidate?.sourceEvidence || null, candidateApprovalDraft: linkedCandidate?.mediaApprovalDraft || null })}
-    ${renderListingProductReadiness(autoListJob)}
-    ${renderManualListingContentForm(autoListJob)}
-    ${renderManualProcurementForm(autoListJob)}
-    ${renderManualPackageForm(autoListJob)}
+    <div class="listing-simple-sheet">
+      <header class="listing-simple-sheet-head">
+        <div>
+          <span class="listing-sheet-status">${escapeHtml(summary.status)}</span>
+          <h3>${escapeHtml(summary.title)}</h3>
+          <p>${escapeHtml(storeLabel)} · Parent SKU ${escapeHtml(parentSku)} · ${escapeHtml(summary.skuCount || "-")} 个规格</p>
+        </div>
+        <div class="listing-simple-actions">
+          <button class="ghost" type="button" data-listing-ai-fill data-listing-ai-run-id="${escapeHtml(summary.runId)}" data-listing-ai-node-key="${escapeHtml(aiNode?.key || "")}" ${aiFillAvailable ? "" : "disabled"}>AI 一键补齐文案</button>
+          <button class="primary" type="button" data-listing-seller-primary-view="${escapeHtml(summary.action.view)}" data-listing-seller-run-id="${escapeHtml(summary.runId)}" data-listing-seller-node-key="${escapeHtml(summary.action.nodeKey || "")}">${escapeHtml(summary.action.label)}</button>
+        </div>
+      </header>
+
+      <div class="listing-fixed-defaults">
+        <span>站点：俄罗斯</span><span>语言：俄语</span><span>重量：克</span><span>尺寸：毫米</span><span>真实提交：人工确认</span>
+      </div>
+
+      <section class="listing-simple-section">
+        <div class="listing-simple-section-title"><div><span>01</span><h4>系统自动填写</h4></div><small>绿色结果不用处理，橙色项目会集中到下方。</small></div>
+        <div class="listing-auto-field-grid">
+          ${renderListingAutoField("Ozon 类目", summary.categoryText, summary.categoryStatusText, categoryState)}
+          ${renderListingAutoField("必填属性", summary.attributeText, "按当前店铺类目字典自动检查", attributeState)}
+          ${renderListingAutoField("俄文文案", summary.contentText, "可点击右上角让 AI 一次补齐", contentState)}
+          ${renderListingAutoField("包装尺重", summary.packageText, "可信采集值自动带入，缺失才手填", packageState)}
+          ${renderListingAutoField("定价与利润", summary.pricingText, "按采购、物流和佣金规则自动计算", pricingState)}
+          ${renderListingAutoField("商品图片", summary.mediaText, "采集图自动带入，风险图才要求检查", mediaState)}
+        </div>
+      </section>
+
+      <section class="listing-simple-section">
+        <div class="listing-simple-section-title"><div><span>02</span><h4>商品图片与规格</h4></div><small>图片和 SKU 已从 1688 自动带入。</small></div>
+        ${renderListingMediaStrip(displayImages)}
+        <div class="listing-variant-summary">
+          <span><b>${escapeHtml(summary.skuCount || "-")}</b> 个规格</span>
+          <span><b>${escapeHtml(displayImages.length || 0)}</b> 张采集图</span>
+          <span><b>${escapeHtml(displayedOfferId || "待生成")}</b> ${escapeHtml(displayedOfferLabel)}</span>
+        </div>
+      </section>
+
+      <section class="listing-simple-section listing-repair-section ${repairSections.length ? "has-repairs" : "is-clear"}">
+        <div class="listing-simple-section-title"><div><span>03</span><h4>${repairSections.length ? `只需补充 ${repairSections.length} 组资料` : "商品资料已齐"}</h4></div><small>${repairSections.length ? "这里只出现系统确实无法确定的内容。" : "可以直接进入提交前预检。"}</small></div>
+        <div class="listing-visible-repairs">${repairSections.join("") || `<div class="listing-no-repairs">没有需要人工填写的商品字段。</div>`}</div>
+      </section>
+
+      <footer class="listing-simple-footer">
+        <div><strong>${escapeHtml(summary.action.label)}</strong><small>${escapeHtml(summary.action.effect)}</small></div>
+        <button class="primary" type="button" data-listing-seller-primary-view="${escapeHtml(summary.action.view)}" data-listing-seller-run-id="${escapeHtml(summary.runId)}" data-listing-seller-node-key="${escapeHtml(summary.action.nodeKey || "")}">${escapeHtml(summary.action.label)}</button>
+      </footer>
+    </div>
+
+    <details class="listing-technical-details">
+      <summary>查看系统证据、预检结果和高级诊断</summary>
+      <div class="listing-technical-details-body">
+        <p class="hint">高级校验规则：字典值和敏感属性仍需按字段确认；展示价不能替代真实采购阶梯价；未经人工批准不能作为可提交富内容。</p>
+        ${renderListingSellerPayloadValidation(run)}
+        ${renderListingSellerContentEvidence(run)}
+        ${renderListingSellerPreflightResult(run)}
+        ${renderListingSellerSourceBinding(run)}
+        ${renderListingMediaReview(mediaAssets, mediaIssues, { run, sourceEvidence: listingProductSource?.sourceEvidence || null, candidateApprovalDraft: linkedCandidate?.mediaApprovalDraft || null })}
+        ${renderListingProductReadiness(autoListJob)}
+      </div>
+    </details>
   `;
   body.querySelector("[data-manual-content-save]")?.addEventListener("click", () => saveManualListingContentFromUi(autoListJob));
   body.querySelector("[data-manual-procurement-save]")?.addEventListener("click", () => saveManualProcurementFromUi(autoListJob));
   body.querySelector("[data-manual-package-save]")?.addEventListener("click", () => saveManualPackageFromUi(autoListJob));
+  body.querySelector("[data-listing-ai-fill]")?.addEventListener("click", async (event) => {
+    const button = event.currentTarget;
+    setBusy(button, true);
+    try {
+      const generated = await generateListingContent(listingProductSource);
+      if (!generated.title || !generated.description) throw new Error("AI 没有生成可用俄文文案，请检查模型配置后重试");
+      const titleInput = body.querySelector("[data-manual-content-title]");
+      const descriptionInput = body.querySelector("[data-manual-content-description]");
+      const annotationInput = body.querySelector("[data-manual-content-annotation]");
+      if (!titleInput || !descriptionInput) throw new Error("当前商品文案表单不可用，请刷新后重试");
+      titleInput.value = generated.title;
+      descriptionInput.value = generated.description;
+      if (annotationInput) annotationInput.value = generated.tags || "";
+      await saveManualListingContentFromUi(autoListJob, { rethrow: true });
+      toast("AI 文案已回填并保存，请继续检查橙色待补项。", "ok");
+    } catch (error) {
+      toast(error.message || "AI 文案处理未完成", "error");
+    } finally {
+      setBusy(button, false);
+    }
+  });
   body.querySelector("[data-seller-validate-payload]")?.addEventListener("click", () => validateListingSellerPayload(body.querySelector("[data-seller-validate-payload]").dataset.runId));
   body.querySelectorAll("[data-seller-payload-issue]").forEach((button) => {
     button.addEventListener("click", () => openSellerPayloadIssue(button.dataset.runId, button));
@@ -2467,9 +2622,9 @@ function renderListingSellerSourceBinding(run = null) {
   </article>`;
 }
 
-function renderListingSellerEvidenceActions(run = null, job = null) {
+function renderListingSellerEvidenceActions(run = null, job = null, productSource = null) {
   if (!run && !job) return "";
-  const candidate = job?.candidateData || run?.source || {};
+  const candidate = job?.candidateData || productSource || run?.source || {};
   const sourceEvidence = candidate.sourceEvidence || run?.sourceEvidence || null;
   const sourceReady = Boolean(
     sourceEvidence?.snapshotHash
@@ -2672,18 +2827,29 @@ function renderManualListingContentForm(job = null) {
   const ready = String(content.title_ru || "").trim() && String(content.description_ru || "").trim();
   if (ready && !["draft_pending", "content_ready"].includes(String(job.status || ""))) return "";
   return `<article class="listing-manual-content-form" aria-label="人工填写俄文内容">
-    <span>先完成商品内容</span>
-    <strong>人工填写俄文标题和描述</strong>
-    <small>只保存本地草稿，不调用 AI、不提交 Ozon；保存后继续补类目和采购证据。</small>
-    <label>俄文标题<input data-manual-content-title value="${escapeHtml(content.title_ru || "")}" maxlength="200" placeholder="例如：Органайзер для хранения" /></label>
-    <label>俄文描述<textarea data-manual-content-description maxlength="5000" placeholder="填写至少 20 个字符的俄文商品描述">${escapeHtml(content.description_ru || "")}</textarea></label>
-    <label>俄文短卖点（可选）<input data-manual-content-annotation value="${escapeHtml(content.annotation_ru || "")}" maxlength="500" /></label>
-    <button class="primary" type="button" data-manual-content-save>保存并重新预检</button>
+    <span>俄文商品文案</span>
+    <strong>优先点击页面顶部“AI 一键补齐文案”</strong>
+    <small>AI 结果自动回填本地草稿；只有 AI 不可用或你想改写时才需要手填。</small>
+    <details>
+      <summary>AI 不可用时手动填写</summary>
+      <div class="listing-manual-fallback">
+        <strong>人工填写俄文标题和描述</strong>
+        <label>俄文标题<input data-manual-content-title value="${escapeHtml(content.title_ru || "")}" maxlength="200" placeholder="例如：Органайзер для хранения" /></label>
+        <label>俄文描述<textarea data-manual-content-description maxlength="5000" placeholder="填写至少 20 个字符的俄文商品描述">${escapeHtml(content.description_ru || "")}</textarea></label>
+        <label>俄文短卖点（可选）<input data-manual-content-annotation value="${escapeHtml(content.annotation_ru || "")}" maxlength="500" /></label>
+        <button class="primary" type="button" data-manual-content-save>保存并重新预检</button>
+      </div>
+    </details>
   </article>`;
 }
 
-async function saveManualListingContentFromUi(job = null) {
-  if (!job?.id) return;
+async function saveManualListingContentFromUi(job = null, options = {}) {
+  if (!job?.id) {
+    const error = new Error("当前商品缺少可保存的自动上品任务");
+    if (options.rethrow) throw error;
+    toast(error.message, "error");
+    return null;
+  }
   const body = document.querySelector("#listingSellerTaskSummaryBody");
   const button = body?.querySelector("[data-manual-content-save]");
   setBusy(button, true);
@@ -2701,8 +2867,11 @@ async function saveManualListingContentFromUi(job = null) {
     await loadAutoListJobs();
     await loadWorkflowRuns();
     await recheckListingAfterEvidenceSave(job, data);
+    return data;
   } catch (error) {
     toast(error.message || "保存内容失败", "error");
+    if (options.rethrow) throw error;
+    return null;
   } finally {
     setBusy(button, false);
   }
@@ -6507,10 +6676,18 @@ async function openCurrentCaptureTask(captureId = "", storeId = "") {
     return false;
   }
   storeId = String(storeId || item.storeId || "").trim();
-  activateErpView("sourcing");
   await switchStoreContext(storeId, { loadWarehouses: false });
   if ($("#captureStoreSelect")) $("#captureStoreSelect").value = storeId;
   state.currentCaptureId = id;
+  const task = currentCaptureSellerTask();
+  if (task?.item?.id === id && task.hasDraft && task.reviewApproved === true) {
+    activateErpView("listing");
+    renderCurrentProductWorkspace();
+    renderListingSellerTaskSummary();
+    toast("已打开当前商品资料；系统先填，你只处理橙色待补项。", "ok");
+    return true;
+  }
+  activateErpView("sourcing");
   renderCaptureBox();
   const row = document.querySelector(`#captureBoxTable tr[data-id="${CSS.escape(id)}"]`);
   row?.scrollIntoView({ behavior: "smooth", block: "center" });
@@ -15886,6 +16063,25 @@ function syncNavigationForView(view, activeTab = null) {
   });
 }
 
+async function syncListingStoreContext() {
+  const task = currentCaptureSellerTask();
+  const targetStoreId = String(task?.item?.storeId || "").trim();
+  if (!targetStoreId || targetStoreId === String(selectedStoreId() || "").trim()) return false;
+  if (state.listingStoreSyncId === targetStoreId) return false;
+  state.listingStoreSyncId = targetStoreId;
+  try {
+    await switchStoreContext(targetStoreId, { loadWarehouses: false });
+    renderListingSellerTaskSummary();
+    toast("已自动切换到当前商品所属店铺", "ok");
+    return true;
+  } catch (error) {
+    toast(error.message || "切换当前商品店铺失败", "error");
+    return false;
+  } finally {
+    state.listingStoreSyncId = "";
+  }
+}
+
 function activateErpView(view, sourceTab = null) {
   const tab = sourceTab || document.querySelector(`.tab[data-view="${view}"]`);
   const targetView = document.querySelector(`#${view}`);
@@ -15894,6 +16090,7 @@ function activateErpView(view, sourceTab = null) {
   syncNavigationForView(view, tab);
   targetView.classList.add("active");
   document.body.dataset.activeView = view;
+  if (view === "listing") void syncListingStoreContext();
   if (!["dashboard", "sourcing", "listing", "products", "orders"].includes(view)) {
     toggleSecondaryNavigation(true);
   }

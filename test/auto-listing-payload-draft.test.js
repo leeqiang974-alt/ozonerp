@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { buildListingPayloadDraftFromJob, categoryReadPolicyForListing, sourceEvidenceBindingForListing, sourceVariantsForListing } from "../src/autoListing.js";
+import { applyManualSellerInputsToJob, buildListingPayloadDraftFromJob, categoryReadPolicyForListing, sourceEvidenceBindingForListing, sourceVariantsForListing } from "../src/autoListing.js";
 import {
   buildRequiredAttributeManualBacklog,
   buildRequiredAttributeApprovalDraftPreview,
@@ -176,6 +176,67 @@ test("buildListingPayloadDraftFromJob creates workflow payload draft without Ozo
   assert.equal(draft.summary.pricingDiagnosis.profitConclusion, "unknown_without_trusted_commission_and_settlement_rules");
   assert.equal(draft.summary.pricingDiagnosis.profitEvidence.settlement.status, "missing");
   assert.equal(validateSubmitPayload(draft).ok, true);
+});
+
+test("manual package measurement cannot inherit stale SKU dimensions in the payload", () => {
+  const snapshotHash = `sha256:${"f".repeat(64)}`;
+  const applied = applyManualSellerInputsToJob({
+    id: "manual-package-payload",
+    candidateId: "capture-package",
+    storeId: "store-package",
+    workflowRunId: "run-package",
+    source: "1688",
+    pendingParentSku: "MANUAL-PACKAGE-1",
+    listingContent: {
+      title_ru: "Значок для одежды",
+      description_ru: "Металлический значок для одежды и рюкзака.",
+    },
+    bestMatch: { candidateTitle: "胸针", purchasePriceCny: 3 },
+    candidateData: {
+      source: "1688",
+      url: "https://detail.1688.com/offer/manual-package.html",
+      images: ["https://example.com/main.jpg"],
+      sourceEvidence: { snapshotHash, verificationState: "ok" },
+      sizeWeight: { weightG: 900, lengthMm: 900, widthMm: 700, heightMm: 300 },
+      skuVariants: [
+        { skuId: "sku-a", spec: "A", weightG: 900, lengthMm: 900, widthMm: 700, heightMm: 300 },
+        { skuId: "sku-b", spec: "B", weightG: 800, lengthMm: 800, widthMm: 600, heightMm: 200 },
+      ],
+    },
+  }, {
+    expectedBinding: {
+      captureId: "capture-package",
+      storeId: "store-package",
+      sourceSnapshotHash: snapshotHash,
+      workflowRunId: "run-package",
+    },
+    package: {
+      source: "manual_measurement",
+      weightG: 100,
+      lengthMm: 100,
+      widthMm: 80,
+      heightMm: 20,
+    },
+  });
+  assert.equal(applied.ok, true);
+  const draft = buildListingPayloadDraftFromJob(applied.job, {
+    categoryMatch: { description_category_id: 17027899, type_id: 87458886, path: "胸针" },
+    pricingPolicy: { commissionRate: 0.15, commissionSource: "controlled_fixture" },
+  });
+  assert.equal(draft.summary.pricingDiagnosis.packageInfoSource, "manual_measurement");
+  assert.deepEqual(
+    draft.items.map((item) => [item.weight, item.depth, item.width, item.height]),
+    [[150, 120, 100, 40], [150, 120, 100, 40]],
+  );
+
+  const legacyMissingWorkflowBinding = structuredClone(applied.job);
+  delete legacyMissingWorkflowBinding.candidateData.sizeWeight.manualEvidenceBinding.workflowRunId;
+  assert.throws(() => buildListingPayloadDraftFromJob(legacyMissingWorkflowBinding, {
+      categoryMatch: { description_category_id: 17027899, type_id: 87458886, path: "胸针" },
+      pricingPolicy: { commissionRate: 0.15, commissionSource: "controlled_fixture" },
+    }),
+    /缺少可信尺重来源/,
+  );
 });
 
 test("collected procurement evidence blocks trusted pricing when MOQ or tiers are missing", () => {

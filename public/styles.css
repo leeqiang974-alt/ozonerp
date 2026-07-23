@@ -399,6 +399,76 @@ body[data-active-view="listing"] #globalCurrentTaskBar { display: none; }
   gap: 10px;
 }
 
+.listing-product-form {
+  background: #fff;
+}
+
+.listing-form-rows {
+  overflow: hidden;
+  border: 1px solid #e0e6ef;
+  border-radius: 12px;
+}
+
+.listing-form-row {
+  display: grid;
+  grid-template-columns: minmax(120px, .34fr) minmax(0, 1.4fr) auto;
+  align-items: center;
+  gap: 18px;
+  min-height: 68px;
+  padding: 12px 16px;
+  border-bottom: 1px solid #e8edf4;
+  background: #fff;
+}
+
+.listing-form-row:last-child { border-bottom: 0; }
+
+.listing-form-row > span {
+  color: #59667a;
+  font-size: 13px;
+  font-weight: 800;
+}
+
+.listing-form-row > div {
+  display: grid;
+  min-width: 0;
+  gap: 4px;
+}
+
+.listing-form-row strong {
+  overflow: hidden;
+  color: #172033;
+  font-size: 14px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.listing-form-row small {
+  color: #7a8597;
+  line-height: 1.4;
+}
+
+.listing-form-row em {
+  padding: 5px 9px;
+  border-radius: 999px;
+  color: #18794e;
+  background: #edf9f2;
+  font-size: 11px;
+  font-style: normal;
+  font-weight: 800;
+  white-space: nowrap;
+}
+
+.listing-form-row.is-automatic em {
+  color: #2865d8;
+  background: #edf4ff;
+}
+
+.listing-form-row.is-review em,
+.listing-form-row.is-required em {
+  color: #9b5b1d;
+  background: #fff3e3;
+}
+
 .listing-auto-field {
   min-width: 0;
   padding: 14px;
@@ -498,6 +568,72 @@ body[data-active-view="listing"] #globalCurrentTaskBar { display: none; }
   margin: 0;
   border-color: #f1c890;
   background: #fffaf3;
+}
+
+.listing-manual-procurement-form,
+.listing-manual-package-form {
+  display: grid;
+  gap: 11px;
+  padding: 18px;
+  border: 1px solid #f1c890;
+  border-radius: 12px;
+}
+
+.listing-manual-procurement-form > span,
+.listing-manual-package-form > span {
+  color: #9b5b1d;
+  font-size: 12px;
+  font-weight: 900;
+}
+
+.listing-manual-procurement-form > strong,
+.listing-manual-package-form > strong {
+  color: #1c273a;
+  font-size: 16px;
+}
+
+.listing-manual-procurement-form > small,
+.listing-manual-package-form > small {
+  color: #7a6a58;
+  line-height: 1.45;
+}
+
+.listing-manual-procurement-form label,
+.listing-manual-package-form label {
+  display: grid;
+  gap: 6px;
+  color: #536177;
+  font-size: 12px;
+  font-weight: 700;
+}
+
+.listing-manual-procurement-form input,
+.listing-manual-package-form input,
+.listing-manual-package-form select {
+  width: 100%;
+  min-height: 38px;
+  padding: 8px 10px;
+  border: 1px solid #ced7e4;
+  background: #fff;
+  color: #172033;
+  color-scheme: light;
+}
+
+.listing-manual-procurement-form input::placeholder,
+.listing-manual-package-form input::placeholder {
+  color: #97a2b3;
+}
+
+.listing-manual-procurement-form .erp-inline,
+.listing-manual-package-form .erp-inline {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 9px;
+}
+
+.listing-manual-procurement-form button,
+.listing-manual-package-form button {
+  justify-self: start;
 }
 
 .listing-manual-content-form details {
@@ -623,6 +759,10 @@ body[data-active-view="listing"] #globalCurrentTaskBar { display: none; }
   .listing-simple-section-title { align-items: stretch; flex-direction: column; }
   .listing-simple-actions { display: grid; grid-template-columns: 1fr; }
   .listing-auto-field-grid { grid-template-columns: 1fr; }
+  .listing-form-row { grid-template-columns: 1fr; gap: 5px; }
+  .listing-form-row em { justify-self: start; }
+  .listing-manual-procurement-form .erp-inline,
+  .listing-manual-package-form .erp-inline { grid-template-columns: 1fr; }
   .listing-media-strip { grid-template-columns: repeat(4, minmax(60px, 1fr)); }
 }
 

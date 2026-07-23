@@ -66,23 +66,46 @@ async function writeStoreUnlocked(store) {
   if (lastError) return;
 }
 
-async function writeStore(store) {
-  const file = workflowFile();
-  const previous = writeChains.get(file) || Promise.resolve();
-  const next = previous.catch(() => {}).then(() => writeStoreUnlocked(store));
-  writeChains.set(file, next.catch(() => {}));
-  return next;
+async function withWorkflowFileLock(file, operation, { timeoutMs = 30000, staleMs = 120000 } = {}) {
+  const lockFile = `${file}.lock`;
+  const started = Date.now();
+  await fs.mkdir(path.dirname(lockFile), { recursive: true });
+  let handle = null;
+  while (!handle) {
+    try {
+      handle = await fs.open(lockFile, "wx");
+      await handle.writeFile(JSON.stringify({ pid: process.pid, acquiredAt: nowIso() }));
+    } catch (error) {
+      if (error?.code !== "EEXIST" || Date.now() - started >= timeoutMs) {
+        const lockError = new Error("workflow storage lock unavailable");
+        lockError.code = error?.code === "EEXIST" ? "WORKFLOW_STORAGE_LOCK_TIMEOUT" : error?.code;
+        throw lockError;
+      }
+      try {
+        const stat = await fs.stat(lockFile);
+        if (Date.now() - stat.mtimeMs > staleMs) await fs.rm(lockFile, { force: true });
+      } catch { /* another process may release it between stat and remove */ }
+      await new Promise((resolve) => setTimeout(resolve, 25));
+    }
+  }
+  try {
+    return await operation();
+  } finally {
+    await handle.close().catch(() => {});
+    await fs.rm(lockFile, { force: true }).catch(() => {});
+  }
 }
 
 function mutateStore(operation) {
   const file = workflowFile();
   const previous = writeChains.get(file) || Promise.resolve();
-  const next = previous.catch(() => {}).then(async () => {
-    const store = await readStore();
-    const result = await operation(store);
-    if (result?.write !== false) await writeStoreUnlocked(store);
-    return result?.value;
-  });
+  const next = previous.catch(() => {}).then(() => withWorkflowFileLock(file, async () => {
+      const store = await readStore();
+      const before = JSON.stringify(store);
+      const result = await operation(store);
+      if (result?.write !== false && JSON.stringify(store) !== before) await writeStoreUnlocked(store);
+      return result?.value;
+    }));
   writeChains.set(file, next.catch(() => {}));
   return next;
 }
@@ -145,151 +168,154 @@ export async function getWorkflowRun(id) {
 }
 
 export async function reconcileStaleWorkflowRuns(options = {}) {
-  const store = await readStore();
-  const now = options.now instanceof Date ? options.now : new Date(options.now || Date.now());
-  const staleAfterMs = Math.max(60 * 60 * 1000, Number(options.staleAfterMs || 2 * 60 * 60 * 1000));
-  const runIds = [];
-  for (const run of store.items) {
-    if (run.status !== "running") continue;
-    const updatedAt = Date.parse(run.updatedAt || run.createdAt || "");
-    if (!Number.isFinite(updatedAt) || now.getTime() - updatedAt < staleAfterMs) continue;
-    const nodeKey = run.currentNode || (run.nodes || []).find((node) => ["running", "retrying"].includes(node.status))?.key || "";
-    run.nodes = (run.nodes || []).map((node) => {
-      if (node.key !== nodeKey || !["running", "retrying", "pending"].includes(node.status)) return node;
-      return {
-        ...node,
-        status: "waiting_human",
-        finishedAt: now.toISOString(),
-        branch: "stale_manual_review",
-        riskScore: Math.max(Number(node.riskScore || 0), 60),
-        riskLevel: node.riskLevel === "high" ? "high" : "medium",
-        reason: "工作流长时间没有更新，已从运行中转为等待人工确认。",
-        recommendedActions: ["检查绑定任务是否仍存在", "人工选择重试、换货源或暂停"],
-        actions: ["retry_node", "request_new_source", "pause_workflow"],
-      };
-    });
-    run.status = "waiting_human";
-    run.currentNode = nodeKey;
-    run.locks = { ...(run.locks || {}), paused: false, waitingHuman: true };
-    run.events = [...(run.events || []), {
-      time: now.toISOString(),
-      node: nodeKey,
-      type: "workflow_stale_reconciled",
-      message: "陈旧运行状态已治理，等待人工确认下一步",
-      data: {
-        previousStatus: "running",
+  return mutateStore((store) => {
+    const now = options.now instanceof Date ? options.now : new Date(options.now || Date.now());
+    const staleAfterMs = Math.max(60 * 60 * 1000, Number(options.staleAfterMs || 2 * 60 * 60 * 1000));
+    const runIds = [];
+    for (const run of store.items) {
+      if (run.status !== "running") continue;
+      const updatedAt = Date.parse(run.updatedAt || run.createdAt || "");
+      if (!Number.isFinite(updatedAt) || now.getTime() - updatedAt < staleAfterMs) continue;
+      const nodeKey = run.currentNode || (run.nodes || []).find((node) => ["running", "retrying"].includes(node.status))?.key || "";
+      run.nodes = (run.nodes || []).map((node) => {
+        if (node.key !== nodeKey || !["running", "retrying", "pending"].includes(node.status)) return node;
+        return {
+          ...node,
+          status: "waiting_human",
+          finishedAt: now.toISOString(),
+          branch: "stale_manual_review",
+          riskScore: Math.max(Number(node.riskScore || 0), 60),
+          riskLevel: node.riskLevel === "high" ? "high" : "medium",
+          reason: "工作流长时间没有更新，已从运行中转为等待人工确认。",
+          recommendedActions: ["检查绑定任务是否仍存在", "人工选择重试、换货源或暂停"],
+          actions: ["retry_node", "request_new_source", "pause_workflow"],
+        };
+      });
+      run.status = "waiting_human";
+      run.currentNode = nodeKey;
+      run.locks = { ...(run.locks || {}), paused: false, waitingHuman: true };
+      run.events = [...(run.events || []), {
+        time: now.toISOString(),
+        node: nodeKey,
+        type: "workflow_stale_reconciled",
+        message: "陈旧运行状态已治理，等待人工确认下一步",
+        data: {
+          previousStatus: "running",
+          staleAfterMs,
+          staleAgeMs: now.getTime() - updatedAt,
+        },
+      }];
+      run.updatedAt = now.toISOString();
+      runIds.push(run.id);
+    }
+    return {
+      value: {
+        ok: true,
+        scanned: store.items.length,
+        reconciled: runIds.length,
+        runIds,
         staleAfterMs,
-        staleAgeMs: now.getTime() - updatedAt,
       },
-    }];
-    run.updatedAt = now.toISOString();
-    runIds.push(run.id);
-  }
-  if (runIds.length) await writeStore(store);
-  return {
-    ok: true,
-    scanned: store.items.length,
-    reconciled: runIds.length,
-    runIds,
-    staleAfterMs,
-  };
+      write: runIds.length > 0,
+    };
+  });
 }
 
 export async function createWorkflowRun(input = {}) {
-  const store = await readStore();
-  const now = nowIso();
-  const run = {
-    id: input.id || makeId(),
-    source: String(input.source || "manual"),
-    status: String(input.status || "draft"),
-    currentNode: String(input.currentNode || ""),
-    title: String(input.title || ""),
-    createdAt: now,
-    updatedAt: now,
-    entity: input.entity || {},
-    nodes: Array.isArray(input.nodes) ? input.nodes : [],
-    events: Array.isArray(input.events) ? input.events : [],
-    locks: {
-      paused: false,
-      waitingHuman: false,
-      submitLocked: false,
-      ...(input.locks || {}),
-    },
-  };
-  store.items.unshift(run);
-  await writeStore(store);
-  return run;
+  return mutateStore((store) => {
+    const now = nowIso();
+    const run = {
+      id: input.id || makeId(),
+      source: String(input.source || "manual"),
+      status: String(input.status || "draft"),
+      currentNode: String(input.currentNode || ""),
+      title: String(input.title || ""),
+      createdAt: now,
+      updatedAt: now,
+      entity: input.entity || {},
+      nodes: Array.isArray(input.nodes) ? input.nodes : [],
+      events: Array.isArray(input.events) ? input.events : [],
+      locks: {
+        paused: false,
+        waitingHuman: false,
+        submitLocked: false,
+        ...(input.locks || {}),
+      },
+    };
+    store.items.unshift(run);
+    return { value: run };
+  });
 }
 
 export async function upsertWorkflowNode(runId, nodeInput = {}) {
-  const store = await readStore();
-  const index = store.items.findIndex((item) => item.id === runId);
-  if (index < 0) throw new Error("工作流不存在: " + runId);
-  const run = store.items[index];
-  const key = String(nodeInput.key || "").trim();
-  if (!key) throw new Error("节点 key 不能为空");
-  const nodeIndex = (run.nodes || []).findIndex((node) => node.key === key);
-  const existingNode = nodeIndex >= 0 ? run.nodes[nodeIndex] : {};
-  const keep = (field, fallback) => Object.prototype.hasOwnProperty.call(nodeInput, field)
-    ? nodeInput[field]
-    : (existingNode[field] ?? fallback);
-  const now = nowIso();
-  const diagnosis = keep("diagnosis", {});
-  const nextNode = {
-    key,
-    name: String(keep("name", key) || key),
-    status: String(keep("status", "pending") || "pending"),
-    startedAt: nodeInput.startedAt || existingNode.startedAt || (nodeInput.status === "running" ? now : ""),
-    finishedAt: nodeInput.finishedAt || existingNode.finishedAt || (["success", "failed", "waiting_human", "skipped"].includes(String(nodeInput.status)) ? now : ""),
-    input: keep("input", {}),
-    output: keep("output", {}),
-    error: keep("error", {}),
-    diagnosis,
-    diagnostic: Object.prototype.hasOwnProperty.call(nodeInput, "diagnostic")
-      ? nodeInput.diagnostic
-      : (Object.prototype.hasOwnProperty.call(nodeInput, "diagnosis") ? diagnosis : (existingNode.diagnostic || diagnosis || {})),
-    branch: keep("branch", ""),
-    riskScore: Number(keep("riskScore", 0) || 0),
-    riskLevel: keep("riskLevel", ""),
-    reason: keep("reason", ""),
-    recommendedActions: Array.isArray(keep("recommendedActions", [])) ? keep("recommendedActions", []) : [],
-    actions: Array.isArray(keep("actions", [])) ? keep("actions", []) : [],
-  };
-  if (nodeIndex >= 0) {
-    run.nodes[nodeIndex] = { ...run.nodes[nodeIndex], ...nextNode };
-  } else {
-    run.nodes = [...(run.nodes || []), nextNode];
-  }
-  run.currentNode = key;
-  run.status = nodeInput.runStatus || run.status;
-  if (nodeInput.runStatus === "waiting_human") {
-    run.locks = { ...(run.locks || {}), waitingHuman: true };
-  }
-  if (nodeInput.runStatus === "running") {
-    run.locks = { ...(run.locks || {}), waitingHuman: false };
-  }
-  run.updatedAt = now;
-  store.items[index] = run;
-  await writeStore(store);
-  return run;
+  return mutateStore((store) => {
+    const index = store.items.findIndex((item) => item.id === runId);
+    if (index < 0) throw new Error("工作流不存在: " + runId);
+    const run = store.items[index];
+    const key = String(nodeInput.key || "").trim();
+    if (!key) throw new Error("节点 key 不能为空");
+    const nodeIndex = (run.nodes || []).findIndex((node) => node.key === key);
+    const existingNode = nodeIndex >= 0 ? run.nodes[nodeIndex] : {};
+    const keep = (field, fallback) => Object.prototype.hasOwnProperty.call(nodeInput, field)
+      ? nodeInput[field]
+      : (existingNode[field] ?? fallback);
+    const now = nowIso();
+    const diagnosis = keep("diagnosis", {});
+    const nextNode = {
+      key,
+      name: String(keep("name", key) || key),
+      status: String(keep("status", "pending") || "pending"),
+      startedAt: nodeInput.startedAt || existingNode.startedAt || (nodeInput.status === "running" ? now : ""),
+      finishedAt: nodeInput.finishedAt || existingNode.finishedAt || (["success", "failed", "waiting_human", "skipped"].includes(String(nodeInput.status)) ? now : ""),
+      input: keep("input", {}),
+      output: keep("output", {}),
+      error: keep("error", {}),
+      diagnosis,
+      diagnostic: Object.prototype.hasOwnProperty.call(nodeInput, "diagnostic")
+        ? nodeInput.diagnostic
+        : (Object.prototype.hasOwnProperty.call(nodeInput, "diagnosis") ? diagnosis : (existingNode.diagnostic || diagnosis || {})),
+      branch: keep("branch", ""),
+      riskScore: Number(keep("riskScore", 0) || 0),
+      riskLevel: keep("riskLevel", ""),
+      reason: keep("reason", ""),
+      recommendedActions: Array.isArray(keep("recommendedActions", [])) ? keep("recommendedActions", []) : [],
+      actions: Array.isArray(keep("actions", [])) ? keep("actions", []) : [],
+    };
+    if (nodeIndex >= 0) {
+      run.nodes[nodeIndex] = { ...run.nodes[nodeIndex], ...nextNode };
+    } else {
+      run.nodes = [...(run.nodes || []), nextNode];
+    }
+    run.currentNode = key;
+    run.status = nodeInput.runStatus || run.status;
+    if (nodeInput.runStatus === "waiting_human") {
+      run.locks = { ...(run.locks || {}), waitingHuman: true };
+    }
+    if (nodeInput.runStatus === "running") {
+      run.locks = { ...(run.locks || {}), waitingHuman: false };
+    }
+    run.updatedAt = now;
+    store.items[index] = run;
+    return { value: run };
+  });
 }
 
 export async function appendWorkflowEvent(runId, event = {}) {
-  const store = await readStore();
-  const index = store.items.findIndex((item) => item.id === runId);
-  if (index < 0) throw new Error("工作流不存在: " + runId);
-  const run = store.items[index];
-  run.events = [...(run.events || []), {
-    time: event.time || nowIso(),
-    node: String(event.node || ""),
-    type: String(event.type || "event"),
-    message: String(event.message || ""),
-    data: event.data || {},
-  }];
-  run.updatedAt = nowIso();
-  store.items[index] = run;
-  await writeStore(store);
-  return run;
+  return mutateStore((store) => {
+    const index = store.items.findIndex((item) => item.id === runId);
+    if (index < 0) throw new Error("工作流不存在: " + runId);
+    const run = store.items[index];
+    run.events = [...(run.events || []), {
+      time: event.time || nowIso(),
+      node: String(event.node || ""),
+      type: String(event.type || "event"),
+      message: String(event.message || ""),
+      data: event.data || {},
+    }];
+    run.updatedAt = nowIso();
+    store.items[index] = run;
+    return { value: run };
+  });
 }
 
 function errorText(error = {}) {
@@ -2206,6 +2232,10 @@ export async function savePayloadDraft(runId, payloadDraft, options = {}) {
     payloadDraftAttrsMeta: Array.isArray(options.attrsMeta) ? options.attrsMeta : (run.payloadDraftAttrsMeta || []),
     payloadDraftSourceVariants: Array.isArray(options.sourceVariants) ? options.sourceVariants : (run.payloadDraftSourceVariants || []),
     payloadDraftValidation: null,
+    validatedDraftHash: "",
+    payloadDraftStale: false,
+    payloadDraftStaleReason: "",
+    payloadDraftStaleAt: "",
     mediaApprovalDraft: run.mediaApprovalDraft?.expectedDraftHash
       && run.mediaApprovalDraft.expectedDraftHash !== payloadDraftHash
       ? {
@@ -2215,6 +2245,18 @@ export async function savePayloadDraft(runId, payloadDraft, options = {}) {
           staleAt: nowIso(),
         }
       : run.mediaApprovalDraft,
+    locks: { ...(run.locks || {}), submitLocked: true },
+  }));
+}
+
+export async function invalidatePayloadDraftValidation(runId, reason = "seller_input_changed") {
+  return updateRun(runId, (run) => ({
+    ...run,
+    payloadDraftValidation: null,
+    validatedDraftHash: "",
+    payloadDraftStale: true,
+    payloadDraftStaleReason: String(reason || "seller_input_changed"),
+    payloadDraftStaleAt: nowIso(),
     locks: { ...(run.locks || {}), submitLocked: true },
   }));
 }
@@ -2840,6 +2882,14 @@ export async function applyPayloadDraftAttributeRepair(runId, input = {}) {
 export async function validatePayloadDraft(runId) {
   const categoryCache = await loadCategoryCache();
   const run = await updateRun(runId, (current) => {
+    if (current.payloadDraftStale === true) {
+      return {
+        ...current,
+        payloadDraftValidation: null,
+        validatedDraftHash: "",
+        locks: { ...(current.locks || {}), submitLocked: true },
+      };
+    }
     const { validation } = buildPayloadDraftValidationForRun(
       current,
       current.payloadDraft || {},
@@ -2853,6 +2903,17 @@ export async function validatePayloadDraft(runId) {
       locks: { ...(current.locks || {}), submitLocked: !validation.ok },
     };
   });
+  if (run.payloadDraftStale === true) {
+    return {
+      ok: false,
+      reasonCode: "PAYLOAD_DRAFT_STALE",
+      issues: [{
+        code: "PAYLOAD_DRAFT_STALE",
+        message: "商品资料已变化，旧 Payload 不能重新预检；请先生成当前商品的新草稿。",
+      }],
+      nextAction: "重新生成当前商品 Payload 草稿后再预检",
+    };
+  }
   return run.payloadDraftValidation;
 }
 
@@ -2870,6 +2931,9 @@ function reservePayloadSubmission(runId, draftHash, storeId) {
     const index = store.items.findIndex((item) => item.id === runId);
     if (index < 0) throw new Error("工作流不存在: " + runId);
     const run = store.items[index];
+    if (run.payloadDraftStale === true) {
+      return { write: false, value: { acquired: false, status: "stale" } };
+    }
     const currentHash = hashPayloadDraft(run.payloadDraft || {});
     if (currentHash !== draftHash) {
       return { write: false, value: { acquired: false, status: "draft_changed", currentDraftHash: currentHash } };
@@ -2936,6 +3000,14 @@ export async function submitPayloadDraftToOzon(runId, input = {}, deps = {}) {
   if (!run) throw new Error("工作流不存在: " + runId);
   if (run.locks?.paused || run.status === "paused") {
     return { ok: false, status: "paused", message: "工作流已暂停，不能提交 Ozon。" };
+  }
+  if (run.payloadDraftStale === true) {
+    return {
+      ok: false,
+      status: "blocked",
+      reasonCode: "PAYLOAD_DRAFT_STALE",
+      message: "商品资料已变化，旧 Payload 已失效；请先生成新草稿并重新预检。",
+    };
   }
   const existingReservation = run.submissionReservation;
   const existingDraftHash = hashPayloadDraft(run.payloadDraft || {});
@@ -3051,11 +3123,26 @@ export async function submitPayloadDraftToOzon(runId, input = {}, deps = {}) {
     attributeMatrix: validation.attributeMatrix,
     requiredAttributeFillPlan: validation.requiredAttributeFillPlan,
   }));
-  await updateRun(runId, (current) => ({
-    ...current,
-    payloadDraftValidation: validation,
-    locks: { ...(current.locks || {}), submitLocked: false },
-  }));
+  run = await updateRun(runId, (current) => current.payloadDraftStale === true
+    ? {
+        ...current,
+        payloadDraftValidation: null,
+        validatedDraftHash: "",
+        locks: { ...(current.locks || {}), submitLocked: true },
+      }
+    : {
+        ...current,
+        payloadDraftValidation: validation,
+        locks: { ...(current.locks || {}), submitLocked: false },
+      });
+  if (run.payloadDraftStale === true) {
+    return {
+      ok: false,
+      status: "blocked",
+      reasonCode: "PAYLOAD_DRAFT_STALE",
+      message: "商品资料在预检期间发生变化，旧 Payload 已失效；请先生成新草稿。",
+    };
+  }
 
   if (input.confirmSubmit !== true) {
     return {
@@ -3095,6 +3182,14 @@ export async function submitPayloadDraftToOzon(runId, input = {}, deps = {}) {
   const store = getStore(storeId);
   const reservation = await reservePayloadSubmission(runId, currentDraftHash, storeId);
   if (!reservation.acquired) {
+    if (reservation.status === "stale") {
+      return {
+        ok: false,
+        status: "blocked",
+        reasonCode: "PAYLOAD_DRAFT_STALE",
+        message: "商品资料在确认期间发生变化，旧 Payload 已失效；请先生成新草稿。",
+      };
+    }
     if (reservation.status === "completed") {
       return {
         ok: true,

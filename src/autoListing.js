@@ -38,6 +38,7 @@ import {
   buildPreflightGateNode,
   diagnoseWorkflowError,
   findOrCreateWorkflowForAutoListingJob,
+  invalidatePayloadDraftValidation,
   savePayloadDraft,
   upsertWorkflowNode,
   workflowDuplicateListingNode,
@@ -90,7 +91,6 @@ const ENABLE_IMAGE_OCR_FOR_LISTING = String(process.env.OZON_IMAGE_OCR_ENABLED |
 const JOB_STALE_TIMEOUT_MS = toNumber(process.env.OZON_JOB_STALE_TIMEOUT_MS, 30 * 60 * 1000);
 const AI_MATCH_LIMIT = toNumber(process.env.OZON_AI_MATCH_LIMIT, 8);
 const LLM_TIMEOUT_MS = toNumber(process.env.OZON_LLM_TIMEOUT_MS, 12_000);
-var jobsWriteChain = Promise.resolve();
 var jobsMutationChain = Promise.resolve();
 
 function nowIso() { return new Date().toISOString(); }
@@ -399,25 +399,12 @@ export async function selectBestMatchForOzon(ozonItem, candidates = [], options 
 async function readJobs() {
   return JobRepository.readAutoListingJobs(JOB_FILE);
 }
-async function writeJobs(items) {
-  jobsWriteChain = jobsWriteChain.then(function() {
-    return JobRepository.writeAutoListingJobs(JOB_FILE, items);
-  }).catch(function() {
-    return JobRepository.writeAutoListingJobs(JOB_FILE, items);
-  });
-  await jobsWriteChain;
-}
-
 async function mutateJobs(mutator) {
-  let output;
   const run = jobsMutationChain.catch(function() {}).then(async function() {
-    const jobs = await readJobs();
-    output = await mutator(jobs);
-    await writeJobs(jobs);
+    return JobRepository.mutateAutoListingJobs(JOB_FILE, mutator);
   });
   jobsMutationChain = run.catch(function() {});
-  await run;
-  return output;
+  return run;
 }
 
 async function atomicWriteFileWithRetry(file, payload, retries) {
@@ -1603,58 +1590,57 @@ function inferTimeoutStageFromHistory(job) {
 }
 
 async function recoverStuckJobs() {
-  var jobs = await readJobs();
   var now = Date.now();
-  var changed = false;
-  var recovered = jobs.map(function(job) {
-    if (!isRunningJobStatus(job.status)) return job;
-    var timeoutStage = timeoutStageByStatus(job.status);
-    var ts = Date.parse(job.updatedAt || job.createdAt || "");
-    if (!Number.isFinite(ts)) return job;
-    if (now - ts < JOB_STALE_TIMEOUT_MS) return job;
-    changed = true;
-    var steps = Array.isArray(job.steps) ? job.steps.slice() : [];
-    steps.push({
-      action: "failed",
-      detail: "任务超时自动回收(" + timeoutStage + ")（卡住超过 " + Math.round(JOB_STALE_TIMEOUT_MS / 60000) + " 分钟）",
-      time: nowIso(),
-    });
-    return Object.assign({}, job, {
-      status: "failed",
-      error: "任务超时自动回收(" + timeoutStage + ")",
-      timeoutStage: timeoutStage,
-      steps: steps,
-      updatedAt: nowIso(),
-    });
+  return mutateJobs(async function(jobs) {
+    for (var i = 0; i < jobs.length; i += 1) {
+      var job = jobs[i];
+      if (!isRunningJobStatus(job.status)) continue;
+      var timeoutStage = timeoutStageByStatus(job.status);
+      var ts = Date.parse(job.updatedAt || job.createdAt || "");
+      if (!Number.isFinite(ts) || now - ts < JOB_STALE_TIMEOUT_MS) continue;
+      var steps = Array.isArray(job.steps) ? job.steps.slice() : [];
+      steps.push({
+        action: "failed",
+        detail: "任务超时自动回收(" + timeoutStage + ")（卡住超过 " + Math.round(JOB_STALE_TIMEOUT_MS / 60000) + " 分钟）",
+        time: nowIso(),
+      });
+      jobs[i] = Object.assign({}, job, {
+        status: "failed",
+        error: "任务超时自动回收(" + timeoutStage + ")",
+        timeoutStage: timeoutStage,
+        steps: steps,
+        updatedAt: nowIso(),
+      });
+    }
+    return jobs;
   });
-  if (changed) await writeJobs(recovered);
-  return recovered;
 }
 
 export async function recoverInterruptedJobs() {
-  var jobs = await readJobs();
-  var changed = false;
-  var recovered = jobs.map(function(job) {
-    if (!isRunningJobStatus(job.status)) return job;
-    var timeoutStage = timeoutStageByStatus(job.status);
-    changed = true;
-    var steps = Array.isArray(job.steps) ? job.steps.slice() : [];
-    steps.push({
-      action: "failed",
-      detail: "后台重启后恢复中断任务(" + timeoutStage + ")",
-      time: nowIso(),
-    });
-    return Object.assign({}, job, {
-      status: "failed",
-      error: "后台重启中断任务(" + timeoutStage + ")",
-      reasonCode: "TIMEOUT",
-      timeoutStage: timeoutStage,
-      steps: steps,
-      updatedAt: nowIso(),
-    });
+  return mutateJobs(async function(jobs) {
+    var recovered = 0;
+    for (var i = 0; i < jobs.length; i += 1) {
+      var job = jobs[i];
+      if (!isRunningJobStatus(job.status)) continue;
+      var timeoutStage = timeoutStageByStatus(job.status);
+      var steps = Array.isArray(job.steps) ? job.steps.slice() : [];
+      steps.push({
+        action: "failed",
+        detail: "后台重启后恢复中断任务(" + timeoutStage + ")",
+        time: nowIso(),
+      });
+      jobs[i] = Object.assign({}, job, {
+        status: "failed",
+        error: "后台重启中断任务(" + timeoutStage + ")",
+        reasonCode: "TIMEOUT",
+        timeoutStage: timeoutStage,
+        steps: steps,
+        updatedAt: nowIso(),
+      });
+      recovered += 1;
+    }
+    return { ok: true, recovered };
   });
-  if (changed) await writeJobs(recovered);
-  return { ok: true, recovered: recovered.filter(function(job) { return String(job.error || "").startsWith("后台重启中断任务"); }).length };
 }
 
 function safeFallbackPackageInfo(packageInfo) {
@@ -1986,11 +1972,8 @@ function packageSizeWeight(candidateData = {}) {
 
 function trustedPackageInfoSourceForListingJob(job = {}) {
   const candidateData = job.candidateData || {};
-  const packageEvidence = candidateData.sourceEvidence?.fields?.package;
-  const snapshotHash = String(candidateData.sourceEvidence?.snapshotHash || "");
-  if (packageEvidence && (String(packageEvidence.source || "") !== "page_content" || String(packageEvidence.evidenceRef || "") !== `snapshot:${snapshotHash.replace(/^sha256:/, "")}`)) return "";
-  if (packageEvidence?.values && Object.entries(packageEvidence.values).some(([key, value]) => Number(value || 0) !== Number(candidateData.sizeWeight?.[key] || 0))) return "";
   const sizeWeight = candidateData.sizeWeight || {};
+  const snapshotHash = String(candidateData.sourceEvidence?.snapshotHash || "");
   const explicitSource = String(
     candidateData.packageInfoSource
     || sizeWeight.packageInfoSource
@@ -1998,9 +1981,24 @@ function trustedPackageInfoSourceForListingJob(job = {}) {
     || sizeWeight.source
     || "",
   ).trim();
-  if (["1688_package", "manual_measurement", "manual_measured", "supplier_package"].includes(explicitSource)) {
+  if (["manual_measurement", "manual_measured", "supplier_package"].includes(explicitSource)) {
+    const binding = sizeWeight.manualEvidenceBinding || candidateData.manualPackageEvidenceBinding || {};
+    const requiredBinding = {
+      captureId: String(job.candidateId || ""),
+      storeId: String(job.storeId || ""),
+      sourceSnapshotHash: snapshotHash,
+      workflowRunId: String(job.workflowRunId || ""),
+    };
+    if (Object.values(requiredBinding).some((value) => !value)
+      || Object.entries(requiredBinding).some(([key, value]) => String(binding[key] || "") !== value)) {
+      return "";
+    }
     return explicitSource;
   }
+  const packageEvidence = candidateData.sourceEvidence?.fields?.package;
+  if (packageEvidence && (String(packageEvidence.source || "") !== "page_content" || String(packageEvidence.evidenceRef || "") !== `snapshot:${snapshotHash.replace(/^sha256:/, "")}`)) return "";
+  if (packageEvidence?.values && Object.entries(packageEvidence.values).some(([key, value]) => Number(value || 0) !== Number(candidateData.sizeWeight?.[key] || 0))) return "";
+  if (explicitSource === "1688_package") return explicitSource;
   const sourceText = [
     candidateData.source,
     candidateData.sourceType,
@@ -2722,16 +2720,8 @@ export async function createListingDraftFrom1688Candidate(candidateId, { storeId
 }
 
 export async function saveManualListingContent(jobId, input = {}) {
-  const id = String(jobId || "").trim();
-  const titleRu = String(input.title_ru || input.title || "").replace(/\s+/g, " ").trim();
-  const descriptionRu = String(input.description_ru || input.description || "").replace(/\s+/g, " ").trim();
-  if (!id) return { ok: false, reasonCode: "AUTO_LISTING_JOB_ID_REQUIRED" };
-  if (titleRu.length < 5 || titleRu.length > 200) return { ok: false, reasonCode: "LISTING_TITLE_LENGTH_INVALID" };
-  if (descriptionRu.length < 20 || descriptionRu.length > 5000) return { ok: false, reasonCode: "LISTING_DESCRIPTION_LENGTH_INVALID" };
-  const job = await getAutoListingJob(id); if (!job) return { ok: false, reasonCode: "AUTO_LISTING_JOB_NOT_FOUND" };
-  const next = await updateJob(id, { listingContent: { ...(job.listingContent || {}), ...input, title_ru: titleRu, description_ru: descriptionRu, contentSource: "manual_seller", contentUpdatedAt: nowIso() }, status: "content_ready", stage: "content_manual_saved", error: "" });
-  const payload = await saveWorkflowPayloadDraftForListingJob(next || job).catch(() => null);
-  return { ok: true, job: next || job, payloadDraftReady: Boolean(payload?.draft), nextAction: "继续补类目/采购成本和媒体确认，重新运行商品预检" };
+  const { expectedBinding, ...content } = input || {};
+  return saveManualSellerInputs(jobId, { expectedBinding, content });
 }
 
 export function findCachedManualCategory(cache = {}, selection = {}) {
@@ -2742,30 +2732,297 @@ export function findCachedManualCategory(cache = {}, selection = {}) {
   return rows.find((row) => !row.disabled && Number(row.description_category_id || 0) === descriptionCategoryId && Number(row.type_id || 0) === typeId && String(row.path || "").replace(/\s+/g, " ").trim() === path) || null;
 }
 export async function saveManualListingCategory(jobId, input = {}) {
-  const job = await getAutoListingJob(jobId); if (!job) return { ok: false, reasonCode: "AUTO_LISTING_JOB_NOT_FOUND" };
+  const job = await getAutoListingJobSnapshot(jobId);
+  if (!job) return { ok: false, reasonCode: "AUTO_LISTING_JOB_NOT_FOUND" };
+  const bindingCheck = applyManualSellerInputsToJob(job, { expectedBinding: input.expectedBinding });
+  if (!bindingCheck.ok) return bindingCheck;
   const savedCategory = { description_category_id: Number(input.description_category_id || input.descriptionCategoryId || 0), type_id: Number(input.type_id || input.typeId || 0), path: String(input.path || "") };
   if (!savedCategory.description_category_id || !savedCategory.type_id) return { ok: false, reasonCode: "LISTING_CATEGORY_REQUIRED" };
   const cache = await loadCategoryCache();
   if (!findCachedManualCategory(cache, savedCategory)) {
     return { ok: false, reasonCode: "LISTING_CATEGORY_NOT_IN_CACHE", nextAction: "先刷新 Ozon 类目缓存，再选择当前可用的类目和类型" };
   }
-  const next = await updateJob(jobId, { manualCategory: savedCategory, status: "category_ready", stage: "category_manual_saved" });
-  const payload = await saveWorkflowPayloadDraftForListingJob(next || job).catch(() => null);
-  return { ok: true, job: next || job, payloadDraftReady: Boolean(payload?.draft), nextAction: "运行预检" };
+  const workflowRun = await findOrCreateWorkflowForAutoListingJob(job).catch(() => null);
+  if (!workflowRun || String(workflowRun.id || "") !== String(input.expectedBinding?.workflowRunId || "")) {
+    return {
+      ok: false,
+      reasonCode: "MANUAL_SELLER_INPUT_WORKFLOW_MISMATCH",
+      nextAction: "刷新当前商品并重新进入精确绑定的商品工作流",
+    };
+  }
+  await invalidatePayloadDraftValidation(workflowRun.id, "seller_category_changed");
+  const saved = await mutateJobs(async function(jobs) {
+    const idx = jobs.findIndex((item) => item.id === jobId);
+    if (idx === -1) return { ok: false, reasonCode: "AUTO_LISTING_JOB_NOT_FOUND" };
+    const currentBinding = applyManualSellerInputsToJob(jobs[idx], { expectedBinding: input.expectedBinding });
+    if (!currentBinding.ok) return currentBinding;
+    jobs[idx] = {
+      ...jobs[idx],
+      manualCategory: savedCategory,
+      status: "category_ready",
+      stage: "category_manual_saved",
+      updatedAt: nowIso(),
+    };
+    return { ok: true, job: jobs[idx] };
+  });
+  if (!saved?.ok) return saved || { ok: false, reasonCode: "AUTO_LISTING_JOB_NOT_FOUND" };
+  try {
+    const payload = await saveWorkflowPayloadDraftForListingJob(saved.job);
+    if (!payload?.draft) throw new Error("payload draft was not rebuilt");
+    return {
+      ok: true,
+      job: saved.job,
+      workflowRunId: workflowRun.id,
+      payloadDraftReady: true,
+      nextAction: "运行预检",
+    };
+  } catch {
+    await updateJob(jobId, {
+      stage: "seller_input_saved_payload_pending",
+      reasonCode: "MANUAL_SELLER_INPUT_PAYLOAD_REFRESH_FAILED",
+      error: "类目已保存，但本地草稿刷新失败；旧预检已失效",
+    });
+    return {
+      ok: false,
+      reasonCode: "MANUAL_SELLER_INPUT_PAYLOAD_REFRESH_FAILED",
+      jobSaved: true,
+      preflightInvalidated: true,
+      nextAction: "类目已保存；重新生成本地草稿并预检后才能继续",
+    };
+  }
+}
+
+function normalizeManualProcurementInput(input = {}) {
+  const supplierId = String(input.supplierId || "").trim();
+  const supplierName = String(input.supplierName || "").trim();
+  const moq = Number(input.moq || 0);
+  const priceTiers = (Array.isArray(input.priceTiers) ? input.priceTiers : [])
+    .map((tier) => ({
+      minQuantity: Number(tier?.minQuantity || 0),
+      unitPriceCny: Number(tier?.unitPriceCny || 0),
+    }))
+    .filter((tier) => tier.minQuantity > 0 || tier.unitPriceCny > 0);
+  if ((!supplierId && !supplierName) || !(moq > 0) || !priceTiers.length
+    || priceTiers.some((tier) => !(tier.minQuantity > 0) || !(tier.unitPriceCny > 0))) {
+    return { ok: false, reasonCode: "MANUAL_PROCUREMENT_REQUIRED", nextAction: "填写供应商、MOQ 和至少一档完整采购价" };
+  }
+  const savedAt = nowIso();
+  return { ok: true, evidence: {
+    supplierId: supplierId ? { value: supplierId, source: "seller_manual" } : { source: "missing" },
+    supplierName: supplierName ? { value: supplierName, source: "seller_manual" } : { source: "missing" },
+    moq: { value: moq, source: "seller_manual" },
+    priceTiers: { values: priceTiers, source: "seller_manual" },
+    evidenceSource: "seller_manual",
+    savedAt,
+  } };
+}
+
+function normalizeManualContentInput(input = {}) {
+  const titleRu = String(input.title_ru || input.title || "").replace(/\s+/g, " ").trim();
+  const descriptionRu = String(input.description_ru || input.description || "").replace(/\s+/g, " ").trim();
+  if (titleRu.length < 5 || titleRu.length > 200) {
+    return { ok: false, reasonCode: "LISTING_TITLE_LENGTH_INVALID", nextAction: "填写 5–200 个字符的俄文标题" };
+  }
+  if (descriptionRu.length < 20 || descriptionRu.length > 5000) {
+    return { ok: false, reasonCode: "LISTING_DESCRIPTION_LENGTH_INVALID", nextAction: "填写 20–5000 个字符的俄文描述" };
+  }
+  return {
+    ok: true,
+    content: {
+      ...input,
+      title_ru: titleRu,
+      description_ru: descriptionRu,
+      annotation_ru: String(input.annotation_ru || input.annotation || "").trim().slice(0, 500),
+      contentSource: "manual_seller",
+      contentUpdatedAt: nowIso(),
+    },
+  };
+}
+
+function normalizeManualPackageInput(input = {}) {
+  const source = String(input.source || "").trim();
+  const sizeWeight = {
+    weightG: Number(input.weightG || 0),
+    lengthMm: Number(input.lengthMm || 0),
+    widthMm: Number(input.widthMm || 0),
+    heightMm: Number(input.heightMm || 0),
+  };
+  const validSource = ["manual_measurement", "supplier_package"].includes(source);
+  const validValues = sizeWeight.weightG > 0 && sizeWeight.weightG <= 100000
+    && [sizeWeight.lengthMm, sizeWeight.widthMm, sizeWeight.heightMm]
+      .every((value) => value > 0 && value <= 2000);
+  if (!validSource || !validValues) {
+    return { ok: false, reasonCode: "MANUAL_PACKAGE_REQUIRED", nextAction: "选择包装资料来源并填写完整的克重和毫米尺寸" };
+  }
+  const savedAt = nowIso();
+  const evidenceNote = String(input.note || "").trim().slice(0, 500);
+  return { ok: true, sizeWeight, source, evidenceNote, savedAt, evidence: {
+    ...sizeWeight,
+    source,
+    note: evidenceNote,
+    evidenceSource: "seller_manual",
+    savedAt,
+  } };
+}
+
+function manualSellerInputBinding(job = {}) {
+  return {
+    captureId: String(job.candidateId || ""),
+    storeId: String(job.storeId || ""),
+    sourceSnapshotHash: String(job.candidateData?.sourceEvidence?.snapshotHash || ""),
+    workflowRunId: String(job.workflowRunId || ""),
+  };
+}
+
+function manualSellerInputBindingMatches(job = {}, expected = {}) {
+  const actual = manualSellerInputBinding(job);
+  return ["captureId", "storeId", "sourceSnapshotHash", "workflowRunId"]
+    .every((key) => String(expected[key] || "").trim() && String(expected[key]) === actual[key]);
+}
+
+export function applyManualSellerInputsToJob(job = {}, input = {}) {
+  if (!job?.id) return { ok: false, reasonCode: "AUTO_LISTING_JOB_NOT_FOUND" };
+  const actualBinding = manualSellerInputBinding(job);
+  const bindingKeys = ["captureId", "storeId", "sourceSnapshotHash", "workflowRunId"];
+  if (!input.expectedBinding
+    || bindingKeys.some((key) => !String(input.expectedBinding?.[key] || "").trim())
+    || bindingKeys.some((key) => !String(actualBinding[key] || "").trim())) {
+    return {
+      ok: false,
+      reasonCode: "MANUAL_SELLER_INPUT_BINDING_REQUIRED",
+      nextAction: "刷新当前商品，确保采购和包装资料绑定到明确的商品、店铺、来源快照和工作流",
+    };
+  }
+  if (!manualSellerInputBindingMatches(job, input.expectedBinding)) {
+    return {
+      ok: false,
+      reasonCode: "MANUAL_SELLER_INPUT_STALE",
+      nextAction: "商品来源或店铺已变化，请刷新当前商品后重新填写",
+    };
+  }
+  const procurement = input.procurement ? normalizeManualProcurementInput(input.procurement) : null;
+  const content = input.content ? normalizeManualContentInput(input.content) : null;
+  const packageInput = input.package ? normalizeManualPackageInput(input.package) : null;
+  if (procurement && !procurement.ok) return procurement;
+  if (content && !content.ok) return content;
+  if (packageInput && !packageInput.ok) return packageInput;
+  if (!procurement && !content && !packageInput) {
+    return { ok: true, job, changed: false };
+  }
+
+  const currentCandidate = job.candidateData || {};
+  let candidateData = { ...currentCandidate };
+  const patch = {};
+  if (content) {
+    patch.listingContent = {
+      ...(job.listingContent || {}),
+      ...content.content,
+    };
+    patch.status = "content_ready";
+    patch.error = "";
+  }
+  if (procurement) {
+    candidateData.procurementEvidence = procurement.evidence;
+    patch.procurementEvidence = procurement.evidence;
+  }
+  if (packageInput) {
+    const binding = manualSellerInputBinding(job);
+    const normalizedSizeWeight = {
+      ...(currentCandidate.sizeWeight || {}),
+      ...packageInput.sizeWeight,
+      source: packageInput.source,
+      packageInfoSource: packageInput.source,
+      evidenceNote: packageInput.evidenceNote,
+      evidenceUpdatedAt: packageInput.savedAt,
+      manualEvidenceBinding: binding,
+    };
+    candidateData = {
+      ...candidateData,
+      sizeWeight: normalizedSizeWeight,
+      packageInfoSource: packageInput.source,
+      manualPackageEvidenceBinding: binding,
+      skuVariants: (Array.isArray(currentCandidate.skuVariants) ? currentCandidate.skuVariants : []).map((variant) => ({
+        ...variant,
+        ...packageInput.sizeWeight,
+        packageInfoSource: packageInput.source,
+      })),
+    };
+    patch.packageEvidence = packageInput.evidence;
+  }
+  return {
+    ok: true,
+    changed: true,
+    job: {
+      ...job,
+      ...patch,
+      candidateData,
+      stage: packageInput ? "package_manual_saved" : procurement ? "procurement_manual_saved" : "content_manual_saved",
+      updatedAt: nowIso(),
+    },
+  };
+}
+
+export async function saveManualSellerInputs(jobId, input = {}) {
+  const previewJob = await getAutoListingJobSnapshot(jobId);
+  const preview = applyManualSellerInputsToJob(previewJob || {}, input);
+  if (!preview.ok) return preview;
+  const workflowRun = await findOrCreateWorkflowForAutoListingJob(previewJob).catch(() => null);
+  if (!workflowRun || String(workflowRun.id || "") !== String(input.expectedBinding?.workflowRunId || "")) {
+    return {
+      ok: false,
+      reasonCode: "MANUAL_SELLER_INPUT_WORKFLOW_MISMATCH",
+      nextAction: "刷新当前商品并重新进入精确绑定的商品工作流",
+    };
+  }
+  if (preview.changed) {
+    await invalidatePayloadDraftValidation(workflowRun.id, "seller_input_changed");
+  }
+  const saved = await mutateJobs(async function(jobs) {
+    const idx = jobs.findIndex((job) => job.id === jobId);
+    if (idx === -1) return { ok: false, reasonCode: "AUTO_LISTING_JOB_NOT_FOUND" };
+    const applied = applyManualSellerInputsToJob(jobs[idx], input);
+    if (!applied.ok) return applied;
+    if (applied.changed) jobs[idx] = applied.job;
+    return { ...applied, job: jobs[idx] };
+  });
+  if (!saved?.ok) return saved || { ok: false, reasonCode: "AUTO_LISTING_JOB_NOT_FOUND" };
+  let payload = null;
+  if (saved.changed) {
+    try {
+      payload = await saveWorkflowPayloadDraftForListingJob(saved.job);
+      if (!payload?.draft) throw new Error("payload draft was not rebuilt");
+    } catch {
+      await updateJob(jobId, {
+        stage: "seller_input_saved_payload_pending",
+        reasonCode: "MANUAL_SELLER_INPUT_PAYLOAD_REFRESH_FAILED",
+        error: "商品资料已保存，但本地草稿刷新失败；旧预检已失效",
+      });
+      return {
+        ok: false,
+        reasonCode: "MANUAL_SELLER_INPUT_PAYLOAD_REFRESH_FAILED",
+        jobSaved: true,
+        preflightInvalidated: true,
+        nextAction: "商品资料已保存；重新生成本地草稿并预检后才能继续",
+      };
+    }
+  }
+  return {
+    ok: true,
+    job: saved.job,
+    changed: saved.changed,
+    payloadDraftReady: Boolean(payload?.draft),
+    nextAction: "运行预检",
+  };
 }
 
 export async function saveManualProcurementEvidence(jobId, input = {}) {
-  const job = await getAutoListingJob(jobId); if (!job) return { ok: false, reasonCode: "AUTO_LISTING_JOB_NOT_FOUND" };
-  const next = await updateJob(jobId, { procurementEvidence: { ...input, evidenceSource: "seller_manual", savedAt: nowIso() }, stage: "procurement_manual_saved" });
-  const payload = await saveWorkflowPayloadDraftForListingJob(next || job).catch(() => null);
-  return { ok: true, job: next || job, payloadDraftReady: Boolean(payload?.draft), nextAction: "运行预检" };
+  const { expectedBinding, ...procurement } = input || {};
+  return saveManualSellerInputs(jobId, { expectedBinding, procurement });
 }
 
 export async function saveManualPackageEvidence(jobId, input = {}) {
-  const job = await getAutoListingJob(jobId); if (!job) return { ok: false, reasonCode: "AUTO_LISTING_JOB_NOT_FOUND" };
-  const next = await updateJob(jobId, { packageEvidence: { ...input, evidenceSource: "seller_manual", savedAt: nowIso() }, stage: "package_manual_saved" });
-  const payload = await saveWorkflowPayloadDraftForListingJob(next || job).catch(() => null);
-  return { ok: true, job: next || job, payloadDraftReady: Boolean(payload?.draft), nextAction: "运行预检" };
+  const { expectedBinding, ...packageInput } = input || {};
+  return saveManualSellerInputs(jobId, { expectedBinding, package: packageInput });
 }
 
 async function waitForImportInfo(store, taskId, attempts = 8, deps = {}) {
@@ -3810,22 +4067,22 @@ export async function rollbackAutoListingMediaApproval(jobId, binding = {}) {
 }
 
 export async function backfillTimeoutStages(limit = 1000) {
-  const jobs = await readJobs();
-  let changed = 0;
-  const max = Math.max(1, Number(limit || 1000));
-  for (let i = 0; i < jobs.length && changed < max; i += 1) {
-    const job = jobs[i];
-    const reasonCode = String(job.reasonCode || mapReasonCode(job.error || ""));
-    if (reasonCode !== "TIMEOUT") continue;
-    const current = String(job.timeoutStage || "");
-    if (current && current !== "unknown") continue;
-    const inferred = inferTimeoutStageFromHistory(job);
-    if (!inferred || inferred === "unknown") continue;
-    jobs[i] = Object.assign({}, job, { timeoutStage: inferred, updatedAt: nowIso() });
-    changed += 1;
-  }
-  if (changed > 0) await writeJobs(jobs);
-  return { ok: true, changed, total: jobs.length };
+  return mutateJobs(async function(jobs) {
+    let changed = 0;
+    const max = Math.max(1, Number(limit || 1000));
+    for (let i = 0; i < jobs.length && changed < max; i += 1) {
+      const job = jobs[i];
+      const reasonCode = String(job.reasonCode || mapReasonCode(job.error || ""));
+      if (reasonCode !== "TIMEOUT") continue;
+      const current = String(job.timeoutStage || "");
+      if (current && current !== "unknown") continue;
+      const inferred = inferTimeoutStageFromHistory(job);
+      if (!inferred || inferred === "unknown") continue;
+      jobs[i] = Object.assign({}, job, { timeoutStage: inferred, updatedAt: nowIso() });
+      changed += 1;
+    }
+    return { ok: true, changed, total: jobs.length };
+  });
 }
 
 function applyListingFixByReason(job, reasonCode) {

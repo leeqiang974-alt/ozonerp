@@ -3,6 +3,8 @@ import assert from "node:assert/strict";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
+import { execFile } from "node:child_process";
+import { promisify } from "node:util";
 import {
   acceptWorkflowPricingRisk,
   appendWorkflowEvent,
@@ -22,6 +24,7 @@ import {
   diagnoseWorkflowError,
   findOrCreateWorkflowForAutoListingJob,
   getWorkflowRun,
+  invalidatePayloadDraftValidation,
   listWorkflowRuns,
   recommendWorkflowDecision,
   reconcileStaleWorkflowRuns,
@@ -50,6 +53,7 @@ const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "ozon-workflow-runs-test-")
 const tmpFile = path.join(tmpDir, "workflow-runs.json");
 const tmpCategoryCacheFile = path.join(tmpDir, "ozon-category-cache.json");
 const multiSkuRepairFixture = JSON.parse(fs.readFileSync(new URL("./fixtures/1688/color-size-matrix/listing-repair.mocked.json", import.meta.url), "utf8"));
+const execFileAsync = promisify(execFile);
 
 test.after(() => {
   fs.rmSync(tmpDir, { recursive: true, force: true });
@@ -61,6 +65,25 @@ function reset() {
   process.env.WORKFLOW_RUNS_FILE = tmpFile;
   process.env.OZON_CATEGORY_CACHE_FILE = tmpCategoryCacheFile;
 }
+
+test("workflow store serializes concurrent writers across local processes", async () => {
+  reset();
+  const moduleUrl = new URL("../src/workflowRuns.js", import.meta.url).href;
+  await Promise.all(Array.from({ length: 8 }, (_, index) => execFileAsync(
+    process.execPath,
+    ["--input-type=module", "-e", `
+      process.env.WORKFLOW_RUNS_FILE = ${JSON.stringify(tmpFile)};
+      const { createWorkflowRun } = await import(${JSON.stringify(moduleUrl)});
+      await createWorkflowRun({ id: "wr_process_${index}", title: "process ${index}" });
+    `],
+    { cwd: path.resolve("."), windowsHide: true },
+  )));
+  const stored = JSON.parse(fs.readFileSync(tmpFile, "utf8"));
+  assert.deepEqual(
+    stored.items.map((run) => run.id).sort(),
+    Array.from({ length: 8 }, (_, index) => `wr_process_${index}`),
+  );
+});
 
 test("stale workflow reconciliation moves old running runs to human review", async () => {
   reset();
@@ -138,6 +161,57 @@ test("workflow runs can be created and node status can be updated", async () => 
   assert.equal(updated.nodes.find((node) => node.key === "preflight_check")?.status, "success");
   assert.equal((await listWorkflowRuns()).items.length, 1);
   assert.equal((await getWorkflowRun(run.id)).entity.parentSku, "SKUlq00999");
+});
+
+test("seller input changes invalidate old preflight and lock submission before payload rebuild", async () => {
+  reset();
+  const run = await createWorkflowRun({
+    title: "商品资料变更",
+    status: "waiting_human",
+    locks: { waitingHuman: true, submitLocked: false },
+  });
+  await savePayloadDraft(run.id, { items: [{ offer_id: "SKU-OLD" }] });
+  const file = JSON.parse(fs.readFileSync(tmpFile, "utf8"));
+  const persisted = file.items.find((item) => item.id === run.id);
+  persisted.payloadDraftValidation = { ok: true, draftHash: persisted.payloadDraftHash };
+  persisted.validatedDraftHash = persisted.payloadDraftHash;
+  persisted.locks.submitLocked = false;
+  fs.writeFileSync(tmpFile, JSON.stringify(file, null, 2));
+
+  await invalidatePayloadDraftValidation(run.id, "seller_input_changed");
+  const invalidated = await getWorkflowRun(run.id);
+  assert.equal(invalidated.payloadDraftValidation, null);
+  assert.equal(invalidated.validatedDraftHash, "");
+  assert.equal(invalidated.payloadDraftStale, true);
+  assert.equal(invalidated.payloadDraftStaleReason, "seller_input_changed");
+  assert.equal(invalidated.locks.submitLocked, true);
+  assert.equal(invalidated.payloadDraft.items[0].offer_id, "SKU-OLD");
+
+  const staleValidation = await validatePayloadDraft(run.id);
+  assert.equal(staleValidation.ok, false);
+  assert.equal(staleValidation.reasonCode, "PAYLOAD_DRAFT_STALE");
+  assert.equal((await getWorkflowRun(run.id)).locks.submitLocked, true);
+
+  let ozonCalled = false;
+  const staleSubmission = await submitPayloadDraftToOzon(run.id, {
+    confirmSubmit: true,
+    expectedDraftHash: invalidated.payloadDraftHash,
+  }, {
+    getStore: () => ({ id: "store-stale" }),
+    ozonRequest: async () => {
+      ozonCalled = true;
+      return {};
+    },
+  });
+  assert.equal(staleSubmission.ok, false);
+  assert.equal(staleSubmission.reasonCode, "PAYLOAD_DRAFT_STALE");
+  assert.equal(ozonCalled, false);
+
+  await savePayloadDraft(run.id, { items: [{ offer_id: "SKU-NEW" }] });
+  const rebuilt = await getWorkflowRun(run.id);
+  assert.equal(rebuilt.payloadDraftStale, false);
+  assert.equal(rebuilt.payloadDraftStaleReason, "");
+  assert.equal(rebuilt.validatedDraftHash, "");
 });
 
 test("listWorkflowRuns derives required attribute rule history from existing runs without persistence", async () => {

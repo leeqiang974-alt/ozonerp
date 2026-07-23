@@ -1514,9 +1514,13 @@ test("saving manual listing content invalidates the old preflight through a refr
   const end = source.indexOf("export function findCachedManualCategory", start);
   assert.ok(start >= 0 && end > start);
   const handler = source.slice(start, end);
-  assert.match(handler, /saveWorkflowPayloadDraftForListingJob/);
-  assert.match(handler, /saveWorkflowPayloadDraftForListingJob/);
-  assert.match(handler, /重新运行商品预检|运行预检/);
+  assert.match(handler, /expectedBinding/);
+  assert.match(handler, /saveManualSellerInputs/);
+  const combinedStart = source.indexOf("export async function saveManualSellerInputs");
+  const combinedEnd = source.indexOf("export async function saveManualProcurementEvidence", combinedStart);
+  const combined = source.slice(combinedStart, combinedEnd);
+  assert.match(combined, /invalidatePayloadDraftValidation/);
+  assert.match(combined, /saveWorkflowPayloadDraftForListingJob/);
 });
 
 test("1688 candidate routes apply principal store scope", async () => {
@@ -1600,6 +1604,9 @@ test("manual listing category route persists a seller-confirmed category without
   const startAuto = autoListing.indexOf("export async function saveManualListingCategory");
   const endAuto = autoListing.indexOf("export async function saveManualProcurementEvidence", startAuto);
   const handler = autoListing.slice(startAuto, endAuto);
+  assert.match(handler, /expectedBinding/);
+  assert.match(handler, /invalidatePayloadDraftValidation/);
+  assert.match(handler, /mutateJobs/);
   assert.match(handler, /saveWorkflowPayloadDraftForListingJob/);
   assert.match(handler, /payloadDraftReady/);
   const draftStart = autoListing.indexOf("async function saveWorkflowPayloadDraftForListingJob");
@@ -1633,8 +1640,12 @@ test("manual procurement route keeps seller evidence distinct from official Ozon
   const startAuto = autoListing.indexOf("export async function saveManualProcurementEvidence");
   const endAuto = autoListing.indexOf("export async function saveManualPackageEvidence", startAuto);
   const handler = autoListing.slice(startAuto, endAuto);
-  assert.match(handler, /saveWorkflowPayloadDraftForListingJob/);
-  assert.match(handler, /payloadDraftReady/);
+  assert.match(handler, /saveManualSellerInputs/);
+  const applyStart = autoListing.indexOf("export function applyManualSellerInputsToJob");
+  const applyEnd = autoListing.indexOf("export async function saveManualSellerInputs", applyStart);
+  const apply = autoListing.slice(applyStart, applyEnd);
+  assert.match(apply, /candidateData\.procurementEvidence/);
+  assert.match(apply, /manualSellerInputBindingMatches/);
   assert.doesNotMatch(handler, /ozonRequest\(/);
 });
 
@@ -1651,9 +1662,36 @@ test("manual package route keeps measured dimensions local and blocks Ozon write
   const startAuto = autoListing.indexOf("export async function saveManualPackageEvidence");
   const endAuto = autoListing.indexOf("async function addStep", startAuto);
   const handler = autoListing.slice(startAuto, endAuto);
-  assert.match(handler, /saveWorkflowPayloadDraftForListingJob/);
-  assert.match(handler, /payloadDraftReady/);
+  assert.match(handler, /saveManualSellerInputs/);
+  const applyStart = autoListing.indexOf("export function applyManualSellerInputsToJob");
+  const applyEnd = autoListing.indexOf("export async function saveManualSellerInputs", applyStart);
+  const apply = autoListing.slice(applyStart, applyEnd);
+  assert.match(apply, /manualPackageEvidenceBinding/);
+  assert.match(apply, /skuVariants/);
+  assert.match(apply, /manualEvidenceBinding/);
   assert.doesNotMatch(handler, /ozonRequest\(/);
+});
+
+test("combined seller input route validates and persists procurement plus package atomically", async () => {
+  const [source, autoListing] = await Promise.all([
+    readFile(new URL("../src/server.js", import.meta.url), "utf8"),
+    readFile(new URL("../src/autoListing.js", import.meta.url), "utf8"),
+  ]);
+  assert.match(source, /\/api\/ozon-learning\/auto-list-jobs\/:id\/manual-seller-inputs/);
+  const routeStart = source.indexOf('app.post("/api/ozon-learning/auto-list-jobs/:id/manual-seller-inputs"');
+  const routeEnd = source.indexOf('app.post("/api/ozon-learning/auto-list-jobs/:id/manual-procurement"', routeStart);
+  const route = source.slice(routeStart, routeEnd);
+  assert.match(route, /saveManualSellerInputs/);
+  assert.match(route, /MANUAL_SELLER_INPUT_STALE/);
+  assert.match(route, /原子保存/);
+  assert.doesNotMatch(route, /ozonRequest|completeListing|directOzonWriteRoute/);
+
+  const saveStart = autoListing.indexOf("export async function saveManualSellerInputs");
+  const saveEnd = autoListing.indexOf("export async function saveManualProcurementEvidence", saveStart);
+  const save = autoListing.slice(saveStart, saveEnd);
+  assert.match(save, /mutateJobs/);
+  assert.match(save, /applyManualSellerInputsToJob\(jobs\[idx\], input\)/);
+  assert.match(save, /if \(applied\.changed\) jobs\[idx\] = applied\.job/);
 });
 
 test("media review request only enters waiting-human mode and does not approve or submit", async () => {

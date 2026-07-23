@@ -107,6 +107,7 @@ import {
   createListingWorkflowFrom1688Capture,
   saveManualListingContent,
   saveManualListingCategory,
+  saveManualSellerInputs,
   saveManualProcurementEvidence,
   saveManualPackageEvidence,
   listAutoListingJobs,
@@ -2369,7 +2370,8 @@ app.put("/api/workflows/:id/payload-draft", asyncRoute(async (req, res) => {
 }));
 
 app.post("/api/workflows/:id/payload-draft/validate", asyncRoute(async (req, res) => {
-  res.json(await validatePayloadDraft(req.params.id));
+  const result = await validatePayloadDraft(req.params.id);
+  res.status(result?.reasonCode === "PAYLOAD_DRAFT_STALE" ? 409 : 200).json(result);
 }));
 
 app.post("/api/workflows/:id/payload-draft/attribute-repair", asyncRoute(async (req, res) => {
@@ -2651,7 +2653,13 @@ app.post("/api/ozon-learning/auto-list-jobs/:id/manual-content", asyncRoute(asyn
   if (!await getScopedAutoListingJob(req.params.id, req)) { res.status(404).json({ error: "未找到铺货记录", reasonCode: "AUTO_LISTING_JOB_NOT_FOUND" }); return; }
   const result = await saveManualListingContent(req.params.id, req.body || {});
   if (!result.ok) {
-    const status = result.reasonCode === "AUTO_LISTING_JOB_NOT_FOUND" ? 404 : 400;
+    const status = result.reasonCode === "AUTO_LISTING_JOB_NOT_FOUND"
+      ? 404
+      : result.reasonCode === "MANUAL_SELLER_INPUT_PAYLOAD_REFRESH_FAILED"
+        ? 503
+        : ["MANUAL_SELLER_INPUT_BINDING_REQUIRED", "MANUAL_SELLER_INPUT_STALE", "MANUAL_SELLER_INPUT_WORKFLOW_MISMATCH"].includes(result.reasonCode)
+          ? 409
+          : 400;
     res.status(status).json(result);
     return;
   }
@@ -2665,12 +2673,49 @@ app.post("/api/ozon-learning/auto-list-jobs/:id/manual-category", asyncRoute(asy
   if (!await getScopedAutoListingJob(req.params.id, req)) { res.status(404).json({ error: "未找到铺货记录", reasonCode: "AUTO_LISTING_JOB_NOT_FOUND" }); return; }
   const result = await saveManualListingCategory(req.params.id, req.body || {});
   if (!result.ok) {
-    res.status(result.reasonCode === "AUTO_LISTING_JOB_NOT_FOUND" ? 404 : 400).json(result);
+    const conflictCodes = new Set([
+      "MANUAL_SELLER_INPUT_BINDING_REQUIRED",
+      "MANUAL_SELLER_INPUT_STALE",
+      "MANUAL_SELLER_INPUT_WORKFLOW_MISMATCH",
+    ]);
+    const status = result.reasonCode === "AUTO_LISTING_JOB_NOT_FOUND"
+      ? 404
+      : result.reasonCode === "MANUAL_SELLER_INPUT_PAYLOAD_REFRESH_FAILED"
+        ? 503
+        : conflictCodes.has(result.reasonCode)
+          ? 409
+          : 400;
+    res.status(status).json(result);
     return;
   }
   res.json({
     ...result,
     sideEffect: "仅保存卖家确认的本地类目并更新工作流；未调用 Ozon 写接口、未提交商品。",
+  });
+}));
+
+app.post("/api/ozon-learning/auto-list-jobs/:id/manual-seller-inputs", asyncRoute(async (req, res) => {
+  if (!await getScopedAutoListingJob(req.params.id, req)) { res.status(404).json({ error: "未找到铺货记录", reasonCode: "AUTO_LISTING_JOB_NOT_FOUND" }); return; }
+  const result = await saveManualSellerInputs(req.params.id, req.body || {});
+  if (!result.ok) {
+    const conflictCodes = new Set([
+      "MANUAL_SELLER_INPUT_BINDING_REQUIRED",
+      "MANUAL_SELLER_INPUT_STALE",
+      "MANUAL_SELLER_INPUT_WORKFLOW_MISMATCH",
+    ]);
+    const status = result.reasonCode === "AUTO_LISTING_JOB_NOT_FOUND"
+      ? 404
+      : result.reasonCode === "MANUAL_SELLER_INPUT_PAYLOAD_REFRESH_FAILED"
+        ? 503
+        : conflictCodes.has(result.reasonCode)
+          ? 409
+          : 400;
+    res.status(status).json(result);
+    return;
+  }
+  res.json({
+    ...result,
+    sideEffect: "原子保存当前商品表单中的商品内容（俄文兜底）、采购和包装资料；未调用 Ozon、未调用付费 AI、未提交商品。",
   });
 }));
 

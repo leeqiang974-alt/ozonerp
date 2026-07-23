@@ -70,7 +70,7 @@ test("frontend shell presents the product as seller ERP rather than FBS-only", a
   assert.match(html, /<title>Ozon Seller ERP<\/title>/);
 });
 
-test("listing keeps the seller surface as one-click automatic product completion", async () => {
+test("listing presents one responsive product form with automatic fields and inline seller inputs", async () => {
   const [html, js, css] = await Promise.all([
     readFile(new URL("../public/index.html", import.meta.url), "utf8"),
     readFile(new URL("../public/app.js", import.meta.url), "utf8"),
@@ -79,11 +79,21 @@ test("listing keeps the seller surface as one-click automatic product completion
 
   assert.match(html, /点一次自动处理到预检/);
   assert.match(js, /listing-simple-sheet/);
-  assert.match(js, /listing-auto-field-grid/);
-  assert.match(js, /系统自动填写/);
-  assert.match(js, /自动完成商品资料（含 AI）/);
+  assert.match(js, /listing-product-form/);
+  assert.match(js, /系统已填写的商品资料/);
+  assert.match(js, /需要你补充/);
+  assert.match(js, /自动匹配，不需要你操作/);
+  assert.match(js, /保存并自动完成其余资料/);
   assert.match(js, /data-listing-auto-complete/);
   assert.match(js, /runListingAutoCompletion/);
+  assert.match(js, /saveListingSellerInputsBeforeAutoCompletion/);
+  assert.match(js, /SELLER_INPUT_REQUIRED/);
+  assert.match(js, /preserveSellerInputs/);
+  assert.match(js, /if \(preserveSellerInputs && button\) button\.textContent = originalButtonText/);
+  assert.match(js, /manual-seller-inputs/);
+  assert.match(js, /listingSellerInputSections\.join/);
+  assert.doesNotMatch(js, /autoCompletionAttempted && repairSections\.length/);
+  assert.doesNotMatch(js, /类目证据同步后自动检查/);
   assert.match(js, /listingAutoCompletionInFlight\.has\(jobId\)/);
   assert.match(js, /listingAutoCompletionInFlight\.add\(jobId\)/);
   assert.match(js, /listingAutoCompletionInFlight\.delete\(jobId\)/);
@@ -91,6 +101,17 @@ test("listing keeps the seller surface as one-click automatic product completion
   assert.match(js, /已在调用 AI 前停止/);
   assert.match(js, /if \(!bindingMatches\(\)\)/);
   assert.match(js, /encodeURIComponent\(runId\)\}\/controlled-chain/);
+  const sellerSaveStart = js.indexOf("async function saveListingSellerInputsBeforeAutoCompletion");
+  const sellerSaveEnd = js.indexOf("async function runListingAutoCompletion", sellerSaveStart);
+  const sellerSave = js.slice(sellerSaveStart, sellerSaveEnd);
+  assert.ok(sellerSave.indexOf("payload.content =") < sellerSave.indexOf("/manual-seller-inputs"));
+  assert.ok(sellerSave.indexOf("payload.procurement =") < sellerSave.indexOf("/manual-seller-inputs"));
+  assert.ok(sellerSave.indexOf("payload.package =") < sellerSave.indexOf("/manual-seller-inputs"));
+  assert.equal((sellerSave.match(/await api\(/g) || []).length, 1);
+  const listingSummaryStart = js.indexOf("function renderListingSellerTaskSummary");
+  const listingSummaryEnd = js.indexOf("async function autoSyncListingCategoryEvidence", listingSummaryStart);
+  const listingSummary = js.slice(listingSummaryStart, listingSummaryEnd);
+  assert.doesNotMatch(listingSummary, /data-manual-(?:content|procurement|package)-save/);
   assert.match(js, /if \(!result\.completed \|\| !resultBoundToOriginal\)/);
   assert.match(js, /refreshedDraftHash === refreshedValidatedHash/);
   assert.match(js, /startNode: "content_generate"/);
@@ -104,6 +125,8 @@ test("listing keeps the seller surface as one-click automatic product completion
   assert.doesNotMatch(js, /\$\{escapeHtml\(offerId \|\| parentSku\)\} 首个 Offer/);
   assert.match(js, /listing-technical-details/);
   assert.match(css, /\.listing-simple-sheet/);
+  assert.match(css, /\.listing-product-form/);
+  assert.match(css, /\.listing-form-row/);
   assert.match(css, /\.listing-current-product-gate:not\(\.is-blocked\)/);
 });
 
@@ -3527,6 +3550,7 @@ test("saving a seller category immediately records a local preflight result", as
   assert.ok(start >= 0 && end > start);
   const body = js.slice(start, end);
   assert.match(body, /manual-category/);
+  assert.match(body, /expectedBinding: listingManualEvidenceBinding\(job\)/);
   assert.match(body, /payload-draft\/validate/);
   assert.match(body, /localPreflight/);
   assert.match(body, /不会调用 Seller API 写端点/);
@@ -4202,7 +4226,7 @@ test("listing seller task summary keeps category and required attributes in the 
   assert.match(js, /Ozon 类目/);
   assert.match(js, /必填属性/);
   assert.match(js, /系统尚未找到可靠类目/);
-  assert.match(js, /系统已自动匹配/);
+  assert.match(js, /自动匹配，不需要你操作/);
 });
 
 test("category and required-attribute workbench surfaces stale cache recovery actions", async () => {
@@ -4450,7 +4474,8 @@ test("listing seller summary exposes automatic category recommendation and syncs
   const sync = js.slice(syncStart, syncEnd);
 
   assert.match(summary, /categoryDecision\?\.selected/);
-  assert.match(summary, /系统已自动匹配，并绑定当前店铺类目证据/);
+  assert.match(summary, /自动匹配，不需要你操作/);
+  assert.match(summary, /系统正在后台载入店铺类目数据/);
   assert.match(summary, /系统找到多个接近类目/);
   assert.match(js, /summary\.categoryStatusText/);
   assert.ok(syncStart >= 0 && syncEnd > syncStart);
@@ -4623,18 +4648,16 @@ test("review failures expose a seller-facing local draft repair entry", async ()
   assert.match(js, /保存后必须重新预检/);
 });
 
-test("manual evidence forms save and immediately recheck the local payload", async () => {
+test("manual evidence forms feed one bottom action and do not expose competing save buttons", async () => {
   const js = await readFile(new URL("../public/app.js", import.meta.url), "utf8");
-  assert.match(js, /data-manual-content-save>保存并重新预检/);
-  assert.match(js, /data-manual-procurement-save>保存并重新预检/);
-  assert.match(js, /data-manual-package-save>保存尺重证据并重新预检/);
-  assert.match(js, /async function recheckListingAfterEvidenceSave/);
-  const start = js.indexOf("async function recheckListingAfterEvidenceSave");
-  const end = js.indexOf("function summarizePipelineHistory", start);
+  const start = js.indexOf("function renderListingSellerTaskSummary");
+  const end = js.indexOf("async function autoSyncListingCategoryEvidence", start);
   assert.ok(start >= 0 && end > start);
   const body = js.slice(start, end);
-  assert.match(body, /payload-draft\/validate/);
-  assert.match(body, /不会自动提交|人工确认/);
+  assert.match(body, /data-listing-auto-complete/);
+  assert.match(body, /保存并自动完成其余资料/);
+  assert.doesNotMatch(body, /data-manual-(?:content|procurement|package)-save/);
+  assert.doesNotMatch(body, /保存尺重证据并重新预检|保存并重新预检/);
 });
 
 test("four-store read matrix shows seller store names next to masked evidence", async () => {

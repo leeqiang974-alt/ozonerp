@@ -2,7 +2,7 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
 import { fileURLToPath } from "node:url";
-import { buildProcurementEvidenceSummary, evaluateSourcingCandidate, filterSourcingCandidates, listingDraftStoreMatches, localJudgeMatch, shouldUseAiMatch } from "../src/autoListing.js";
+import { applyManualSellerInputsToJob, buildProcurementEvidenceSummary, evaluateSourcingCandidate, filterSourcingCandidates, listingDraftStoreMatches, localJudgeMatch, shouldUseAiMatch } from "../src/autoListing.js";
 
 test("shouldUseAiMatch limits expensive per-candidate AI matching", () => {
   assert.equal(shouldUseAiMatch(0, 3), true);
@@ -124,4 +124,147 @@ test("procurement summary distinguishes observed, manual review and missing evid
     priceTiers: { values: [{ minQuantity: 2, unitPriceCny: 3 }], source: "manual_seller" },
   } } }).status, "needs_review");
   assert.deepEqual(buildProcurementEvidenceSummary({ parsed: { procurementEvidence: {} } }).missing, ["supplier", "moq", "price_tiers"]);
+});
+
+test("combined seller input validation is all-or-nothing and rejects stale product bindings", () => {
+  const snapshotHash = `sha256:${"a".repeat(64)}`;
+  const job = {
+    id: "job-1",
+    candidateId: "capture-1",
+    storeId: "store-1",
+    workflowRunId: "run-1",
+    candidateData: {
+      sourceEvidence: { snapshotHash },
+      skuVariants: [{ skuId: "sku-1", weightG: 900 }],
+    },
+  };
+  const procurement = {
+    supplierName: "供应商",
+    moq: 2,
+    priceTiers: [{ minQuantity: 2, unitPriceCny: 3 }],
+  };
+  const missingBinding = applyManualSellerInputsToJob(job, { procurement });
+  assert.equal(missingBinding.ok, false);
+  assert.equal(missingBinding.reasonCode, "MANUAL_SELLER_INPUT_BINDING_REQUIRED");
+  const partialBinding = applyManualSellerInputsToJob(job, {
+    expectedBinding: { captureId: "capture-1", storeId: "store-1", sourceSnapshotHash: snapshotHash },
+    procurement,
+  });
+  assert.equal(partialBinding.ok, false);
+  assert.equal(partialBinding.reasonCode, "MANUAL_SELLER_INPUT_BINDING_REQUIRED");
+
+  const invalid = applyManualSellerInputsToJob(job, {
+    expectedBinding: {
+      captureId: "capture-1",
+      storeId: "store-1",
+      sourceSnapshotHash: snapshotHash,
+      workflowRunId: "run-1",
+    },
+    procurement,
+    package: { source: "manual_measurement", weightG: 100, lengthMm: 0, widthMm: 80, heightMm: 20 },
+  });
+  assert.equal(invalid.ok, false);
+  assert.equal(job.candidateData.procurementEvidence, undefined);
+  assert.equal(job.candidateData.skuVariants[0].weightG, 900);
+  assert.equal(job.listingContent, undefined);
+
+  const stale = applyManualSellerInputsToJob(job, {
+    expectedBinding: {
+      captureId: "capture-1",
+      storeId: "store-1",
+      sourceSnapshotHash: `sha256:${"b".repeat(64)}`,
+      workflowRunId: "run-1",
+    },
+    procurement,
+  });
+  assert.equal(stale.ok, false);
+  assert.equal(stale.reasonCode, "MANUAL_SELLER_INPUT_STALE");
+  assert.equal(job.candidateData.procurementEvidence, undefined);
+});
+
+test("combined seller input applies manual content with procurement and package in one job mutation", () => {
+  const snapshotHash = `sha256:${"d".repeat(64)}`;
+  const applied = applyManualSellerInputsToJob({
+    id: "job-content",
+    candidateId: "capture-content",
+    storeId: "store-content",
+    workflowRunId: "run-content",
+    listingContent: {},
+    candidateData: {
+      sourceEvidence: { snapshotHash },
+      skuVariants: [{ skuId: "sku-content" }],
+    },
+  }, {
+    expectedBinding: {
+      captureId: "capture-content",
+      storeId: "store-content",
+      sourceSnapshotHash: snapshotHash,
+      workflowRunId: "run-content",
+    },
+    content: {
+      title_ru: "Брошь мультяшная",
+      description_ru: "Декоративная брошь для одежды и рюкзака.",
+    },
+    procurement: {
+      supplierName: "供应商",
+      moq: 2,
+      priceTiers: [{ minQuantity: 2, unitPriceCny: 3 }],
+    },
+    package: {
+      source: "supplier_package",
+      weightG: 100,
+      lengthMm: 100,
+      widthMm: 80,
+      heightMm: 20,
+    },
+  });
+  assert.equal(applied.ok, true);
+  assert.equal(applied.job.listingContent.title_ru, "Брошь мультяшная");
+  assert.equal(applied.job.listingContent.contentSource, "manual_seller");
+  assert.equal(applied.job.candidateData.procurementEvidence.moq.value, 2);
+  assert.equal(applied.job.candidateData.sizeWeight.weightG, 100);
+});
+
+test("manual package evidence is bound to the current capture and replaces every SKU package value", () => {
+  const snapshotHash = `sha256:${"c".repeat(64)}`;
+  const applied = applyManualSellerInputsToJob({
+    id: "job-2",
+    candidateId: "capture-2",
+    storeId: "store-2",
+    workflowRunId: "run-2",
+    candidateData: {
+      sourceEvidence: { snapshotHash },
+      sizeWeight: { weightG: 900, lengthMm: 900, widthMm: 700, heightMm: 300 },
+      skuVariants: [
+        { skuId: "sku-a", weightG: 900, lengthMm: 900, widthMm: 700, heightMm: 300 },
+        { skuId: "sku-b", weightG: 800, lengthMm: 800, widthMm: 600, heightMm: 200 },
+      ],
+    },
+  }, {
+    expectedBinding: {
+      captureId: "capture-2",
+      storeId: "store-2",
+      sourceSnapshotHash: snapshotHash,
+      workflowRunId: "run-2",
+    },
+    package: {
+      source: "manual_measurement",
+      weightG: 100,
+      lengthMm: 100,
+      widthMm: 80,
+      heightMm: 20,
+    },
+  });
+  assert.equal(applied.ok, true);
+  assert.equal(applied.job.candidateData.sizeWeight.weightG, 100);
+  assert.deepEqual(
+    applied.job.candidateData.skuVariants.map((row) => [row.weightG, row.lengthMm, row.widthMm, row.heightMm]),
+    [[100, 100, 80, 20], [100, 100, 80, 20]],
+  );
+  assert.deepEqual(applied.job.candidateData.sizeWeight.manualEvidenceBinding, {
+    captureId: "capture-2",
+    storeId: "store-2",
+    sourceSnapshotHash: snapshotHash,
+    workflowRunId: "run-2",
+  });
 });

@@ -43,7 +43,7 @@ test("server defaults to loopback hosting and an explicit local CORS allowlist",
   assert.match(source, /CORS_ALLOWED_ORIGINS/);
   assert.match(source, /http:\/\/localhost:/);
   assert.match(source, /http:\/\/127\.0\.0\.1:/);
-  assert.match(source, /if \(!origin\) return callback\(null, true\)/);
+  assert.match(source, /isAllowedCorsOrigin\(\{ origin, host: hostName, allowedOrigins \}\)/);
   assert.match(source, /CORS_ORIGIN_DENIED/);
   assert.match(source, /app\.use\(cors\(corsOptions\)\)/);
   assert.doesNotMatch(source, /Access-Control-Allow-Origin", "\*"/);

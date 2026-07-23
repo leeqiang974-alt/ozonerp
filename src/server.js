@@ -13,6 +13,7 @@ import { calculateOzonPrice, RMB_SHIPPING_LEVELS } from "./pricing.js";
 import { buildActivityReadSellerResult, buildPromotionImpactPreview } from "./activityReadModel.js";
 import { buildFinanceDomainReadModel } from "./financeReadModel.js";
 import { fetch1688Html, normalizeManualCapturePayload, parse1688Product } from "./collector1688.js";
+import { isAllowedCorsOrigin } from "./corsPolicy.js";
 import { parsePddProduct } from "./collectorPdd.js";
 import {
   addCollectionItem,
@@ -256,7 +257,7 @@ const fbsEvidenceReceipts = new FbsEvidenceReceiptRepository({
   file: process.env.FBS_EVIDENCE_RECEIPTS_FILE || path.resolve("data", "fbs-evidence-receipts.json"),
 });
 
-function buildCorsOptions({ portNumber = port, configuredOrigins = process.env.CORS_ALLOWED_ORIGINS || "" } = {}) {
+function buildCorsOptions({ portNumber = port, hostName = host, configuredOrigins = process.env.CORS_ALLOWED_ORIGINS || "" } = {}) {
   const allowedOrigins = new Set([
     `http://localhost:${portNumber}`,
     `http://127.0.0.1:${portNumber}`,
@@ -269,8 +270,7 @@ function buildCorsOptions({ portNumber = port, configuredOrigins = process.env.C
     // pass the browser preflight before the server validates the session.
     allowedHeaders: ["Content-Type", "Authorization", "Idempotency-Key", "X-Ozon-ERP-Admin", "X-Ozon-ERP-Read-Environment"],
     origin(origin, callback) {
-      if (!origin) return callback(null, true);
-      if (allowedOrigins.has(origin)) return callback(null, true);
+      if (isAllowedCorsOrigin({ origin, host: hostName, allowedOrigins })) return callback(null, true);
       const error = new Error(`CORS origin denied: ${origin}`);
       error.status = 403;
       error.code = "CORS_ORIGIN_DENIED";

@@ -1,6 +1,12 @@
 # Ozon ERP 产品与交付路线图
 
-> 当前派工以 `docs/TOP-LEVEL-DEVELOPMENT-PLAN.zh-CN.md` 为准。本文件记录已交付内容和验证等级，不再从历史条目反向领取开发任务。G1-S1、G1-S2 已完成；当前唯一切片：G1-S3 首个真实 1688 商品回放；G4 MVP 通过前冻结 FBS、活动、财务和售后扩建。
+> 当前派工以 `docs/TOP-LEVEL-DEVELOPMENT-PLAN.zh-CN.md` 为准。本文件记录已交付内容和验证等级，不再从历史条目反向领取开发任务。G1 已完成；当前唯一切片：G2-S1 真实采集商品生成唯一草稿骨架；G4 MVP 通过前冻结 FBS、活动、财务和售后扩建。
+
+> 2026-07-23 G1-S3 首个真实 1688 商品回放完成：Chrome 扩展成功采集真实 Offer `992997159052` 到店铺 `3815760-4`，复用持久化 ID `c178476424685142rv6`；回执包含 18 个 SKU、28 张图片、19 个属性和 `ok` 快照，同店同 Offer 仍只有 1 条记录，界面明确返回“已采集过”，重复导入去重成立。供应商身份及采购 MOQ/阶梯价保持 `needs_review` 并给出补齐后重采动作，未伪造可信证据。全量 `npm test` 1247/1247、lint 76 files、runtime smoke 和 offline acceptance 通过；`networkAccessed=false`、`databaseObserved=false`、`writesExecuted=false`。G1 验证等级升级为真实扩展采集已验证；当前唯一入口转为 G2-S1 唯一本地草稿骨架。
+
+> 2026-07-23 G1-S3 扩展来源白名单修复：真实插件请求已从消息传输层推进到 ERP，并以 `CORS_ORIGIN_DENIED` 精确暴露服务端遗漏 `chrome-extension://<id>` 来源。新增独立 CORS 策略：仅当 ERP 绑定 `127.0.0.1/localhost/::1` 时允许格式合法的 32 位 Chrome 扩展来源；外部绑定、畸形扩展 ID 与普通网站来源继续拒绝，显式部署白名单保持不变。定向 CORS/扩展/服务端 170/170，全量 `npm test` `1247/1247`、lint 76 files 通过；重启本地 ERP 后，真实 HTTP 预检返回 204 且回显扩展 Origin，健康接口返回 200。验证等级 `locally_tested`；浏览器自动控制点击被 1688 页面长任务拖至超时，页面仍保留上一次错误文案，尚需用户在已打开页面手动点击一次并完成重复导入，G1-S3 仍未完成。
+
+> 2026-07-23 G1-S3 真实采集传输阻断修复：真实 1688 页面 `992997159052` 的直接本地回放 HTTP 200，证明 ERP 采集端点可用；插件的通用 `Internal server error` 定位为整页 HTML 叠加 SKU/媒体数据经过 `chrome.runtime.sendMessage` 时在 ERP 请求发出前失败。两套详情扩展改为传递绑定最终标题、SKU、图片、属性和尺重的紧凑可回放快照，并在 SKU 筛选/手动尺重后重建；同时清理“阿里巴巴/1688”标题后缀。定向 40/40、全量 `npm test` `1243/1243`、lint 75 files 通过；真实中文标题本地 API 回放 200。验证等级 `locally_tested`；尚需用户重新加载扩展后完成一次真实插件采集与重复导入，G1-S3 仍未完成。
 
 > 2026-07-22 G1-S2 采集导入入口收口：两个 1688 采集弹窗在成功或重复采集后自动打开带 `captureId` 的 ERP 当前商品页，保留手动重开链接；详情扩展把 `collectionId` 与脱敏 `captureReceipt` 回传给弹窗。当前商品页继续显示来源身份、快照、SKU/采购/媒体覆盖、尺重与阻断动作，不生成或提交 Ozon 草稿。定向扩展/前端测试、全量 `npm test` `1240/1240`、lint 75 files、offline acceptance 通过；未联网、未连接数据库、未执行 Ozon 写入。验证等级 `locally_tested`；下一步只做首个真实 1688 商品回放。
 

@@ -155,27 +155,70 @@ async function collectPage(options = {}) {
   const contextData = await getContextData();
   const packageInfo = pickPackageInfo(contextData);
   const skuVariants = pickSkuVariants(contextData, packageInfo.skuPackageMap || {});
-  const title = pickTitle(contextData);
+  const title = normalizeCaptureTitle(pickTitle(contextData));
   const images = pickImages(contextData);
   const attributes = pickAttributes(contextData);
-
-  return {
-    contractVersion: "manual_capture_v1",
-    url: location.href,
-    offerId: pickOfferId(contextData),
+  const captureData = {
     title,
     supplier: pickSupplier(contextData),
     description: pickDescription(contextData),
-    html: document.documentElement.outerHTML,
     images,
     detailImages: [],
     video: options.includeVideo === false ? null : pickVideo(contextData),
     attributes,
     skuVariants,
     packageInfo,
+  };
+
+  return {
+    contractVersion: "manual_capture_v1",
+    taskId: String(options.taskId || "").trim(),
+    url: location.href,
+    offerId: pickOfferId(contextData),
+    ...captureData,
+    html: buildCompactCaptureHtml(captureData),
+    sourceHtmlBytes: document.documentElement.outerHTML.length,
     storeId: options.storeId || "",
     includeVideo: options.includeVideo !== false,
+    collectedAt: new Date().toISOString(),
     sentAt: new Date().toISOString(),
+    captureMode: options.captureMode || "extension_browser",
+  };
+}
+
+function normalizeCaptureTitle(value) {
+  return cleanText(value).replace(/\s*[-–—]\s*(?:阿里巴巴|1688).*$/i, "");
+}
+
+function buildCompactCaptureHtml(captureData = {}) {
+  const snapshot = {
+    contractVersion: "manual_capture_v1",
+    source: "1688",
+    url: location.href,
+    offerId: String(location.pathname.match(/\/offer\/(\d+)/)?.[1] || ""),
+    capturedAt: new Date().toISOString(),
+    ...captureData,
+  };
+  const json = JSON.stringify(snapshot).replace(/</g, "\\u003c");
+  const title = String(snapshot.title || "")
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;");
+  return `<html><head><title>${title}</title></head><body><script type="application/json" data-ozon-erp-capture>${json}</script></body></html>`;
+}
+
+function captureDataForSnapshot(payload = {}) {
+  return {
+    title: payload.title || "",
+    supplier: payload.supplier || "",
+    description: payload.description || "",
+    images: Array.isArray(payload.images) ? payload.images : [],
+    detailImages: Array.isArray(payload.detailImages) ? payload.detailImages : [],
+    video: payload.video || null,
+    attributes: Array.isArray(payload.attributes) ? payload.attributes : [],
+    skuVariants: Array.isArray(payload.skuVariants) ? payload.skuVariants : [],
+    packageInfo: payload.packageInfo && typeof payload.packageInfo === "object" ? payload.packageInfo : {},
   };
 }
 
@@ -389,11 +432,28 @@ function mountFloatingCollector() {
     renderSkuSelector(panel, payload.skuVariants || []);
   }).catch(() => {});
   loadStoreOptions(panel.querySelector("#ozon-erp-1688-store"), panel.querySelector("#ozon-erp-1688-status"));
+  const manualSizeInputs = ["#ozon-erp-weight", "#ozon-erp-length", "#ozon-erp-width", "#ozon-erp-height"]
+    .map((selector) => panel.querySelector(selector))
+    .filter(Boolean);
+  manualSizeInputs.forEach((input) => input.addEventListener("input", () => {
+    const values = manualSizeInputs.map((field) => toNumber(field.value));
+    const status = panel.querySelector("#ozon-erp-1688-status");
+    const button = panel.querySelector("#ozon-erp-1688-collect");
+    if (values.every((value) => value > 0) && !button.disabled) {
+      const previousLabel = button.textContent || "";
+      button.textContent = "采集到 ERP";
+      if (previousLabel === "补齐后入箱" || /Internal server error|补齐/.test(status.textContent || "")) {
+        status.textContent = "尺重已补齐，可重新入箱";
+        status.style.color = "#667085";
+      }
+    }
+  }));
   panel.querySelector("#ozon-erp-1688-collect").addEventListener("click", async () => {
     const button = panel.querySelector("#ozon-erp-1688-collect");
     const status = panel.querySelector("#ozon-erp-1688-status");
     const sizeBox = panel.querySelector("#ozon-erp-1688-size-box");
     button.disabled = true;
+    button.textContent = "采集中...";
     status.textContent = "采集中...";
     try {
       const payload = await collectPage({
@@ -403,6 +463,7 @@ function mountFloatingCollector() {
       payload.skuVariants = filterSelectedSkus(payload.skuVariants || []);
       const manualPackageInfo = readManualPackageInfo(panel);
       if (manualPackageInfo) applyManualPackageInfo(payload, manualPackageInfo, panel.querySelector("#ozon-erp-apply-all-sku").checked);
+      payload.html = buildCompactCaptureHtml(captureDataForSnapshot(payload));
       const sizeWeightStatus = productSizeWeightStatus(payload);
       if (!sizeWeightStatus.ok) {
         prefillManualPackageInfo(panel, payload.packageInfo || {});
@@ -438,6 +499,7 @@ function mountFloatingCollector() {
     } catch (error) {
       status.textContent = error.message || "失败";
       status.style.color = "#b42318";
+      button.textContent = "重试采集";
     } finally {
       button.disabled = false;
     }

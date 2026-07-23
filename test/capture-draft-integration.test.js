@@ -65,6 +65,7 @@ function runIsolatedCaptureWorkflowContract(tempDir, operations, { parallel = fa
       return createListingWorkflowFrom1688Capture(operation.id, {
         storeId: operation.storeId || "",
         captureReview: operation.captureReview || {},
+        categoryEvidenceEnvironmentRefHash: operation.categoryEvidenceEnvironmentRefHash || "",
       });
     };
     const operations = ${JSON.stringify(operations)};
@@ -259,6 +260,148 @@ test("capture workflow persists one seller-facing draft skeleton with unique sou
   assert.ok(first.draftSkeleton.blockers.some((entry) => entry.reasonCode === "DRAFT_RUSSIAN_CONTENT_REQUIRED"));
   assert.ok(first.draftSkeleton.blockers.some((entry) => entry.reasonCode === "DRAFT_CATEGORY_REQUIRED"));
   assert.match(first.draftSkeleton.sideEffect, /不会调用 Ozon/);
+});
+
+test("capture workflow auto-binds a unique high-confidence category from current-store evidence", async () => {
+  const tempDir = await fs.mkdtemp(path.join(os.tmpdir(), "ozonerp-capture-auto-category-"));
+  const hash = `sha256:${"6".repeat(64)}`;
+  const item = candidate("capture-auto-category", hash, "992997159052", "store-fixture");
+  item.parsed.captureReview = { status: "approved", humanConfirmed: true, reviewedSnapshotHash: hash };
+  item.parsed.title = "小精灵卡通胸针徽章服装背包饰品配饰别针跨境外贸热销合金胸章";
+  item.parsed.attributes = [
+    { name: "材质", value: "锌合金" },
+    { name: "处理工艺", value: "烤漆" },
+    { name: "商品类型", value: "饰品" },
+  ];
+  item.parsed.skuVariants = [{ skuId: "pin-1", spec: "卡通款", price: 2.3 }];
+  const environmentRefHash = `sha256:${"4".repeat(64)}`;
+  const attributeUpdatedAt = new Date().toISOString();
+  await fs.mkdir(path.join(tempDir, "data"), { recursive: true });
+  await fs.writeFile(path.join(tempDir, "data", "1688-collection-box.json"), JSON.stringify({ items: [{
+    id: item.id, storeId: item.storeId, parsed: item.parsed,
+  }] }, null, 2));
+  await fs.writeFile(path.join(tempDir, "data", "ozon-category-cache.json"), JSON.stringify({
+    updatedAt: new Date().toISOString(),
+    storeId: "store-fixture",
+    flat: [
+      { description_category_id: 17027906, type_id: 970959847, path: "住宅和花园 / 装饰和房间内饰 / 室内装饰品", name: "室内装饰品" },
+      { description_category_id: 17027899, type_id: 93762, path: "小百货和配饰 / 服装首饰 / 徽章", name: "徽章" },
+      { description_category_id: 17027899, type_id: 87458886, path: "小百货和配饰 / 服装首饰 / 胸针", name: "胸针" },
+    ],
+    categoryReadEvidence: {
+      tree: { storeId: "store-fixture", environmentRefHash, observedAt: new Date().toISOString() },
+      attributes: {
+        "17027899:87458886": {
+          storeId: "store-fixture",
+          cacheKey: "17027899:87458886",
+          environmentRefHash,
+          observedAt: attributeUpdatedAt,
+        },
+      },
+      attributeValues: {},
+    },
+    attributeUpdatedAt: { "17027899:87458886": attributeUpdatedAt },
+  }, null, 2));
+
+  const output = await runIsolatedCaptureWorkflowContract(tempDir, [{
+    id: item.id,
+    storeId: item.storeId,
+    categoryEvidenceEnvironmentRefHash: environmentRefHash,
+  }]);
+  const result = output.results[0];
+
+  assert.equal(result.ok, true);
+  assert.equal(result.job.autoCategory.type_id, 87458886);
+  assert.equal(result.draftSkeleton.categoryDecision.status, "auto_matched");
+  assert.equal(result.draftSkeleton.categoryDecision.evidenceReady, true);
+  assert.equal(result.draftSkeleton.categoryDecision.attributeEvidenceReady, true);
+  assert.equal(result.draftSkeleton.categoryDecision.selected.path, "小百货和配饰 / 服装首饰 / 胸针");
+  assert.equal(result.draftSkeleton.blockers.some((entry) => entry.reasonCode.startsWith("DRAFT_CATEGORY_")), false);
+});
+
+test("automatic category reruns never overwrite an existing seller category selection", async () => {
+  const tempDir = await fs.mkdtemp(path.join(os.tmpdir(), "ozonerp-capture-manual-category-wins-"));
+  const hash = `sha256:${"5".repeat(64)}`;
+  const item = candidate("capture-manual-category", hash, "992997159052", "store-fixture");
+  item.parsed.captureReview = { status: "approved", humanConfirmed: true, reviewedSnapshotHash: hash };
+  item.parsed.title = "小精灵卡通胸针徽章服装背包饰品配饰别针";
+  item.parsed.attributes = [{ name: "商品类型", value: "饰品" }];
+  item.parsed.skuVariants = [{ skuId: "pin-manual", spec: "卡通款", price: 2.3 }];
+  await fs.mkdir(path.join(tempDir, "data"), { recursive: true });
+  await fs.writeFile(path.join(tempDir, "data", "1688-collection-box.json"), JSON.stringify({ items: [{
+    id: item.id, storeId: item.storeId, parsed: item.parsed,
+  }] }, null, 2));
+  await fs.writeFile(path.join(tempDir, "data", "ozon-category-cache.json"), JSON.stringify({
+    updatedAt: new Date().toISOString(),
+    storeId: "store-fixture",
+    flat: [
+      { description_category_id: 17027899, type_id: 93762, path: "小百货和配饰 / 服装首饰 / 徽章", name: "徽章" },
+      { description_category_id: 17027899, type_id: 87458886, path: "小百货和配饰 / 服装首饰 / 胸针", name: "胸针" },
+    ],
+    categoryReadEvidence: {
+      tree: { storeId: "store-fixture", observedAt: new Date().toISOString() },
+      attributes: {},
+      attributeValues: {},
+    },
+  }, null, 2));
+
+  await runIsolatedCaptureWorkflowContract(tempDir, [{ id: item.id, storeId: item.storeId }]);
+  const jobsPath = path.join(tempDir, "data", "auto-listing-jobs.json");
+  const jobs = JSON.parse(await fs.readFile(jobsPath, "utf8"));
+  jobs.items[0].manualCategory = {
+    description_category_id: 17027899,
+    type_id: 93762,
+    path: "小百货和配饰 / 服装首饰 / 徽章",
+    name: "徽章",
+  };
+  await fs.writeFile(jobsPath, JSON.stringify(jobs, null, 2));
+
+  const output = await runIsolatedCaptureWorkflowContract(tempDir, [{ id: item.id, storeId: item.storeId }]);
+  const result = output.results[0];
+
+  assert.equal(result.job.manualCategory.type_id, 93762);
+  assert.equal(result.job.categoryDecision, null);
+  assert.equal(result.draftSkeleton.categoryDecision, null);
+  assert.equal(result.draftSkeleton.blockers.some((entry) => entry.reasonCode.startsWith("DRAFT_CATEGORY_")), false);
+});
+
+test("a later ambiguous snapshot clears the previous automatic category", async () => {
+  const tempDir = await fs.mkdtemp(path.join(os.tmpdir(), "ozonerp-capture-auto-category-cleared-"));
+  const firstHash = `sha256:${"3".repeat(64)}`;
+  const secondHash = `sha256:${"2".repeat(64)}`;
+  const item = candidate("capture-auto-category-cleared", firstHash, "992997159052", "store-fixture");
+  item.parsed.captureReview = { status: "approved", humanConfirmed: true, reviewedSnapshotHash: firstHash };
+  item.parsed.title = "卡通胸针服装配饰";
+  item.parsed.skuVariants = [{ skuId: "pin-clear", spec: "标准款", price: 2.3 }];
+  await fs.mkdir(path.join(tempDir, "data"), { recursive: true });
+  await fs.writeFile(path.join(tempDir, "data", "1688-collection-box.json"), JSON.stringify({ items: [{
+    id: item.id, storeId: item.storeId, parsed: item.parsed,
+  }] }, null, 2));
+  await fs.writeFile(path.join(tempDir, "data", "ozon-category-cache.json"), JSON.stringify({
+    updatedAt: new Date().toISOString(),
+    storeId: "foreign-store",
+    flat: [
+      { description_category_id: 17027906, type_id: 970959847, path: "住宅和花园 / 装饰和房间内饰 / 室内装饰品", name: "室内装饰品" },
+      { description_category_id: 17027899, type_id: 93762, path: "小百货和配饰 / 服装首饰 / 徽章", name: "徽章" },
+      { description_category_id: 17027899, type_id: 87458886, path: "小百货和配饰 / 服装首饰 / 胸针", name: "胸针" },
+    ],
+  }, null, 2));
+  const first = await runIsolatedCaptureWorkflowContract(tempDir, [{ id: item.id, storeId: item.storeId }]);
+  assert.equal(first.results[0].job.autoCategory.type_id, 87458886);
+
+  const replacement = structuredClone(item.parsed);
+  replacement.title = "卡通饰品礼物";
+  replacement.sourceEvidence.snapshotHash = secondHash;
+  replacement.captureReview = { status: "approved", humanConfirmed: true, reviewedSnapshotHash: secondHash };
+  const second = await runIsolatedCaptureWorkflowContract(tempDir, [{
+    id: item.id,
+    storeId: item.storeId,
+    replaceParsed: replacement,
+  }]);
+
+  assert.equal(second.results[0].job.autoCategory, null);
+  assert.equal(second.results[0].draftSkeleton.categoryDecision.status, "ambiguous");
+  assert.ok(second.results[0].draftSkeleton.blockers.some((entry) => entry.reasonCode === "DRAFT_CATEGORY_AMBIGUOUS"));
 });
 
 test("concurrent capture handoffs reuse one job and one workflow", async () => {

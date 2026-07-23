@@ -12,7 +12,13 @@ import { getStore } from "./config.js";
 import { ozonRequest } from "./ozon.js";
 import { nextParentSku } from "./skuSequence.js";
 import { recordListingExperience } from "./learningMemory.js";
-import { attributeValueCacheKey, flattenCategories, loadCategoryCache, matchCategory } from "./ozonCategoryCache.js";
+import {
+  attributeValueCacheKey,
+  flattenCategories,
+  inspectCategoryCacheFreshness,
+  loadCategoryCache,
+  matchCategory,
+} from "./ozonCategoryCache.js";
 import {
   buildRequiredAttributeManualBacklog,
   buildRequiredAttributeFillPlan,
@@ -2287,13 +2293,14 @@ async function saveWorkflowPayloadDraftForListingJob(job = {}) {
     skuVariants: job.candidateData?.skuVariants || [],
   };
   const sourceIs1688 = String(job.source || job.candidateData?.source || "").toLowerCase() === "1688";
-  const savedCategory = job.manualCategory || job.categorySelection || job.candidateData?.categorySelection || null;
+  const savedCategory = job.manualCategory || job.autoCategory || job.categorySelection || job.candidateData?.categorySelection || null;
   const savedCategoryIdsValid = Boolean(savedCategory && (savedCategory.description_category_id || savedCategory.descriptionCategoryId) && (savedCategory.type_id || savedCategory.typeId));
   const cache = await loadCategoryCache();
   const flatCategories = cache.flat || flattenCategories(cache.tree || []);
-  // A seller-confirmed category is a business decision, not just UI metadata.
-  // Re-resolve it against the current local dictionary before building the
-  // payload; never silently replace it with a different auto-match.
+  // A seller-confirmed or high-confidence automatic category is a business
+  // decision, not just UI metadata. Re-resolve it against the current local
+  // dictionary before building the payload; never silently replace it with a
+  // different match. Submission evidence remains enforced separately.
   const manualCategoryMatch = savedCategoryIdsValid ? findCachedManualCategory({ flat: flatCategories }, savedCategory) : null;
   if (savedCategoryIdsValid && !manualCategoryMatch) {
     throw new Error("卖家确认的 Ozon 类目不在当前类目缓存中，请刷新类目后重新确认");
@@ -2443,8 +2450,24 @@ export function buildCaptureDraftSkeleton({ captureId = "", candidate = {}, job 
   if (!String(job.listingContent?.title_ru || "").trim() || !String(job.listingContent?.description_ru || "").trim()) {
     blockers.push(captureDraftBlocker("DRAFT_RUSSIAN_CONTENT_REQUIRED", "俄文标题和描述待生成或确认", "进入上架草稿补齐俄文标题和描述"));
   }
-  if (!Number(job.manualCategory?.description_category_id || 0) || !Number(job.manualCategory?.type_id || 0)) {
-    blockers.push(captureDraftBlocker("DRAFT_CATEGORY_REQUIRED", "Ozon 类目与类型待确认", "在当前店铺真实类目证据可用后选择类目和类型"));
+  const categoryDecision = job.categoryDecision || null;
+  const manualCategory = job.manualCategory || null;
+  const manualCategoryReady = Number(manualCategory?.description_category_id || 0) > 0 && Number(manualCategory?.type_id || 0) > 0;
+  const categorySelected = manualCategoryReady ? manualCategory : (categoryDecision?.selected || job.autoCategory || null);
+  const categoryIdsReady = Number(categorySelected?.description_category_id || 0) > 0 && Number(categorySelected?.type_id || 0) > 0;
+  if (!categoryIdsReady) {
+    const ambiguous = categoryDecision?.status === "ambiguous";
+    blockers.push(captureDraftBlocker(
+      ambiguous ? "DRAFT_CATEGORY_AMBIGUOUS" : "DRAFT_CATEGORY_REQUIRED",
+      ambiguous ? "Ozon 类目存在多个接近候选" : "尚未匹配到可靠的 Ozon 类目",
+      ambiguous ? "只需在系统给出的少量候选中确认一个" : "系统继续根据商品核心类型匹配类目",
+    ));
+  } else if (!manualCategoryReady && categoryDecision?.evidenceReady !== true) {
+    blockers.push(captureDraftBlocker(
+      "DRAFT_CATEGORY_EVIDENCE_REQUIRED",
+      `已自动匹配「${categorySelected.name || categorySelected.path || "Ozon 类目"}」，当前店铺类目证据待同步`,
+      "系统同步当前店铺类目和必填属性后自动继续",
+    ));
   }
   return {
     status: blockers.length ? "needs_review" : "draft_ready",
@@ -2461,13 +2484,68 @@ export function buildCaptureDraftSkeleton({ captureId = "", candidate = {}, job 
     sourceSkuIds,
     imageCount: Array.isArray(candidate.images) ? candidate.images.length : 0,
     attributeCount: Array.isArray(candidate.attributes) ? candidate.attributes.length : 0,
+    categoryDecision,
     blockers,
     nextAction: blockers[0]?.nextAction || "打开本地草稿检查自动带入字段并准备预检",
     sideEffect: "仅创建并复用本地草稿骨架；不会调用 Ozon、不会生成付费内容、不会提交商品。",
   };
 }
 
-export async function createListingWorkflowFrom1688Capture(captureId, { parsed = {}, storeId = "", captureReview = {} } = {}) {
+export async function categoryDecisionForCaptureDraft(candidate = {}, storeId = "", expectedEnvironmentRefHash = "") {
+  const cache = await loadCategoryCache();
+  const flat = cache.flat || flattenCategories(cache.tree || []);
+  const matches = matchCategory({
+    title: candidate.title || "",
+    url: candidate.url || candidate.sourceEvidence?.canonicalUrl || "",
+    attributes: candidate.attributes || [],
+    skuVariants: candidate.skuVariants || [],
+  }, flat, 3);
+  const selected = matches[0]?.autoSelectable ? matches[0] : null;
+  const freshness = inspectCategoryCacheFreshness(cache);
+  const sameStore = Boolean(String(storeId || "").trim() && String(cache.storeId || "").trim() === String(storeId || "").trim());
+  const categoryKey = selected ? categoryAttributeCacheKey(selected) : "";
+  const treeEvidence = cache.categoryReadEvidence?.tree || null;
+  const attributeEvidence = categoryKey ? cache.categoryReadEvidence?.attributes?.[categoryKey] || null : null;
+  const attributeFreshness = inspectCategoryCacheFreshness({ updatedAt: categoryKey ? cache.attributeUpdatedAt?.[categoryKey] || "" : "" });
+  const environmentRefHash = String(expectedEnvironmentRefHash || "").trim();
+  const treeEvidenceReady = Boolean(
+    treeEvidence
+    && String(treeEvidence.storeId || "").trim() === String(storeId || "").trim()
+    && environmentRefHash
+    && String(treeEvidence.environmentRefHash || "").trim() === environmentRefHash,
+  );
+  const attributeEvidenceReady = Boolean(
+    attributeEvidence
+    && String(attributeEvidence.storeId || "").trim() === String(storeId || "").trim()
+    && String(attributeEvidence.cacheKey || "").trim() === categoryKey
+    && String(attributeEvidence.environmentRefHash || "").trim() === environmentRefHash
+    && attributeFreshness.usable,
+  );
+  const evidenceReady = Boolean(selected && sameStore && freshness.usable && treeEvidenceReady && attributeEvidenceReady);
+  return {
+    status: selected ? (evidenceReady ? "auto_matched" : "auto_matched_evidence_pending") : (matches.length ? "ambiguous" : "unmatched"),
+    selected,
+    candidates: matches,
+    evidenceReady,
+    cacheStoreId: String(cache.storeId || ""),
+    storeId: String(storeId || ""),
+    cacheUpdatedAt: String(cache.updatedAt || ""),
+    cacheFreshness: freshness.status,
+    treeEvidenceReady,
+    attributeEvidenceReady,
+    environmentRefHash,
+    reason: selected
+      ? (evidenceReady ? "核心商品词唯一且当前店铺类目缓存可用" : "核心商品词已匹配，仍需同步当前店铺类目证据")
+      : (matches.length ? "候选分数接近，不能安全盲选" : "本地类目库没有可靠候选"),
+  };
+}
+
+export async function createListingWorkflowFrom1688Capture(captureId, {
+  parsed = {},
+  storeId = "",
+  captureReview = {},
+  categoryEvidenceEnvironmentRefHash = "",
+} = {}) {
   const id = String(captureId || "").trim();
   const item = await getCollectionItem(id, { storeId: String(storeId || "").trim() });
   if (!item) return { ok: false, reasonCode: "CAPTURE_NOT_FOUND", error: "没有找到采集箱商品" };
@@ -2552,6 +2630,13 @@ export async function createListingWorkflowFrom1688Capture(captureId, { parsed =
     job = await getAutoListingJob(job.id) || job;
   }
   if (snapshotConflict) return snapshotConflict;
+  const manualCategoryReady = Number(job.manualCategory?.description_category_id || 0) > 0 && Number(job.manualCategory?.type_id || 0) > 0;
+  const categoryDecision = manualCategoryReady
+    ? null
+    : await categoryDecisionForCaptureDraft(job.candidateData || candidate, effectiveStoreId, categoryEvidenceEnvironmentRefHash);
+  const autoCategory = manualCategoryReady ? null : (categoryDecision.selected || null);
+  await updateJob(job.id, { categoryDecision, autoCategory });
+  job = await getAutoListingJob(job.id) || { ...job, categoryDecision, ...(autoCategory ? { autoCategory } : {}) };
   const workflowRun = await findOrCreateWorkflowForAutoListingJob(job).catch(() => null);
   const draftSkeleton = buildCaptureDraftSkeleton({ captureId: id, candidate: job.candidateData || candidate, job, workflowRunId: workflowRun?.id || "" });
   await updateJob(job.id, { workflowRunId: workflowRun?.id || "", draftSkeleton });

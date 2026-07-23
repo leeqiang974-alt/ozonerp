@@ -4164,7 +4164,8 @@ test("listing seller task summary keeps category and required attributes in the 
   assert.match(js, /const attributeText/);
   assert.match(js, /Ozon 类目/);
   assert.match(js, /必填属性/);
-  assert.match(js, /尚未确认 Ozon 类目/);
+  assert.match(js, /系统尚未找到可靠类目/);
+  assert.match(js, /系统已自动匹配/);
 });
 
 test("category and required-attribute workbench surfaces stale cache recovery actions", async () => {
@@ -4400,6 +4401,30 @@ test("listing seller summary routes a known media blocker before package or pric
   assert.ok(body.indexOf("mediaBlocked") < body.indexOf("!packageReady"));
   assert.ok(body.indexOf("mediaBlocked") < body.indexOf("pricingBlocked"));
   assert.match(js, /mediaIssues,\n    skuCount/);
+});
+
+test("listing seller summary exposes automatic category recommendation and syncs current-store evidence without a manual search", async () => {
+  const js = await readFile(new URL("../public/app.js", import.meta.url), "utf8");
+  const summaryStart = js.indexOf("function listingSellerTaskSummaryModel");
+  const summaryEnd = js.indexOf("function mediaSellerRiskItems", summaryStart);
+  const summary = js.slice(summaryStart, summaryEnd);
+  const syncStart = js.indexOf("async function autoSyncListingCategoryEvidence");
+  const syncEnd = js.indexOf("function renderListingSellerContentEvidence", syncStart);
+  const sync = js.slice(syncStart, syncEnd);
+
+  assert.match(summary, /categoryDecision\?\.selected/);
+  assert.match(summary, /系统已自动匹配，并绑定当前店铺类目证据/);
+  assert.match(summary, /系统找到多个接近类目/);
+  assert.match(js, /summary\.categoryStatusText/);
+  assert.ok(syncStart >= 0 && syncEnd > syncStart);
+  assert.match(sync, /auto_matched_evidence_pending/);
+  assert.match(sync, /\/api\/ozon\/category-cache\/refresh/);
+  assert.match(sync, /\/api\/ozon\/description-attributes/);
+  assert.match(sync, /description_category_id: decision\.selected\.description_category_id/);
+  assert.match(sync, /\/api\/1688\/captures\/\$\{encodeURIComponent\(captureId\)\}\/workflow/);
+  assert.match(sync, /categoryAutoSyncKeys/);
+  assert.match(sync, /categoryAutoSyncRetryAt/);
+  assert.match(sync, /5 \* 60 \* 1000/);
 });
 
 test("preflight success is labeled as not submitted until the submit reservation exists", async () => {

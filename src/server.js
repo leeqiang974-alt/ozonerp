@@ -1953,6 +1953,7 @@ app.post("/api/1688/captures/:id/workflow", asyncRoute(async (req, res) => {
     // The browser cannot assert approval in the request body. The only
     // accepted review is the hash-bound receipt persisted by /review.
     captureReview: item.captureReview || {},
+    categoryEvidenceEnvironmentRefHash: req.body?.environment ? scopeHash(String(req.body.environment).trim()) : "",
   });
   if (!result.ok) {
     res.status(400).json(result);
@@ -1980,6 +1981,7 @@ app.post("/api/1688/captures/:id/preflight", asyncRoute(async (req, res) => {
     parsed: item.parsed || {},
     storeId: String(item.storeId || storeId || ""),
     captureReview: item.captureReview || {},
+    categoryEvidenceEnvironmentRefHash: req.body?.environment ? scopeHash(String(req.body.environment).trim()) : "",
   });
   if (!binding.ok || !binding.workflowRunId) {
     res.status(400).json({ ...binding, sideEffect: "仅尝试绑定本地商品工作流；未调用 Ozon、未提交写入。" });

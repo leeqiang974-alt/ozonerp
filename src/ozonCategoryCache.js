@@ -166,7 +166,7 @@ export function matchCategory(product, flatCategories, limit = 8) {
   const titleCore = inferTitleCore(titleText);
   const tokens = buildProductTokens(text);
 
-  return (flatCategories || [])
+  const ranked = (flatCategories || [])
     .filter((item) => !item.disabled)
     .map((item) => {
       const categoryText = normalizeText(`${item.path} ${item.name}`);
@@ -237,11 +237,29 @@ export function matchCategory(product, flatCategories, limit = 8) {
       if (titleCore.kind === "water_bottle" && /成人用品|汽车|建筑|文具|烘焙|宠物|服装|鞋|箱包/.test(item.path)) score -= 80;
       if (titleCore.kind === "stationery_sharpener" && item.path === "文具 / 文具 / 卷笔刀") score += 95;
       if (titleCore.kind === "adult_simulator" && /成人用品|情趣玩具|性模拟器/.test(item.path)) score += 120;
+      const clothingPin = /胸针|胸章|徽章|领针/.test(titleText)
+        && /服装|背包|衣领|饰品|配饰|别针|固定/.test(text);
+      if (clothingPin && /服装首饰/.test(item.path) && item.name === "胸针" && /胸针/.test(titleText)) {
+        score += 260;
+        reasons.push("胸针核心商品词");
+      }
+      if (clothingPin && /服装首饰/.test(item.path) && item.name === "徽章" && /徽章|胸章/.test(titleText)) {
+        score += 210;
+        reasons.push("徽章候选词");
+      }
+      if (clothingPin && /室内装饰|节庆商品|宠物|文具别针|曲别针|古董室内/.test(item.path)) score -= 220;
       return { ...item, score, reasons: [...new Set(reasons)] };
     })
     .filter((item) => item.score > 0)
-    .sort((a, b) => b.score - a.score)
-    .slice(0, limit);
+    .sort((a, b) => b.score - a.score);
+  const bestScore = Number(ranked[0]?.score || 0);
+  const secondScore = Number(ranked[1]?.score || 0);
+  const bestHasExactIntent = (ranked[0]?.reasons || []).some((reason) => /核心商品词/.test(reason));
+  return ranked.slice(0, limit).map((item, index) => ({
+    ...item,
+    scoreMargin: index === 0 ? Math.max(0, bestScore - secondScore) : Math.max(0, bestScore - Number(item.score || 0)),
+    autoSelectable: index === 0 && bestHasExactIntent && bestScore >= 250 && bestScore - secondScore >= 25,
+  }));
 }
 
 export function normalizeText(value) {

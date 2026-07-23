@@ -3,6 +3,8 @@ const state = {
   selectedStoreId: "",
   categoryTree: [],
   categoryEvidence: { tree: null, attributes: null },
+  categoryAutoSyncKeys: new Set(),
+  categoryAutoSyncRetryAt: new Map(),
   categoryAttributeRequestToken: 0,
   productStatus: "all",
   productRows: [],
@@ -1548,11 +1550,27 @@ function listingSellerTaskSummaryModel(run = null, context = {}) {
   const validation = run?.payloadDraftValidation || null;
   const validationIssues = Array.isArray(validation?.issues) ? validation.issues.length : 0;
   const firstPayloadItem = run?.payloadDraft?.items?.[0] || null;
-  const category = run?.categoryMatch || run?.source?.categoryMatch || context.categoryMatch || firstPayloadItem || null;
-  const categoryReady = Number(category?.description_category_id || 0) > 0 && Number(category?.type_id || 0) > 0;
-  const categoryText = categoryReady
+  const categoryDecision = handoffNode?.output?.draftSkeleton?.categoryDecision || null;
+  const category = run?.categoryMatch
+    || run?.source?.categoryMatch
+    || context.categoryMatch
+    || firstPayloadItem
+    || categoryDecision?.selected
+    || null;
+  const categoryIdsAvailable = Number(category?.description_category_id || 0) > 0 && Number(category?.type_id || 0) > 0;
+  const categoryReady = categoryIdsAvailable && (!categoryDecision || categoryDecision.evidenceReady === true);
+  const categoryText = categoryIdsAvailable
     ? String(category.path || `${category.description_category_id} / ${category.type_id}`)
-    : "尚未确认 Ozon 类目";
+    : categoryDecision?.status === "ambiguous"
+      ? "系统找到多个接近类目"
+      : "系统尚未找到可靠类目";
+  const categoryStatusText = categoryReady
+    ? "系统已自动匹配，并绑定当前店铺类目证据"
+    : categoryIdsAvailable
+      ? `系统已自动匹配；${categoryDecision?.reason || "正在同步当前店铺类目证据"}`
+      : categoryDecision?.status === "ambiguous"
+        ? "只在候选分数接近时需要确认"
+        : "系统会继续根据商品核心类型匹配";
   const attributeIssueCount = Array.isArray(validation?.issues)
     ? validation.issues.filter((issue) => /ATTRIBUTE|属性|CATEGORY/i.test(String(issue?.code || issue?.message || ""))).length
     : 0;
@@ -1760,6 +1778,7 @@ function listingSellerTaskSummaryModel(run = null, context = {}) {
     title: title || "还没有当前商品",
     sourceText,
     categoryText,
+    categoryStatusText,
     attributeText,
     contentText,
     packageText,
@@ -2124,6 +2143,7 @@ function renderListingSellerTaskSummary() {
   }
   if (panel) panel.hidden = false;
   const autoListJob = currentListingAutoListJob(run);
+  void autoSyncListingCategoryEvidence(run, autoListJob);
   const linkedCandidate = autoListJob?.candidateData || null;
   const mediaAssets = run
     ? (linkedCandidate?.mediaAssets || run.source?.mediaAssets || [])
@@ -2138,12 +2158,13 @@ function renderListingSellerTaskSummary() {
     mediaAssets: state.collected1688?.mediaAssets || state.currentCaptureDraft?.mediaAssets || [],
     mediaIssues,
     skuCount: state.collected1688?.skuVariants?.length || state.currentCaptureDraft?.skuVariants?.length || 0,
+    categoryMatch: autoListJob?.manualCategory || autoListJob?.autoCategory || autoListJob?.categoryDecision?.selected || null,
   });
   renderListingUploadQueueSummary(summary, run);
   body.innerHTML = `
     <article><span>当前商品</span><strong>${escapeHtml(summary.title)}</strong><small>${escapeHtml(summary.status)}</small></article>
     <article><span>来源证据</span><strong>${escapeHtml(summary.sourceText)}</strong><small>SKU ${escapeHtml(summary.skuCount || "-")} 个</small></article>
-    <article><span>Ozon 类目</span><strong>${escapeHtml(summary.categoryText)}</strong><small>${escapeHtml(summary.categoryText === "尚未确认 Ozon 类目" ? "需从当前类目缓存中选择有效 type" : "类目/type 已绑定当前草稿")}</small></article>
+    <article><span>Ozon 类目</span><strong>${escapeHtml(summary.categoryText)}</strong><small>${escapeHtml(summary.categoryStatusText)}</small></article>
     <article><span>必填属性</span><strong>${escapeHtml(summary.attributeText)}</strong><small>字典值和敏感属性仍需按字段确认</small></article>
      <article><span>俄文内容</span><strong>${escapeHtml(summary.contentText)}</strong><small>模型建议不能替代来源事实或人工确认</small></article>
      <article><span>采购证据</span><strong>${escapeHtml(summary.procurementText)}</strong><small>展示价不能替代真实采购阶梯价</small></article>
@@ -2191,6 +2212,48 @@ function renderListingSellerTaskSummary() {
     document.querySelector("#listingCurrentDraftStatus")?.scrollIntoView({ behavior: "smooth", block: "center" });
     toast("已回到当前本地草稿；修复后点击重新校验 Payload", "ok");
   });
+}
+
+async function autoSyncListingCategoryEvidence(run = null, job = null) {
+  const handoff = run?.nodes?.find((node) => node.key === "capture_handoff")?.output?.draftSkeleton || null;
+  const decision = job?.categoryDecision || handoff?.categoryDecision || null;
+  if (decision?.status !== "auto_matched_evidence_pending" || !decision?.selected) return false;
+  const captureId = String(job?.candidateId || handoff?.captureId || "").trim();
+  const storeId = String(job?.storeId || handoff?.storeId || selectedStoreId() || "").trim();
+  if (!captureId || !storeId) return false;
+  const syncKey = `${captureId}:${storeId}:${decision.selected.description_category_id}:${decision.selected.type_id}`;
+  if (state.categoryAutoSyncKeys.has(syncKey)) return false;
+  if (Number(state.categoryAutoSyncRetryAt.get(syncKey) || 0) > Date.now()) return false;
+  state.categoryAutoSyncKeys.add(syncKey);
+  try {
+    const environment = currentSellerReadEnvironment();
+    await api("/api/ozon/category-cache/refresh", {
+      method: "POST",
+      body: JSON.stringify({ storeId, environment }),
+    });
+    await api("/api/ozon/description-attributes", {
+      method: "POST",
+      body: JSON.stringify({
+        storeId,
+        environment,
+        description_category_id: decision.selected.description_category_id,
+        type_id: decision.selected.type_id,
+      }),
+    });
+    await api(`/api/1688/captures/${encodeURIComponent(captureId)}/workflow`, {
+      method: "POST",
+      body: JSON.stringify({ storeId, environment }),
+    });
+    await loadAutoListJobs();
+    await loadWorkflowRuns();
+    toast(`已自动匹配并同步类目：${decision.selected.path || decision.selected.name}`, "ok");
+    return true;
+  } catch (error) {
+    state.categoryAutoSyncKeys.delete(syncKey);
+    state.categoryAutoSyncRetryAt.set(syncKey, Date.now() + 5 * 60 * 1000);
+    console.warn("自动同步当前店铺类目证据失败", error);
+    return false;
+  }
 }
 
 function renderListingSellerContentEvidence(run = null) {
@@ -2413,15 +2476,19 @@ function renderListingSellerEvidenceActions(run = null, job = null) {
       && sourceEvidence?.canonicalUrl
       && sourceEvidence?.verificationState === "ok",
   );
-  const category = job?.categoryMatch || run?.source?.categoryMatch || null;
-  const categoryReady = Number(category?.description_category_id || 0) > 0 && Number(category?.type_id || 0) > 0;
+  const categoryDecision = job?.categoryDecision
+    || run?.nodes?.find((node) => node.key === "capture_handoff")?.output?.draftSkeleton?.categoryDecision
+    || null;
+  const category = job?.manualCategory || job?.categoryMatch || job?.autoCategory || run?.source?.categoryMatch || categoryDecision?.selected || null;
+  const categoryIdsAvailable = Number(category?.description_category_id || 0) > 0 && Number(category?.type_id || 0) > 0;
+  const categoryReady = categoryIdsAvailable && (!categoryDecision || categoryDecision.evidenceReady === true);
   if (sourceReady && categoryReady) return "";
   return `<article class="listing-seller-evidence-actions" aria-label="前置证据任务">
-    <span>上架前置资料</span><strong>${sourceReady ? "来源已记录" : "来源证据待补齐"} · ${categoryReady ? "类目已确认" : "类目待确认"}</strong>
-    <small>先补齐真实来源和当前店铺类目，系统不会根据标题猜测或把页面状态当成证据。</small>
+    <span>上架前置资料</span><strong>${sourceReady ? "来源已记录" : "来源证据待补齐"} · ${categoryReady ? "类目已自动绑定" : categoryIdsAvailable ? "类目已匹配，证据同步中" : "类目自动匹配中"}</strong>
+    <small>${categoryIdsAvailable ? `系统推荐：${escapeHtml(category.path || category.name || "")}。当前店铺证据同步完成后自动继续。` : "系统会按商品核心类型从本地类目库生成候选；只有候选确实接近时才需要确认。"}</small>
     <div class="listing-seller-evidence-buttons">
       ${sourceReady ? "" : `<button class="ghost" type="button" data-seller-source-task>回到 1688 采集</button>`}
-      ${categoryReady ? "" : `<button class="primary" type="button" data-seller-category-task>选择 Ozon 类目</button>`}
+      ${categoryReady || categoryDecision?.status !== "ambiguous" ? "" : `<button class="primary" type="button" data-seller-category-task>确认系统候选</button>`}
     </div>
   </article>`;
 }

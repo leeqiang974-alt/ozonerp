@@ -183,6 +183,12 @@ test("snapshot-bound 1688 SKU prices are sufficient procurement evidence without
   assert.equal(preview.autoStarted, true);
   assert.equal(preview.sourcePriceCny, 2.6);
   assert.equal(preview.packageInfoSource, "1688_package");
+  assert.deepEqual(preview.package, {
+    weightG: 1,
+    lengthMm: 1,
+    widthMm: 1,
+    heightMm: 1,
+  });
   assert.equal(preview.procurementEvidence.verificationState, "source_verified");
   assert.ok(preview.priceCny > 0);
 });

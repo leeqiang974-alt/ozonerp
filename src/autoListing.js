@@ -75,8 +75,6 @@ export function listingDraftStoreMatches(existingJob = {}, requestedStoreId = ""
 const JOB_FILE = path.join(DATA_DIR, "auto-listing-jobs.json");
 const RMB_TO_RUB = 13.5;
 const PURCHASE_COST_MARKUP_RMB = 5;
-const PACKAGE_WEIGHT_PADDING_G = 50;
-const PACKAGE_SIZE_PADDING_MM = 20;
 const MAX_OZON_IMAGE_PREPARE_COUNT = toNumber(process.env.OZON_IMAGE_PREPARE_COUNT, 8);
 const STRICT_MATCH_MIN_CONFIDENCE = toNumber(process.env.OZON_MATCH_STRICT_CONFIDENCE, 50);
 const SIMILAR_MATCH_MIN_CONFIDENCE = toNumber(process.env.OZON_MATCH_SIMILAR_CONFIDENCE, 35);
@@ -1455,8 +1453,10 @@ function needCategoryTypeRetry(importErrors) {
 
 export function shouldAutoRetryImport(itemCount, importErrors = []) {
   if (Number(itemCount || 0) !== 1 || !importErrors.length) return false;
+  // A size/weight rejection requires new seller/source evidence. Never retry
+  // by silently replacing the evidence-bound package measurements.
+  if (needSizeWeightRetry(importErrors)) return false;
   return needModelRetry(importErrors)
-    || needSizeWeightRetry(importErrors)
     || needCategoryTypeRetry(importErrors)
     || needTitleRetry(importErrors);
 }
@@ -1723,15 +1723,6 @@ export async function recoverInterruptedJobs() {
     }
     return { ok: true, recovered };
   });
-}
-
-function safeFallbackPackageInfo(packageInfo) {
-  return {
-    weight: Math.max(120, Math.min(1200, Number(packageInfo?.weight || 300))),
-    depth: Math.max(60, Math.min(300, Number(packageInfo?.depth || 120))),
-    width: Math.max(50, Math.min(240, Number(packageInfo?.width || 100))),
-    height: Math.max(30, Math.min(200, Number(packageInfo?.height || 80))),
-  };
 }
 
 function inferFamily(text) {
@@ -2020,25 +2011,24 @@ function packageSizeWeight(candidateData = {}) {
   var lengths = variants.map(function(v) { return toNumber(v.lengthMm); }).filter(Boolean);
   var widths = variants.map(function(v) { return toNumber(v.widthMm); }).filter(Boolean);
   var heights = variants.map(function(v) { return toNumber(v.heightMm); }).filter(Boolean);
-  var sourceWeight = weights.length ? Math.max.apply(null, weights) : toNumber(sw.weightG);
-  var sourceLength = lengths.length ? Math.max.apply(null, lengths) : toNumber(sw.lengthMm);
-  var sourceWidth = widths.length ? Math.max.apply(null, widths) : toNumber(sw.widthMm);
-  var sourceHeight = heights.length ? Math.max.apply(null, heights) : toNumber(sw.heightMm);
+  // A complete parent package is the evidence-bound package shared by the
+  // listing. Variant measurements may only fill a missing parent dimension;
+  // they cannot silently override a package whose evidence was verified
+  // against candidateData.sizeWeight.
+  var sourceWeight = toNumber(sw.weightG) || (weights.length ? Math.max.apply(null, weights) : 0);
+  var sourceLength = toNumber(sw.lengthMm) || (lengths.length ? Math.max.apply(null, lengths) : 0);
+  var sourceWidth = toNumber(sw.widthMm) || (widths.length ? Math.max.apply(null, widths) : 0);
+  var sourceHeight = toNumber(sw.heightMm) || (heights.length ? Math.max.apply(null, heights) : 0);
   if (!sourceWeight || !sourceLength || !sourceWidth || !sourceHeight) {
     return { ok: false, reason: "1688货源缺少可信尺重，禁止自动上架" };
   }
-  var weight = Math.round(sourceWeight + PACKAGE_WEIGHT_PADDING_G);
-  var depth = Math.round(sourceLength + PACKAGE_SIZE_PADDING_MM);
-  var width = Math.round(sourceWidth + PACKAGE_SIZE_PADDING_MM);
-  var height = Math.round(sourceHeight + PACKAGE_SIZE_PADDING_MM);
-  var safe = safeFallbackPackageInfo({ weight, depth, width, height });
-  weight = safe.weight;
-  depth = safe.depth;
-  width = safe.width;
-  height = safe.height;
-  if (weight < 10 || depth < 10 || width < 10 || height < 10) {
-    return { ok: false, reason: "尺重小于Ozon安全阈值，禁止自动上架" };
-  }
+  // Package measurements are evidence-bound business facts. Do not pad,
+  // clamp, or otherwise rewrite them while continuing to label the result as
+  // 1688/manual package evidence.
+  var weight = sourceWeight;
+  var depth = sourceLength;
+  var width = sourceWidth;
+  var height = sourceHeight;
   return {
     ok: true,
     sourceWeight,
@@ -4502,25 +4492,22 @@ function applyListingFixByReason(job, reasonCode) {
   if (reasonCode === "CATEGORY_INVALID") {
     next.listingContent.categoryRetry = "auto_rematch";
   }
-  if (reasonCode === "WEIGHT_SIZE_INVALID") {
-    const cd = next.candidateData;
-    const sw = Object.assign({}, cd.sizeWeight || {});
-    const variants = Array.isArray(cd.skuVariants) ? cd.skuVariants : [];
-    const maxN = (arr, f) => {
-      const nums = arr.map(f).map((x) => Number(x || 0)).filter((x) => Number.isFinite(x) && x > 0);
-      return nums.length ? Math.max.apply(null, nums) : 0;
-    };
-    sw.weightG = Math.max(Number(sw.weightG || 0), maxN(variants, (v) => v.weightG));
-    sw.lengthMm = Math.max(Number(sw.lengthMm || 0), maxN(variants, (v) => v.lengthMm));
-    sw.widthMm = Math.max(Number(sw.widthMm || 0), maxN(variants, (v) => v.widthMm));
-    sw.heightMm = Math.max(Number(sw.heightMm || 0), maxN(variants, (v) => v.heightMm));
-    sw.weightG = Math.max(100, Number(sw.weightG || 0) + 50);
-    sw.lengthMm = Math.max(50, Number(sw.lengthMm || 0) + 20);
-    sw.widthMm = Math.max(50, Number(sw.widthMm || 0) + 20);
-    sw.heightMm = Math.max(30, Number(sw.heightMm || 0) + 20);
-    next.candidateData.sizeWeight = sw;
-  }
   return next;
+}
+
+export function canAutoRemediateListingReason(reasonCode = "") {
+  // A rejected package measurement is an evidence conflict, not a value that
+  // can be guessed. Keep the failed job intact for same-product correction and
+  // a new explicit confirmation.
+  return [
+    "CATEGORY_INVALID",
+    "BRAND_INVALID",
+    "TITLE_INVALID",
+    "RICH_CONTENT_INVALID",
+    "COUNTRY_INVALID",
+    "ATTRIBUTE_DUPLICATE",
+    "ATTRIBUTE_REQUIRED",
+  ].includes(String(reasonCode || ""));
 }
 
 export async function remediateFailedListingJobs(options = {}) {
@@ -4529,7 +4516,7 @@ export async function remediateFailedListingJobs(options = {}) {
   const limit = Math.max(1, rawLimit);
   const autoResubmit = Boolean(options.autoResubmit);
   const reasons = new Set(
-    String(options.reasonCodes || "CATEGORY_INVALID,WEIGHT_SIZE_INVALID,BRAND_INVALID,TITLE_INVALID,RICH_CONTENT_INVALID,COUNTRY_INVALID,ATTRIBUTE_DUPLICATE,ATTRIBUTE_REQUIRED")
+    String(options.reasonCodes || "CATEGORY_INVALID,BRAND_INVALID,TITLE_INVALID,RICH_CONTENT_INVALID,COUNTRY_INVALID,ATTRIBUTE_DUPLICATE,ATTRIBUTE_REQUIRED")
       .split(",")
       .map((x) => x.trim())
       .filter(Boolean),
@@ -4539,7 +4526,7 @@ export async function remediateFailedListingJobs(options = {}) {
     .filter((j) => {
       const text = [j.error || "", j.lastError || "", JSON.stringify(j.listingResult || {}).slice(0, 2000)].join(" ");
       const rc = String(j.reasonCode && j.reasonCode !== "UNKNOWN" ? j.reasonCode : mapReasonCode(text));
-      return String(j.status || "") === "failed" && reasons.has(rc);
+      return String(j.status || "") === "failed" && reasons.has(rc) && canAutoRemediateListingReason(rc);
     })
     .slice(0, limit);
   let patched = 0;
@@ -4597,7 +4584,7 @@ export async function remediateListingJobsByTaskIds(taskIds = [], options = {}) 
       JSON.stringify(job.listingResult?.importInfo || {}).slice(0, 4000),
     ].join(" ");
     const rc = mapReasonCode(text);
-    if (!["CATEGORY_INVALID", "WEIGHT_SIZE_INVALID", "BRAND_INVALID", "TITLE_INVALID", "RICH_CONTENT_INVALID", "COUNTRY_INVALID", "ATTRIBUTE_DUPLICATE", "ATTRIBUTE_REQUIRED"].includes(rc)) continue;
+    if (!canAutoRemediateListingReason(rc)) continue;
     const fixed = applyListingFixByReason(job, rc);
     fixed.status = "ready_for_listing";
     fixed.stage = "guided";
@@ -5008,14 +4995,6 @@ export async function completeListing(jobId, storeId) {
       if (needModelRetry(importErrors)) {
         retryItem.attributes = mergeRetryModelAttributes(retryItem.attributes || [], brandAttr, modelAttributesForMeta(modelName + " " + parentSku, attrsMeta));
         await addStep(jobId, "retry_model", "检测到型号必填，自动补全型号后重试");
-      }
-      if (needSizeWeightRetry(importErrors)) {
-        var safe = safeFallbackPackageInfo(packageInfo);
-        retryItem.weight = safe.weight;
-        retryItem.depth = safe.depth;
-        retryItem.width = safe.width;
-        retryItem.height = safe.height;
-        await addStep(jobId, "retry_size_weight", "检测到尺重报错，切换安全尺重后重试");
       }
       if (needCategoryTypeRetry(importErrors) && categoryMatches[1]) {
         var alt = categoryMatches[1];

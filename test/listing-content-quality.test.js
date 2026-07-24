@@ -30,6 +30,7 @@ import {
   selectPreparedOzonImages,
   postSubmissionStockReadiness,
   buildSubmittedReconciliationSellerResult,
+  canAutoRemediateListingReason,
   waitForImportInfo,
 } from "../src/autoListing.js";
 import { buildListingContentEvidence } from "../src/llmListing.js";
@@ -1006,6 +1007,23 @@ test("shouldAutoRetryImport never collapses a multi-variant batch into one item"
 
   assert.equal(shouldAutoRetryImport(5, modelError), false);
   assert.equal(shouldAutoRetryImport(1, modelError), true);
+});
+
+test("shouldAutoRetryImport never rewrites evidence-bound package measurements", () => {
+  const packageError = [{ code: "INVALID_DIMENSIONS", message: "Размер и вес товара некорректны" }];
+  const mixedError = [
+    ...packageError,
+    { code: "INVALID_TITLE", message: "Название товара некорректно" },
+  ];
+
+  assert.equal(shouldAutoRetryImport(1, packageError), false);
+  assert.equal(shouldAutoRetryImport(1, mixedError), false);
+});
+
+test("package rejection is excluded from every automatic remediation path", () => {
+  assert.equal(canAutoRemediateListingReason("WEIGHT_SIZE_INVALID"), false);
+  assert.equal(canAutoRemediateListingReason("TITLE_INVALID"), true);
+  assert.equal(canAutoRemediateListingReason("ATTRIBUTE_REQUIRED"), true);
 });
 
 test("findDuplicateListingJob blocks repeated Ozon or 1688 product submissions", () => {

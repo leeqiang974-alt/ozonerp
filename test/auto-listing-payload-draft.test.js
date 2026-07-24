@@ -312,10 +312,20 @@ test("payload draft reuses snapshot-bound SKU prices and collector package data 
   });
 
   assert.equal(draft.summary.pricingDiagnosis.packageInfoSource, "1688_package");
+  assert.deepEqual(draft.summary.pricingDiagnosis.package, {
+    weightG: 1,
+    lengthMm: 1,
+    widthMm: 1,
+    heightMm: 1,
+  });
   assert.equal(draft.summary.pricingDiagnosis.procurementEvidence.status, "verified");
   assert.equal(draft.summary.pricingDiagnosis.procurementEvidence.sourceMode, "sku_price_snapshot");
   assert.equal(draft.summary.pricingDiagnosis.procurementEvidence.skuPriceCount, 2);
   assert.equal(draft.items.length, 2);
+  assert.deepEqual(
+    draft.items.map((item) => [item.weight, item.depth, item.width, item.height]),
+    [[1, 1, 1, 1], [1, 1, 1, 1]],
+  );
 });
 
 test("new 1688 evidence envelopes cannot use the legacy URL fallback for missing package proof", () => {
@@ -403,7 +413,7 @@ test("manual package measurement cannot inherit stale SKU dimensions in the payl
   assert.equal(draft.summary.pricingDiagnosis.packageInfoSource, "manual_measurement");
   assert.deepEqual(
     draft.items.map((item) => [item.weight, item.depth, item.width, item.height]),
-    [[150, 120, 100, 40], [150, 120, 100, 40]],
+    [[100, 100, 80, 20], [100, 100, 80, 20]],
   );
 
   const legacyMissingWorkflowBinding = structuredClone(applied.job);
@@ -414,6 +424,58 @@ test("manual package measurement cannot inherit stale SKU dimensions in the payl
     }),
     /缺少可信尺重来源/,
   );
+});
+
+test("verified parent package evidence cannot be overridden by conflicting SKU measurements", () => {
+  const snapshotHash = `sha256:${"d".repeat(64)}`;
+  const job = {
+    id: "al-parent-package",
+    candidateId: "capture-parent-package",
+    storeId: "store-parent-package",
+    workflowRunId: "run-parent-package",
+    listingContent: {
+      title_ru: "Брошь",
+      description_ru: "Металлическая брошь.",
+    },
+    bestMatch: { candidateTitle: "胸针", purchasePriceCny: 3 },
+    candidateData: {
+      source: "1688",
+      images: ["https://example.com/main.jpg"],
+      sizeWeight: { weightG: 50, lengthMm: 10, widthMm: 10, heightMm: 10 },
+      sourceEvidence: {
+        platform: "1688",
+        snapshotHash,
+        verificationState: "ok",
+        fields: {
+          package: {
+            source: "page_content",
+            evidenceRef: `snapshot:${"d".repeat(64)}`,
+            values: { weightG: 50, lengthMm: 10, widthMm: 10, heightMm: 10 },
+          },
+        },
+      },
+      skuVariants: [
+        { skuId: "sku-a", spec: "A", price: 3, weightG: 900, lengthMm: 900, widthMm: 700, heightMm: 300 },
+      ],
+    },
+  };
+
+  const draft = buildListingPayloadDraftFromJob(job, {
+    categoryMatch: { description_category_id: 17027899, type_id: 87458886, path: "胸针" },
+    pricingPolicy: { commissionRate: 0.15, commissionSource: "controlled_fixture" },
+  });
+
+  assert.equal(draft.summary.pricingDiagnosis.packageInfoSource, "1688_package");
+  assert.deepEqual(
+    draft.items.map((item) => [item.weight, item.depth, item.width, item.height]),
+    [[50, 10, 10, 10]],
+  );
+  assert.deepEqual(draft.summary.pricingDiagnosis.package, {
+    weightG: 50,
+    lengthMm: 10,
+    widthMm: 10,
+    heightMm: 10,
+  });
 });
 
 test("collected procurement evidence blocks trusted pricing when MOQ or tiers are missing", () => {

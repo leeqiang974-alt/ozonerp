@@ -27,6 +27,8 @@ Read these before substantial Ozon ERP changes:
 - Tests for API clients must fail closed before the first red-light run: inject or globally stub network transport before invoking the subject. A planned dependency-injection test is not sufficient if the old implementation can ignore the injected dependency and fall through to real network access.
 - 1688 包装尺重只有在 `sourceEvidence.fields.package` 的 source/evidenceRef 与当前 snapshot 对齐时才能升级为 `1688_package`；孤立数值、URL 推断或缺失证据必须保持阻塞。无历史 evidence envelope 的旧内部 job 可暂留 legacy 路径，但新采集回执必须补齐该字段。
 - 包装尺重证据不仅要校验来源和 snapshot 引用，还必须逐字段匹配当前待提交的 `sizeWeight` 数值；快照之后被改过的数字即使沿用旧 evidenceRef 也必须阻断。
+- 定价与 Payload 必须使用来源快照或绑定手工实测中的原始包装尺重；不得加缓冲、抬高最小值、截断后继续标记为 `1688_package`/人工实测。Ozon 返回尺重错误时必须回到同屏证据修复，禁止静默改值后自动重试写入。
+- 已有完整父级包装证据时，SKU 行中的孤立尺重不得覆盖父级证据进入定价或 Payload；除非 SKU 尺重本身具备同一快照下可逐项核验的独立证据。`WEIGHT_SIZE_INVALID` 必须排除在所有后台纠偏和自动重投入口之外。
 - 插件采集或插件内手填的包装尺重，只要 `sourceEvidence.fields.package` 使用 `capture_hint`、`page_content` 或 `1688_package`，并与当前 snapshot 引用及四项 `sizeWeight` 数值逐项一致，就应自动复用为 `1688_package`；不得要求卖家在 ERP 再录一次。
 - 1688 详情页若每个选中 SKU 都有正数价格和稳定 `sourceSkuId`，且 `sourceEvidence.fields.variants` 与当前 snapshot 精确绑定，可直接作为本地定价采购价证据；不得再强制卖家填写供应商、MOQ 或阶梯价。只有未绑定快照的搜索卡价格区间、缺失 SKU 标识或非正数价格继续阻塞。
 - 1688 采集行数不能直接当作唯一 SKU 数。进入草稿前必须按来源 `skuId/sourceSkuId` 归一化，重复行优先保留字段更完整的版本，同时记录 raw/unique/duplicate 计数；不得把同一来源 SKU 生成多个 Ozon Offer。

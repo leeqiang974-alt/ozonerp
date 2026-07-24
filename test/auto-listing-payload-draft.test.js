@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { applyManualSellerInputsToJob, buildListingPayloadDraftFromJob, buildPaidAiContentReceipt, categoryCacheForListingEvidence, categoryReadPolicyForListing, paidAiJobBinding, reusablePaidAiContentReceipt, sourceEvidenceBindingForListing, sourceVariantsForListing, validatePaidAiJobBinding } from "../src/autoListing.js";
+import { applyManualSellerInputsToJob, buildListingPayloadDraftFromJob, buildPaidAiContentReceipt, categoryCacheForListingEvidence, categoryReadPolicyForListing, contentGenerationContextForJob, paidAiJobBinding, reusablePaidAiContentReceipt, sourceEvidenceBindingForListing, sourcePriceCnyForListingJob, sourceVariantsForListing, validatePaidAiJobBinding } from "../src/autoListing.js";
 import {
   buildRequiredAttributeManualBacklog,
   buildRequiredAttributeApprovalDraftPreview,
@@ -69,10 +69,149 @@ test("paid AI content receipt is reusable only for the exact bound product and u
     ...withReceipt,
     autoCategory: { description_category_id: 1, type_id: 2 },
   }, binding).ok, false);
+  assert.equal(reusablePaidAiContentReceipt({
+    ...withReceipt,
+    pricingPreview: { priceCny: 99 },
+  }, binding).ok, false);
   assert.equal(reusablePaidAiContentReceipt(withReceipt, { ...binding, storeId: "other-store" }).ok, false);
   assert.equal(receipt.generatedAt, "2026-07-24T12:00:00.000Z");
   assert.match(receipt.contentHash, /^sha256:[a-f0-9]{64}$/);
   assert.match(receipt.inputHash, /^sha256:[a-f0-9]{64}$/);
+});
+
+test("seller-selected current 1688 capture can generate content without a sourcing bestMatch", () => {
+  const snapshotHash = `sha256:${"3".repeat(64)}`;
+  const context = contentGenerationContextForJob({
+    bestMatch: {},
+    candidateData: {
+      title: "卡通小精灵胸针",
+      url: "https://detail.1688.com/offer/993570366569.html",
+      skuVariants: [{ skuId: "sku-current", spec: "胸针", price: 2.2 }],
+      sourceEvidence: {
+        platform: "1688",
+        verificationState: "ok",
+        snapshotHash,
+        canonicalUrl: "https://detail.1688.com/offer/993570366569.html",
+        fields: {
+          variants: {
+            source: "capture_hint",
+            evidenceRef: `snapshot:${snapshotHash.slice("sha256:".length)}`,
+          },
+        },
+      },
+    },
+    pricingPreview: {
+      sourcePriceCny: 2.2,
+      priceCny: 22.45,
+      profit: 5.18,
+      profitRate: 0.3,
+      calculationStatus: "local_preview",
+      sourceEvidence: {
+        source: "1688",
+        status: "bound",
+        snapshotHash,
+      },
+    },
+  });
+
+  assert.equal(context.ok, true);
+  assert.equal(context.sourceMode, "seller_selected_capture");
+  assert.equal(context.match.confidence, 100);
+  assert.equal(context.match.reason, "seller_selected_current_1688_capture");
+  assert.equal(context.candidate.title, "卡通小精灵胸针");
+  assert.equal(context.profit.purchasePriceCny, 2.2);
+  assert.equal(context.profit.estSellPriceCny, 22.45);
+});
+
+test("seller-selected content stops before paid AI when pricing preview belongs to another snapshot", () => {
+  const currentHash = `sha256:${"5".repeat(64)}`;
+  const context = contentGenerationContextForJob({
+    candidateData: {
+      title: "卡通小精灵胸针",
+      skuVariants: [{ skuId: "sku-current", spec: "胸针", price: 2.2 }],
+      sourceEvidence: {
+        platform: "1688",
+        verificationState: "ok",
+        snapshotHash: currentHash,
+        canonicalUrl: "https://detail.1688.com/offer/993570366569.html",
+        fields: {
+          variants: {
+            source: "capture_hint",
+            evidenceRef: `snapshot:${currentHash.slice("sha256:".length)}`,
+          },
+        },
+      },
+    },
+    pricingPreview: {
+      sourcePriceCny: 2.2,
+      priceCny: 22.45,
+      sourceEvidence: {
+        source: "1688",
+        status: "bound",
+        snapshotHash: `sha256:${"6".repeat(64)}`,
+      },
+    },
+  });
+
+  assert.equal(context.ok, false);
+  assert.equal(context.reasonCode, "CONTENT_PRICING_EVIDENCE_STALE");
+});
+
+test("seller-selected capture uses only snapshot-bound SKU prices without a sourcing bestMatch", () => {
+  const snapshotHash = `sha256:${"4".repeat(64)}`;
+  const candidateData = {
+    sourceEvidence: {
+      platform: "1688",
+      verificationState: "ok",
+      snapshotHash,
+      fields: {
+        variants: {
+          source: "capture_hint",
+          evidenceRef: `snapshot:${snapshotHash.slice("sha256:".length)}`,
+        },
+      },
+    },
+    skuVariants: [
+      { skuId: "sku-low", spec: "小号", price: 2.2 },
+      { skuId: "sku-high", spec: "大号", price: 2.6 },
+    ],
+  };
+  assert.equal(sourcePriceCnyForListingJob({ candidateData }), 2.6);
+  assert.equal(sourcePriceCnyForListingJob({
+    candidateData: {
+      ...candidateData,
+      sourceEvidence: {
+        ...candidateData.sourceEvidence,
+        snapshotHash: "sha256:stale",
+      },
+    },
+  }), 0);
+  assert.throws(() => buildListingPayloadDraftFromJob({
+    pendingParentSku: "STALE-SNAPSHOT-PRICE",
+    listingContent: { title_ru: "Брошь", description_ru: "Металлическая брошь." },
+    candidateData: {
+      ...candidateData,
+      images: ["https://example.com/main.jpg"],
+      sizeWeight: { weightG: 50, lengthMm: 10, widthMm: 10, heightMm: 10 },
+      sourceEvidence: {
+        ...candidateData.sourceEvidence,
+        fields: {
+          ...candidateData.sourceEvidence.fields,
+          variants: {
+            source: "capture_hint",
+            evidenceRef: `snapshot:${"9".repeat(64)}`,
+          },
+          package: {
+            source: "capture_hint",
+            evidenceRef: `snapshot:${snapshotHash.slice("sha256:".length)}`,
+            values: { weightG: 50, lengthMm: 10, widthMm: 10, heightMm: 10 },
+          },
+        },
+      },
+    },
+  }, {
+    categoryMatch: { description_category_id: 1, type_id: 2, path: "Броши" },
+  }), /缺少与采集快照严格绑定的 SKU 采购价/);
 });
 
 test("1688 listing policy carries exact-store category read receipts into re-preflight", () => {
@@ -317,7 +456,6 @@ test("payload draft reuses snapshot-bound SKU prices and collector package data 
       title_ru: "Металлический значок для одежды",
       description_ru: "Металлический значок для одежды и рюкзака.",
     },
-    bestMatch: { candidateTitle: "胸针", purchasePriceCny: 2.6 },
     candidateData: {
       source: "1688",
       url: "https://detail.1688.com/offer/992997159052.html",
@@ -361,6 +499,7 @@ test("payload draft reuses snapshot-bound SKU prices and collector package data 
   assert.equal(draft.summary.pricingDiagnosis.procurementEvidence.status, "verified");
   assert.equal(draft.summary.pricingDiagnosis.procurementEvidence.sourceMode, "sku_price_snapshot");
   assert.equal(draft.summary.pricingDiagnosis.procurementEvidence.skuPriceCount, 2);
+  assert.equal(draft.summary.pricingDiagnosis.sourcePriceCny, 2.6);
   assert.equal(draft.items.length, 2);
   assert.deepEqual(
     draft.items.map((item) => [item.weight, item.depth, item.width, item.height]),

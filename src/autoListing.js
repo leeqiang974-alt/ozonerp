@@ -2206,6 +2206,60 @@ export function buildAutomaticPricingPreviewFromCapture(job = {}, categoryMatch 
   return preview;
 }
 
+export function listingPriceEvidenceForJob(job = {}) {
+  const candidateData = job.candidateData || {};
+  const captured = buildCapturedSkuPriceEvidence(candidateData);
+  if (captured.ok) {
+    return {
+      ok: true,
+      sourceMode: "sku_price_snapshot",
+      sourcePriceCny: Number(captured.maxPriceCny || 0),
+      evidenceRef: captured.evidenceRef,
+      sourceSnapshotHash: String(candidateData.sourceEvidence?.snapshotHash || ""),
+      skuPrices: Object.fromEntries(captured.rows.map((row) => [row.sourceSkuId, Number(row.unitPriceCny || 0)])),
+    };
+  }
+  const matchedPrice = Number(job.bestMatch?.purchasePriceCny || 0);
+  if (matchedPrice > 0) {
+    return {
+      ok: true,
+      sourceMode: "best_match",
+      sourcePriceCny: matchedPrice,
+      evidenceRef: "",
+      sourceSnapshotHash: "",
+      skuPrices: {},
+    };
+  }
+  return {
+    ok: false,
+    reasonCode: "PRICING_SOURCE_PRICE_EVIDENCE_MISSING",
+    error: "当前商品缺少与采集快照严格绑定的 SKU 采购价，不能生成上架草稿。",
+    sourceMode: "",
+    sourcePriceCny: 0,
+    evidenceRef: "",
+    sourceSnapshotHash: "",
+    skuPrices: {},
+  };
+}
+
+export function sourcePriceCnyForListingJob(job = {}) {
+  return Number(listingPriceEvidenceForJob(job).sourcePriceCny || 0);
+}
+
+function variantSourcePriceCny(variant = {}, priceEvidence = {}) {
+  if (priceEvidence.sourceMode !== "sku_price_snapshot") {
+    return Number(priceEvidence.sourcePriceCny || 0);
+  }
+  const sourceSkuId = String(
+    variant.sourceSkuId
+    || variant.source_sku_id
+    || variant.skuId
+    || variant.sku_id
+    || "",
+  ).trim();
+  return Number(priceEvidence.skuPrices?.[sourceSkuId] || 0);
+}
+
 function contentGenerationWorkflowSummary(listingContent = {}, candidate = {}, visualCard = null) {
   var product = candidate?.parsed || candidate || {};
   var titleRu = String(listingContent.title_ru || listingContent.title || listingContent.name || "");
@@ -2255,7 +2309,9 @@ export function buildListingPayloadDraftFromJob(job = {}, options = {}) {
   if (!packageInfo.ok) throw new Error(packageInfo.reason || "候选缺少尺重，无法生成 payload 草稿");
   packageInfo.packageInfoSource = trustedPackageInfoSourceForListingJob(job);
   if (!packageInfo.packageInfoSource) throw new Error("候选缺少可信尺重来源，无法生成 payload 草稿");
-  const bestMatchPrice = job.bestMatch ? job.bestMatch.purchasePriceCny : 0;
+  const listingPriceEvidence = listingPriceEvidenceForJob(job);
+  if (!listingPriceEvidence.ok) throw new Error(listingPriceEvidence.error);
+  const bestMatchPrice = listingPriceEvidence.sourcePriceCny;
   const purchaseCost = Math.max(Number(bestMatchPrice || 0) + PURCHASE_COST_MARKUP_RMB, 1);
   const commissionInput = resolveCommissionInput(job, categoryMatch);
   const priceCalc = calculateOzonPrice({
@@ -2375,7 +2431,7 @@ export function buildListingPayloadDraftFromJob(job = {}, options = {}) {
   };
   const skuVariants = (job.candidateData && job.candidateData.skuVariants) || [];
   let variantsForListing = Array.isArray(skuVariants)
-    ? skuVariants.filter(function(v) { return cleanSkuSpec(v.spec || "") && Number(v.price || bestMatchPrice || 0) > 0; }).slice(0, SOURCING_MAX_SKU_COUNT)
+    ? skuVariants.filter(function(v) { return cleanSkuSpec(v.spec || "") && variantSourcePriceCny(v, listingPriceEvidence) > 0; }).slice(0, SOURCING_MAX_SKU_COUNT)
     : [];
   // Keep a single real source SKU; it still needs a stable parent Offer ID.
   let submitItems = variantsForListing.length
@@ -2384,7 +2440,8 @@ export function buildListingPayloadDraftFromJob(job = {}, options = {}) {
       let variantPrice = finalPriceCny;
       let variantPricingFields = pricingFields;
       try {
-        const variantPurchase = Math.max(Number(variant.price || bestMatchPrice || 0) + PURCHASE_COST_MARKUP_RMB, 1);
+        const variantSourcePrice = variantSourcePriceCny(variant, listingPriceEvidence);
+        const variantPurchase = Math.max(variantSourcePrice + PURCHASE_COST_MARKUP_RMB, 1);
         const variantCalc = calculateOzonPrice({
           purchaseCost: variantPurchase,
           weightG: variantPackage.ok ? variantPackage.weight : packageInfo.weight,
@@ -2402,7 +2459,7 @@ export function buildListingPayloadDraftFromJob(job = {}, options = {}) {
         });
         pricingDiagnosis.variants.push({
           offerId: variantOfferId(parentSku, variant, index),
-          sourcePriceCny: roundMoney(Number(variant.price || bestMatchPrice || 0)),
+          sourcePriceCny: roundMoney(variantSourcePrice),
           purchaseCost: roundMoney(variantPurchase),
           priceCny: variantPrice,
           oldPriceCny: variantPricingFields.oldPriceCny,
@@ -2560,7 +2617,7 @@ async function saveWorkflowPayloadDraftForListingJob(job = {}) {
       ...pricingNode,
       input: {
         autoListingJobId: job.id,
-        sourcePriceCny: job.bestMatch?.purchasePriceCny || 0,
+        sourcePriceCny: sourcePriceCnyForListingJob(job),
         purchaseMarkupRmb: PURCHASE_COST_MARKUP_RMB,
         package: draft.summary.pricingDiagnosis.package,
       },
@@ -3147,6 +3204,7 @@ function paidAiContentInputHash(job = {}) {
   const generationInput = {
     candidateData: job.candidateData || {},
     bestMatch: job.bestMatch || {},
+    pricingPreview: job.pricingPreview || {},
     ozonContext: job.ozonContext || {},
     ozonTitle: job.ozonTitle || "",
     ozonPrice: job.ozonPrice || 0,
@@ -3896,17 +3954,30 @@ export async function rerunAutoListingMatch(jobId, options = {}) {
   };
 }
 
-function candidateFromMatchedJob(job = {}) {
+function verifiedSourcingMatchForContent(job = {}) {
+  const match = job.bestMatch || {};
+  return Boolean(
+    String(match.id || match.candidateId || "").trim()
+    && String(match.candidateTitle || match.title || "").trim()
+    && /1688\.com/i.test(String(match.candidateUrl || match.url || ""))
+    && Number(match.purchasePriceCny || 0) > 0
+    && String(match.matchTier || match.tier || "").trim()
+    && Number(match.matchConfidence ?? match.confidence ?? 0) > 0
+  );
+}
+
+function candidateFromMatchedJob(job = {}, options = {}) {
   const base = job.candidateData || {};
+  const match = options.useBestMatch === true ? (job.bestMatch || {}) : {};
   return {
-    id: job.bestMatch?.id || job.bestMatch?.candidateId || "",
-    title: job.bestMatch?.candidateTitle || base.title || "",
-    url: job.bestMatch?.candidateUrl || base.url || "",
-    priceMin: job.bestMatch?.purchasePriceCny || base.priceMin || 0,
+    id: match.id || match.candidateId || "",
+    title: match.candidateTitle || base.title || "",
+    url: match.candidateUrl || base.url || "",
+    priceMin: match.purchasePriceCny || base.priceMin || 0,
     parsed: {
       ...base,
-      title: job.bestMatch?.candidateTitle || base.title || "",
-      url: job.bestMatch?.candidateUrl || base.url || "",
+      title: match.candidateTitle || base.title || "",
+      url: match.candidateUrl || base.url || "",
     },
   };
 }
@@ -3929,39 +4000,95 @@ function ozonItemFromMatchedJob(job = {}) {
   };
 }
 
+export function contentGenerationContextForJob(job = {}) {
+  if (!job.candidateData || typeof job.candidateData !== "object") {
+    return {
+      ok: false,
+      reasonCode: "CONTENT_SOURCE_REQUIRED",
+      error: "当前商品缺少已绑定的 1688 来源资料，不能生成上架内容。",
+    };
+  }
+  const hasSourcingMatch = verifiedSourcingMatchForContent(job);
+  const matched = hasSourcingMatch ? job.bestMatch : {};
+  const candidate = candidateFromMatchedJob(job, { useBestMatch: hasSourcingMatch });
+  const ozonItem = ozonItemFromMatchedJob(job);
+  const pricing = job.pricingPreview || {};
+  if (!hasSourcingMatch) {
+    const sourceEvidence = job.candidateData.sourceEvidence || {};
+    const sourceSnapshotHash = String(sourceEvidence.snapshotHash || "");
+    const pricingEvidence = pricing.sourceEvidence || {};
+    const priceEvidence = listingPriceEvidenceForJob(job);
+    const exactCurrentCapture = sourceEvidence.platform === "1688"
+      && sourceEvidence.verificationState === "ok"
+      && /^sha256:[a-f0-9]{64}$/i.test(sourceSnapshotHash)
+      && pricingEvidence.status === "bound"
+      && pricingEvidence.source === "1688"
+      && String(pricingEvidence.snapshotHash || "") === sourceSnapshotHash
+      && priceEvidence.ok
+      && priceEvidence.sourceMode === "sku_price_snapshot"
+      && priceEvidence.sourceSnapshotHash === sourceSnapshotHash
+      && Number(pricing.sourcePriceCny || 0) === Number(priceEvidence.sourcePriceCny || 0);
+    if (!exactCurrentCapture) {
+      return {
+        ok: false,
+        reasonCode: "CONTENT_PRICING_EVIDENCE_STALE",
+        error: "当前商品的采集价格或定价预览与来源快照不一致，已在付费 AI 调用前停止。",
+      };
+    }
+  }
+  return {
+    ok: true,
+    candidate,
+    ozonItem,
+    ozonContext: buildOzonContext(ozonItem),
+    match: hasSourcingMatch ? {
+      match: true,
+      confidence: Number(matched.matchConfidence || 0),
+      reason: String(matched.matchTier || "matched"),
+    } : {
+      match: true,
+      confidence: 100,
+      reason: "seller_selected_current_1688_capture",
+    },
+    profit: {
+      basis: matched.profitBasis || pricing.calculationStatus || "current_capture_pricing",
+      purchasePriceCny: matched.purchasePriceCny ?? pricing.sourcePriceCny ?? null,
+      estProfitCny: matched.estProfitCny ?? pricing.profit ?? null,
+      margin: matched.margin ?? pricing.profitRate ?? null,
+      estSellPriceCny: matched.estSellPriceCny ?? pricing.priceCny ?? null,
+      estRubPrice: matched.estRubPrice ?? null,
+      actualOzonPrice: matched.actualOzonPrice ?? null,
+      marketPriceCny: matched.marketPriceCny ?? null,
+      priceDiff: matched.priceDiff ?? null,
+    },
+    sourceMode: hasSourcingMatch ? "sourcing_match" : "seller_selected_capture",
+  };
+}
+
 export async function rerunAutoListingContent(jobId, options = {}) {
   const initialJob = await getAutoListingJob(jobId);
   if (!initialJob) return { ok: false, error: "自动上架任务不存在: " + jobId };
   const initialAuthorization = validatePaidAiJobBinding(initialJob, options.expectedBinding);
   if (!initialAuthorization.ok) return initialAuthorization;
-  if (!initialJob.bestMatch || !initialJob.candidateData) {
-    return { ok: false, error: "缺少已匹配候选，需先续跑 match_profit" };
-  }
+  const initialContext = contentGenerationContextForJob(initialJob);
+  if (!initialContext.ok) return initialContext;
 
   const claim = await claimPaidAiContentWork(jobId, options.expectedBinding, {
     forcePaidAiRegeneration: options.forcePaidAiRegeneration === true,
   });
   if (!claim.ok) return claim;
   const job = claim.job;
-  const candidate = candidateFromMatchedJob(job);
-  const ozonItem = ozonItemFromMatchedJob(job);
-  const ozonContext = buildOzonContext(ozonItem);
-  const match = {
-    match: true,
-    confidence: Number(job.bestMatch?.matchConfidence || 0),
-    reason: String(job.bestMatch?.matchTier || "matched"),
-  };
-  const profit = {
-    basis: job.bestMatch?.profitBasis,
-    purchasePriceCny: job.bestMatch?.purchasePriceCny,
-    estProfitCny: job.bestMatch?.estProfitCny,
-    margin: job.bestMatch?.margin,
-    estSellPriceCny: job.bestMatch?.estSellPriceCny,
-    estRubPrice: job.bestMatch?.estRubPrice,
-    actualOzonPrice: job.bestMatch?.actualOzonPrice,
-    marketPriceCny: job.bestMatch?.marketPriceCny,
-    priceDiff: job.bestMatch?.priceDiff,
-  };
+  const generationContext = contentGenerationContextForJob(job);
+  if (!generationContext.ok) {
+    await releasePaidAiContentWork(jobId, claim.token);
+    return generationContext;
+  }
+  const {
+    candidate,
+    ozonContext,
+    match,
+    profit,
+  } = generationContext;
 
   if (claim.mode === "reuse") {
     const summary = contentGenerationWorkflowSummary(job.listingContent, candidate, job.visualCard || null);
@@ -5175,7 +5302,12 @@ export async function completeListing(jobId, storeId) {
       return { ok: false, error: "候选缺少可信尺重来源" };
     }
     await addStep(jobId, "size_weight_checked", "尺重确认: " + packageInfo.weight + "g / " + packageInfo.depth + "x" + packageInfo.width + "x" + packageInfo.height + "mm");
-    var bestMatchPrice = job.bestMatch ? job.bestMatch.purchasePriceCny : 0;
+    var listingPriceEvidence = listingPriceEvidenceForJob(job);
+    if (!listingPriceEvidence.ok) {
+      await failJob(jobId, listingPriceEvidence.error);
+      return { ok: false, error: listingPriceEvidence.error };
+    }
+    var bestMatchPrice = listingPriceEvidence.sourcePriceCny;
     var productForCategory = {
       title: [
         title,
@@ -5281,7 +5413,7 @@ export async function completeListing(jobId, storeId) {
       .filter(Boolean));
     await addStep(jobId, "submitting", "提交商品到 Ozon...");
     var variantsForListing = Array.isArray(skuVariants)
-      ? skuVariants.filter(function(v) { return cleanSkuSpec(v.spec || "") && Number(v.price || bestMatchPrice || 0) > 0; }).slice(0, SOURCING_MAX_SKU_COUNT)
+      ? skuVariants.filter(function(v) { return cleanSkuSpec(v.spec || "") && variantSourcePriceCny(v, listingPriceEvidence) > 0; }).slice(0, SOURCING_MAX_SKU_COUNT)
       : [];
     if (variantsForListing.length < 2) variantsForListing = [];
     var submitItems = variantsForListing.length
@@ -5290,7 +5422,8 @@ export async function completeListing(jobId, storeId) {
         var vPrice = finalPriceCny;
         var variantPricingFields = pricingFields;
         try {
-          var variantPurchase = Math.max(Number(variant.price || bestMatchPrice || 0) + PURCHASE_COST_MARKUP_RMB, 1);
+          var variantSourcePrice = variantSourcePriceCny(variant, listingPriceEvidence);
+          var variantPurchase = Math.max(variantSourcePrice + PURCHASE_COST_MARKUP_RMB, 1);
           var variantCalc = calculateOzonPrice({
             purchaseCost: variantPurchase,
             weightG: variantPackage.ok ? variantPackage.weight : packageInfo.weight,
@@ -5308,7 +5441,7 @@ export async function completeListing(jobId, storeId) {
           });
           pricingDiagnosis.variants.push({
             offerId: variantOfferId(parentSku, variant, index),
-            sourcePriceCny: roundMoney(Number(variant.price || bestMatchPrice || 0)),
+            sourcePriceCny: roundMoney(variantSourcePrice),
             purchaseCost: roundMoney(variantPurchase),
             priceCny: vPrice,
             oldPriceCny: variantPricingFields.oldPriceCny,

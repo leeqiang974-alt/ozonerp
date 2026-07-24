@@ -20,6 +20,8 @@ test("paid AI reruns recheck actual job after model return and preserve source b
   assert.match(match, /updateJobIfPaidAiBindingMatches/);
   assert.match(match, /sourceEvidence: postMatchJob\.candidateData\?\.sourceEvidence/);
   assert.match(content, /claimPaidAiContentWork\(jobId, options\.expectedBinding/);
+  assert.match(content, /contentGenerationContextForJob/);
+  assert.doesNotMatch(content, /缺少已匹配候选/);
   assert.match(content, /paidAiContentLease\?\.token/);
   assert.match(content, /paidAiContentInputHash\(currentJob \|\| \{\}\) === claim\.inputHash/);
   assert.match(content, /commitPaidAiGeneratedContent/);

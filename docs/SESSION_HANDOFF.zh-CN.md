@@ -1,5 +1,14 @@
 # Ozon ERP 会话接管与恢复记录
 
+## 2026-07-24 G4-S1 卖家直选商品不再依赖 bestMatch
+
+- 根因：当前真实商品由卖家在 1688 明确选中并采集，job 没有选品候选池产生的 `bestMatch`；旧的一键内容节点因此会在付费 AI 前停止，旧 Payload 草稿还会把采购价回退为 0。
+- 修复：内容生成上下文允许精确绑定的当前 `candidateData` 直接进入，标记为 `seller_selected_capture`，不再强迫当前商品先跑无关的选品匹配。付费 AI 输入哈希加入 `pricingPreview`，价格变化会使旧回执失效。
+- 定价：无 `bestMatch` 时只复用当前 `sourceEvidence.snapshotHash` 严格绑定的 SKU 价格证据；要求 variants field、evidenceRef、稳定 source SKU 和正价格全部成立，取当前快照最高 SKU 价。陈旧、无绑定或不完整价格一律不进入 Payload。
+- 运行态：服务已重启；店铺 `3815760-4` 当前 Offer `993570366569` 显示 9 个 SKU 价格 2.2–2.2 CNY、售价 22.45 CNY、包装 50g / 10×10×10mm，当前没有必须人工填写字段，主动作仍只有“自动完成其余资料”。
+- 安全复审：原始 `variant.price` 不再能绕过快照证据重新进入 Payload；空/残缺 `bestMatch` 也不能跳过 capture 与 pricing preview 绑定。无可信价格时新旧两条 Payload 路径均 fail-closed，最终独立复审结论 Ready。
+- 验证：定向 382/382、全量 1330/1330、lint 76 files、offline acceptance 通过；未点击付费 AI，未调用 Seller API，未执行 Ozon 写入。可信类目佣金/结算证据仍缺失，因此利润保持未知且强预检不得伪装通过。
+
 ## 2026-07-24 G4-S1 付费 AI 内容回执与免重复扣费
 
 - 直接阻断：当前商品首次 AI 文案已返回、但 Payload 刷新或预检失败时，重试“一键自动完成”会再次调用付费模型。

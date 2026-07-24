@@ -1973,7 +1973,13 @@ async function updateRun(runId, updater) {
   return mutateStore((store) => {
     const index = store.items.findIndex((item) => item.id === runId);
     if (index < 0) throw new Error("工作流不存在: " + runId);
-    const next = updater({ ...store.items[index] });
+    const current = store.items[index];
+    if (current.submissionReservation?.state === "in_progress") {
+      const error = new Error("当前 Payload 正在提交，工作流已锁定，不能并发修改。");
+      error.code = "PAYLOAD_SUBMISSION_FENCE_ACTIVE";
+      throw error;
+    }
+    const next = updater({ ...current });
     next.updatedAt = nowIso();
     store.items[index] = next;
     return { value: next };
@@ -2891,14 +2897,93 @@ export async function applyPayloadDraftAttributeRepair(runId, input = {}) {
   };
 }
 
-export async function validatePayloadDraft(runId) {
+function paidAiDraftReceiptFailure(reasonCode, message) {
+  return {
+    ok: false,
+    reasonCode,
+    issues: [{
+      code: reasonCode,
+      message,
+    }],
+    nextAction: "重新运行“自动完成商品资料”，生成与当前商品一致的新草稿后再预检。",
+  };
+}
+
+async function validateRunPaidAiDraftReceipt(run = {}, deps = {}) {
+  const jobId = String(run.entity?.autoListingJobId || "").trim();
+  if (!jobId) return { ok: true, required: false };
+  const receipt = run.payloadDraft?.paidAiContentReceipt;
+  if (!receipt) {
+    return paidAiDraftReceiptFailure(
+      "PAID_AI_PAYLOAD_RECEIPT_REQUIRED",
+      "当前自动上架商品缺少 AI 内容回执，不能验证或提交旧草稿。",
+    );
+  }
+  let validator = deps.validatePaidAiPayloadDraftCurrent;
+  if (typeof validator !== "function") {
+    const module = await import("./autoListing.js");
+    validator = module.validatePaidAiPayloadDraftCurrent;
+  }
+  if (typeof validator !== "function") {
+    return paidAiDraftReceiptFailure(
+      "PAID_AI_PAYLOAD_VALIDATOR_REQUIRED",
+      "当前商品缺少 AI 内容当前性校验器，已停止预检。",
+    );
+  }
+  const expectedBinding = {
+    workflowRunId: String(run.id || "").trim(),
+    autoListingJobId: jobId,
+    captureId: String(run.entity?.candidateId || "").trim(),
+    storeId: String(run.entity?.storeId || "").trim(),
+    sourceSnapshotHash: String(run.entity?.sourceEvidence?.snapshotHash || "").trim(),
+  };
+  const checked = await validator(jobId, expectedBinding, receipt);
+  return { ...checked, required: true };
+}
+
+async function paidAiSubmissionFenceDeps(deps = {}) {
+  if (typeof deps.claimPaidAiSubmissionFence === "function"
+    && typeof deps.validatePaidAiSubmissionFence === "function"
+    && typeof deps.releasePaidAiSubmissionFence === "function") {
+    return deps;
+  }
+  const module = await import("./autoListing.js");
+  return {
+    ...deps,
+    claimPaidAiSubmissionFence: module.claimPaidAiSubmissionFence,
+    validatePaidAiSubmissionFence: module.validatePaidAiSubmissionFence,
+    releasePaidAiSubmissionFence: module.releasePaidAiSubmissionFence,
+  };
+}
+
+export async function validatePayloadDraft(runId, deps = {}) {
   const categoryCache = await loadCategoryCache();
+  const before = await getWorkflowRun(runId);
+  if (!before) throw new Error("工作流不存在: " + runId);
+  const beforeDraftHash = hashPayloadDraft(before.payloadDraft || {});
+  const aiReceiptCheck = await validateRunPaidAiDraftReceipt(before, deps);
+  if (!aiReceiptCheck.ok) {
+    await invalidatePayloadDraftValidation(runId, "paid_ai_payload_context_stale");
+    return aiReceiptCheck;
+  }
   const run = await updateRun(runId, (current) => {
     if (current.payloadDraftStale === true) {
       return {
         ...current,
         payloadDraftValidation: null,
         validatedDraftHash: "",
+        locks: { ...(current.locks || {}), submitLocked: true },
+      };
+    }
+    const currentDraftHash = hashPayloadDraft(current.payloadDraft || {});
+    if (currentDraftHash !== beforeDraftHash) {
+      return {
+        ...current,
+        payloadDraftValidation: null,
+        validatedDraftHash: "",
+        payloadDraftStale: true,
+        payloadDraftStaleReason: "payload_changed_during_preflight",
+        payloadDraftStaleAt: nowIso(),
         locks: { ...(current.locks || {}), submitLocked: true },
       };
     }
@@ -2911,7 +2996,18 @@ export async function validatePayloadDraft(runId) {
     return {
       ...current,
       payloadDraftHash: draftHash,
-      payloadDraftValidation: { ...validation, draftHash },
+      payloadDraftValidation: {
+        ...validation,
+        draftHash,
+        ...(aiReceiptCheck.required ? {
+          paidAiContentReceipt: {
+            version: String(before.payloadDraft?.paidAiContentReceipt?.version || ""),
+            binding: before.payloadDraft?.paidAiContentReceipt?.binding || {},
+            inputHash: String(aiReceiptCheck.inputHash || before.payloadDraft?.paidAiContentReceipt?.inputHash || ""),
+            contentHash: String(aiReceiptCheck.contentHash || before.payloadDraft?.paidAiContentReceipt?.contentHash || ""),
+          },
+        } : {}),
+      },
       locks: { ...(current.locks || {}), submitLocked: !validation.ok },
     };
   });
@@ -2926,6 +3022,11 @@ export async function validatePayloadDraft(runId) {
       nextAction: "重新生成当前商品 Payload 草稿后再预检",
     };
   }
+  const finalAiReceiptCheck = await validateRunPaidAiDraftReceipt(run, deps);
+  if (!finalAiReceiptCheck.ok) {
+    await invalidatePayloadDraftValidation(runId, "paid_ai_payload_context_stale");
+    return finalAiReceiptCheck;
+  }
   return run.payloadDraftValidation;
 }
 
@@ -2938,7 +3039,7 @@ function extractTaskId(result = {}) {
   return result?.result?.task_id || result?.result?.taskId || result?.task_id || result?.taskId || "";
 }
 
-function reservePayloadSubmission(runId, draftHash, storeId) {
+function reservePayloadSubmission(runId, draftHash, storeId, paidAiReceipt = null) {
   return mutateStore((store) => {
     const index = store.items.findIndex((item) => item.id === runId);
     if (index < 0) throw new Error("工作流不存在: " + runId);
@@ -2964,6 +3065,14 @@ function reservePayloadSubmission(runId, draftHash, storeId) {
       state: "in_progress",
       draftHash,
       storeId,
+      ...(paidAiReceipt ? {
+        paidAiReceipt: {
+          version: String(paidAiReceipt.version || ""),
+          binding: paidAiReceipt.binding || {},
+          inputHash: String(paidAiReceipt.inputHash || ""),
+          contentHash: String(paidAiReceipt.contentHash || ""),
+        },
+      } : {}),
       reservedAt: nowIso(),
     };
     store.items[index] = {
@@ -3007,6 +3116,25 @@ function finishPayloadSubmissionReservation(runId, draftHash, state, summary = {
   });
 }
 
+function cancelPayloadSubmissionReservation(runId, draftHash) {
+  return mutateStore((store) => {
+    const index = store.items.findIndex((item) => item.id === runId);
+    if (index < 0) throw new Error("工作流不存在: " + runId);
+    const run = store.items[index];
+    if (run.submissionReservation?.state !== "in_progress"
+      || run.submissionReservation?.draftHash !== draftHash) {
+      return { write: false, value: false };
+    }
+    const { submissionReservation, ...runWithoutReservation } = run;
+    store.items[index] = {
+      ...runWithoutReservation,
+      locks: { ...(run.locks || {}), submitLocked: true },
+      updatedAt: nowIso(),
+    };
+    return { value: true };
+  });
+}
+
 export async function submitPayloadDraftToOzon(runId, input = {}, deps = {}) {
   let run = await getWorkflowRun(runId);
   if (!run) throw new Error("工作流不存在: " + runId);
@@ -3019,6 +3147,16 @@ export async function submitPayloadDraftToOzon(runId, input = {}, deps = {}) {
       status: "blocked",
       reasonCode: "PAYLOAD_DRAFT_STALE",
       message: "商品资料已变化，旧 Payload 已失效；请先生成新草稿并重新预检。",
+    };
+  }
+  const aiReceiptCheck = await validateRunPaidAiDraftReceipt(run, deps);
+  if (!aiReceiptCheck.ok) {
+    await invalidatePayloadDraftValidation(runId, "paid_ai_payload_context_stale");
+    return {
+      ...aiReceiptCheck,
+      status: "blocked",
+      message: aiReceiptCheck.error || aiReceiptCheck.issues?.[0]?.message || "AI 内容回执已失效。",
+      submittedToOzon: false,
     };
   }
   const existingReservation = run.submissionReservation;
@@ -3189,10 +3327,33 @@ export async function submitPayloadDraftToOzon(runId, input = {}, deps = {}) {
     };
   }
 
+  run = await getWorkflowRun(runId);
+  const finalDraftHash = hashPayloadDraft(run?.payloadDraft || {});
+  if (!run || run.payloadDraftStale === true || finalDraftHash !== currentDraftHash) {
+    return {
+      ok: false,
+      status: "blocked",
+      reasonCode: "PAYLOAD_DRAFT_STALE",
+      message: "商品资料在确认期间发生变化，旧 Payload 已失效；请重新预检并确认。",
+      submittedToOzon: false,
+    };
+  }
+  const finalAiReceiptCheck = await validateRunPaidAiDraftReceipt(run, deps);
+  if (!finalAiReceiptCheck.ok) {
+    await invalidatePayloadDraftValidation(runId, "paid_ai_payload_context_stale");
+    return {
+      ...finalAiReceiptCheck,
+      status: "blocked",
+      message: finalAiReceiptCheck.error || finalAiReceiptCheck.issues?.[0]?.message || "AI 内容回执已失效。",
+      submittedToOzon: false,
+    };
+  }
+
   const getStore = requireSubmitDep(deps, "getStore");
   const ozonRequest = requireSubmitDep(deps, "ozonRequest");
   const store = getStore(storeId);
-  const reservation = await reservePayloadSubmission(runId, currentDraftHash, storeId);
+  const paidAiReceipt = run.payloadDraft?.paidAiContentReceipt || null;
+  const reservation = await reservePayloadSubmission(runId, currentDraftHash, storeId, paidAiReceipt);
   if (!reservation.acquired) {
     if (reservation.status === "stale") {
       return {
@@ -3227,12 +3388,78 @@ export async function submitPayloadDraftToOzon(runId, input = {}, deps = {}) {
       message: "同一 Payload 草稿已有提交占位，不能重复提交。",
     };
   }
+  let paidAiFence = null;
+  let fenceDeps = null;
+  const autoListingJobId = String(run.entity?.autoListingJobId || "").trim();
+  if (autoListingJobId) {
+    try {
+      fenceDeps = await paidAiSubmissionFenceDeps(deps);
+      const expectedBinding = {
+        workflowRunId: String(run.id || "").trim(),
+        autoListingJobId,
+        captureId: String(run.entity?.candidateId || "").trim(),
+        storeId: String(run.entity?.storeId || "").trim(),
+        sourceSnapshotHash: String(run.entity?.sourceEvidence?.snapshotHash || "").trim(),
+      };
+      paidAiFence = await fenceDeps.claimPaidAiSubmissionFence(
+        autoListingJobId,
+        expectedBinding,
+        paidAiReceipt,
+        currentDraftHash,
+      );
+      if (!paidAiFence?.ok) {
+        await cancelPayloadSubmissionReservation(runId, currentDraftHash);
+        return {
+          ...paidAiFence,
+          ok: false,
+          status: "blocked",
+          submittedToOzon: false,
+        };
+      }
+      const fencedRun = await getWorkflowRun(runId);
+      const workflowFenceValid = fencedRun?.submissionReservation?.state === "in_progress"
+        && fencedRun.submissionReservation?.draftHash === currentDraftHash
+        && hashPayloadDraft(fencedRun.payloadDraft || {}) === currentDraftHash;
+      const currentFence = await fenceDeps.validatePaidAiSubmissionFence(
+        autoListingJobId,
+        expectedBinding,
+        paidAiFence.token,
+        currentDraftHash,
+      );
+      if (!workflowFenceValid || !currentFence?.ok) {
+        await fenceDeps.releasePaidAiSubmissionFence(autoListingJobId, paidAiFence.token).catch(() => {});
+        await cancelPayloadSubmissionReservation(runId, currentDraftHash);
+        return {
+          ok: false,
+          status: "blocked",
+          reasonCode: currentFence?.reasonCode || "PAYLOAD_SUBMISSION_FENCE_STALE",
+          message: currentFence?.error || "当前商品或 Payload 在提交锁定期间发生变化，未调用 Ozon。",
+          submittedToOzon: false,
+        };
+      }
+    } catch {
+      if (paidAiFence?.ok && fenceDeps?.releasePaidAiSubmissionFence) {
+        await fenceDeps.releasePaidAiSubmissionFence(autoListingJobId, paidAiFence.token).catch(() => {});
+      }
+      await cancelPayloadSubmissionReservation(runId, currentDraftHash).catch(() => {});
+      return {
+        ok: false,
+        status: "blocked",
+        reasonCode: "PAID_AI_SUBMISSION_FENCE_FAILED",
+        message: "提交安全锁建立失败，未调用 Ozon；可以安全重试。",
+        submittedToOzon: false,
+      };
+    }
+  }
   const submitPayload = { items };
   const submissionSummary = buildPayloadSubmissionSummary(items);
   let result;
   try {
     result = await ozonRequest(store, "/v3/product/import", submitPayload);
   } catch {
+    if (paidAiFence?.ok) {
+      await fenceDeps.releasePaidAiSubmissionFence(autoListingJobId, paidAiFence.token).catch(() => {});
+    }
     await finishPayloadSubmissionReservation(runId, currentDraftHash, "needs_review", {
       reasonCode: "OZON_SUBMISSION_OUTCOME_UNKNOWN",
     });
@@ -3242,6 +3469,9 @@ export async function submitPayloadDraftToOzon(runId, input = {}, deps = {}) {
       reasonCode: "OZON_SUBMISSION_OUTCOME_UNKNOWN",
       message: "Ozon 提交结果未知，必须人工回查；系统不会自动重试。",
     };
+  }
+  if (paidAiFence?.ok) {
+    await fenceDeps.releasePaidAiSubmissionFence(autoListingJobId, paidAiFence.token).catch(() => {});
   }
   const taskId = extractTaskId(result);
   // A 2xx response without a task id cannot be reconciled to an Ozon import

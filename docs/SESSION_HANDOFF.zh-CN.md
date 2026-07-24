@@ -1,5 +1,15 @@
 # Ozon ERP 会话接管与恢复记录
 
+## 2026-07-24 G4-S1 付费 AI 内容回执与免重复扣费
+
+- 直接阻断：当前商品首次 AI 文案已返回、但 Payload 刷新或预检失败时，重试“一键自动完成”会再次调用付费模型。
+- 修复：成功生成后保存 `paid_ai_content_v1` 回执，绑定 workflow/job/capture/store/source snapshot、生成输入哈希和文案内容哈希；完全一致时重试只复用文案、重建 Payload 并继续强预检，返回 `paidAiCalled=false`。
+- 任一商品输入、类目、文案内容或绑定发生变化，回执立即失效；需要再次生成时仍必须针对当前商品明确确认。未放宽 Ozon 提交门。
+- 并发与超时：同一商品由原子 lease 取得生成权；模型请求默认 2 分钟、硬上限 5 分钟，短于 15 分钟 lease。请求超时/连接中断视为费用结果未知，保留 lease，禁止立即重复调用。
+- canonical 总闸：普通预检接口、一键链路和提交接口都强制重验当前 auto-listing job 与草稿 `paid_ai_content_v1` 回执；缺失、被 PUT 删除、绑定变化、输入变化或内容变化都会作废旧预检。
+- 提交竞态：workflow reservation 与 job submission fence 同时绑定 draft hash、五字段 binding、input/content hash；有效 fence 期间任何 job/workflow 并发修改都会被拒绝，Ozon 调用前再次核对两侧 fence。锁建立异常会释放 job fence 并取消 workflow reservation。
+- 验证：定向安全边界 339/339、全量 1327/1327、lint 76 files、offline acceptance 通过；独立复审最终结论 Ready。本轮没有真实模型调用、Seller API 写入或 Ozon 提交。
+
 ## 2026-07-24 G3-S1 真实类目回执与商品页联动完成
 
 - 已建立绑定 `local-read-2026-07-24` 和四店铺范围的 signed ERP session，并对当前店铺 `3815760-4` 执行真实白名单 Seller API 类目只读。

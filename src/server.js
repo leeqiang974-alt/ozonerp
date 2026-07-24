@@ -120,6 +120,10 @@ import {
   completeListing,
   rerunAutoListingMatch,
   rerunAutoListingContent,
+  validatePaidAiPayloadDraftCurrent,
+  claimPaidAiSubmissionFence,
+  validatePaidAiSubmissionFence,
+  releasePaidAiSubmissionFence,
   requestAutoListingNewSource,
   reconcileSubmittedJobs,
   buildSubmittedReconciliationSellerResult,
@@ -177,6 +181,7 @@ import {
   retryWorkflowAfterManualFix,
   retryWorkflowNode,
   savePayloadDraft,
+  invalidatePayloadDraftValidation,
   submitPayloadDraftToOzon,
   reconcileWorkflowTaskReadback,
   upsertWorkflowNode,
@@ -1994,7 +1999,9 @@ app.post("/api/1688/captures/:id/preflight", asyncRoute(async (req, res) => {
     res.status(400).json({ ...binding, sideEffect: "仅尝试绑定本地商品工作流；未调用 Ozon、未提交写入。" });
     return;
   }
-  const validation = await validatePayloadDraft(binding.workflowRunId);
+  const validation = await validatePayloadDraft(binding.workflowRunId, {
+    validatePaidAiPayloadDraftCurrent,
+  });
   const run = await getWorkflowRun(binding.workflowRunId);
   const passed = validation?.ok === true;
   res.json({
@@ -2326,6 +2333,8 @@ app.post("/api/workflows/:id/nodes/:key/continue", asyncRoute(async (req, res) =
     getWorkflowRun,
     updateCrawlerTaskStatus,
     validatePayloadDraft,
+    validatePaidAiPayloadDraftCurrent,
+    invalidatePayloadDraftValidation,
     rerunAutoListingMatch,
     rerunAutoListingContent,
     retryWorkflowAfterManualFix,
@@ -2338,6 +2347,8 @@ app.post("/api/workflows/:id/controlled-chain", asyncRoute(async (req, res) => {
     getWorkflowRun,
     updateCrawlerTaskStatus,
     validatePayloadDraft,
+    validatePaidAiPayloadDraftCurrent,
+    invalidatePayloadDraftValidation,
     rerunAutoListingMatch,
     rerunAutoListingContent,
     retryWorkflowAfterManualFix,
@@ -2376,7 +2387,9 @@ app.put("/api/workflows/:id/payload-draft", asyncRoute(async (req, res) => {
 }));
 
 app.post("/api/workflows/:id/payload-draft/validate", asyncRoute(async (req, res) => {
-  const result = await validatePayloadDraft(req.params.id);
+  const result = await validatePayloadDraft(req.params.id, {
+    validatePaidAiPayloadDraftCurrent,
+  });
   res.status(result?.reasonCode === "PAYLOAD_DRAFT_STALE" ? 409 : 200).json(result);
 }));
 
@@ -2451,6 +2464,7 @@ app.post("/api/workflows/:id/request-preflight-recheck", asyncRoute(async (req, 
     getWorkflowRun,
     updateCrawlerTaskStatus,
     validatePayloadDraft,
+    validatePaidAiPayloadDraftCurrent,
     rerunAutoListingMatch,
     rerunAutoListingContent,
     retryWorkflowAfterManualFix,
@@ -2468,6 +2482,10 @@ app.post("/api/workflows/:id/payload-draft/submit", requireListingSubmitRole, as
   res.json(await submitPayloadDraftToOzon(req.params.id, { ...body, confirmSubmit }, {
     getStore,
     ozonRequest,
+    validatePaidAiPayloadDraftCurrent,
+    claimPaidAiSubmissionFence,
+    validatePaidAiSubmissionFence,
+    releasePaidAiSubmissionFence,
   }));
 }));
 

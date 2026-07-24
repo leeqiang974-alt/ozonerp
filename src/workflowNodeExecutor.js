@@ -128,7 +128,9 @@ export async function continueWorkflowNode(runId, nodeKey, body = {}, deps = {})
     actions.push("crawler_resumed");
   } else if (key === "preflight_check" && run.payloadDraft) {
     const validatePayloadDraft = requireDep(deps, "validatePayloadDraft");
-    result = await validatePayloadDraft(runId);
+    result = await validatePayloadDraft(runId, {
+      validatePaidAiPayloadDraftCurrent: deps.validatePaidAiPayloadDraftCurrent,
+    });
     actions.push("payload_draft_validated");
   } else if (key === "match_profit" && run.entity?.autoListingJobId) {
     const authorization = validatePaidAiAuthorization(run, body);
@@ -259,6 +261,9 @@ export async function runControlledWorkflowChain(runId, body = {}, deps = {}) {
   const reachedPreflight = steps.some((step) => (
     step.node === "preflight_check" && (step.ok !== false || step.nodeExecuted === true)
   ));
+  const preflightStepSucceeded = steps.some((step) => (
+    step.node === "preflight_check" && step.ok !== false && step.result?.ok !== false
+  ));
   const draftHash = String(finalRun?.payloadDraftHash || "").trim();
   const validatedDraftHash = String(
     finalRun?.validatedDraftHash
@@ -266,6 +271,7 @@ export async function runControlledWorkflowChain(runId, body = {}, deps = {}) {
     || "",
   ).trim();
   const preflightPassed = reachedPreflight
+    && preflightStepSucceeded
     && finalRun?.payloadDraftValidation?.ok === true
     && Boolean(draftHash)
     && draftHash === validatedDraftHash;

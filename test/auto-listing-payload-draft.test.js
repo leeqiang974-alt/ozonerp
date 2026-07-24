@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { applyManualSellerInputsToJob, buildListingPayloadDraftFromJob, categoryCacheForListingEvidence, categoryReadPolicyForListing, paidAiJobBinding, sourceEvidenceBindingForListing, sourceVariantsForListing, validatePaidAiJobBinding } from "../src/autoListing.js";
+import { applyManualSellerInputsToJob, buildListingPayloadDraftFromJob, buildPaidAiContentReceipt, categoryCacheForListingEvidence, categoryReadPolicyForListing, paidAiJobBinding, reusablePaidAiContentReceipt, sourceEvidenceBindingForListing, sourceVariantsForListing, validatePaidAiJobBinding } from "../src/autoListing.js";
 import {
   buildRequiredAttributeManualBacklog,
   buildRequiredAttributeApprovalDraftPreview,
@@ -18,6 +18,7 @@ test("paid AI job authorization binds the actual job to workflow capture store a
     candidateId: "capture_paid",
     storeId: "store_paid",
     candidateData: {
+      title: "猫咪胸针",
       sourceEvidence: { snapshotHash: "sha256:paid" },
     },
   };
@@ -33,6 +34,45 @@ test("paid AI job authorization binds the actual job to workflow capture store a
   assert.equal(validatePaidAiJobBinding(job, binding).ok, true);
   assert.equal(validatePaidAiJobBinding(job, { ...binding, captureId: "capture_stale" }).ok, false);
   assert.equal(validatePaidAiJobBinding(job, { ...binding, sourceSnapshotHash: "" }).ok, false);
+});
+
+test("paid AI content receipt is reusable only for the exact bound product and unchanged content", () => {
+  const job = {
+    id: "al_paid",
+    workflowRunId: "wr_paid",
+    candidateId: "capture_paid",
+    storeId: "store_paid",
+    candidateData: {
+      sourceEvidence: { snapshotHash: "sha256:paid" },
+    },
+    listingContent: {
+      title_ru: "Брошь кошка",
+      description_ru: "Металлическая брошь в форме кошки.",
+    },
+  };
+  const binding = paidAiJobBinding(job);
+  const receipt = buildPaidAiContentReceipt(job, job.listingContent, binding, {
+    generatedAt: "2026-07-24T12:00:00.000Z",
+  });
+  const withReceipt = { ...job, paidAiContentReceipt: receipt };
+
+  assert.equal(reusablePaidAiContentReceipt(withReceipt, binding).ok, true);
+  assert.equal(reusablePaidAiContentReceipt({
+    ...withReceipt,
+    listingContent: { ...job.listingContent, title_ru: "Измененный заголовок" },
+  }, binding).ok, false);
+  assert.equal(reusablePaidAiContentReceipt({
+    ...withReceipt,
+    candidateData: { ...job.candidateData, title: "另一个商品" },
+  }, binding).ok, false);
+  assert.equal(reusablePaidAiContentReceipt({
+    ...withReceipt,
+    autoCategory: { description_category_id: 1, type_id: 2 },
+  }, binding).ok, false);
+  assert.equal(reusablePaidAiContentReceipt(withReceipt, { ...binding, storeId: "other-store" }).ok, false);
+  assert.equal(receipt.generatedAt, "2026-07-24T12:00:00.000Z");
+  assert.match(receipt.contentHash, /^sha256:[a-f0-9]{64}$/);
+  assert.match(receipt.inputHash, /^sha256:[a-f0-9]{64}$/);
 });
 
 test("1688 listing policy carries exact-store category read receipts into re-preflight", () => {

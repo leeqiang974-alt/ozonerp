@@ -1,5 +1,6 @@
 import fs from "node:fs/promises";
 import path from "node:path";
+import { createHash, randomUUID } from "node:crypto";
 import { createCrawlerTask } from "./crawler1688.js";
 import { listCrawlerCandidates } from "./crawler1688.js";
 import { getCollectionItem } from "./collectionBox.js";
@@ -399,7 +400,31 @@ async function readJobs() {
 }
 async function mutateJobs(mutator) {
   const run = jobsMutationChain.catch(function() {}).then(async function() {
-    return JobRepository.mutateAutoListingJobs(JOB_FILE, mutator);
+    return JobRepository.mutateAutoListingJobs(JOB_FILE, async function(jobs) {
+      const fencedJobs = new Map(jobs
+        .filter((job) => {
+          const expiresAtMs = Date.parse(String(job.paidAiSubmissionFence?.expiresAt || ""));
+          return job.paidAiSubmissionFence?.token && Number.isFinite(expiresAtMs) && expiresAtMs > Date.now();
+        })
+        .map((job) => [job.id, {
+          binding: canonicalReceiptJson(paidAiJobBinding(job)),
+          inputHash: paidAiContentInputHash(job),
+          contentHash: paidAiContentHash(job.listingContent || {}),
+        }]));
+      const result = await mutator(jobs);
+      for (const [jobId, before] of fencedJobs) {
+        const current = jobs.find((job) => job.id === jobId);
+        if (!current
+          || canonicalReceiptJson(paidAiJobBinding(current)) !== before.binding
+          || paidAiContentInputHash(current) !== before.inputHash
+          || paidAiContentHash(current.listingContent || {}) !== before.contentHash) {
+          const error = new Error("当前商品正在提交，不能修改 AI 生成输入或文案。");
+          error.code = "PAID_AI_SUBMISSION_FENCE_ACTIVE";
+          throw error;
+        }
+      }
+      return result;
+    });
   });
   jobsMutationChain = run.catch(function() {});
   return run;
@@ -2493,6 +2518,14 @@ async function saveWorkflowPayloadDraftForListingJob(job = {}) {
     parentSku,
   });
   draft.sourceEvidenceReview = job.candidateData?.sourceEvidence || null;
+  const reusableAiContent = reusablePaidAiContentReceipt(job, paidAiJobBinding(job));
+  draft.paidAiContentReceipt = reusableAiContent.ok ? {
+    version: reusableAiContent.receipt.version,
+    binding: reusableAiContent.receipt.binding,
+    inputHash: reusableAiContent.inputHash,
+    contentHash: reusableAiContent.contentHash,
+    generatedAt: reusableAiContent.receipt.generatedAt,
+  } : null;
   const contentSummary = contentGenerationWorkflowSummary(
     job.listingContent || {},
     job.candidateData || {},
@@ -2510,6 +2543,7 @@ async function saveWorkflowPayloadDraftForListingJob(job = {}) {
     variantCount: Number(draft.summary?.variantCount || draft.items?.length || 0),
     savedCategory,
     savedCategoryIdsValid,
+    paidAiContentReceipt: draft.paidAiContentReceipt,
     ...categoryReadPolicy,
   };
   await savePayloadDraft(workflowRun.id, draft, {
@@ -3097,6 +3131,323 @@ export function paidAiJobBinding(job = {}) {
   };
 }
 
+function canonicalReceiptJson(value) {
+  if (Array.isArray(value)) return `[${value.map(canonicalReceiptJson).join(",")}]`;
+  if (value && typeof value === "object") {
+    return `{${Object.keys(value).sort().map((key) => `${JSON.stringify(key)}:${canonicalReceiptJson(value[key])}`).join(",")}}`;
+  }
+  return JSON.stringify(value);
+}
+
+function paidAiContentHash(listingContent = {}) {
+  return `sha256:${createHash("sha256").update(canonicalReceiptJson(listingContent || {}), "utf8").digest("hex")}`;
+}
+
+function paidAiContentInputHash(job = {}) {
+  const generationInput = {
+    candidateData: job.candidateData || {},
+    bestMatch: job.bestMatch || {},
+    ozonContext: job.ozonContext || {},
+    ozonTitle: job.ozonTitle || "",
+    ozonPrice: job.ozonPrice || 0,
+    ozonUrl: job.ozonUrl || "",
+    category: job.manualCategory || job.autoCategory || job.categoryDecision?.selected || null,
+  };
+  return `sha256:${createHash("sha256").update(canonicalReceiptJson(generationInput), "utf8").digest("hex")}`;
+}
+
+const PAID_AI_CONTENT_LEASE_TTL_MS = 15 * 60 * 1000;
+
+export function buildPaidAiContentReceipt(job = {}, listingContent = {}, expectedBinding = {}, options = {}) {
+  const authorization = validatePaidAiJobBinding(job, expectedBinding);
+  if (!authorization.ok) return null;
+  return {
+    version: "paid_ai_content_v1",
+    binding: authorization.binding,
+    inputHash: paidAiContentInputHash(job),
+    contentHash: paidAiContentHash(listingContent),
+    generatedAt: String(options.generatedAt || nowIso()),
+  };
+}
+
+export function reusablePaidAiContentReceipt(job = {}, expectedBinding = {}) {
+  const authorization = validatePaidAiJobBinding(job, expectedBinding);
+  if (!authorization.ok) return authorization;
+  const receipt = job.paidAiContentReceipt || {};
+  const bindingMatches = receipt.version === "paid_ai_content_v1"
+    && ["workflowRunId", "autoListingJobId", "captureId", "storeId", "sourceSnapshotHash"]
+      .every((key) => String(receipt.binding?.[key] || "") === String(authorization.binding[key] || ""));
+  const currentHash = paidAiContentHash(job.listingContent || {});
+  const currentInputHash = paidAiContentInputHash(job);
+  if (!bindingMatches || !/^sha256:[a-f0-9]{64}$/i.test(String(receipt.contentHash || ""))
+    || !/^sha256:[a-f0-9]{64}$/i.test(String(receipt.inputHash || ""))
+    || receipt.contentHash !== currentHash || receipt.inputHash !== currentInputHash) {
+    return {
+      ok: false,
+      reasonCode: "PAID_AI_CONTENT_RECEIPT_STALE",
+      error: "现有 AI 文案与当前商品、店铺、来源快照或内容不一致，不能免付费复用。",
+    };
+  }
+  return {
+    ok: true,
+    receipt,
+    binding: authorization.binding,
+    contentHash: currentHash,
+    inputHash: currentInputHash,
+  };
+}
+
+async function claimPaidAiContentWork(jobId, expectedBinding, { forcePaidAiRegeneration = false } = {}) {
+  const token = randomUUID();
+  let result = {
+    ok: false,
+    reasonCode: "PAID_AI_CONTENT_CLAIM_FAILED",
+    error: "未能取得当前商品的 AI 内容处理权。",
+  };
+  await mutateJobs(async function(jobs) {
+    const idx = jobs.findIndex((item) => item.id === jobId);
+    if (idx === -1) {
+      result = { ok: false, reasonCode: "AUTO_LISTING_JOB_NOT_FOUND", error: "自动上架任务不存在: " + jobId };
+      return;
+    }
+    const current = jobs[idx];
+    const authorization = validatePaidAiJobBinding(current, expectedBinding);
+    if (!authorization.ok) {
+      result = authorization;
+      return;
+    }
+    const activeLease = current.paidAiContentLease || {};
+    const startedAtMs = Date.parse(String(activeLease.startedAt || ""));
+    const leaseFresh = activeLease.token
+      && Number.isFinite(startedAtMs)
+      && Date.now() - startedAtMs < PAID_AI_CONTENT_LEASE_TTL_MS;
+    if (leaseFresh) {
+      result = {
+        ok: false,
+        reasonCode: "PAID_AI_CONTENT_ALREADY_RUNNING",
+        error: "当前商品正在生成或复用 AI 文案，本次没有再次调用付费模型。",
+        paidAiCalled: false,
+      };
+      return;
+    }
+    const inputHash = paidAiContentInputHash(current);
+    const reusable = reusablePaidAiContentReceipt(current, expectedBinding);
+    const mode = reusable.ok && !forcePaidAiRegeneration ? "reuse" : "generate";
+    jobs[idx] = {
+      ...current,
+      paidAiContentLease: {
+        token,
+        mode,
+        binding: authorization.binding,
+        inputHash,
+        startedAt: nowIso(),
+      },
+      updatedAt: nowIso(),
+    };
+    result = {
+      ok: true,
+      token,
+      mode,
+      inputHash,
+      job: jobs[idx],
+      reusableReceipt: reusable.ok ? reusable.receipt : null,
+    };
+  });
+  return result;
+}
+
+async function releasePaidAiContentWork(jobId, token) {
+  await mutateJobs(async function(jobs) {
+    const idx = jobs.findIndex((item) => item.id === jobId);
+    if (idx === -1 || String(jobs[idx].paidAiContentLease?.token || "") !== String(token || "")) return;
+    const { paidAiContentLease, ...jobWithoutLease } = jobs[idx];
+    jobs[idx] = { ...jobWithoutLease, updatedAt: nowIso() };
+  });
+}
+
+async function commitPaidAiGeneratedContent(jobId, expectedBinding, claim, listingContent, visualCard) {
+  let result = {
+    ok: false,
+    reasonCode: "PAID_AI_CONTENT_CONTEXT_CHANGED",
+    error: "AI 运行期间当前商品输入已变化，系统未写入旧内容。",
+  };
+  await mutateJobs(async function(jobs) {
+    const idx = jobs.findIndex((item) => item.id === jobId);
+    if (idx === -1) return;
+    const current = jobs[idx];
+    const authorization = validatePaidAiJobBinding(current, expectedBinding);
+    const leaseMatches = String(current.paidAiContentLease?.token || "") === String(claim.token || "")
+      && current.paidAiContentLease?.mode === "generate";
+    const inputMatches = paidAiContentInputHash(current) === claim.inputHash;
+    if (!authorization.ok || !leaseMatches || !inputMatches) {
+      result = authorization.ok ? result : authorization;
+      return;
+    }
+    const receipt = buildPaidAiContentReceipt(current, listingContent, expectedBinding);
+    if (!receipt || receipt.inputHash !== claim.inputHash) return;
+    jobs[idx] = {
+      ...current,
+      status: "ready_for_listing",
+      stage: "guided",
+      error: "",
+      reasonCode: "",
+      listingContent,
+      visualCard,
+      paidAiContentReceipt: receipt,
+      paidAiContentLease: {
+        ...current.paidAiContentLease,
+        phase: "payload_refresh",
+      },
+      updatedAt: nowIso(),
+    };
+    result = { ok: true, job: jobs[idx], receipt };
+  });
+  return result;
+}
+
+async function finalizePaidAiContentWork(jobId, expectedBinding, claim) {
+  let result = {
+    ok: false,
+    reasonCode: "PAID_AI_CONTENT_CONTEXT_CHANGED",
+    error: "Payload 刷新期间当前商品输入或 AI 文案已变化，旧草稿不能继续预检。",
+  };
+  await mutateJobs(async function(jobs) {
+    const idx = jobs.findIndex((item) => item.id === jobId);
+    if (idx === -1) return;
+    const current = jobs[idx];
+    const leaseMatches = String(current.paidAiContentLease?.token || "") === String(claim.token || "");
+    const reusable = reusablePaidAiContentReceipt(current, expectedBinding);
+    if (!leaseMatches || !reusable.ok || reusable.inputHash !== claim.inputHash) return;
+    const { paidAiContentLease, ...jobWithoutLease } = current;
+    jobs[idx] = { ...jobWithoutLease, updatedAt: nowIso() };
+    result = { ok: true, job: jobs[idx], receipt: reusable.receipt };
+  });
+  return result;
+}
+
+export async function validatePaidAiPayloadDraftCurrent(jobId, expectedBinding, draftReceipt = {}) {
+  let result = {
+    ok: false,
+    reasonCode: "PAID_AI_PAYLOAD_CONTEXT_STALE",
+    error: "当前商品输入或 AI 文案已变化，旧 Payload 不能通过提交前预检。",
+  };
+  await mutateJobs(async function(jobs) {
+    const current = jobs.find((item) => item.id === jobId);
+    if (!current) {
+      result = {
+        ok: false,
+        reasonCode: "AUTO_LISTING_JOB_NOT_FOUND",
+        error: "当前商品对应的自动上架任务不存在。",
+      };
+      return;
+    }
+    const reusable = reusablePaidAiContentReceipt(current, expectedBinding);
+    if (!reusable.ok) {
+      result = {
+        ...result,
+        reasonCode: reusable.reasonCode || result.reasonCode,
+        error: reusable.error || result.error,
+      };
+      return;
+    }
+    const receiptMatches = String(draftReceipt.version || "") === String(reusable.receipt.version || "")
+      && canonicalReceiptJson(draftReceipt.binding || {}) === canonicalReceiptJson(reusable.receipt.binding || {})
+      && String(draftReceipt.inputHash || "") === String(reusable.inputHash || "")
+      && String(draftReceipt.contentHash || "") === String(reusable.contentHash || "");
+    if (!receiptMatches) return;
+    result = {
+      ok: true,
+      receipt: reusable.receipt,
+      inputHash: reusable.inputHash,
+      contentHash: reusable.contentHash,
+    };
+  });
+  return result;
+}
+
+const PAID_AI_SUBMISSION_FENCE_TTL_MS = 10 * 60 * 1000;
+
+export async function claimPaidAiSubmissionFence(jobId, expectedBinding, draftReceipt = {}, draftHash = "") {
+  const token = randomUUID();
+  let result = {
+    ok: false,
+    reasonCode: "PAID_AI_SUBMISSION_FENCE_FAILED",
+    error: "未能锁定当前商品的 AI 内容版本，禁止提交。",
+  };
+  await mutateJobs(async function(jobs) {
+    const idx = jobs.findIndex((item) => item.id === jobId);
+    if (idx === -1) return;
+    const current = jobs[idx];
+    const reusable = reusablePaidAiContentReceipt(current, expectedBinding);
+    const receiptMatches = reusable.ok
+      && String(draftReceipt.version || "") === String(reusable.receipt.version || "")
+      && canonicalReceiptJson(draftReceipt.binding || {}) === canonicalReceiptJson(reusable.receipt.binding || {})
+      && String(draftReceipt.inputHash || "") === String(reusable.inputHash || "")
+      && String(draftReceipt.contentHash || "") === String(reusable.contentHash || "");
+    if (!receiptMatches || !String(draftHash || "").trim()) return;
+    const active = current.paidAiSubmissionFence || {};
+    const activeExpiresAt = Date.parse(String(active.expiresAt || ""));
+    if (active.token && Number.isFinite(activeExpiresAt) && activeExpiresAt > Date.now()) {
+      result = {
+        ok: false,
+        reasonCode: "PAID_AI_SUBMISSION_FENCE_ACTIVE",
+        error: "当前商品已有提交正在进行，不能重复提交。",
+      };
+      return;
+    }
+    const claimedAt = nowIso();
+    jobs[idx] = {
+      ...current,
+      paidAiSubmissionFence: {
+        token,
+        workflowRunId: String(expectedBinding.workflowRunId || ""),
+        draftHash: String(draftHash),
+        inputHash: reusable.inputHash,
+        contentHash: reusable.contentHash,
+        claimedAt,
+        expiresAt: new Date(Date.parse(claimedAt) + PAID_AI_SUBMISSION_FENCE_TTL_MS).toISOString(),
+      },
+      updatedAt: nowIso(),
+    };
+    result = { ok: true, token, job: jobs[idx] };
+  });
+  return result;
+}
+
+export async function validatePaidAiSubmissionFence(jobId, expectedBinding, token, draftHash = "") {
+  let result = {
+    ok: false,
+    reasonCode: "PAID_AI_SUBMISSION_FENCE_STALE",
+    error: "当前商品的提交锁已失效，禁止调用 Ozon。",
+  };
+  await mutateJobs(async function(jobs) {
+    const current = jobs.find((item) => item.id === jobId);
+    if (!current) return;
+    const reusable = reusablePaidAiContentReceipt(current, expectedBinding);
+    const fence = current.paidAiSubmissionFence || {};
+    const expiresAtMs = Date.parse(String(fence.expiresAt || ""));
+    if (!reusable.ok
+      || String(fence.token || "") !== String(token || "")
+      || String(fence.workflowRunId || "") !== String(expectedBinding.workflowRunId || "")
+      || String(fence.draftHash || "") !== String(draftHash || "")
+      || String(fence.inputHash || "") !== String(reusable.inputHash || "")
+      || String(fence.contentHash || "") !== String(reusable.contentHash || "")
+      || !Number.isFinite(expiresAtMs)
+      || expiresAtMs <= Date.now()) return;
+    result = { ok: true, fence };
+  });
+  return result;
+}
+
+export async function releasePaidAiSubmissionFence(jobId, token) {
+  await mutateJobs(async function(jobs) {
+    const idx = jobs.findIndex((item) => item.id === jobId);
+    if (idx === -1 || String(jobs[idx].paidAiSubmissionFence?.token || "") !== String(token || "")) return;
+    const { paidAiSubmissionFence, ...jobWithoutFence } = jobs[idx];
+    jobs[idx] = { ...jobWithoutFence, updatedAt: nowIso() };
+  });
+}
+
 export function validatePaidAiJobBinding(job = {}, expected = {}) {
   const actualBinding = paidAiJobBinding(job);
   const bindingKeys = [
@@ -3579,14 +3930,19 @@ function ozonItemFromMatchedJob(job = {}) {
 }
 
 export async function rerunAutoListingContent(jobId, options = {}) {
-  const job = await getAutoListingJob(jobId);
-  if (!job) return { ok: false, error: "自动上架任务不存在: " + jobId };
-  const initialAuthorization = validatePaidAiJobBinding(job, options.expectedBinding);
+  const initialJob = await getAutoListingJob(jobId);
+  if (!initialJob) return { ok: false, error: "自动上架任务不存在: " + jobId };
+  const initialAuthorization = validatePaidAiJobBinding(initialJob, options.expectedBinding);
   if (!initialAuthorization.ok) return initialAuthorization;
-  if (!job.bestMatch || !job.candidateData) {
+  if (!initialJob.bestMatch || !initialJob.candidateData) {
     return { ok: false, error: "缺少已匹配候选，需先续跑 match_profit" };
   }
 
+  const claim = await claimPaidAiContentWork(jobId, options.expectedBinding, {
+    forcePaidAiRegeneration: options.forcePaidAiRegeneration === true,
+  });
+  if (!claim.ok) return claim;
+  const job = claim.job;
   const candidate = candidateFromMatchedJob(job);
   const ozonItem = ozonItemFromMatchedJob(job);
   const ozonContext = buildOzonContext(ozonItem);
@@ -3607,6 +3963,53 @@ export async function rerunAutoListingContent(jobId, options = {}) {
     priceDiff: job.bestMatch?.priceDiff,
   };
 
+  if (claim.mode === "reuse") {
+    const summary = contentGenerationWorkflowSummary(job.listingContent, candidate, job.visualCard || null);
+    try {
+      const payloadDraftResult = await saveWorkflowPayloadDraftForListingJob(job);
+      if (!payloadDraftResult?.draft) throw new Error("payload draft was not rebuilt");
+      const finalized = await finalizePaidAiContentWork(jobId, options.expectedBinding, claim);
+      if (!finalized.ok) {
+        await invalidatePayloadDraftValidation(job.workflowRunId, "paid_ai_content_context_changed").catch(function() {});
+        await releasePaidAiContentWork(jobId, claim.token);
+        return {
+          ...finalized,
+          jobId,
+          payloadDraftReady: false,
+          paidAiCalled: false,
+          reusedPaidAiContent: true,
+        };
+      }
+      await addStep(jobId, "paid_ai_content_reused", "复用当前商品已绑定的 AI 文案，未再次调用付费模型");
+      return {
+        ok: true,
+        jobId,
+        status: "ready_for_listing",
+        contentReady: summary.listingContentReady,
+        visualCardReady: summary.visualCardReady,
+        payloadDraftReady: true,
+        payloadDraftItemCount: payloadDraftResult.draft.items?.length || 0,
+        titleRu: summary.titleRu,
+        contentIssues: summary.contentIssues,
+        paidAiCalled: false,
+        reusedPaidAiContent: true,
+      };
+    } catch (error) {
+      await releasePaidAiContentWork(jobId, claim.token);
+      await addStep(jobId, "paid_ai_content_reuse_payload_failed", "已复用 AI 文案，但 Payload 草稿刷新失败: " + (error.message || String(error)));
+      return {
+        ok: false,
+        jobId,
+        reasonCode: "PAYLOAD_DRAFT_REFRESH_FAILED",
+        error: "已复用当前商品的 AI 文案且未再次收费，但 Payload 草稿刷新仍失败。",
+        contentReady: summary.listingContentReady,
+        payloadDraftReady: false,
+        paidAiCalled: false,
+        reusedPaidAiContent: true,
+      };
+    }
+  }
+
   await updateJob(jobId, { status: "generating_content", stage: "guided" });
   await addStep(jobId, "content_rerun_started", "人工从工作流触发重新生成上架内容");
   await emitAutoListingWorkflowNode(job, "generating_content", {
@@ -3615,16 +4018,37 @@ export async function rerunAutoListingContent(jobId, options = {}) {
 
   const currentJob = await getAutoListingJob(jobId);
   const currentAuthorization = validatePaidAiJobBinding(currentJob, options.expectedBinding);
-  if (!currentAuthorization.ok) return currentAuthorization;
-  const listingResult = await generateListingContentWithLlm(candidate.parsed || candidate, {
-    ozonContext,
-    match,
-    profit,
-  });
-  const postModelJob = await getAutoListingJob(jobId);
-  const postModelAuthorization = validatePaidAiJobBinding(postModelJob, options.expectedBinding);
-  if (!postModelAuthorization.ok) return { ...postModelAuthorization, paidAiCalled: true };
+  const leaseStillOwned = String(currentJob?.paidAiContentLease?.token || "") === String(claim.token || "")
+    && paidAiContentInputHash(currentJob || {}) === claim.inputHash;
+  if (!currentAuthorization.ok || !leaseStillOwned) {
+    await releasePaidAiContentWork(jobId, claim.token);
+    return currentAuthorization.ok
+      ? {
+        ok: false,
+        reasonCode: "PAID_AI_CONTENT_CONTEXT_CHANGED",
+        error: "AI 调用前当前商品输入已变化，系统未调用付费模型。",
+        paidAiCalled: false,
+      }
+      : currentAuthorization;
+  }
+  let listingResult;
+  try {
+    listingResult = await generateListingContentWithLlm(candidate.parsed || candidate, {
+      ozonContext,
+      match,
+      profit,
+    });
+  } catch (error) {
+    return {
+      ok: false,
+      jobId,
+      reasonCode: "CONTENT_GENERATION_OUTCOME_UNCERTAIN",
+      error: "AI 请求超时或连接中断，系统保留当前生成锁且不会立即重试，以避免重复计费。请稍后再检查。",
+      paidAiCalled: true,
+    };
+  }
   if (!listingResult.enabled) {
+    await releasePaidAiContentWork(jobId, claim.token);
     await emitAutoListingWorkflowNode(job, "generating_content", {
       nodeStatus: "failed",
       runStatus: "waiting_human",
@@ -3654,34 +4078,29 @@ export async function rerunAutoListingContent(jobId, options = {}) {
   }
 
   const summary = contentGenerationWorkflowSummary(listingResult.content, candidate, visualCard);
-  const nextJob = {
-    ...postModelJob,
-    listingContent: listingResult.content,
+  const contentUpdate = await commitPaidAiGeneratedContent(
+    jobId,
+    options.expectedBinding,
+    claim,
+    listingResult.content,
     visualCard,
-  };
-  const contentUpdate = await updateJobIfPaidAiBindingMatches(jobId, options.expectedBinding, {
-    status: "ready_for_listing",
-    stage: "guided",
-    error: "",
-    reasonCode: "",
-    listingContent: listingResult.content,
-    visualCard,
-  });
-  if (!contentUpdate.ok) return { ...contentUpdate, paidAiCalled: true };
+  );
+  if (!contentUpdate.ok) {
+    await releasePaidAiContentWork(jobId, claim.token);
+    return {
+      ...contentUpdate,
+      jobId,
+      paidAiCalled: true,
+    };
+  }
   let payloadDraftResult = null;
   try {
-    const payloadJob = await getAutoListingJob(jobId);
-    const payloadAuthorization = validatePaidAiJobBinding(payloadJob, options.expectedBinding);
-    if (!payloadAuthorization.ok) return { ...payloadAuthorization, paidAiCalled: true };
-    payloadDraftResult = await saveWorkflowPayloadDraftForListingJob({
-      ...payloadJob,
-      listingContent: nextJob.listingContent,
-      visualCard: nextJob.visualCard,
-    });
+    payloadDraftResult = await saveWorkflowPayloadDraftForListingJob(contentUpdate.job);
     if (payloadDraftResult?.draft) {
       await addStep(jobId, "payload_draft_refreshed", "已刷新提交前 Payload 草稿，等待人工校验");
     }
   } catch (error) {
+    await releasePaidAiContentWork(jobId, claim.token);
     await addStep(jobId, "payload_draft_refresh_failed", "Payload 草稿刷新失败: " + (error.message || String(error)));
     return {
       ok: false,
@@ -3693,8 +4112,19 @@ export async function rerunAutoListingContent(jobId, options = {}) {
       paidAiCalled: true,
     };
   }
+  const finalized = await finalizePaidAiContentWork(jobId, options.expectedBinding, claim);
+  if (!finalized.ok) {
+    await invalidatePayloadDraftValidation(job.workflowRunId, "paid_ai_content_context_changed").catch(function() {});
+    await releasePaidAiContentWork(jobId, claim.token);
+    return {
+      ...finalized,
+      jobId,
+      payloadDraftReady: false,
+      paidAiCalled: true,
+    };
+  }
   await addStep(jobId, "content_rerun_success", "重新生成上架内容完成");
-  await emitAutoListingWorkflowNode(job, "generating_content", {
+  await emitAutoListingWorkflowNode(finalized.job, "generating_content", {
     bestMatch: {
       id: job.bestMatch?.id || "",
       title: job.bestMatch?.candidateTitle || "",
@@ -4206,6 +4636,7 @@ async function updateJobIfPaidAiBindingMatches(id, expectedBinding, patch) {
     reasonCode: "PAID_AI_JOB_CONTEXT_STALE",
     error: "自动上架任务已变化，系统未写入旧 AI 结果。",
   };
+  let workflowRunIdToInvalidate = "";
   await mutateJobs(async function(jobs) {
     const idx = jobs.findIndex(function(job) { return job.id === id; });
     if (idx === -1) return;
@@ -4214,9 +4645,16 @@ async function updateJobIfPaidAiBindingMatches(id, expectedBinding, patch) {
       result = validation;
       return;
     }
+    const previousInputHash = paidAiContentInputHash(jobs[idx]);
     jobs[idx] = Object.assign({}, jobs[idx], patch, { updatedAt: nowIso() });
+    if (paidAiContentInputHash(jobs[idx]) !== previousInputHash) {
+      workflowRunIdToInvalidate = String(jobs[idx].workflowRunId || "").trim();
+    }
     result = { ok: true, job: jobs[idx] };
   });
+  if (workflowRunIdToInvalidate) {
+    await invalidatePayloadDraftValidation(workflowRunIdToInvalidate, "paid_ai_generation_input_changed");
+  }
   return result;
 }
 

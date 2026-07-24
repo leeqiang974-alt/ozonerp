@@ -8,6 +8,7 @@ import {
 
 test("paid AI reruns recheck actual job after model return and preserve source binding", async () => {
   const source = await readFile(new URL("../src/autoListing.js", import.meta.url), "utf8");
+  const listingLlmSource = await readFile(new URL("../src/llmListing.js", import.meta.url), "utf8");
   const matchStart = source.indexOf("export async function rerunAutoListingMatch");
   const contentStart = source.indexOf("export async function rerunAutoListingContent");
   const match = source.slice(matchStart, contentStart);
@@ -18,11 +19,26 @@ test("paid AI reruns recheck actual job after model return and preserve source b
   assert.match(match, /validatePaidAiCandidateSourceBinding/);
   assert.match(match, /updateJobIfPaidAiBindingMatches/);
   assert.match(match, /sourceEvidence: postMatchJob\.candidateData\?\.sourceEvidence/);
-  assert.match(content, /postModelJob = await getAutoListingJob/);
-  assert.match(content, /validatePaidAiJobBinding\(postModelJob/);
-  assert.match(content, /updateJobIfPaidAiBindingMatches/);
-  assert.match(content, /payloadJob = await getAutoListingJob/);
+  assert.match(content, /claimPaidAiContentWork\(jobId, options\.expectedBinding/);
+  assert.match(content, /paidAiContentLease\?\.token/);
+  assert.match(content, /paidAiContentInputHash\(currentJob \|\| \{\}\) === claim\.inputHash/);
+  assert.match(content, /commitPaidAiGeneratedContent/);
+  assert.match(content, /finalizePaidAiContentWork/);
+  assert.match(content, /invalidatePayloadDraftValidation\(job\.workflowRunId, "paid_ai_content_context_changed"\)/);
   assert.match(content, /paidAiCalled: true/);
+  assert.match(content, /claim\.mode === "reuse"/);
+  assert.match(content, /reusedPaidAiContent: true/);
+  assert.match(content, /paidAiCalled: false/);
+  assert.ok(
+    content.indexOf("claimPaidAiContentWork(jobId, options.expectedBinding")
+      < content.indexOf("generateListingContentWithLlm"),
+  );
+  assert.match(content, /CONTENT_GENERATION_OUTCOME_UNCERTAIN/);
+  const uncertainStart = content.indexOf('reasonCode: "CONTENT_GENERATION_OUTCOME_UNCERTAIN"');
+  const uncertainEnd = content.indexOf("if (!listingResult.enabled)", uncertainStart);
+  assert.doesNotMatch(content.slice(uncertainStart, uncertainEnd), /releasePaidAiContentWork/);
+  assert.match(listingLlmSource, /AbortSignal\.timeout\(timeoutMs\)/);
+  assert.match(listingLlmSource, /MAX_LISTING_LLM_TIMEOUT_MS = 5 \* 60 \* 1000/);
 });
 
 test("paid AI candidate binding rejects the same candidate id when its snapshot changed", () => {

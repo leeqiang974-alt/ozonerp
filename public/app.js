@@ -2647,7 +2647,7 @@ async function runListingAutoCompletion({ run = null, job = null, productSource 
     toast("当前商品缺少来源快照绑定，系统未调用付费 AI。", "error");
     return;
   }
-  if (!window.confirm("确认让 AI 自动补齐当前商品文案并继续完成定价和提交前预检吗？这可能产生 AI 调用费用，但不会提交 Ozon。")) {
+  if (!window.confirm("确认让系统自动完成当前商品文案、定价和提交前预检吗？首次生成可能产生 AI 调用费用；若当前商品已有未改动的 AI 文案，系统会直接复用且不重复调用。此操作不会提交 Ozon。")) {
     return;
   }
   state.listingAutoCompletionInFlight.add(completionKey);

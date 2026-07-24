@@ -214,6 +214,168 @@ test("seller input changes invalidate old preflight and lock submission before p
   assert.equal(rebuilt.validatedDraftHash, "");
 });
 
+test("auto-listing payload validation and submission fail closed without a current paid AI receipt", async () => {
+  reset();
+  const run = await createWorkflowRun({
+    title: "AI 回执总闸",
+    source: "auto_listing",
+    entity: {
+      autoListingJobId: "al_ai_gate",
+      candidateId: "capture_ai_gate",
+      storeId: "store_ai_gate",
+      sourceEvidence: { snapshotHash: "sha256:ai-gate" },
+    },
+  });
+  await savePayloadDraft(run.id, {
+    items: [{ offer_id: "AI-GATE-1" }],
+  });
+
+  const validation = await validatePayloadDraft(run.id);
+  assert.equal(validation.ok, false);
+  assert.equal(validation.reasonCode, "PAID_AI_PAYLOAD_RECEIPT_REQUIRED");
+  assert.equal((await getWorkflowRun(run.id)).locks.submitLocked, true);
+
+  let ozonCalled = false;
+  const submission = await submitPayloadDraftToOzon(run.id, {
+    confirmSubmit: true,
+    storeId: "store_ai_gate",
+  }, {
+    getStore: () => ({ id: "store_ai_gate" }),
+    ozonRequest: async () => {
+      ozonCalled = true;
+      return {};
+    },
+  });
+  assert.equal(submission.ok, false);
+  assert.equal(submission.reasonCode, "PAYLOAD_DRAFT_STALE");
+  assert.equal(ozonCalled, false);
+});
+
+test("auto-listing submission rechecks the current job against the paid AI receipt", async () => {
+  reset();
+  const run = await createWorkflowRun({
+    title: "AI 回执变更",
+    source: "auto_listing",
+    entity: {
+      autoListingJobId: "al_ai_changed",
+      candidateId: "capture_ai_changed",
+      storeId: "store_ai_changed",
+      sourceEvidence: { snapshotHash: "sha256:ai-changed" },
+    },
+  });
+  await savePayloadDraft(run.id, {
+    paidAiContentReceipt: {
+      version: "paid_ai_content_v1",
+      binding: {
+        workflowRunId: run.id,
+        autoListingJobId: "al_ai_changed",
+        captureId: "capture_ai_changed",
+        storeId: "store_ai_changed",
+        sourceSnapshotHash: "sha256:ai-changed",
+      },
+      inputHash: "sha256:old-input",
+      contentHash: "sha256:old-content",
+    },
+    items: [{ offer_id: "AI-CHANGED-1" }],
+  });
+
+  let ozonCalled = false;
+  const submission = await submitPayloadDraftToOzon(run.id, {
+    confirmSubmit: true,
+    storeId: "store_ai_changed",
+  }, {
+    validatePaidAiPayloadDraftCurrent: async () => ({
+      ok: false,
+      reasonCode: "PAID_AI_PAYLOAD_CONTEXT_STALE",
+      error: "当前商品输入已变化",
+    }),
+    getStore: () => ({ id: "store_ai_changed" }),
+    ozonRequest: async () => {
+      ozonCalled = true;
+      return {};
+    },
+  });
+
+  assert.equal(submission.ok, false);
+  assert.equal(submission.reasonCode, "PAID_AI_PAYLOAD_CONTEXT_STALE");
+  assert.equal(submission.submittedToOzon, false);
+  assert.equal(ozonCalled, false);
+});
+
+test("auto-listing submission clears its reservation when the paid AI fence cannot be established", async () => {
+  reset();
+  const run = await createWorkflowRun({
+    title: "AI 提交锁异常",
+    source: "auto_listing",
+    entity: {
+      autoListingJobId: "al_ai_fence_error",
+      candidateId: "capture_ai_fence_error",
+      storeId: "store_ai_fence_error",
+      sourceEvidence: { snapshotHash: "sha256:ai-fence-error" },
+    },
+  });
+  const receipt = {
+    version: "paid_ai_content_v1",
+    binding: {
+      workflowRunId: run.id,
+      autoListingJobId: "al_ai_fence_error",
+      captureId: "capture_ai_fence_error",
+      storeId: "store_ai_fence_error",
+      sourceSnapshotHash: "sha256:ai-fence-error",
+    },
+    inputHash: "sha256:current-input",
+    contentHash: "sha256:current-content",
+  };
+  const saved = await savePayloadDraft(run.id, {
+    paidAiContentReceipt: receipt,
+    items: [{
+      offer_id: "AI-FENCE-1",
+      name: "Товар с безопасной блокировкой",
+      description_category_id: 17028673,
+      type_id: 95183,
+      price: "100",
+      images: ["https://example.com/a.jpg", "https://example.com/b.jpg", "https://example.com/c.jpg"],
+      attributes: [
+        { id: 85, values: [{ value: "Нет бренда" }] },
+        { id: 9048, values: [{ value: "AI-FENCE-1" }] },
+      ],
+    }],
+  });
+  const validatePaidAiPayloadDraftCurrent = async () => ({
+    ok: true,
+    inputHash: receipt.inputHash,
+    contentHash: receipt.contentHash,
+  });
+  const validation = await validatePayloadDraft(run.id, {
+    validatePaidAiPayloadDraftCurrent,
+  });
+  assert.equal(validation.ok, true);
+  let ozonCalled = false;
+
+  const result = await submitPayloadDraftToOzon(run.id, {
+    confirmSubmit: true,
+    storeId: "store_ai_fence_error",
+    expectedDraftHash: saved.payloadDraftHash,
+  }, {
+    validatePaidAiPayloadDraftCurrent,
+    claimPaidAiSubmissionFence: async () => {
+      throw new Error("simulated job repository failure");
+    },
+    validatePaidAiSubmissionFence: async () => ({ ok: true }),
+    releasePaidAiSubmissionFence: async () => {},
+    getStore: () => ({ id: "store_ai_fence_error" }),
+    ozonRequest: async () => {
+      ozonCalled = true;
+      return { result: { task_id: 1 } };
+    },
+  });
+
+  assert.equal(result.ok, false);
+  assert.equal(result.reasonCode, "PAID_AI_SUBMISSION_FENCE_FAILED");
+  assert.equal(ozonCalled, false);
+  assert.equal((await getWorkflowRun(run.id)).submissionReservation, undefined);
+});
+
 test("listWorkflowRuns derives required attribute rule history from existing runs without persistence", async () => {
   reset();
   const first = await createWorkflowRun({

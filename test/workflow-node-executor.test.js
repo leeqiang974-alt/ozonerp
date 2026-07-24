@@ -15,6 +15,14 @@ function fakeDeps(run) {
       calls.push(["validatePayloadDraft", runId]);
       return { ok: true, issues: [] };
     },
+    validatePaidAiPayloadDraftCurrent: async (jobId, binding, receipt) => {
+      calls.push(["validatePaidAiPayloadDraftCurrent", jobId, binding, receipt]);
+      return { ok: true };
+    },
+    invalidatePayloadDraftValidation: async (runId, reason) => {
+      calls.push(["invalidatePayloadDraftValidation", runId, reason]);
+      return { ok: true };
+    },
     rerunAutoListingMatch: async (autoListingJobId, options = {}) => {
       calls.push(["rerunAutoListingMatch", autoListingJobId, options]);
       return { ok: true, jobId: autoListingJobId, matched: true, paidAiCalled: true };
@@ -65,6 +73,48 @@ test("continueWorkflowNode validates payload draft for preflight gate", async ()
   assert.deepEqual(result.actions, ["payload_draft_validated"]);
   assert.deepEqual(deps.calls[0], ["validatePayloadDraft", run.id]);
   assert.equal(deps.calls.at(-1)[2].type, "continue_requested");
+});
+
+test("continueWorkflowNode delegates paid AI receipt checking to canonical payload validation", async () => {
+  const receipt = {
+    version: "paid_ai_content_v1",
+    binding: { workflowRunId: "wr_paid_preflight" },
+    inputHash: "sha256:old-input",
+    contentHash: "sha256:old-content",
+  };
+  const run = {
+    id: "wr_paid_preflight",
+    currentNode: "preflight_check",
+    entity: { autoListingJobId: "al_paid_preflight" },
+    payloadDraft: { items: [], paidAiContentReceipt: receipt },
+    nodes: [{ key: "preflight_check" }],
+  };
+  const deps = fakeDeps(run);
+  deps.validatePayloadDraft = async (runId, options = {}) => {
+    deps.calls.push(["validatePayloadDraft", runId, options]);
+    return options.validatePaidAiPayloadDraftCurrent(
+      run.entity.autoListingJobId,
+      { workflowRunId: run.id },
+      receipt,
+    );
+  };
+  deps.validatePaidAiPayloadDraftCurrent = async (...args) => {
+    deps.calls.push(["validatePaidAiPayloadDraftCurrent", ...args]);
+    return {
+      ok: false,
+      reasonCode: "PAID_AI_PAYLOAD_CONTEXT_STALE",
+      error: "当前商品输入已变化",
+    };
+  };
+
+  const result = await continueWorkflowNode(run.id, "preflight_check", {
+    expectedBinding: { workflowRunId: run.id },
+  }, deps);
+
+  assert.equal(result.ok, false);
+  assert.equal(result.reasonCode, "PAID_AI_PAYLOAD_CONTEXT_STALE");
+  assert.equal(deps.calls.some(([name]) => name === "validatePaidAiPayloadDraftCurrent"), true);
+  assert.equal(deps.calls.some(([name]) => name === "retryWorkflowAfterManualFix"), false);
 });
 
 test("continueWorkflowNode records unsupported nodes without unsafe side effects", async () => {

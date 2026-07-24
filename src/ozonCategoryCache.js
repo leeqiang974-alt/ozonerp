@@ -1,4 +1,4 @@
-import { mkdir, readFile, writeFile } from "node:fs/promises";
+import { mkdir, readFile, realpath, rename, unlink, writeFile } from "node:fs/promises";
 import path from "node:path";
 
 const DATA_DIR = path.join(process.cwd(), "data");
@@ -7,6 +7,7 @@ const DATA_DIR = path.join(process.cwd(), "data");
 // Ozon evidence.  The default is deliberately conservative but configurable
 // for operators who have a documented refresh cadence.
 const DEFAULT_CACHE_MAX_AGE_MS = 30 * 24 * 60 * 60 * 1000;
+const categoryMutationChains = new Map();
 function categoryCacheFile() {
   return process.env.OZON_CATEGORY_CACHE_FILE || path.join(DATA_DIR, "ozon-category-cache.json");
 }
@@ -20,11 +21,81 @@ export async function loadCategoryCache() {
 }
 
 export async function saveCategoryCache(cache) {
-  const file = categoryCacheFile();
+  return mutateCategoryCache(() => cache);
+}
+
+async function writeCategoryCacheUnlocked(cache, { shouldCommit } = {}) {
+  const configuredFile = categoryCacheFile();
+  // Disk cleanup may leave the configured C: path as a symlink/junction to a
+  // D: target. Resolve an existing link before creating the adjacent temp
+  // file; renaming onto the link path would replace the link itself.
+  const file = await realpath(configuredFile).catch((error) => {
+    if (error?.code === "ENOENT") return configuredFile;
+    throw error;
+  });
   await mkdir(path.dirname(file), { recursive: true });
   const tmp = `${file}.tmp.${Date.now()}.${Math.random().toString(36).slice(2)}`;
   await writeFile(tmp, JSON.stringify(normalizeCategoryCache(cache), null, 2), "utf8");
+  let commitAllowed = true;
+  try {
+    if (typeof shouldCommit === "function") commitAllowed = await shouldCommit() !== false;
+  } catch (error) {
+    await unlink(tmp).catch(() => {});
+    throw error;
+  }
+  if (!commitAllowed) {
+    await unlink(tmp).catch(() => {});
+    return false;
+  }
   await renameFile(tmp, file);
+  return true;
+}
+
+async function withCategoryCacheFileLock(file, operation, { timeoutMs = 30000, staleMs = 120000 } = {}) {
+  const { open, rm, stat } = await import("node:fs/promises");
+  const lockFile = `${file}.lock`;
+  const started = Date.now();
+  await mkdir(path.dirname(lockFile), { recursive: true });
+  let handle = null;
+  while (!handle) {
+    try {
+      handle = await open(lockFile, "wx");
+      await handle.writeFile(JSON.stringify({ pid: process.pid, acquiredAt: new Date().toISOString() }));
+    } catch (error) {
+      if (error?.code !== "EEXIST" || Date.now() - started >= timeoutMs) {
+        const lockError = new Error("category cache lock unavailable");
+        lockError.code = error?.code === "EEXIST" ? "CATEGORY_CACHE_LOCK_TIMEOUT" : error?.code;
+        throw lockError;
+      }
+      try {
+        const info = await stat(lockFile);
+        if (Date.now() - info.mtimeMs > staleMs) await rm(lockFile, { force: true });
+      } catch { /* another writer may release between stat and remove */ }
+      await new Promise((resolve) => setTimeout(resolve, 25));
+    }
+  }
+  try {
+    return await operation();
+  } finally {
+    await handle.close().catch(() => {});
+    await rm(lockFile, { force: true }).catch(() => {});
+  }
+}
+
+export function mutateCategoryCache(operation, { shouldCommit, onCommit } = {}) {
+  const file = categoryCacheFile();
+  const previous = categoryMutationChains.get(file) || Promise.resolve();
+  const next = previous.catch(() => {}).then(() => withCategoryCacheFileLock(file, async () => {
+    const current = await loadCategoryCache();
+    const result = await operation(current);
+    const updated = normalizeCategoryCache(result && typeof result === "object" ? result : current);
+    const committed = await writeCategoryCacheUnlocked(updated, { shouldCommit });
+    if (!committed) return current;
+    if (typeof onCommit === "function") await onCommit(updated, current);
+    return updated;
+  }));
+  categoryMutationChains.set(file, next.catch(() => {}));
+  return next;
 }
 
 /**
@@ -77,34 +148,32 @@ export async function upsertAttributeValuesCache({
   values = [],
   operationEvidence = null,
 } = {}) {
-  const cache = await loadCategoryCache();
   const key = attributeValueCacheKey({ descriptionCategoryId, typeId, attributeId, language });
   const updatedAt = new Date().toISOString();
-  const next = {
-    ...cache,
-    updatedAt: cache.updatedAt || updatedAt,
-    storeId: storeId || cache.storeId || "",
-    attributeValues: {
-      ...(cache.attributeValues || {}),
-      [key]: {
-        storeId: storeId || cache.storeId || "",
-        descriptionCategoryId: Number(descriptionCategoryId || 0),
-        typeId: Number(typeId || 0),
-        attributeId: Number(attributeId || 0),
-        language: String(language || "ZH_HANS"),
-        updatedAt,
-        values: Array.isArray(values) ? values : [],
-      },
-    },
-    categoryReadEvidence: {
-      ...(cache.categoryReadEvidence || {}),
+  const next = await mutateCategoryCache((cache) => ({
+      ...cache,
+      updatedAt: cache.updatedAt || updatedAt,
+      storeId: storeId || cache.storeId || "",
       attributeValues: {
-        ...(cache.categoryReadEvidence?.attributeValues || {}),
-        ...(operationEvidence ? { [key]: operationEvidence } : {}),
+        ...(cache.attributeValues || {}),
+        [key]: {
+          storeId: storeId || cache.storeId || "",
+          descriptionCategoryId: Number(descriptionCategoryId || 0),
+          typeId: Number(typeId || 0),
+          attributeId: Number(attributeId || 0),
+          language: String(language || "ZH_HANS"),
+          updatedAt,
+          values: Array.isArray(values) ? values : [],
+        },
       },
-    },
-  };
-  await saveCategoryCache(next);
+      categoryReadEvidence: {
+        ...(cache.categoryReadEvidence || {}),
+        attributeValues: {
+          ...(cache.categoryReadEvidence?.attributeValues || {}),
+          ...(operationEvidence ? { [key]: operationEvidence } : {}),
+        },
+      },
+    }));
   return next.attributeValues[key];
 }
 
@@ -129,9 +198,11 @@ function normalizeCategoryCache(cache = {}) {
 }
 
 async function renameFile(from, to) {
-  const { copyFile, unlink } = await import("node:fs/promises");
-  await copyFile(from, to);
-  await unlink(from);
+  // The temporary file is created beside the destination, so this is a
+  // same-volume atomic replacement. Never fall back to copyFile: a copied
+  // destination can be observed half-written and reopens the generation
+  // check-to-commit race.
+  await rename(from, to);
 }
 
 export function flattenCategories(nodes, parents = [], inheritedCategoryId = 0) {
@@ -166,7 +237,7 @@ export function matchCategory(product, flatCategories, limit = 8) {
   const titleCore = inferTitleCore(titleText);
   const tokens = buildProductTokens(text);
 
-  return (flatCategories || [])
+  const ranked = (flatCategories || [])
     .filter((item) => !item.disabled)
     .map((item) => {
       const categoryText = normalizeText(`${item.path} ${item.name}`);
@@ -237,11 +308,29 @@ export function matchCategory(product, flatCategories, limit = 8) {
       if (titleCore.kind === "water_bottle" && /成人用品|汽车|建筑|文具|烘焙|宠物|服装|鞋|箱包/.test(item.path)) score -= 80;
       if (titleCore.kind === "stationery_sharpener" && item.path === "文具 / 文具 / 卷笔刀") score += 95;
       if (titleCore.kind === "adult_simulator" && /成人用品|情趣玩具|性模拟器/.test(item.path)) score += 120;
+      const clothingPin = /胸针|胸章|徽章|领针/.test(titleText)
+        && /服装|背包|衣领|饰品|配饰|别针|固定/.test(text);
+      if (clothingPin && /服装首饰/.test(item.path) && item.name === "胸针" && /胸针/.test(titleText)) {
+        score += 260;
+        reasons.push("胸针核心商品词");
+      }
+      if (clothingPin && /服装首饰/.test(item.path) && item.name === "徽章" && /徽章|胸章/.test(titleText)) {
+        score += 210;
+        reasons.push("徽章候选词");
+      }
+      if (clothingPin && /室内装饰|节庆商品|宠物|文具别针|曲别针|古董室内/.test(item.path)) score -= 220;
       return { ...item, score, reasons: [...new Set(reasons)] };
     })
     .filter((item) => item.score > 0)
-    .sort((a, b) => b.score - a.score)
-    .slice(0, limit);
+    .sort((a, b) => b.score - a.score);
+  const bestScore = Number(ranked[0]?.score || 0);
+  const secondScore = Number(ranked[1]?.score || 0);
+  const bestHasExactIntent = (ranked[0]?.reasons || []).some((reason) => /核心商品词/.test(reason));
+  return ranked.slice(0, limit).map((item, index) => ({
+    ...item,
+    scoreMargin: index === 0 ? Math.max(0, bestScore - secondScore) : Math.max(0, bestScore - Number(item.score || 0)),
+    autoSelectable: index === 0 && bestHasExactIntent && bestScore >= 250 && bestScore - secondScore >= 25,
+  }));
 }
 
 export function normalizeText(value) {

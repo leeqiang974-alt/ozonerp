@@ -80,6 +80,20 @@ test("1688 detail extensions send the versioned manual capture contract", async 
   assert.match(unified, /contractVersion:\s*["']manual_capture_v1["']/);
 });
 
+test("1688 detail extensions use a bounded replay snapshot instead of messaging the full page HTML", async () => {
+  for (const file of [
+    "../browser-extension/1688-collector/content.js",
+    "../browser-extension/erp-collector-extension/content.js",
+  ]) {
+    const content = await readFile(new URL(file, import.meta.url), "utf8");
+    assert.match(content, /function buildCompactCaptureHtml/);
+    assert.match(content, /html: buildCompactCaptureHtml\(captureData\)/);
+    assert.match(content, /sourceHtmlBytes: document\.documentElement\.outerHTML\.length/);
+    assert.match(content, /function normalizeCaptureTitle/);
+    assert.match(content, /阿里巴巴\|1688/);
+  }
+});
+
 test("1688 collector opens the exact captured item in the ERP sourcing box", async () => {
   for (const directory of ["../browser-extension/1688-collector/", "../browser-extension/erp-collector-extension/"]) {
     const popup = await readFile(new URL(`${directory}popup.js`, import.meta.url), "utf8");
@@ -92,6 +106,26 @@ test("1688 collector opens the exact captured item in the ERP sourcing box", asy
     assert.match(popup, /ERP 自动打开失败，请点击下方链接/);
     assert.match(popup, /captureId=/);
     assert.match(popup, /ERP 已自动打开当前商品/);
+  }
+});
+
+test("1688 collector makes manual size recovery and API errors actionable", async () => {
+  for (const file of [
+    "../browser-extension/1688-collector/content.js",
+    "../browser-extension/erp-collector-extension/content.js",
+  ]) {
+    const content = await readFile(new URL(file, import.meta.url), "utf8");
+    assert.match(content, /manualSizeInputs/);
+    assert.match(content, /尺重已补齐，可重新入箱/);
+    assert.match(content, /button\.textContent = "重试采集"/);
+    assert.match(content, /button\.textContent = "采集中\.\.\."/);
+  }
+  for (const file of [
+    "../browser-extension/1688-collector/background.js",
+    "../browser-extension/erp-collector-extension/background.js",
+  ]) {
+    const background = await readFile(new URL(file, import.meta.url), "utf8");
+    assert.match(background, /data\.reasonCode/);
   }
 });
 

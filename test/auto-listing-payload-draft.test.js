@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { buildListingPayloadDraftFromJob, categoryReadPolicyForListing, sourceEvidenceBindingForListing, sourceVariantsForListing } from "../src/autoListing.js";
+import { applyManualSellerInputsToJob, buildListingPayloadDraftFromJob, buildPaidAiContentReceipt, categoryCacheForListingEvidence, categoryReadPolicyForListing, contentGenerationContextForJob, paidAiJobBinding, reusablePaidAiContentReceipt, sourceEvidenceBindingForListing, sourcePriceCnyForListingJob, sourceVariantsForListing, validatePaidAiJobBinding, validateTrustedCommissionEvidenceForJob } from "../src/autoListing.js";
 import {
   buildRequiredAttributeManualBacklog,
   buildRequiredAttributeApprovalDraftPreview,
@@ -11,6 +11,209 @@ import {
 } from "../src/ozonRequiredAttributeAnalysis.js";
 import { validateSubmitPayload } from "../src/workflowRuns.js";
 
+test("paid AI job authorization binds the actual job to workflow capture store and source snapshot", () => {
+  const job = {
+    id: "al_paid",
+    workflowRunId: "wr_paid",
+    candidateId: "capture_paid",
+    storeId: "store_paid",
+    candidateData: {
+      title: "猫咪胸针",
+      sourceEvidence: { snapshotHash: "sha256:paid" },
+    },
+  };
+  const binding = paidAiJobBinding(job);
+
+  assert.deepEqual(binding, {
+    workflowRunId: "wr_paid",
+    autoListingJobId: "al_paid",
+    captureId: "capture_paid",
+    storeId: "store_paid",
+    sourceSnapshotHash: "sha256:paid",
+  });
+  assert.equal(validatePaidAiJobBinding(job, binding).ok, true);
+  assert.equal(validatePaidAiJobBinding(job, { ...binding, captureId: "capture_stale" }).ok, false);
+  assert.equal(validatePaidAiJobBinding(job, { ...binding, sourceSnapshotHash: "" }).ok, false);
+});
+
+test("paid AI content receipt is reusable only for the exact bound product and unchanged content", () => {
+  const job = {
+    id: "al_paid",
+    workflowRunId: "wr_paid",
+    candidateId: "capture_paid",
+    storeId: "store_paid",
+    candidateData: {
+      sourceEvidence: { snapshotHash: "sha256:paid" },
+    },
+    listingContent: {
+      title_ru: "Брошь кошка",
+      description_ru: "Металлическая брошь в форме кошки.",
+    },
+  };
+  const binding = paidAiJobBinding(job);
+  const receipt = buildPaidAiContentReceipt(job, job.listingContent, binding, {
+    generatedAt: "2026-07-24T12:00:00.000Z",
+  });
+  const withReceipt = { ...job, paidAiContentReceipt: receipt };
+
+  assert.equal(reusablePaidAiContentReceipt(withReceipt, binding).ok, true);
+  assert.equal(reusablePaidAiContentReceipt({
+    ...withReceipt,
+    listingContent: { ...job.listingContent, title_ru: "Измененный заголовок" },
+  }, binding).ok, false);
+  assert.equal(reusablePaidAiContentReceipt({
+    ...withReceipt,
+    candidateData: { ...job.candidateData, title: "另一个商品" },
+  }, binding).ok, false);
+  assert.equal(reusablePaidAiContentReceipt({
+    ...withReceipt,
+    autoCategory: { description_category_id: 1, type_id: 2 },
+  }, binding).ok, false);
+  assert.equal(reusablePaidAiContentReceipt({
+    ...withReceipt,
+    pricingPreview: { priceCny: 99 },
+  }, binding).ok, false);
+  assert.equal(reusablePaidAiContentReceipt(withReceipt, { ...binding, storeId: "other-store" }).ok, false);
+  assert.equal(receipt.generatedAt, "2026-07-24T12:00:00.000Z");
+  assert.match(receipt.contentHash, /^sha256:[a-f0-9]{64}$/);
+  assert.match(receipt.inputHash, /^sha256:[a-f0-9]{64}$/);
+});
+
+test("seller-selected current 1688 capture can generate content without a sourcing bestMatch", () => {
+  const snapshotHash = `sha256:${"3".repeat(64)}`;
+  const context = contentGenerationContextForJob({
+    bestMatch: {},
+    candidateData: {
+      title: "卡通小精灵胸针",
+      url: "https://detail.1688.com/offer/993570366569.html",
+      skuVariants: [{ skuId: "sku-current", spec: "胸针", price: 2.2 }],
+      sourceEvidence: {
+        platform: "1688",
+        verificationState: "ok",
+        snapshotHash,
+        canonicalUrl: "https://detail.1688.com/offer/993570366569.html",
+        fields: {
+          variants: {
+            source: "capture_hint",
+            evidenceRef: `snapshot:${snapshotHash.slice("sha256:".length)}`,
+          },
+        },
+      },
+    },
+    pricingPreview: {
+      sourcePriceCny: 2.2,
+      priceCny: 22.45,
+      profit: 5.18,
+      profitRate: 0.3,
+      calculationStatus: "local_preview",
+      sourceEvidence: {
+        source: "1688",
+        status: "bound",
+        snapshotHash,
+      },
+    },
+  });
+
+  assert.equal(context.ok, true);
+  assert.equal(context.sourceMode, "seller_selected_capture");
+  assert.equal(context.match.confidence, 100);
+  assert.equal(context.match.reason, "seller_selected_current_1688_capture");
+  assert.equal(context.candidate.title, "卡通小精灵胸针");
+  assert.equal(context.profit.purchasePriceCny, 2.2);
+  assert.equal(context.profit.estSellPriceCny, 22.45);
+});
+
+test("seller-selected content stops before paid AI when pricing preview belongs to another snapshot", () => {
+  const currentHash = `sha256:${"5".repeat(64)}`;
+  const context = contentGenerationContextForJob({
+    candidateData: {
+      title: "卡通小精灵胸针",
+      skuVariants: [{ skuId: "sku-current", spec: "胸针", price: 2.2 }],
+      sourceEvidence: {
+        platform: "1688",
+        verificationState: "ok",
+        snapshotHash: currentHash,
+        canonicalUrl: "https://detail.1688.com/offer/993570366569.html",
+        fields: {
+          variants: {
+            source: "capture_hint",
+            evidenceRef: `snapshot:${currentHash.slice("sha256:".length)}`,
+          },
+        },
+      },
+    },
+    pricingPreview: {
+      sourcePriceCny: 2.2,
+      priceCny: 22.45,
+      sourceEvidence: {
+        source: "1688",
+        status: "bound",
+        snapshotHash: `sha256:${"6".repeat(64)}`,
+      },
+    },
+  });
+
+  assert.equal(context.ok, false);
+  assert.equal(context.reasonCode, "CONTENT_PRICING_EVIDENCE_STALE");
+});
+
+test("seller-selected capture uses only snapshot-bound SKU prices without a sourcing bestMatch", () => {
+  const snapshotHash = `sha256:${"4".repeat(64)}`;
+  const candidateData = {
+    sourceEvidence: {
+      platform: "1688",
+      verificationState: "ok",
+      snapshotHash,
+      fields: {
+        variants: {
+          source: "capture_hint",
+          evidenceRef: `snapshot:${snapshotHash.slice("sha256:".length)}`,
+        },
+      },
+    },
+    skuVariants: [
+      { skuId: "sku-low", spec: "小号", price: 2.2 },
+      { skuId: "sku-high", spec: "大号", price: 2.6 },
+    ],
+  };
+  assert.equal(sourcePriceCnyForListingJob({ candidateData }), 2.6);
+  assert.equal(sourcePriceCnyForListingJob({
+    candidateData: {
+      ...candidateData,
+      sourceEvidence: {
+        ...candidateData.sourceEvidence,
+        snapshotHash: "sha256:stale",
+      },
+    },
+  }), 0);
+  assert.throws(() => buildListingPayloadDraftFromJob({
+    pendingParentSku: "STALE-SNAPSHOT-PRICE",
+    listingContent: { title_ru: "Брошь", description_ru: "Металлическая брошь." },
+    candidateData: {
+      ...candidateData,
+      images: ["https://example.com/main.jpg"],
+      sizeWeight: { weightG: 50, lengthMm: 10, widthMm: 10, heightMm: 10 },
+      sourceEvidence: {
+        ...candidateData.sourceEvidence,
+        fields: {
+          ...candidateData.sourceEvidence.fields,
+          variants: {
+            source: "capture_hint",
+            evidenceRef: `snapshot:${"9".repeat(64)}`,
+          },
+          package: {
+            source: "capture_hint",
+            evidenceRef: `snapshot:${snapshotHash.slice("sha256:".length)}`,
+            values: { weightG: 50, lengthMm: 10, widthMm: 10, heightMm: 10 },
+          },
+        },
+      },
+    },
+  }, {
+    categoryMatch: { description_category_id: 1, type_id: 2, path: "Броши" },
+  }), /缺少与采集快照严格绑定的 SKU 采购价/);
+});
+
 test("1688 listing policy carries exact-store category read receipts into re-preflight", () => {
   const evidence = {
     checkedAt: new Date().toISOString(),
@@ -19,6 +222,10 @@ test("1688 listing policy carries exact-store category read receipts into re-pre
     responseHash: `sha256:${"a".repeat(64)}`,
     storeId: "store-1",
     environmentRefHash: `sha256:${"b".repeat(64)}`,
+    signedSessionBound: true,
+    authSource: "session_cookie",
+    sessionRefHash: `sha256:${"c".repeat(64)}`,
+    readReceiptId: "read-operator:11111111-1111-4111-8111-111111111111",
   };
   const policy = categoryReadPolicyForListing({ source: "1688", storeId: "store-1" }, {
     categoryReadEvidence: {
@@ -30,11 +237,47 @@ test("1688 listing policy carries exact-store category read receipts into re-pre
   assert.equal(policy.categoryEvidenceStoreId, "store-1");
   assert.equal(policy.categoryEvidence.attributes.cacheKey, "10:20");
   assert.equal(policy.categoryEvidenceEnvironmentRefHash, evidence.environmentRefHash);
+  assert.equal(policy.categoryEvidence.tree.signedSessionBound, true);
 
   const missing = categoryReadPolicyForListing({ source: "1688" }, {}, { description_category_id: 10, type_id: 20 });
   assert.equal(missing.categoryEvidenceRequired, true);
   assert.equal(missing.categoryEvidenceStoreId, "");
   assert.equal(missing.categoryEvidence.tree, null);
+});
+
+test("listing category cache excludes dictionaries from another store or read environment", () => {
+  const environmentRefHash = `sha256:${"b".repeat(64)}`;
+  const signedEvidence = {
+    signedSessionBound: true,
+    authSource: "session_cookie",
+    sessionRefHash: `sha256:${"c".repeat(64)}`,
+    readReceiptId: "read-operator:11111111-1111-4111-8111-111111111111",
+  };
+  const categoryMatch = { description_category_id: 10, type_id: 20 };
+  const scoped = categoryCacheForListingEvidence({
+    storeId: "store-1",
+    attributes: { "10:20": [{ id: 85, dictionary_id: 1, is_required: true }] },
+    attributeStores: { "10:20": "store-1" },
+    attributeUpdatedAt: { "10:20": new Date().toISOString() },
+    attributeValues: {
+      "10:20:85:ZH_HANS": { storeId: "store-2", values: [{ id: 1, value: "wrong store" }] },
+      "10:20:86:ZH_HANS": { storeId: "store-1", values: [{ id: 2, value: "current" }] },
+    },
+    categoryReadEvidence: {
+      tree: { storeId: "store-1", environmentRefHash, ...signedEvidence },
+      attributes: { "10:20": { storeId: "store-1", environmentRefHash, cacheKey: "10:20", ...signedEvidence } },
+      attributeValues: {
+        "10:20:85:ZH_HANS": { storeId: "store-2", environmentRefHash, cacheKey: "10:20:85:ZH_HANS", paginationComplete: true, ...signedEvidence },
+        "10:20:86:ZH_HANS": { storeId: "store-1", environmentRefHash, cacheKey: "10:20:86:ZH_HANS", paginationComplete: true, ...signedEvidence },
+      },
+    },
+  }, categoryMatch, "store-1", environmentRefHash);
+  assert.equal(scoped.attributeValues["10:20:85:ZH_HANS"], undefined);
+  assert.deepEqual(scoped.attributeValues["10:20:86:ZH_HANS"].values, [{ id: 2, value: "current" }]);
+
+  const wrongEnvironment = categoryCacheForListingEvidence(scoped, categoryMatch, "store-1", `sha256:${"c".repeat(64)}`);
+  assert.equal(wrongEnvironment.attributes["10:20"], undefined);
+  assert.deepEqual(wrongEnvironment.attributeValues, {});
 });
 
 test("sourceVariantsForListing preserves stable 1688 SKU ids for downstream binding", () => {
@@ -67,7 +310,19 @@ test("single-SKU payload binds the parent offer to its only 1688 source SKU", ()
     candidateData: {
       title: "单 SKU 商品",
       url: "https://detail.1688.com/offer/single.html",
-      sourceEvidence: { snapshotHash, canonicalUrl: "https://detail.1688.com/offer/single.html", verificationState: "ok" },
+      sourceEvidence: {
+        platform: "1688",
+        snapshotHash,
+        canonicalUrl: "https://detail.1688.com/offer/single.html",
+        verificationState: "ok",
+        fields: {
+          package: {
+            source: "page_content",
+            evidenceRef: `snapshot:${snapshotHash.slice(7)}`,
+            values: { weightG: 400, lengthMm: 300, widthMm: 200, heightMm: 100 },
+          },
+        },
+      },
       skuVariants: [{ skuId: "SOURCE-SINGLE", spec: "颜色: 白色", price: 12, image: "https://example.com/single.jpg" }],
       images: ["https://example.com/main.jpg", "https://example.com/second.jpg"],
       detailImages: ["https://example.com/detail.jpg"],
@@ -105,7 +360,19 @@ test("payload draft carries a compact source snapshot binding beside Ozon items"
     bestMatch: { candidateTitle: "收纳盒", purchasePriceCny: 12 },
     candidateData: {
       source: "1688",
-      sourceEvidence: { snapshotHash, canonicalUrl: "https://detail.1688.com/offer/fixture.html", verificationState: "ok" },
+      sourceEvidence: {
+        platform: "1688",
+        snapshotHash,
+        canonicalUrl: "https://detail.1688.com/offer/fixture.html",
+        verificationState: "ok",
+        fields: {
+          package: {
+            source: "page_content",
+            evidenceRef: `snapshot:${snapshotHash.slice(7)}`,
+            values: { weightG: 200, lengthMm: 100, widthMm: 100, heightMm: 100 },
+          },
+        },
+      },
       images: ["https://example.com/main.jpg"],
       sizeWeight: { weightG: 200, lengthMm: 100, widthMm: 100, heightMm: 100 },
       skuVariants: [{ skuId: "fixture-white", spec: "白色", price: 12 }],
@@ -178,6 +445,218 @@ test("buildListingPayloadDraftFromJob creates workflow payload draft without Ozo
   assert.equal(validateSubmitPayload(draft).ok, true);
 });
 
+test("payload draft reuses snapshot-bound SKU prices and collector package data without seller re-entry", () => {
+  const hashBody = "7".repeat(64);
+  const snapshotHash = `sha256:${hashBody}`;
+  const evidenceRef = `snapshot:${hashBody}`;
+  const draft = buildListingPayloadDraftFromJob({
+    source: "1688",
+    pendingParentSku: "CAPTURED-PIN-1",
+    listingContent: {
+      title_ru: "Металлический значок для одежды",
+      description_ru: "Металлический значок для одежды и рюкзака.",
+    },
+    candidateData: {
+      source: "1688",
+      url: "https://detail.1688.com/offer/992997159052.html",
+      images: ["https://example.com/main.jpg"],
+      sizeWeight: { weightG: 1, lengthMm: 1, widthMm: 1, heightMm: 1 },
+      procurementEvidence: {
+        supplierName: { value: "", source: "missing", evidenceRef: "" },
+        moq: { value: null, source: "missing", evidenceRef: "" },
+        priceTiers: { values: [], source: "missing", evidenceRef: "" },
+      },
+      skuVariants: [
+        { skuId: "sku-a", spec: "A", price: 2.3, weightG: 1, lengthMm: 1, widthMm: 1, heightMm: 1 },
+        { skuId: "sku-b", spec: "B", price: 2.6, weightG: 1, lengthMm: 1, widthMm: 1, heightMm: 1 },
+      ],
+      sourceEvidence: {
+        platform: "1688",
+        verificationState: "ok",
+        snapshotHash,
+        fields: {
+          variants: { source: "capture_hint", evidenceRef, count: 2, skuIds: ["sku-a", "sku-b"] },
+          package: {
+            source: "capture_hint",
+            evidenceRef,
+            values: { weightG: 1, lengthMm: 1, widthMm: 1, heightMm: 1 },
+          },
+        },
+      },
+    },
+  }, {
+    categoryMatch: { description_category_id: 17027899, type_id: 87458886, path: "胸针" },
+    pricingPolicy: { commissionRate: 0.15, commissionSource: "controlled_fixture" },
+  });
+
+  assert.equal(draft.summary.pricingDiagnosis.packageInfoSource, "1688_package");
+  assert.deepEqual(draft.summary.pricingDiagnosis.package, {
+    weightG: 1,
+    lengthMm: 1,
+    widthMm: 1,
+    heightMm: 1,
+  });
+  assert.equal(draft.summary.pricingDiagnosis.procurementEvidence.status, "verified");
+  assert.equal(draft.summary.pricingDiagnosis.procurementEvidence.sourceMode, "sku_price_snapshot");
+  assert.equal(draft.summary.pricingDiagnosis.procurementEvidence.skuPriceCount, 2);
+  assert.equal(draft.summary.pricingDiagnosis.sourcePriceCny, 2.6);
+  assert.equal(draft.items.length, 2);
+  assert.deepEqual(
+    draft.items.map((item) => [item.weight, item.depth, item.width, item.height]),
+    [[1, 1, 1, 1], [1, 1, 1, 1]],
+  );
+});
+
+test("new 1688 evidence envelopes cannot use the legacy URL fallback for missing package proof", () => {
+  const snapshotHash = `sha256:${"8".repeat(64)}`;
+  assert.throws(() => buildListingPayloadDraftFromJob({
+    source: "1688",
+    pendingParentSku: "CAPTURE-MISSING-PACKAGE",
+    listingContent: {
+      title_ru: "Металлический значок",
+      description_ru: "Металлический значок для одежды и рюкзака.",
+    },
+    bestMatch: {
+      candidateTitle: "金属胸针",
+      candidateUrl: "https://detail.1688.com/offer/998877.html",
+      purchasePriceCny: 2.5,
+    },
+    candidateData: {
+      source: "1688",
+      url: "https://detail.1688.com/offer/998877.html",
+      images: ["https://example.com/a.jpg", "https://example.com/b.jpg", "https://example.com/c.jpg"],
+      sizeWeight: { weightG: 50, lengthMm: 20, widthMm: 20, heightMm: 10 },
+      sourceEvidence: {
+        platform: "1688",
+        offerId: "998877",
+        canonicalUrl: "https://detail.1688.com/offer/998877.html",
+        snapshotHash,
+        verificationState: "ok",
+        fields: {},
+      },
+    },
+  }, {
+    categoryMatch: {
+      description_category_id: 17027899,
+      type_id: 87458886,
+      path: "小百货和配饰 / 服装首饰 / 胸针",
+    },
+  }), /可信尺重来源/);
+});
+
+test("manual package measurement cannot inherit stale SKU dimensions in the payload", () => {
+  const snapshotHash = `sha256:${"f".repeat(64)}`;
+  const applied = applyManualSellerInputsToJob({
+    id: "manual-package-payload",
+    candidateId: "capture-package",
+    storeId: "store-package",
+    workflowRunId: "run-package",
+    source: "1688",
+    pendingParentSku: "MANUAL-PACKAGE-1",
+    listingContent: {
+      title_ru: "Значок для одежды",
+      description_ru: "Металлический значок для одежды и рюкзака.",
+    },
+    bestMatch: { candidateTitle: "胸针", purchasePriceCny: 3 },
+    candidateData: {
+      source: "1688",
+      url: "https://detail.1688.com/offer/manual-package.html",
+      images: ["https://example.com/main.jpg"],
+      sourceEvidence: { snapshotHash, verificationState: "ok" },
+      sizeWeight: { weightG: 900, lengthMm: 900, widthMm: 700, heightMm: 300 },
+      skuVariants: [
+        { skuId: "sku-a", spec: "A", weightG: 900, lengthMm: 900, widthMm: 700, heightMm: 300 },
+        { skuId: "sku-b", spec: "B", weightG: 800, lengthMm: 800, widthMm: 600, heightMm: 200 },
+      ],
+    },
+  }, {
+    expectedBinding: {
+      captureId: "capture-package",
+      storeId: "store-package",
+      sourceSnapshotHash: snapshotHash,
+      workflowRunId: "run-package",
+    },
+    package: {
+      source: "manual_measurement",
+      weightG: 100,
+      lengthMm: 100,
+      widthMm: 80,
+      heightMm: 20,
+    },
+  });
+  assert.equal(applied.ok, true);
+  const draft = buildListingPayloadDraftFromJob(applied.job, {
+    categoryMatch: { description_category_id: 17027899, type_id: 87458886, path: "胸针" },
+    pricingPolicy: { commissionRate: 0.15, commissionSource: "controlled_fixture" },
+  });
+  assert.equal(draft.summary.pricingDiagnosis.packageInfoSource, "manual_measurement");
+  assert.deepEqual(
+    draft.items.map((item) => [item.weight, item.depth, item.width, item.height]),
+    [[100, 100, 80, 20], [100, 100, 80, 20]],
+  );
+
+  const legacyMissingWorkflowBinding = structuredClone(applied.job);
+  delete legacyMissingWorkflowBinding.candidateData.sizeWeight.manualEvidenceBinding.workflowRunId;
+  assert.throws(() => buildListingPayloadDraftFromJob(legacyMissingWorkflowBinding, {
+      categoryMatch: { description_category_id: 17027899, type_id: 87458886, path: "胸针" },
+      pricingPolicy: { commissionRate: 0.15, commissionSource: "controlled_fixture" },
+    }),
+    /缺少可信尺重来源/,
+  );
+});
+
+test("verified parent package evidence cannot be overridden by conflicting SKU measurements", () => {
+  const snapshotHash = `sha256:${"d".repeat(64)}`;
+  const job = {
+    id: "al-parent-package",
+    candidateId: "capture-parent-package",
+    storeId: "store-parent-package",
+    workflowRunId: "run-parent-package",
+    listingContent: {
+      title_ru: "Брошь",
+      description_ru: "Металлическая брошь.",
+    },
+    bestMatch: { candidateTitle: "胸针", purchasePriceCny: 3 },
+    candidateData: {
+      source: "1688",
+      images: ["https://example.com/main.jpg"],
+      sizeWeight: { weightG: 50, lengthMm: 10, widthMm: 10, heightMm: 10 },
+      sourceEvidence: {
+        platform: "1688",
+        snapshotHash,
+        verificationState: "ok",
+        fields: {
+          package: {
+            source: "page_content",
+            evidenceRef: `snapshot:${"d".repeat(64)}`,
+            values: { weightG: 50, lengthMm: 10, widthMm: 10, heightMm: 10 },
+          },
+        },
+      },
+      skuVariants: [
+        { skuId: "sku-a", spec: "A", price: 3, weightG: 900, lengthMm: 900, widthMm: 700, heightMm: 300 },
+      ],
+    },
+  };
+
+  const draft = buildListingPayloadDraftFromJob(job, {
+    categoryMatch: { description_category_id: 17027899, type_id: 87458886, path: "胸针" },
+    pricingPolicy: { commissionRate: 0.15, commissionSource: "controlled_fixture" },
+  });
+
+  assert.equal(draft.summary.pricingDiagnosis.packageInfoSource, "1688_package");
+  assert.deepEqual(
+    draft.items.map((item) => [item.weight, item.depth, item.width, item.height]),
+    [[50, 10, 10, 10]],
+  );
+  assert.deepEqual(draft.summary.pricingDiagnosis.package, {
+    weightG: 50,
+    lengthMm: 10,
+    widthMm: 10,
+    heightMm: 10,
+  });
+});
+
 test("collected procurement evidence blocks trusted pricing when MOQ or tiers are missing", () => {
   const draft = buildListingPayloadDraftFromJob({
     pendingParentSku: "SKU-PROCUREMENT-RISK",
@@ -213,7 +692,16 @@ test("manual procurement values remain needs_review instead of masquerading as s
     bestMatch: { candidateTitle: "收纳盒", purchasePriceCny: 12 },
     candidateData: {
       source: "1688",
-      sourceEvidence: { snapshotHash: `sha256:${"a".repeat(64)}` },
+      sourceEvidence: {
+        platform: "1688",
+        snapshotHash: `sha256:${"a".repeat(64)}`,
+        verificationState: "ok",
+        fields: { package: {
+          source: "page_content",
+          evidenceRef: `snapshot:${"a".repeat(64)}`,
+          values: { weightG: 200, lengthMm: 100, widthMm: 100, heightMm: 100 },
+        } },
+      },
       sizeWeight: { weightG: 200, lengthMm: 100, widthMm: 100, heightMm: 100 },
       procurementEvidence: {
         verificationState: "manual_unverified",
@@ -243,7 +731,16 @@ test("procurement values are verified only when refs bind to the candidate snaps
     bestMatch: { candidateTitle: "收纳盒", purchasePriceCny: 12 },
     candidateData: {
       source: "1688",
-      sourceEvidence: { snapshotHash: `sha256:${hash}` },
+      sourceEvidence: {
+        platform: "1688",
+        snapshotHash: `sha256:${hash}`,
+        verificationState: "ok",
+        fields: { package: {
+          source: "page_content",
+          evidenceRef,
+          values: { weightG: 200, lengthMm: 100, widthMm: 100, heightMm: 100 },
+        } },
+      },
       sizeWeight: { weightG: 200, lengthMm: 100, widthMm: 100, heightMm: 100 },
       procurementEvidence: {
         supplierName: { value: "页面供应商", source: "page_content", evidenceRef },
@@ -270,7 +767,16 @@ test("capture hints remain unverified even when stored beside a snapshot", () =>
     bestMatch: { candidateTitle: "收纳盒", purchasePriceCny: 12 },
     candidateData: {
       source: "1688",
-      sourceEvidence: { snapshotHash: `sha256:${hash}` },
+      sourceEvidence: {
+        platform: "1688",
+        snapshotHash: `sha256:${hash}`,
+        verificationState: "ok",
+        fields: { package: {
+          source: "page_content",
+          evidenceRef,
+          values: { weightG: 200, lengthMm: 100, widthMm: 100, heightMm: 100 },
+        } },
+      },
       sizeWeight: { weightG: 200, lengthMm: 100, widthMm: 100, heightMm: 100 },
       procurementEvidence: {
         supplierName: { value: "提示供应商", source: "capture_hint", evidenceRef },
@@ -364,7 +870,16 @@ test("buildListingPayloadDraftFromJob submits collected rich content only after 
     ...job,
     candidateData: {
       ...job.candidateData,
-      sourceEvidence: { snapshotHash: `sha256:${"a".repeat(64)}` },
+      sourceEvidence: {
+        platform: "1688",
+        snapshotHash: `sha256:${"a".repeat(64)}`,
+        verificationState: "ok",
+        fields: { package: {
+          source: "page_content",
+          evidenceRef: `snapshot:${"a".repeat(64)}`,
+          values: { weightG: 700, lengthMm: 220, widthMm: 160, heightMm: 80 },
+        } },
+      },
       mediaApprovalPublished: {
         status: "stale",
         expectedDraftHash: `sha256:${"b".repeat(64)}`,
@@ -408,7 +923,16 @@ test("buildListingPayloadDraftFromJob submits collected rich content only after 
     ...job,
     candidateData: {
       ...job.candidateData,
-      sourceEvidence: { snapshotHash: `sha256:${"a".repeat(64)}`, verificationState: "ok" },
+      sourceEvidence: {
+        platform: "1688",
+        snapshotHash: `sha256:${"a".repeat(64)}`,
+        verificationState: "ok",
+        fields: { package: {
+          source: "page_content",
+          evidenceRef: `snapshot:${"a".repeat(64)}`,
+          values: { weightG: 700, lengthMm: 220, widthMm: 160, heightMm: 80 },
+        } },
+      },
       mediaApproval: {
         confirmed: true,
         confirmedAt: "2026-07-12T09:00:00.000Z",
@@ -459,7 +983,7 @@ test("buildListingPayloadDraftFromJob rejects PDD package evidence without trust
   }), /可信尺重来源/);
 });
 
-test("buildListingPayloadDraftFromJob marks learned Ozon commission source", () => {
+test("unbound legacy product commission cannot pass as trusted learned evidence", () => {
   const draft = buildListingPayloadDraftFromJob({
     pendingParentSku: "SKUlq01000",
     ozonTitle: "Органайзер для кухни",
@@ -489,8 +1013,111 @@ test("buildListingPayloadDraftFromJob marks learned Ozon commission source", () 
     },
   });
 
-  assert.equal(draft.summary.pricingDiagnosis.commissionRate, 0.18);
-  assert.equal(draft.summary.pricingDiagnosis.commissionSource.source, "learned_product");
+  assert.equal(draft.summary.pricingDiagnosis.commissionRate, 0.15);
+  assert.equal(draft.summary.pricingDiagnosis.commissionSource.source, "manual_default");
+  assert.equal(draft.summary.pricingDiagnosis.commissionSource.confidence, "low");
+});
+
+test("exact learned commission evidence remains attached to the payload pricing diagnosis", () => {
+  const snapshotHash = `sha256:${"d".repeat(64)}`;
+  const evidenceRef = `sha256:${"e".repeat(64)}`;
+  const draft = buildListingPayloadDraftFromJob({
+    pendingParentSku: "SKUlq01000e",
+    storeId: "store-1",
+    ozonTitle: "Органайзер для кухни",
+    commissions: [{ sale_schema: "FBS", percent: 18 }],
+    commissionEvidence: {
+      commissionSource: {
+        source: "learned_product",
+        label: "当前店铺同类已上架商品学习",
+        confidence: "medium",
+        categoryKey: "17028673:95183",
+        sampleCount: 2,
+        coverageComplete: true,
+        evidenceRef,
+        updatedAt: "2026-07-24T08:00:00.000Z",
+        storeId: "store-1",
+        environment: "local",
+        sourceSnapshotHash: snapshotHash,
+      },
+    },
+    listingContent: {
+      title_ru: "Органайзер для кухни",
+      description_ru: "Практичный органайзер для хранения.",
+    },
+    visualCard: { url: "https://example.com/cover.jpg" },
+    bestMatch: {
+      candidateTitle: "厨房收纳盒",
+      candidateUrl: "https://detail.1688.com/offer/2.html",
+      purchasePriceCny: 20,
+    },
+    candidateData: {
+      sourceEvidence: {
+        platform: "1688",
+        verificationState: "ok",
+        snapshotHash,
+        fields: {
+          package: {
+            source: "page_content",
+            evidenceRef: `snapshot:${"d".repeat(64)}`,
+            values: { weightG: 700, lengthMm: 220, widthMm: 160, heightMm: 80 },
+          },
+        },
+      },
+      images: ["https://example.com/a.jpg", "https://example.com/b.jpg", "https://example.com/c.jpg"],
+      sizeWeight: {
+        weightG: 700,
+        lengthMm: 220,
+        widthMm: 160,
+        heightMm: 80,
+      },
+      skuVariants: [],
+    },
+  }, {
+    categoryMatch: {
+      description_category_id: 17028673,
+      type_id: 95183,
+      path: "Дом / Кухня",
+    },
+  });
+
+  assert.equal(draft.summary.pricingDiagnosis.commissionSource.evidenceRef, evidenceRef);
+  assert.equal(draft.summary.pricingDiagnosis.commissionSource.coverageComplete, true);
+  assert.equal(draft.summary.pricingDiagnosis.commissionSource.sampleCount, 2);
+});
+
+test("trusted commission gate rejects stale category snapshot and environment", () => {
+  const snapshotHash = `sha256:${"d".repeat(64)}`;
+  const base = {
+    storeId: "store-1",
+    autoCategory: { description_category_id: 17028673, type_id: 95183 },
+    candidateData: { sourceEvidence: { snapshotHash } },
+    commissions: [{ sale_schema: "FBS", percent: 18 }],
+    commissionEvidence: {
+      commissionSource: {
+        source: "learned_product",
+        confidence: "medium",
+        categoryKey: "17028673:95183",
+        sampleCount: 2,
+        coverageComplete: true,
+        evidenceRef: `sha256:${"e".repeat(64)}`,
+        updatedAt: "2026-07-24T08:00:00.000Z",
+        storeId: "store-1",
+        environment: "local",
+        sourceSnapshotHash: snapshotHash,
+      },
+    },
+  };
+  assert.equal(validateTrustedCommissionEvidenceForJob(base, null, "local").ok, true);
+  assert.equal(validateTrustedCommissionEvidenceForJob({
+    ...base,
+    autoCategory: { description_category_id: 999, type_id: 95183 },
+  }, null, "local").ok, false);
+  assert.equal(validateTrustedCommissionEvidenceForJob({
+    ...base,
+    candidateData: { sourceEvidence: { snapshotHash: `sha256:${"f".repeat(64)}` } },
+  }, null, "local").ok, false);
+  assert.equal(validateTrustedCommissionEvidenceForJob(base, null, "staging").ok, false);
 });
 
 test("buildListingPayloadDraftFromJob autofills no-brand and China from current category dictionaries", () => {

@@ -906,6 +906,7 @@ function cleanupText(value) {
 
 function cleanupTitle(value) {
   return cleanupText(value)
+    .replace(/\s*[-–—]\s*(?:阿里巴巴|1688).*$/i, "")
     .replace(/\s*[-_].*1688.*$/i, "")
     .replace(/^\d+\s*/, "");
 }

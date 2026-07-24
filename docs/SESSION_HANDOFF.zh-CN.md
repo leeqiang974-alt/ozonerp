@@ -1,5 +1,183 @@
 # Ozon ERP 会话接管与恢复记录
 
+## 2026-07-24 G4-S1 可信佣金在付费 AI 前自动读取
+
+- 根因：当前商品已经按 1688 SKU 价和包装证据生成本地售价，但强预检正确拒绝 `manual_default` 佣金；旧一键顺序会先进入付费 AI，随后才发现佣金阻塞。
+- 修复：一键链在 AI 前自动读取当前店铺完整 `/v3/product/list`，再按 100 个 product ID 分批用 `/v3/product/info/list` 核对精确类目，并从 `/v5/product/info/prices` 明确读取 `commissions.sales_percent_fbs`；v3 `sale_schema=standard` 不作 FBS 推断。
+- 安全门：列表最多 20 页/5000 商品；total/cursor 矛盾、缺页、重复游标、任一批次 product ID 缺失/重复/额外、无明确 FBS、无同类样本、比例冲突、店铺/环境/来源快照变化全部停止。持久化证据绑定三个端点响应 hash、完整范围、样本数、读取时间和当前商品五字段 binding，保存时再次原子重验类目/store/snapshot。
+- 服务端总闸：`rerunAutoListingMatch` 与 `rerunAutoListingContent` 在真实模型函数之前强制校验可信佣金和当前读取环境；环境只接受 signed ERP session 的权威声明。匹配在每次付费模型调用前重验，内容生成在原子 claim、lease 输入哈希和模型调用前重验；前端一键、旧高级入口、旧客户端、跨环境请求或直接 controlled-chain 请求都不能绕过。
+- 定价：证据保存后自动重算 `pricingPreview`；Payload 继续携带 `learned_product` 的 `evidenceRef/updatedAt/coverageComplete`。该来源只表示同店同类经验估算，不声称是 Ozon 官方实时类目费率；结算规则仍缺失时利润仍是 estimate。
+- 验证：扩大定向 343/343、全量 1346/1346、lint 77 files、offline acceptance 通过；独立复审结论 Ready（无 Critical/Important）。当前 ERP signed session 未建立，真实同店佣金回放尚未执行；没有调用付费 AI、Seller API 或 Ozon 写接口。
+- 下一唯一入口：先恢复与当前读取环境一致的 signed ERP session，再对 capture `c1784812672342zraqu` 运行佣金只读回放；成功后才由用户明确授权首次付费 AI，并继续到强预检。
+
+## 2026-07-24 G4-S1 卖家直选商品不再依赖 bestMatch
+
+- 根因：当前真实商品由卖家在 1688 明确选中并采集，job 没有选品候选池产生的 `bestMatch`；旧的一键内容节点因此会在付费 AI 前停止，旧 Payload 草稿还会把采购价回退为 0。
+- 修复：内容生成上下文允许精确绑定的当前 `candidateData` 直接进入，标记为 `seller_selected_capture`，不再强迫当前商品先跑无关的选品匹配。付费 AI 输入哈希加入 `pricingPreview`，价格变化会使旧回执失效。
+- 定价：无 `bestMatch` 时只复用当前 `sourceEvidence.snapshotHash` 严格绑定的 SKU 价格证据；要求 variants field、evidenceRef、稳定 source SKU 和正价格全部成立，取当前快照最高 SKU 价。陈旧、无绑定或不完整价格一律不进入 Payload。
+- 运行态：服务已重启；店铺 `3815760-4` 当前 Offer `993570366569` 显示 9 个 SKU 价格 2.2–2.2 CNY、售价 22.45 CNY、包装 50g / 10×10×10mm，当前没有必须人工填写字段，主动作仍只有“自动完成其余资料”。
+- 安全复审：原始 `variant.price` 不再能绕过快照证据重新进入 Payload；空/残缺 `bestMatch` 也不能跳过 capture 与 pricing preview 绑定。无可信价格时新旧两条 Payload 路径均 fail-closed，最终独立复审结论 Ready。
+- 验证：定向 382/382、全量 1330/1330、lint 76 files、offline acceptance 通过；未点击付费 AI，未调用 Seller API，未执行 Ozon 写入。可信类目佣金/结算证据仍缺失，因此利润保持未知且强预检不得伪装通过。
+
+## 2026-07-24 G4-S1 付费 AI 内容回执与免重复扣费
+
+- 直接阻断：当前商品首次 AI 文案已返回、但 Payload 刷新或预检失败时，重试“一键自动完成”会再次调用付费模型。
+- 修复：成功生成后保存 `paid_ai_content_v1` 回执，绑定 workflow/job/capture/store/source snapshot、生成输入哈希和文案内容哈希；完全一致时重试只复用文案、重建 Payload 并继续强预检，返回 `paidAiCalled=false`。
+- 任一商品输入、类目、文案内容或绑定发生变化，回执立即失效；需要再次生成时仍必须针对当前商品明确确认。未放宽 Ozon 提交门。
+- 并发与超时：同一商品由原子 lease 取得生成权；模型请求默认 2 分钟、硬上限 5 分钟，短于 15 分钟 lease。请求超时/连接中断视为费用结果未知，保留 lease，禁止立即重复调用。
+- canonical 总闸：普通预检接口、一键链路和提交接口都强制重验当前 auto-listing job 与草稿 `paid_ai_content_v1` 回执；缺失、被 PUT 删除、绑定变化、输入变化或内容变化都会作废旧预检。
+- 提交竞态：workflow reservation 与 job submission fence 同时绑定 draft hash、五字段 binding、input/content hash；有效 fence 期间任何 job/workflow 并发修改都会被拒绝，Ozon 调用前再次核对两侧 fence。锁建立异常会释放 job fence 并取消 workflow reservation。
+- 验证：定向安全边界 339/339、全量 1327/1327、lint 76 files、offline acceptance 通过；独立复审最终结论 Ready。本轮没有真实模型调用、Seller API 写入或 Ozon 提交。
+
+## 2026-07-24 G3-S1 真实类目回执与商品页联动完成
+
+- 已建立绑定 `local-read-2026-07-24` 和四店铺范围的 signed ERP session，并对当前店铺 `3815760-4` 执行真实白名单 Seller API 类目只读。
+- `17027899:87458886` 返回 tree、40 个属性和必填字典 `85/8229/9163`；品牌字典 71,757 项按 `last_value_id` 完成 36 页，另外两个字典各 1 页，全部 `paginationComplete=true`。
+- 最终持久化完整成功回执：`read-operator:4929ef94-93f5-46c6-bfdb-b5746ccc5371`；`readSucceeded=true`、`endpointCoverageComplete=true`、`signedSessionBound=true`、`writeAttempted=false`。tree、attributes 与 3 组字典证据均绑定同一个 `readReceiptId/sessionRefHash`。
+- 修复真实断点：类目只读 POST allowlist、receipt observations、旧单页字典覆盖、321MB 全类目缓存，以及独立复审发现的“缓存先于回执”“异常终页可误判完整”“慢旧请求覆盖新上下文”“legacy 路由重新污染精简缓存”。
+- 字典读取按最大 2000/页有界分页；缺失/非布尔 `has_next`、非法 ID、空标签、重复/缺失/倒退游标全部 fail-closed。先持久化签名回执，再由全局最新类目读取代次提交精简 `{id,value}` 工作集；代次在临时文件序列化后、原子 rename 前再次校验，跨店铺/环境慢请求也不能覆盖新上下文。legacy 单字典读取只返回结果，不写黄金缓存。缓存约 8.94MB。
+- 当前界面实际绑定的是 capture `c1784812672342zraqu` / workflow `wr_mrxje9dwa5a4m`；刷新后卖家页显示“胸针 / 自动匹配，不需要你操作”和“必填属性 / 已填写”。采购价、包装尺重、定价均自动带入。
+- 验证：安全边界定向 343/343、全量 `npm test` 1305/1305、lint 76 files、5178 浏览器 runtime smoke、offline acceptance 通过；未点击付费 AI，未执行 Ozon 写入。
+- 顶层计划已将 G3-S1 标记 completed；当前唯一入口为 G4-S1。下一步必须由用户对当前商品明确授权一次付费 AI，随后系统连续生成内容、刷新草稿并运行强预检，不增加逐项人工操作。
+
+## 2026-07-24 G3-S1 当前店铺类目证据自动续读
+
+- 当前唯一切片已从通过退出门的 G2-S1 切到 G3-S1；目标是让店铺 `3815760-4` 的胸针草稿使用当前环境真实类目树、`17027899:87458886` 属性和必填字典回执。
+- 修复两个主链断点：首次受控类目计划不再要求预先提供 attribute IDs；完整字典返回的 `completed` 状态不再被当成失败。
+- 商品页的一次主动作现在执行两阶段只读链：metadata 读取 tree + attributes；服务端仅从该次 attributes 响应推导必填字典 IDs，并返回精确 hash 绑定的 complete 续读计划；前端自动执行续读后才刷新同一 capture/workflow。页面普通渲染不再后台发起读取。
+- metadata 阶段不写缓存；complete 阶段会再次核对当前 attributes 推导出的必填字典范围，只有 tree、attributes、全部字典和范围同时成功才原子提交整组证据。与续读计划不一致时返回 `CATEGORY_READ_ATTRIBUTE_SCOPE_CHANGED`；字典 `has_next=true`、格式异常或任一端点失败仍为 partial，不得污染完整缓存或升级预检。
+- payload 草稿只消费 store/environment/cacheKey/paginationComplete 全匹配的字典证据；前端自动处理从类目同步到 AI/预检全程绑定同一 capture、workflow、job、store 和 environment，切换上下文立即停止。
+- 5178 服务已重启到新代码。metadata 计划对当前真实 scope 生成 tree/attributes 两个请求；执行因当前会话未签名而在 Ozon transport 前返回 HTTP 403 `READ_OPERATOR_SESSION_REQUIRED`，side effect 明确为未调用 Seller API。
+- 独立复审依次发现并关闭旧字典残留、异常 200、并发写覆盖、上下文竞态、原子阶段逆序和分页完整标记漏存，最终结论 `Ready: Yes`。
+- 验证：定向 519/519、全量 `npm test` 1294/1294、lint 76 files、frontend runtime smoke、offline acceptance 全部通过；未调用 Seller API、未执行 Ozon 写入。
+- 下一唯一入口：建立覆盖当前 environment 与 `3815760-4` 的 signed ERP session，然后在当前商品点一次“自动完成商品资料”，记录真实 server-observed tree + attributes + 必填字典回执；完成前 G3-S1 仍为 `CURRENT`。
+
+## 2026-07-24 G2-S1 采集价格、包装尺重与自动定价联动
+
+- 用户纠正：1688 插件已采集每个 SKU 的价格并录入包装尺重，ERP 仍要求重复填写供应商、采购价和包装数据，而且定价没有自动启动。
+- 根因是采购门只认可供应商/MOQ/阶梯价，包装门只认可 `page_content`，前端又没有把当前 `sizeWeight` 传给商品摘要；结果是同一份已绑定快照的数据被误判为缺失。
+- 现在对当前 1688 快照精确绑定的详情 SKU 价格按 `sourceSkuId` 去重后直接作为本地采购价证据，取最高 SKU 价进入现有“采购价 + 5 RMB”定价公式；不再要求重复填写供应商、MOQ 或阶梯价。搜索卡价格区间或未绑定快照的价格仍保持阻塞。
+- 插件采集/插件内手填的包装尺重在 source、snapshot/evidenceRef 与四项数值完全一致时自动升级并复用为 `1688_package`；任何旧快照或数值不一致仍 fail-closed。
+- capture 到唯一草稿交接时立即生成本地定价预览并持久化；默认佣金只能用于试算，利润继续标记未知。该动作不调用 AI、不提交 Ozon、不产生库存或价格写入。
+- 商品表单新增“采购价格”自动结果行，并直接显示已采集 SKU 数、价格范围、包装尺重和本地试算；已有可信数据不再显示人工输入。
+- 独立复核后额外封死三处边界：有 evidence envelope 的新 capture 缺 package field 时不得使用旧 URL 回退；snapshot 更新必须同步替换 `bestMatch.purchasePriceCny`；自动定价诊断必须连同 `enforced` 强预检策略持久化并在 validate/submit 重放。
+- 验证：采购/包装/草稿交接定向测试 63/63，安全边界定向 322/322，前端与交接定向 326/326，全量 `npm test` 1288/1288、lint 76 files、offline acceptance 通过。真实 Offer `993570366569` 浏览器复核显示 9 个 SKU 价格 2.2–2.2 CNY、包装 50g / 10×10×10mm、售价本地试算 25.37 CNY、利润未知，当前没有必须人工填写字段且控制台零错误；未点击付费 AI，未执行 Seller API/Ozon 写入。
+
+## 2026-07-23 G2-S1 商品表单联动响应
+
+- 用户纠正：旧商品页把类目证据同步、属性载入等内部阶段显示成橙色“系统处理中”，却没有卖家入口；真正需要卖家提供的采购和包装数据反而藏在首次自动处理之后，形成“显示要处理但不知道去哪里处理”的死路。
+- 商品页已改为无忧易售式单商品表单：自动类目、属性、俄文、定价、图片按行展示结果；类目已高置信匹配时明确显示“自动匹配，不需要你操作”，内部证据同步不再冒充卖家任务。采购与包装等真实缺口首次进入页面就同屏显示输入框。
+- 底部只保留“保存并自动完成其余资料”：俄文手填兜底、采购和包装事实通过同一个接口一次校验、一次保存，再连续运行类目数据载入、AI 文案、草稿刷新与预检；输入不完整时直接聚焦当前表单，不再要求去其他 tab 寻找入口。
+- 修复了原保存链路的实质断点：采购与包装接口过去只写顶层旁路字段，而 Payload/UI 读取 `candidateData`。现在手工采购写入规范化 `candidateData.procurementEvidence`，包装写入 `candidateData.sizeWeight` 和可信人工/供应商来源；保存后重新读取同一 job，再生成草稿。人工包装资料与旧 1688 包装快照分开验证，不会伪造采集证据。
+- 保存严格绑定当前 `captureId + storeId + sourceSnapshotHash + workflowRunId`；人工俄文、类目、采购和包装入口任何一个缺失或过期绑定都拒绝写入，旧人工尺重记录缺工作流绑定也不能升级为可信来源。资料变化后在修改 job 前先作废旧预检并锁住提交；草稿重建失败时保留已保存事实，但明确停在“草稿待刷新”，不能复用旧预检。
+- 本地 JSON job 与 workflow 的 read-modify-write 现在都由跨进程文件锁串行化；超时回收、重启恢复和 timeout 回填也复用同一原子 mutation 路径，避免两个 ERP 进程互相覆盖当前商品或把已失效预检写回来。新增 8 个独立 Node 进程并发写 workflow 的回归测试。
+- 稳定规则已提升到 `AGENTS.md` 与 `CLAUDE.md`：凡提示卖家处理，必须同屏给入口并联动下游；系统内部阶段不得使用卖家阻塞样式。
+- 浏览器用真实 Offer `993570366569` 验证：类目显示“小百货和配饰 / 服装首饰 / 胸针”，类目与属性为系统自动，采购与包装输入同屏，且只有一个“保存并自动完成其余资料”按钮；空资料点击会聚焦供应商输入并保留表单，不触发保存、AI 或 Ozon 写入。
+- 验证：定向 635/635、全量 `npm test` 1284/1284、lint 76 files、offline acceptance 通过；`networkAccessed=false`、`databaseObserved=false`、`writesExecuted=false`。
+
+## 2026-07-23 G2-S1 1688 采集页改为插件收件箱
+
+- 用户纠正：原采集页把日常插件采集、候选池、fixture 回放、反向链路、crawler/API 状态、原始页面、任务配置和自动铺货历史同时展开，实测页面约 11,762px，高级工程流程替代了正常卖家操作。
+- 普通入口现在只保留 3 块：在 1688 商品页点击“补齐后入箱”的唯一操作、插件连接/人机验证状态、当前真实采集商品与系统处理结果。真实 Offer `992997159052` 直接显示店铺 `xymallc`、9 个唯一规格、28 张图片和唯一的“完善商品资料”动作。
+- 全局重复任务条、功能归属说明、任务入口卡和旧工具墙在普通采集页隐藏；所有旧能力被运行时归入原生 `<details>`“高级采集工具与历史记录（通常不用）”，默认关闭且不依赖 `:has()`。顶部“刷新采集结果”复用现有只读采集箱读取链并给出商品数回执。浏览器实测普通页高度从约 11,762px 降至 912px；主动展开后恢复约 11,869px，关闭后回到 912px。
+- 唯一动作已在浏览器验证可自动切到商品所属店铺 `3815760-4` 并进入“编辑商品”；没有调用付费 AI、Seller API 或 Ozon 写入。前端静态测试 314/314、全量 `npm test` 1275/1275、lint 76 files、offline acceptance 均通过；`networkAccessed=false`、`databaseObserved=false`、`writesExecuted=false`。
+- 稳定规则已提升到 `AGENTS.md` 与 `CLAUDE.md`：普通 1688 采集页是插件收件箱，不得再次演变为采集实验室。
+
+## 2026-07-23 G2-S1 一次点击自动处理到预检
+
+- 用户纠正：把复杂流程折叠起来仍不等于自动化；类目、属性、AI 文案和预检分别要求点击，本质上仍是卖家逐项驱动系统。
+- 商品页现在只提供“自动完成商品资料（含 AI）”：一次明确点击先等待当前店铺类目证据同步，再从 `content_generate` 运行现有受控链路，自动生成俄文内容、刷新本地草稿并执行提交前预检；该链路不包含 Ozon 提交。
+- 自动处理前不再展开采购、尺重和手工俄文表单。自动处理完成后，只有来源确实没有、系统不能可靠推断的字段才展开；预检通过后只留下“进入最终提交确认”。
+- 类目自动同步增加同一商品/店铺/类目的 Promise 合并，页面后台同步与卖家点击不会并发重复，也不会在同步尚未结束时提前预检。
+- 自动处理增加 job 级全局运行锁和 capture/store/run/job 四重绑定；同一商品不会重复调用付费 AI，等待期间切店/切商品会在 AI 前停止。完成提示必须同时满足受控链到达预检、原绑定不变且当前草稿 hash 与验证 hash 一致。
+- 浏览器只读验收：真实 Offer `992997159052` 显示一个启用的自动处理按钮，旧“AI 一键补齐文案”不存在，采购/尺重表单在运行前不可见；未点击自动处理，因此没有模型费用、Seller API 类目读取或 Ozon 写入。
+- 验证：定向 319/319、全量 `npm test` 1274/1274、lint 76 files、offline acceptance 通过；独立复核确认重复 AI、类目失败后继续、跨商品竞态和误报完成 4 项均已关闭。
+
+## 2026-07-23 G2-S1 单商品编辑单与自动处理界面
+
+- 用户纠正：后台证据链严谨不等于卖家前台要理解 workflow、证据卡和流程节点。上架页改为一张单商品编辑单：系统自动填写区、图片与规格区、仅剩待补资料区和一个主动作；证据、预检回执、媒体审批与诊断折叠到高级区。
+- 稳定默认值直接展示为俄罗斯站点、俄语、克、毫米和真实提交人工确认；Ozon 动态类目、必填属性和当前店铺证据继续实时绑定，未被写死。
+- AI 文案改为一次明确点击：按钮调用现有 `/api/ai/listing-content`，只在点击后可能产生模型费用，生成结果回填俄文标题/描述并保存本地草稿；不会提交 Ozon。AI 不可用时才展开手工俄文表单。
+- 修复商品入口串店：从首页点击“完善商品资料”会先切换到 capture 所属店铺，再进入商品单；直接打开商品页也自动对齐店铺。真实 Offer `992997159052` 浏览器验证显示 `xymallc - 3815760`、类目“胸针”、9 个唯一规格、28 张采集图、Parent SKU `SKUlq00005`，AI 按钮可用，当前主动作是“补齐采购成本”。
+- 规格显示不再使用 18 条原始采集行，优先按稳定 source SKU ID 去重；商品图展示采用 28 张采集主图，媒体审查的 37 个资产证据仍保留在高级区。
+- 稳定规则已提升到 `AGENTS.md` 与 `CLAUDE.md`：普通上架页必须是单商品编辑单；稳定经营默认值可固定，动态 Ozon 类目/属性/字典和真实店铺证据不得写死。
+- 验证：定向前端/采集/类目 333/333，全量 `npm test` 1274/1274，lint 76 files，offline acceptance 通过；浏览器完成真实商品入口、自动切店、类目、AI 按钮、SKU/图片/Parent SKU 与主动作检查。`networkAccessed=false`、`databaseObserved=false`、`writesExecuted=false`；未点击 AI、未执行 Ozon 写入。
+
+## 2026-07-23 G2-S1 高置信类目自动匹配
+
+- 用户纠正：黄金链路中能自动完成的类目匹配不能默认转成人工操作。本地类目库存在不代表链路已完成，必须把候选生成、置信判断、当前店铺证据和卖家状态串起来。
+- 真实 Offer `992997159052` 诊断：本地库有 7422 个 type，含 `胸针 17027899/87458886` 与 `徽章 17027899/93762`；旧算法只抓“饰品”宽词，错误排序室内装饰等类目。缓存绑定 `3770019-3`，商品绑定 `3815760-4`，不能直接升级为当前店铺提交证据。
+- `matchCategory()` 新增胸针/徽章核心意图、错误装饰/宠物/文具类目降权，以及分差/核心词约束的 `autoSelectable`。真实回放自动选择胸针，分数 420，领先徽章 50 分。
+- capture handoff 新增持久化 `categoryDecision` 和 `autoCategory`。唯一高置信候选自动绑定；候选接近才显示确认；没有可靠候选继续由系统匹配。当前店铺树或精确类目属性回执缺失时状态为 `auto_matched_evidence_pending`，不会冒充可提交证据；证据就绪必须同时匹配店铺、环境和 `description_category_id:type_id`。已有卖家类目选择始终优先，后续自动重跑不会覆盖；新快照变为歧义/无候选时会清除旧自动类目。
+- 商品资料页显示实际推荐类目和证据状态；若只是跨店铺/旧缓存候选，后台自动调用只读类目树和精确属性刷新并重新运行同一 capture workflow，不再要求卖家手动搜索 7422 个 type。任何刷新失败仍 fail-closed，不提交 Ozon，并在 5 分钟退避后允许自动重试。
+- 稳定规则已提升到 `AGENTS.md`：类目状态必须区分无候选、高置信候选、候选歧义和当前店铺证据问题；跨店铺缓存只可作明确标注的只读候选。
+- 验证：定向前端/采集/类目 332/332，全量 `npm test` 1273/1273，lint 76 files，offline acceptance 通过；真实回放仅更新本地 job/workflow，`networkAccessed=false`（验收）、未执行 Ozon 写入、付费模型或库存写入。独立复审提出的旧自动类目残留、证据范围不足和失败后不重试均已修复。
+
+## 2026-07-23 G2-S1 零学习成本使用引导
+
+- 用户反馈“仍不知道 ERP 怎么使用”。根因不是缺少教程，而是首页只给出“完善商品资料”等抽象动作，没有解释用户责任、自动化责任和点击后的业务结果。
+- 首页新增固定分工：用户只负责选商品、确认必要资料和最后决定是否上架；现有规格/图片整理和风险检查由系统与 AI 负责，任何付费生成仍需另行授权。
+- 当前商品模型为等待采集、来源确认、重新采集、自动整理、资料补充和确认上架分别提供 `userInstruction`、`systemNext`、`safetyBoundary`。唯一主动作同屏显示“现在只做这一步”“点完以后”“安全边界”。
+- 当前动作显式区分 `view/capture/capture_review/capture_workflow/workflow`，确认商品、建立/恢复草稿和打开已有 workflow 都先切换到当前 capture 的精确店铺。来源确认同时接受 canonical `sourceEvidenceRecord.snapshot.hash` 和旧 `sourceEvidence.snapshotHash`，确认框只显示卖家业务语言，不暴露 snapshot/hash。
+- 当前真实 Offer `992997159052` 实测显示：只补充系统无法确定的内容；点击后直接进入绑定 workflow `wr_mrwy5u1frz3nr` 的商品资料页，不再回到采集箱寻找第二个控件；此时不提交 Ozon、不调用付费 AI。桌面视口 `scrollWidth === clientWidth`，无横向溢出。
+- 稳定规则已提升到 `AGENTS.md`：普通卖家不能依赖说明书理解 ERP，每个当前动作必须说明用户现在做什么、系统接下来做什么、何时真实提交或产生费用。
+- 验证：前端静态 311/311、全量 `npm test` 1268/1268、lint 76 files、offline acceptance 通过，最终独立复审无 Critical/Important；`networkAccessed=false`、`databaseObserved=false`、`writesExecuted=false`。
+
+## 2026-07-23 G2-S1 商品工作台视觉系统重做
+
+- 用户明确纠正：三步逻辑虽然已收口，但视觉仍像廉价内部后台。该反馈已提升到 `AGENTS.md`：普通卖家首屏必须是商品运营产品，优先展示真实商品图、身份、状态和单一动作，禁止序号字符导航和大面积深色动作块。
+- 桌面壳层改为浅色 232px 固定侧栏、Ozon 蓝品牌标、统一 SVG 导航图标、轻量状态胶囊和 1180px 内容区；主商品卡使用真实采集首图、两行标题、商品元数据和独立蓝色行动区。
+- 三步进度改为三个独立状态块：已完成为绿色勾选、当前步骤为蓝色聚焦、未开始保持中性；处理结果压缩为单行商品事实。
+- 商品图只接受 http(s) URL，渲染时属性转义、`referrerpolicy=no-referrer`；无合法图片时显示本地 OZ 占位，不改变任何采集、草稿、预检、hash 或提交门。
+- 响应式浏览器验收覆盖默认桌面、960×900 非首页、768×900 和 390×844；修复了窄屏下侧栏变为普通文档流、导致主内容下移 743px 的层叠冲突，并统一 901–1023px 的 sidebar、main、全局任务条和 72px 顶部占位。960px 采集页实测 main/task 左边界均为 0、task 为 static、main padding-top 为 0。
+- 验证：前端静态 308/308、全量 `npm test` 1265/1265、lint 76 files、offline acceptance 通过，最终独立复审无 Critical/Important；`networkAccessed=false`、`databaseObserved=false`、`writesExecuted=false`。
+
+## 2026-07-23 G2-S1 卖家三步界面
+
+- 用户明确纠正：工作流节点、证据、快照、预检和 AI 推理属于系统内部过程，不应直接放到卖家台面。该原则已写入 `AGENTS.md`，后续普通界面只允许显示业务结果、必须人工决定的异常和唯一下一步。
+- 首屏固定为“采集商品—检查商品—确认上架”三步；隐藏顶部自动化/工作流状态，技术性完成记录合并成简短处理结果，高级经营和诊断入口降级为“更多信息”。
+- 首页隐藏重复的全局当前商品按钮，离开首页后才显示该快捷入口；普通首页只有一个主动作。
+- 所有内部 fail-closed 安全门保持不变；本轮只重写卖家信息架构和文案，没有删除 snapshot/workflow/preflight/evidence 校验，也没有放宽提交确认。
+- 浏览器观察：真实 Offer `992997159052` 当前处于“检查商品”，9 个规格、28 张图片；页面只显示“完善商品资料”动作和必须确认的资料数量，不自动上架。后台 `currentProductTask.reason` 不再直出首屏，避免泄漏 Payload、预检、证据等内部术语。
+- 验证：前端静态 307/307、全量 `npm test` 1264/1264、lint 76 files、offline acceptance 通过；新增可执行测试覆盖有效待确认、已建立草稿、草稿 hash 过期和检查通过状态，确保进度高亮与主动作一致，旧检查结果不能进入“确认上架”；最终独立复审无 Critical/Important；`networkAccessed=false`、`databaseObserved=false`、`writesExecuted=false`。
+
+## 2026-07-23 G2-S1 当前商品工作台重构（等待真实确认）
+
+- 依据 Ozon 官方商品内容文档、Shopify Polaris 资源/动作模式和 Vendure/Ozon 开源后台实际代码，将首页从全域数据驾驶舱改为单商品上新工作台：真实商品、5 步进度、系统已完成、卖家唯一动作同屏显示；经营模块和系统诊断默认折叠。
+- 修复三个界面各选不同当前商品的根因：工作台、全局任务条、商品草稿页和高级工作流动作现在共用 canonical capture 上下文；存在真实 capture 时，只能匹配同一 `captureId + storeId` 的非 synthetic workflow，不能回退到最近历史或 Fixture workflow。缺少 capture、无效 snapshot hash、未人工确认或绑定不匹配时，所有工作流变更/提交动作 fail-closed。
+- 当前真实商品准确显示 Offer `992997159052`、9 个唯一 SKU 和 28 张图片。商品草稿页在来源未确认前只显示该商品的确认门，不再显示 Fixture 草稿、提交按钮或完整编辑墙。
+- “去核对并确认”已在浏览器实测：自动切换到 xymallc (`3815760-4`)、定位 capture `c178476424685142rv6`；目标行永久橙色高亮，SKU 显示去重后的 9，未确认阶段只突出“确认当前快照”和次要的“补齐采集”。未代替用户点击人工确认。
+- 外部证据和采用/不采用决策记录在 `docs/frontend-current-product-workbench-research.zh-CN.md`；稳定的当前商品绑定规则已提升到 `AGENTS.md`。
+- 验证：前端静态 305/305、全量 `npm test` 1262/1262、lint 76 files、5178 frontend runtime smoke、offline acceptance 通过；新增可执行场景覆盖 synthetic/历史 workflow、无 capture、未确认和无效 snapshot hash；`networkAccessed=false`、`databaseObserved=false`、`writesExecuted=false`。G2-S1 仍等待用户确认真实快照，未进入 G3。
+
+## 2026-07-23 G2-S1 前端主线收口（等待真实确认）
+
+- 13 个平铺模块改为 5 个日常主线入口：工作台、1688 采集、商品草稿、商品状态、订单履约；其余模块保留在“更多功能”，没有删除业务能力。
+- 新增全局当前商品任务条，真实采集优先于 workflow 历史；当前准确指向 capture `c178476424685142rv6`，点击后自动切到店铺 `3815760-4`、打开选品采集并定位目标行。
+- 采集表使用固定布局、截断长 URL、右侧 sticky 操作列；浏览器在 1256×912 视口和页面滚动 `2289px` 时，任务条及“确认当前快照”均可见，按钮保持 enabled。
+- 803 条 fixture workflow 默认隐藏，不进入首页数量、当前商品和风险统计；高级诊断明确显示隐藏数量，页面高度由约 220,449px 降至 654px，可手动显示测试数据。
+- 验证：前端静态 299/299、全量 `npm test` 1256/1256、lint 76 文件；五个主线入口逐项浏览器验证通过，控制台 0 error。未点击人工确认、未调用 Seller API、未执行付费模型或 Ozon 写入。
+- 当前唯一入口仍是 G2-S1：用户点击全局“去确认快照”后，在已自动定位的真实商品行确认当前 1688 快照；随后核对唯一 9 SKU 草稿和集中阻塞项。
+
+## 2026-07-23 G2-S1 唯一本地草稿骨架（等待真实确认）
+
+- `createListingWorkflowFrom1688Capture` 现在按 capture/store 原子复用唯一 auto-listing job，并复用精确绑定的 workflow；重复点击或刷新不会产生重复商品任务。
+- 真实样本暴露出采集器返回 18 行 SKU、但仅 9 个唯一 `skuId`。草稿入口按来源 SKU 身份去重、优先保留字段更完整的行，并持久化原始/唯一/重复计数；此前文档中的“18 个 SKU”已纠正为“18 行采集结果、9 个唯一来源 SKU”。
+- 草稿骨架将供应商、MOQ/阶梯价、可信包装尺重、媒体合规、俄文内容、Ozon 类目集中为卖家阻塞任务；`capture_hint` 尺重不会被升级为 `1688_package`。
+- 界面在用户确认精确 snapshot hash 后立即创建/复用本地草稿骨架、进入当前商品上架中心，并展示唯一下一步；确认动作仍不可绕过，整个交接不调用 Seller API、付费模型或 Ozon 写入。
+- 修复测试隔离：capture/workflow 集成测试显式把 `WORKFLOW_RUNS_FILE` 指向临时目录，避免隔离测试把 workflow 数据写进项目 `data`。
+- 提交前代码审查补齐三项重要边界：跨快照不能沿用旧候选数据，workflow 创建改为同一存储事务内 find-or-create，并发 8 次仍只有 1 个；缺少来源 SKU ID 的规格必须加入阻塞，不能显示为草稿就绪。
+- 验证：capture 集成 7/7、新增 workflow/前端定向通过、`npm test` 1253/1253、lint 76 文件、5178 healthz 与 frontend runtime smoke 通过、offline acceptance 通过；`networkAccessed=false`、`databaseObserved=false`、`writesExecuted=false`。
+- 当前阶段仍是 G2-S1 `CURRENT`。下一步唯一入口：用户在真实 capture `c178476424685142rv6` 点击“确认当前快照”，随后核对生成的 9 SKU 草稿与集中阻塞项；未完成该真实人工回执前不得进入 G3。
+
+## 2026-07-23 G1-S3 首个真实 1688 商品回放完成
+
+- Chrome 扩展已成功采集真实 Offer `992997159052` 到店铺 `3815760-4`，持久化 ID `c178476424685142rv6`；界面返回“已采集过”，同店同 Offer 仍只有 1 条记录。
+- 真实回执包含 18 行 SKU 采集结果（归一化后为 9 个唯一来源 SKU）、28 张图片、19 个属性和绑定快照；来源校验为 `ok`。供应商身份、采购 MOQ/阶梯价仍为明确的 `needs_review`，没有被默认值升级为可信证据。
+- 修复两个真实阻断：扩展不再通过 runtime message 传递整页 HTML；本地回环 ERP 只允许格式合法的 Chrome 扩展 Origin，外部绑定和普通网站来源仍拒绝。
+- 验证：全量 `npm test` 1247/1247、lint 76 文件、runtime smoke（7 views、13 nav bindings、4 stores）及 offline acceptance 通过；未连接 Ozon、未执行付费模型或写入。
+- G1 已完成。当前 WIP=1 唯一切片转为 G2-S1：从该真实 capture 生成或复用唯一的店铺绑定本地草稿骨架；不得提前进入真实类目属性、FBS、活动或财务。
+
 ## 2026-07-22 顶层计划与防漂移治理
 
 - 用户确认近期唯一目标是“手工采集 1688 后，ERP 自动处理到预检通过、等待人工确认提交”，不再接受围绕无关小点持续深挖。
@@ -4079,6 +4257,63 @@ pm run lint：33 files 通过。
 - 分析产物：`data/ozon-required-attribute-analysis.json`。
 - 说明文档：`docs/ozon-required-attributes-analysis.zh-CN.md`。
 - 测试：`test/ozon-required-attribute-analysis.test.js`。
+
+## 2026-07-24 G4-S1 一键自动处理安全闭环（第一批）
+
+### 已完成
+
+- 普通商品页的“自动完成其余资料”会先取得一次明确的付费 AI 授权；授权内容明确说明可能产生 AI 调用费用、不会提交 Ozon。
+- 浏览器请求与服务端共同绑定当前真实商品的 `workflowRunId + autoListingJobId + captureId + storeId + sourceSnapshotHash`。
+- 服务端在 AI 调用前和受控链路每个阶段重新校验绑定；缺少授权、字段不完整或商品/店铺/来源快照变化时，在 AI 调用前停止。
+- 实际 auto-listing job 在模型调用前再次校验相同五字段；工作流暂停或等待人工时不会启动，也不会被串跑自动解锁。
+- 模型返回后再次复核真实 job，关键写回使用绑定 CAS；匹配候选自身必须以 crawler 持久化外层 `captureId + storeId` 和当前来源 `sourceSnapshotHash` 与授权全量一致，同 ID 新快照、缺失外层范围或 parsed 范围冲突均停止并要求重新授权，不能把新字段挂到旧来源证据。
+- AI 内容未形成当前 Payload 草稿时立即停止，不会拿旧草稿继续预检；付费节点也不再显示旧的无授权“从此继续”动作。
+- 受控链路不再以“到达 preflight 节点”冒充完成。只有当前草稿 `payloadDraftHash` 与成功预检的验证哈希完全一致时才返回 `completed=true`。
+- 所有返回和审计事件继续明确 `submittedToOzon=false`；本轮没有调用付费 AI，也没有执行 Ozon 写入。
+
+### 当前真实页面
+
+- 当前 capture：`c1784812672342zraqu`，店铺 `3815760-4 / xymallc`。
+- 页面自动展示胸针类目、9 个 SKU 的 2.2 CNY 采集价、50g / 10×10×10mm 包装尺重与 25.37 CNY 试算售价。
+- 页面只有一个主动作“自动完成其余资料”；点击后首先出现付费 AI 安全确认，取消不会运行链路。
+
+### 验证
+
+- 定向：`node --test test/workflow-node-executor.test.js test/auto-listing-payload-draft.test.js test/auto-listing-match-rerun.test.js test/frontend-static.test.js`，377/377。
+- 全量：`npm test`，1319/1319。
+- 独立只读复核：Ready，未发现仍存在的 Critical/Important。
+- `npm run lint`：76 files。
+- `npm run offline-acceptance`：通过，`networkAccessed=false`、`writesExecuted=false`。
+- 5178 服务已重启并在真实商品草稿页完成浏览器检查。
+
+### 唯一下一入口
+
+- G4-S1 仍为 `CURRENT`。下一步只能是在用户明确确认当前真实商品的一次付费 AI 调用后，记录“AI 文案 → 当前草稿刷新 → 自动定价/属性 → 强预检”的真实结果；仍不提交 Ozon。
+
+## 2026-07-24 G4-S1 包装证据与定价同源修复
+
+- 真实 capture `c1784812672342zraqu` 的当前快照明确记录 `50g / 10×10×10mm`，但旧定价预览通过 padding/minimum clamp 改成 `120g / 60×50×30mm`，导致页面展示证据与实际计价输入不一致。
+- `packageSizeWeight` 现在保留来源快照或绑定手工实测的原始数值；父商品、变体、定价诊断和 Payload 不再加缓冲或抬高最小值后继续冒充可信证据。
+- Ozon 尺重错误不再触发“安全默认尺重”自动重试；必须返回卖家同屏修复来源/实测证据，保留预检和人工提交总闸。
+- 当前真实商品以 2.2 CNY 采集价和 `50g / 10×10×10mm` 重新试算为 22.45 CNY；利润继续显示未知，因为当前店铺佣金和结算规则仍没有可信证据。浏览器运行态已核对页面显示同一尺重、售价和唯一动作“自动完成其余资料”。
+- 独立审查发现并已封死两条旁路：SKU 自带尺重不能覆盖已验证的父级包装；`WEIGHT_SIZE_INVALID` 不再进入任一后台自动纠偏/自动重投路径。
+- 验证：定向 119/119、全量 1322/1322、lint 76 files、offline acceptance 通过；未调用付费 AI、未执行 Ozon 写入。
+- G4-S1 状态不变。唯一下一入口仍是用户针对当前真实商品明确授权一次付费 AI，随后记录 AI 文案、草稿刷新和强预检真实结果。
+
+## 2026-07-23 G2-S1 真实胸针商品类目回填复核
+
+- 当前真实采集：`c1784812672342zraqu`，1688 Offer `993570366569`，店铺 `3815760-4`。
+- 标题“卡通小精灵胸针徽章服装背包饰品配饰别针跨境外贸热销合金胸章”在 7422 条本地类目中自动匹配：
+  - 第一候选：`小百货和配饰 / 服装首饰 / 胸针`
+  - `description_category_id=17027899`
+  - `type_id=87458886`
+  - 分数 `420`，领先第二候选 `50`，满足自动选择门槛。
+- 页面先前显示“系统尚未找到可靠类目”的直接原因是 5178 端口仍运行未加载现有匹配代码的旧 Node 进程；重启服务并重跑同一 capture 后，旧草稿已回填 `auto_matched_evidence_pending`。
+- 新增回归测试，证明旧草稿即使缺失 `categoryDecision/autoCategory`，重复打开时也会从标题回填“胸针”，并把阻断收敛为“当前店铺类目证据待同步”，不会退回人工盲选。
+- 浏览器实测商品草稿已展示“系统已自动匹配：小百货和配饰 / 服装首饰 / 胸针”。
+- 定向回归 `11/11`、全量 `npm test` `1276/1276`、lint `76 files`、offline acceptance 均通过。
+- 验证等级：标题候选与旧草稿回填为 `locally_tested`；当前店铺 `3815760-4` 的类目树和属性回执仍未取得，本地跨店缓存只作候选诊断，不能作为提交证据。
+- G2-S1 退出前的下一项直接阻断：通过受控 Seller API 只读同步当前店铺类目树与 `17027899:87458886` 必填属性；该证据边界属于后续 G3，只有 G2-S1 正式通过退出门后才进入，且不要求卖家手工搜索 7422 个类型。
 
 ### 后续建议
 

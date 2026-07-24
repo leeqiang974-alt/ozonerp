@@ -70,6 +70,66 @@ test("frontend shell presents the product as seller ERP rather than FBS-only", a
   assert.match(html, /<title>Ozon Seller ERP<\/title>/);
 });
 
+test("listing presents one responsive product form with automatic fields and inline seller inputs", async () => {
+  const [html, js, css] = await Promise.all([
+    readFile(new URL("../public/index.html", import.meta.url), "utf8"),
+    readFile(new URL("../public/app.js", import.meta.url), "utf8"),
+    readFile(new URL("../public/styles.css", import.meta.url), "utf8"),
+  ]);
+
+  assert.match(html, /点一次自动处理到预检/);
+  assert.match(js, /listing-simple-sheet/);
+  assert.match(js, /listing-product-form/);
+  assert.match(js, /系统已填写的商品资料/);
+  assert.match(js, /需要你补充/);
+  assert.match(js, /自动匹配，不需要你操作/);
+  assert.match(js, /保存并自动完成其余资料/);
+  assert.match(js, /data-listing-auto-complete/);
+  assert.match(js, /runListingAutoCompletion/);
+  assert.match(js, /saveListingSellerInputsBeforeAutoCompletion/);
+  assert.match(js, /SELLER_INPUT_REQUIRED/);
+  assert.match(js, /preserveSellerInputs/);
+  assert.match(js, /if \(preserveSellerInputs && button\) button\.textContent = originalButtonText/);
+  assert.match(js, /manual-seller-inputs/);
+  assert.match(js, /listingSellerInputSections\.join/);
+  assert.doesNotMatch(js, /autoCompletionAttempted && repairSections\.length/);
+  assert.doesNotMatch(js, /类目证据同步后自动检查/);
+  assert.match(js, /listingAutoCompletionInFlight\.has\(completionKey\)/);
+  assert.match(js, /listingAutoCompletionInFlight\.add\(completionKey\)/);
+  assert.match(js, /listingAutoCompletionInFlight\.delete\(completionKey\)/);
+  assert.match(js, /if \(categorySyncRequired && !categorySynced\)/);
+  assert.match(js, /已在调用 AI 前停止/);
+  assert.match(js, /if \(!bindingMatches\(\)\)/);
+  assert.match(js, /encodeURIComponent\(runId\)\}\/controlled-chain/);
+  const sellerSaveStart = js.indexOf("async function saveListingSellerInputsBeforeAutoCompletion");
+  const sellerSaveEnd = js.indexOf("async function runListingAutoCompletion", sellerSaveStart);
+  const sellerSave = js.slice(sellerSaveStart, sellerSaveEnd);
+  assert.ok(sellerSave.indexOf("payload.content =") < sellerSave.indexOf("/manual-seller-inputs"));
+  assert.ok(sellerSave.indexOf("payload.procurement =") < sellerSave.indexOf("/manual-seller-inputs"));
+  assert.ok(sellerSave.indexOf("payload.package =") < sellerSave.indexOf("/manual-seller-inputs"));
+  assert.equal((sellerSave.match(/await api\(/g) || []).length, 1);
+  const listingSummaryStart = js.indexOf("function renderListingSellerTaskSummary");
+  const listingSummaryEnd = js.indexOf("async function autoSyncListingCategoryEvidence", listingSummaryStart);
+  const listingSummary = js.slice(listingSummaryStart, listingSummaryEnd);
+  assert.doesNotMatch(listingSummary, /data-manual-(?:content|procurement|package)-save/);
+  assert.match(js, /if \(!result\.completed \|\| !resultBoundToOriginal\)/);
+  assert.match(js, /refreshedDraftHash === refreshedValidatedHash/);
+  assert.match(js, /startNode: "content_generate"/);
+  assert.match(js, /\/controlled-chain/);
+  assert.match(js, /下一步只需最终提交确认/);
+  assert.doesNotMatch(js, /data-listing-ai-fill/);
+  assert.match(js, /effectiveCategoryDecision\?\.status === "auto_matched_evidence_pending"/);
+  assert.match(js, /renderListingSellerEvidenceActions\(run, autoListJob, listingProductSource\)/);
+  assert.match(js, /listingSourceEvidence\?\.captureIdentity\?\.offerId/);
+  assert.match(js, /displayedOfferLabel = offerId \? "Ozon Offer" : "1688 Offer"/);
+  assert.doesNotMatch(js, /\$\{escapeHtml\(offerId \|\| parentSku\)\} 首个 Offer/);
+  assert.match(js, /listing-technical-details/);
+  assert.match(css, /\.listing-simple-sheet/);
+  assert.match(css, /\.listing-product-form/);
+  assert.match(css, /\.listing-form-row/);
+  assert.match(css, /\.listing-current-product-gate:not\(\.is-blocked\)/);
+});
+
 test("frontend exposes workflow console shell", async () => {
   const [html, js] = await Promise.all([
     readFile(new URL("../public/index.html", import.meta.url), "utf8"),
@@ -224,6 +284,26 @@ test("collection box requires exact snapshot confirmation before draft handoff",
   assert.match(source, /app\.post\("\/api\/1688\/captures\/:id\/review"/);
   assert.match(source, /reviewedSnapshotHash: snapshotHash/);
   assert.match(source, /未访问 1688、未调用 Ozon/);
+});
+
+test("snapshot confirmation immediately opens the unique local draft skeleton", async () => {
+  const js = await readFile(new URL("../public/app.js", import.meta.url), "utf8");
+  const reviewStart = js.indexOf("async function reviewCaptureSnapshot");
+  const reviewEnd = js.indexOf("async function createDraftFromCapture", reviewStart);
+  const reviewBody = js.slice(reviewStart, reviewEnd);
+  assert.match(reviewBody, /openCaptureDraftSkeleton\(id, storeId\)/);
+  assert.match(reviewBody, /确认当前快照并创建本地草稿骨架/);
+
+  const openStart = js.indexOf("async function openCaptureDraftSkeleton");
+  const openEnd = js.indexOf("async function createDraftFromCapture", openStart);
+  const openBody = js.slice(openStart, openEnd);
+  assert.match(openBody, /\/api\/1688\/captures\/\$\{encodeURIComponent\(id\)\}\/workflow/);
+  assert.match(openBody, /data\.draftSkeleton/);
+  assert.match(openBody, /state\.selectedWorkflowRunId = workflowRunId/);
+  assert.match(openBody, /state\.selectedWorkflowNodeKey = "capture_handoff"/);
+  assert.match(openBody, /activateErpView\("listing"\)/);
+  assert.match(openBody, /loadAutoListJobs/);
+  assert.doesNotMatch(openBody, /submitListing\s*\(/);
 });
 
 test("capture batch actions cannot bypass snapshot review", async () => {
@@ -1880,24 +1960,25 @@ test("frontend exposes the flow cockpit application shell", async () => {
   assert.match(css, /\.app-shell/);
 });
 
-test("frontend exposes the redesigned ERP information architecture", async () => {
+test("frontend exposes the seller-first ERP information architecture", async () => {
   const [html, js, css] = await Promise.all([
     readFile(new URL("../public/index.html", import.meta.url), "utf8"),
     readFile(new URL("../public/app.js", import.meta.url), "utf8"),
     readFile(new URL("../public/styles.css", import.meta.url), "utf8"),
   ]);
 
-  assert.match(html, /店铺总览/);
-  assert.match(html, /商品管理/);
-  assert.match(html, /选品采购/);
-  assert.match(html, /上架中心/);
+  assert.match(html, /工作台/);
+  assert.match(html, /1688 采集/);
+  assert.match(html, /商品草稿/);
+  assert.match(html, /商品状态/);
   assert.match(html, /订单履约/);
-  assert.match(html, /库存仓库/);
+  assert.match(html, /更多功能/);
+  assert.match(html, /仓库与库存/);
   assert.match(html, /营销活动/);
-  assert.match(html, /财务利润/);
-  assert.match(html, /客户售后/);
-  assert.match(html, /数据报表/);
-  assert.match(html, /系统配置/);
+  assert.match(html, /利润核算/);
+  assert.match(html, /售后风险/);
+  assert.match(html, /经营报表/);
+  assert.match(html, /API 与系统/);
   assert.match(html, /erpArchitectureMap/);
   assert.match(html, /listingPrimaryFlow/);
   assert.match(html, /店铺经营总览/);
@@ -2096,7 +2177,8 @@ test("1688 capture deep links focus the exact sourcing row", async () => {
   assert.match(body, /captureId/);
   assert.match(body, /state\.captureRows\.find/);
   assert.match(body, /captureBoxTable/);
-  assert.match(body, /生成本地草稿/);
+  assert.match(body, /openCurrentCaptureTask/);
+  assert.match(body, /检查商品/);
 });
 
 test("missing multi-SKU source binding offers a direct seller repair entry", async () => {
@@ -2376,19 +2458,28 @@ test("frontend exposes a seller operating model instead of hidden developer navi
   assert.match(css, /nav-group-always-visible/);
 });
 
-test("frontend uses a readable business theme and keeps all module labels visible", async () => {
-  const [html, css] = await Promise.all([
+test("frontend keeps the golden path primary and moves secondary modules behind more functions", async () => {
+  const [html, js, css] = await Promise.all([
     readFile(new URL("../public/index.html", import.meta.url), "utf8"),
+    readFile(new URL("../public/app.js", import.meta.url), "utf8"),
     readFile(new URL("../public/styles.css", import.meta.url), "utf8"),
   ]);
 
-  assert.match(html, /app-rail-wide/);
+  assert.match(html, /seller-primary-nav/);
+  assert.match(html, /1688 采集/);
+  assert.match(html, /商品草稿/);
+  assert.match(html, /id="secondaryNavToggle"/);
+  assert.match(html, /aria-controls="sellerSecondaryNav"/);
+  assert.match(html, /seller-secondary-nav/);
+  assert.match(js, /function toggleSecondaryNavigation/);
+  assert.match(html, /data-nav-group="sourcing-procurement" data-view="sourcing"/);
+  assert.match(html, /data-nav-group="listing-center" data-view="listing"/);
+  assert.match(js, /if \(button\.dataset\.view\)[\s\S]*activateErpView\(button\.dataset\.view\)/);
   assert.match(css, /business-erp-theme/);
   assert.match(css, /--business-bg:/);
   assert.match(css, /--business-panel:/);
   assert.match(css, /--business-text:/);
-  assert.match(css, /\.nav-group \{ display: block; \}/);
-  assert.doesNotMatch(css, /\.nav-group \{ display: none; \}/);
+  assert.match(css, /\.seller-secondary-nav:not\(\.is-open\)/);
 });
 
 test("business ERP sidebar keeps text labels visible on desktop widths", async () => {
@@ -3459,6 +3550,7 @@ test("saving a seller category immediately records a local preflight result", as
   assert.ok(start >= 0 && end > start);
   const body = js.slice(start, end);
   assert.match(body, /manual-category/);
+  assert.match(body, /expectedBinding: listingManualEvidenceBinding\(job\)/);
   assert.match(body, /payload-draft\/validate/);
   assert.match(body, /localPreflight/);
   assert.match(body, /不会调用 Seller API 写端点/);
@@ -3954,10 +4046,10 @@ test("1688 candidate handoff keeps source evidence state and human-verification 
   assert.match(js, /生成的只是本地草稿/);
 });
 
-test("listing seller summary keeps procurement and media evidence as blockers", async () => {
+test("listing seller summary reuses captured SKU prices while keeping media evidence blocking", async () => {
   const js = await readFile(new URL("../public/app.js", import.meta.url), "utf8");
 
-  assert.match(js, /采购 MOQ\/阶梯价证据待补齐/);
+  assert.match(js, /已采集 \${capturedSkuPriceRows\.length} 个 SKU 价格/);
   assert.match(js, /媒体候选证据待补齐/);
   assert.match(js, /采购、运费和利润诊断；不会提交 Ozon/);
   assert.match(js, /未经人工批准不能作为可提交富内容/);
@@ -3967,7 +4059,8 @@ test("procurement evidence summary requires supplier, MOQ, tier binding, and sna
   const js = await readFile(new URL("../public/app.js", import.meta.url), "utf8");
 
   assert.match(js, /供应商\/MOQ\/采购阶梯价待核/);
-  assert.match(js, /展示价不能替代真实采购阶梯价/);
+  assert.match(js, /当前快照绑定的详情 SKU 价格可用于本地定价/);
+  assert.match(js, /未绑定的搜索页价格区间不可使用/);
   assert.match(js, /无法证明当前数量对应的真实采购成本/);
   assert.match(js, /补充来源快照后才可标记为来源已验证/);
   assert.match(js, /打开采购、运费和利润诊断；不会提交 Ozon/);
@@ -4133,7 +4226,8 @@ test("listing seller task summary keeps category and required attributes in the 
   assert.match(js, /const attributeText/);
   assert.match(js, /Ozon 类目/);
   assert.match(js, /必填属性/);
-  assert.match(js, /尚未确认 Ozon 类目/);
+  assert.match(js, /系统尚未找到可靠类目/);
+  assert.match(js, /自动匹配，不需要你操作/);
 });
 
 test("category and required-attribute workbench surfaces stale cache recovery actions", async () => {
@@ -4170,6 +4264,58 @@ test("ordinary seller dashboard exposes the golden-path task summary", async () 
   assert.match(js, /blockedStageLabel/);
   assert.match(js, /1688 货源采集/);
   assert.match(js, /不会调用 Ozon 写接口/);
+});
+
+test("every view exposes one current product task with capture review taking priority", async () => {
+  const [html, js, css] = await Promise.all([
+    readFile(new URL("../public/index.html", import.meta.url), "utf8"),
+    readFile(new URL("../public/app.js", import.meta.url), "utf8"),
+    readFile(new URL("../public/styles.css", import.meta.url), "utf8"),
+  ]);
+  assert.match(html, /id="globalCurrentTaskBar"/);
+  assert.match(html, /id="globalCurrentTaskBody"/);
+  assert.match(js, /function currentCaptureSellerTask/);
+  assert.match(js, /function renderGlobalCurrentTaskBar/);
+  assert.match(js, /function openCurrentCaptureTask/);
+  assert.match(js, /data-global-capture-id/);
+  assert.match(js, /state\.currentCaptureId \|\| new URLSearchParams\(window\.location\.search\)\.get\("captureId"\)/);
+  assert.match(js, /extension_browser\|browser_extension/);
+  assert.doesNotMatch(js, /const rank = reviewNeeded \?/);
+  assert.match(js, /await switchStoreContext\(storeId, \{ loadWarehouses: false \}\)/);
+  assert.match(js, /async function switchStoreContext\(storeId, \{ loadWarehouses = true \} = \{\}\)/);
+  assert.match(js, /if \(loadWarehouses\) await loadListingWarehouses\(\)/);
+  assert.match(js, /dispatchEvent\(new Event\("change"\)\)/);
+  assert.match(css, /\.global-current-task-bar/);
+});
+
+test("capture table keeps the source compact and the action column visible", async () => {
+  const [html, js, css] = await Promise.all([
+    readFile(new URL("../public/index.html", import.meta.url), "utf8"),
+    readFile(new URL("../public/app.js", import.meta.url), "utf8"),
+    readFile(new URL("../public/styles.css", import.meta.url), "utf8"),
+  ]);
+  assert.match(html, /capture-table-wrap/);
+  assert.match(html, /capture-box-table/);
+  assert.match(js, /capture-source-url/);
+  assert.match(css, /\.capture-box-table[\s\S]*table-layout:\s*fixed/);
+  assert.match(css, /\.capture-box-table \.row-actions[\s\S]*position:\s*sticky/);
+  assert.match(css, /\.capture-source-url[\s\S]*text-overflow:\s*ellipsis/);
+});
+
+test("seller workflow console hides fixture runs unless advanced data is requested", async () => {
+  const [html, js] = await Promise.all([
+    readFile(new URL("../public/index.html", import.meta.url), "utf8"),
+    readFile(new URL("../public/app.js", import.meta.url), "utf8"),
+  ]);
+  assert.match(html, /id="toggleSyntheticWorkflows"/);
+  assert.match(html, /id="syntheticWorkflowNotice"/);
+  assert.match(js, /showSyntheticWorkflows:\s*false/);
+  assert.match(js, /function isSyntheticWorkflowRun/);
+  assert.match(js, /function sellerWorkflowRuns/);
+  assert.match(js, /sourceMarkers\.some/);
+  assert.match(js, /\^\(fixture product\|test product\|测试商品\|demo product\)/);
+  assert.doesNotMatch(js, /fixture\\b\|test\[_ -\]workflow/);
+  assert.match(js, /测试数据已隐藏/);
 });
 
 test("listing category workbench exposes current-store evidence status", async () => {
@@ -4270,7 +4416,7 @@ test("store switching clears product rows before inventory handoff can reuse an 
 
 test("candidate handoff without a workflow cannot fall back to another product", async () => {
   const js = await readFile(new URL("../public/app.js", import.meta.url), "utf8");
-  assert.match(js, /state\.selectedWorkflowRunId === "__no_workflow__"/);
+  assert.match(js, /state\.selectedWorkflowRunId = "__no_workflow__"/);
   assert.match(js, /if \(!data\.workflowRunId\)/);
   assert.match(js, /不能进入预检/);
 });
@@ -4317,6 +4463,99 @@ test("listing seller summary routes a known media blocker before package or pric
   assert.ok(body.indexOf("mediaBlocked") < body.indexOf("!packageReady"));
   assert.ok(body.indexOf("mediaBlocked") < body.indexOf("pricingBlocked"));
   assert.match(js, /mediaIssues,\n    skuCount/);
+});
+
+test("listing seller summary exposes automatic category recommendation and syncs current-store evidence without a manual search", async () => {
+  const js = await readFile(new URL("../public/app.js", import.meta.url), "utf8");
+  const summaryStart = js.indexOf("function listingSellerTaskSummaryModel");
+  const summaryEnd = js.indexOf("function mediaSellerRiskItems", summaryStart);
+  const summary = js.slice(summaryStart, summaryEnd);
+  const syncStart = js.indexOf("async function autoSyncListingCategoryEvidence");
+  const syncEnd = js.indexOf("function renderListingSellerContentEvidence", syncStart);
+  const sync = js.slice(syncStart, syncEnd);
+
+  assert.match(summary, /categoryDecision\?\.selected/);
+  assert.match(summary, /自动匹配，不需要你操作/);
+  assert.match(summary, /系统正在后台载入店铺类目数据/);
+  assert.match(summary, /系统找到多个接近类目/);
+  assert.match(js, /summary\.categoryStatusText/);
+  assert.ok(syncStart >= 0 && syncEnd > syncStart);
+  assert.match(sync, /auto_matched_evidence_pending/);
+  assert.match(sync, /\/api\/ozon\/read-operator\/category-plan/);
+  assert.match(sync, /\/api\/ozon\/read-operator\/category-execute/);
+  assert.match(sync, /phase: "metadata"/);
+  assert.match(sync, /currentSellerReadEnvironment\(\).*=== environment/s);
+  assert.match(sync, /currentCaptureSellerTask/);
+  assert.match(sync, /currentListingWorkflowRun/);
+  assert.match(sync, /CATEGORY_READ_CONTEXT_CHANGED/);
+  assert.match(sync, /sellerReadAccessRecovery/);
+  assert.match(sync, /continuationPlan/);
+  assert.match(sync, /continuationPlanBinding/);
+  assert.match(sync, /recordEvidence: true/);
+  assert.match(sync, /confirm: "I_CONFIRM_READ_ONLY"/);
+  assert.match(sync, /\/api\/1688\/captures\/\$\{encodeURIComponent\(captureId\)\}\/workflow/);
+  assert.match(sync, /categoryAutoSyncKeys/);
+  assert.doesNotMatch(sync, /categoryAutoSyncRetryAt|5 \* 60 \* 1000/);
+  assert.doesNotMatch(js, /void autoSyncListingCategoryEvidence\(run, autoListJob\)/);
+
+  const completionStart = js.indexOf("async function runListingAutoCompletion");
+  const completionEnd = js.indexOf("function renderListingSellerContentEvidence", completionStart);
+  const completion = js.slice(completionStart, completionEnd);
+  assert.match(completion, /const environment = currentSellerReadEnvironment\(\)/);
+  assert.match(completion, /currentSellerReadEnvironment\(\).*=== environment/s);
+  assert.match(completion, /assertBinding\(\)/);
+  assert.match(completion, /I_CONFIRM_PAID_AI_FOR_CURRENT_PRODUCT/);
+  assert.match(completion, /confirmPaidAi: true/);
+  assert.match(completion, /workflowRunId: runId/);
+  assert.match(completion, /autoListingJobId: jobId/);
+  assert.match(completion, /sourceSnapshotHash/);
+  assert.match(completion, /window\.confirm/);
+  assert.match(completion, /不会提交 Ozon/);
+  assert.ok(completion.indexOf("assertBinding();", completion.indexOf("autoSyncListingCategoryEvidence"))
+    < completion.indexOf("/controlled-chain"));
+  assert.ok(completion.lastIndexOf("assertBinding();") > completion.indexOf("/controlled-chain"));
+});
+
+test("workflow console does not expose a misleading unconfirmed continue action for paid AI nodes", async () => {
+  const js = await readFile(new URL("../public/app.js", import.meta.url), "utf8");
+  const detailStart = js.indexOf("function renderWorkflowDetail");
+  const detailEnd = js.indexOf("function renderWorkflowConsole", detailStart);
+  const detail = js.slice(detailStart, detailEnd);
+  const actionStart = js.indexOf('if (action === "continue-node"');
+  const actionEnd = js.indexOf('if (action === "controlled-chain"', actionStart);
+  const action = js.slice(actionStart, actionEnd);
+
+  assert.match(detail, /\["match_profit", "content_generate"\]\.includes\(node\.key\)/);
+  assert.match(action, /\["match_profit", "content_generate"\]\.includes\(node\.key\)/);
+  assert.match(action, /受控跑到总闸/);
+  assert.match(action, /result\?\.ok !== true/);
+  assert.match(action, /throw new Error/);
+
+  const controlledStart = js.indexOf('if (action === "controlled-chain"');
+  const controlledEnd = js.indexOf('if (action === "confirm-continue"', controlledStart);
+  const controlled = js.slice(controlledStart, controlledEnd);
+  assert.match(controlled, /result\?\.ok !== true/);
+  assert.match(controlled, /result\?\.error/);
+  assert.match(controlled, /result\?\.reasonCode/);
+});
+
+test("listing seller form reuses captured SKU prices and package values instead of asking for duplicate input", async () => {
+  const js = await readFile(new URL("../public/app.js", import.meta.url), "utf8");
+  const summaryStart = js.indexOf("function listingSellerTaskSummaryModel");
+  const summaryEnd = js.indexOf("function mediaSellerRiskItems", summaryStart);
+  const renderStart = js.indexOf("function renderListingSellerTaskSummary");
+  const renderEnd = js.indexOf("async function saveListingSellerInputsBeforeAutoCompletion", renderStart);
+  const summary = js.slice(summaryStart, summaryEnd);
+  const render = js.slice(renderStart, renderEnd);
+
+  assert.match(js, /function capturedSkuPriceEvidenceReady/);
+  assert.match(js, /function capturedPackageEvidenceReady/);
+  assert.match(summary, /capturedSkuPriceEvidenceReady\(context, sourceEvidence\)/);
+  assert.match(summary, /capturedPackageEvidenceReady\(context, sourceEvidence\)/);
+  assert.match(summary, /context\.pricingDiagnosis/);
+  assert.match(render, /sizeWeight: listingProductSource\?\.sizeWeight/);
+  assert.match(render, /pricingDiagnosis: autoListJob\?\.pricingPreview \|\| handoffNode\?\.output\?\.pricingPreview/);
+  assert.match(render, /skuVariants: sourceVariants/);
 });
 
 test("preflight success is labeled as not submitted until the submit reservation exists", async () => {
@@ -4478,18 +4717,16 @@ test("review failures expose a seller-facing local draft repair entry", async ()
   assert.match(js, /保存后必须重新预检/);
 });
 
-test("manual evidence forms save and immediately recheck the local payload", async () => {
+test("manual evidence forms feed one bottom action and do not expose competing save buttons", async () => {
   const js = await readFile(new URL("../public/app.js", import.meta.url), "utf8");
-  assert.match(js, /data-manual-content-save>保存并重新预检/);
-  assert.match(js, /data-manual-procurement-save>保存并重新预检/);
-  assert.match(js, /data-manual-package-save>保存尺重证据并重新预检/);
-  assert.match(js, /async function recheckListingAfterEvidenceSave/);
-  const start = js.indexOf("async function recheckListingAfterEvidenceSave");
-  const end = js.indexOf("function summarizePipelineHistory", start);
+  const start = js.indexOf("function renderListingSellerTaskSummary");
+  const end = js.indexOf("async function autoSyncListingCategoryEvidence", start);
   assert.ok(start >= 0 && end > start);
   const body = js.slice(start, end);
-  assert.match(body, /payload-draft\/validate/);
-  assert.match(body, /不会自动提交|人工确认/);
+  assert.match(body, /data-listing-auto-complete/);
+  assert.match(body, /保存并自动完成其余资料/);
+  assert.doesNotMatch(body, /data-manual-(?:content|procurement|package)-save/);
+  assert.doesNotMatch(body, /保存尺重证据并重新预检|保存并重新预检/);
 });
 
 test("four-store read matrix shows seller store names next to masked evidence", async () => {
@@ -4577,4 +4814,335 @@ test("general Seller reads prefer the system environment over a stale listing en
   const body = js.slice(start, end);
   assert.match(body, /readOperatorEnvironment.*listingReadEnvironment/);
   assert.match(body, /stale listing value must not poison unrelated/);
+});
+
+test("current product workspace never falls back to an unrelated or synthetic workflow", async () => {
+  const js = await readFile(new URL("../public/app.js", import.meta.url), "utf8");
+  const start = js.indexOf("function canonicalCurrentCaptureWorkflowRun");
+  const end = js.indexOf("function currentListingAutoListJob", start);
+  assert.ok(start >= 0 && end > start);
+  const helper = js.slice(start, end);
+  assert.match(helper, /currentCaptureSellerTask\(\)/);
+  assert.match(helper, /filter\(\(run\) => !isSyntheticWorkflowRun\(run\)\)/);
+  assert.match(helper, /entity\?\.candidateId/);
+  assert.match(helper, /entity\?\.storeId/);
+  assert.doesNotMatch(helper, /sort\([\s\S]*\)\[0\]/);
+});
+
+test("canonical current product resolver fails closed for synthetic, stale, and unconfirmed workflows", async () => {
+  const js = await readFile(new URL("../public/app.js", import.meta.url), "utf8");
+  const syntheticStart = js.indexOf("function isSyntheticWorkflowRun");
+  const syntheticEnd = js.indexOf("function sellerWorkflowRuns", syntheticStart);
+  const resolverStart = js.indexOf("function canonicalCurrentCaptureWorkflowRun");
+  const resolverEnd = js.indexOf("function currentListingAutoListJob", resolverStart);
+  assert.ok(syntheticStart >= 0 && syntheticEnd > syntheticStart && resolverStart >= 0 && resolverEnd > resolverStart);
+  const state = {
+    selectedWorkflowRunId: "stale-real",
+    workflowRuns: [
+      { id: "stale-real", entity: { candidateId: "other", storeId: "store-1" } },
+      { id: "synthetic-exact", synthetic: true, entity: { candidateId: "capture-1", storeId: "store-1" } },
+      { id: "real-exact", entity: { candidateId: "capture-1", storeId: "store-1" } },
+    ],
+  };
+  let captureTask = { item: { id: "capture-1", storeId: "store-1" }, reviewApproved: false };
+  const build = new Function("state", "currentCaptureSellerTask", `${js.slice(syntheticStart, syntheticEnd)}\n${js.slice(resolverStart, resolverEnd)}\nreturn { canonicalCurrentCaptureWorkflowRun, currentListingWorkflowRun, workflowCanActForCurrentProduct };`);
+  const resolver = build(state, () => captureTask);
+  assert.equal(resolver.currentListingWorkflowRun()?.id, "real-exact");
+  assert.equal(resolver.workflowCanActForCurrentProduct(state.workflowRuns[2]), false);
+  captureTask = { ...captureTask, reviewApproved: true };
+  assert.equal(resolver.workflowCanActForCurrentProduct(state.workflowRuns[2]), true);
+  assert.equal(resolver.workflowCanActForCurrentProduct(state.workflowRuns[1]), false);
+  captureTask = null;
+  assert.equal(resolver.workflowCanActForCurrentProduct(state.workflowRuns[2]), false);
+  assert.equal(resolver.currentListingWorkflowRun(), null);
+  captureTask = { item: { id: "capture-1", storeId: "store-1" }, reviewApproved: true };
+  state.workflowRuns = state.workflowRuns.filter((run) => run.id !== "real-exact");
+  assert.equal(resolver.currentListingWorkflowRun(), null);
+});
+
+test("invalid source snapshot remains blocked behind seller language", async () => {
+  const js = await readFile(new URL("../public/app.js", import.meta.url), "utf8");
+  const start = js.indexOf("function currentProductWorkspaceModel");
+  const end = js.indexOf("function renderCurrentProductWorkspace", start);
+  assert.ok(start >= 0 && end > start);
+  const state = { stores: [{ id: "store-1", name: "Store 1" }] };
+  const captureTask = {
+    item: { id: "capture-1", storeId: "store-1" },
+    product: { title: "Real item", skuVariants: [] },
+    reviewApproved: false,
+    reviewPossible: false,
+    reviewNeeded: true,
+    hasDraft: true,
+  };
+  const build = new Function("state", "currentCaptureSellerTask", "currentListingWorkflowRun", `${js.slice(start, end)}\nreturn currentProductWorkspaceModel;`);
+  const model = build(state, () => captureTask, () => ({ id: "old-run", payloadDraftValidation: { ok: true } }))();
+  assert.equal(model.status, "商品资料不完整");
+  assert.equal(model.actionLabel, "重新采集商品");
+  assert.equal(model.actionKind, "capture");
+  assert.equal(model.stages.length, 3);
+  assert.equal(model.stages[0].status, "current");
+  assert.equal(model.stages[1].status, "pending");
+  assert.equal(model.completed.some((item) => item.includes("人工确认")), false);
+});
+
+test("three seller steps stay aligned across review, draft, and ready states", async () => {
+  const js = await readFile(new URL("../public/app.js", import.meta.url), "utf8");
+  const start = js.indexOf("function currentProductWorkspaceModel");
+  const end = js.indexOf("function renderCurrentProductWorkspace", start);
+  assert.ok(start >= 0 && end > start);
+  const state = { stores: [{ id: "store-1", name: "Store 1" }] };
+  let captureTask = {
+    item: { id: "capture-1", storeId: "store-1" },
+    product: { title: "Real item", skuVariants: [], images: ["javascript:alert(1)"] },
+    reviewApproved: false,
+    reviewPossible: true,
+    reviewNeeded: true,
+    hasDraft: false,
+  };
+  let run = null;
+  const build = new Function("state", "currentCaptureSellerTask", "currentListingWorkflowRun", `${js.slice(start, end)}\nreturn currentProductWorkspaceModel;`);
+  const model = build(state, () => captureTask, () => run);
+
+  const review = model();
+  assert.deepEqual(review.stages.map((stage) => stage.status), ["complete", "current", "pending"]);
+  assert.equal(review.actionLabel, "确认这是我的商品");
+  assert.equal(review.actionKind, "capture_review");
+  assert.equal(review.imageUrl, "");
+
+  captureTask = { ...captureTask, reviewApproved: true, reviewNeeded: false, hasDraft: false };
+  const pendingDraft = model();
+  assert.equal(pendingDraft.actionLabel, "建立商品草稿");
+  assert.equal(pendingDraft.actionKind, "capture_workflow");
+
+  captureTask = { ...captureTask, hasDraft: true };
+  const detachedDraft = model();
+  assert.equal(detachedDraft.actionLabel, "打开商品资料");
+  assert.equal(detachedDraft.actionKind, "capture_workflow");
+
+  captureTask = { ...captureTask, reviewApproved: true, reviewNeeded: false, hasDraft: true };
+  run = {
+    id: "run-1",
+    payloadDraftHash: "sha256:draft-v1",
+    payloadDraftValidation: { ok: false, issues: [{ code: "MISSING" }, { code: "MISSING_2" }] },
+    summary: { currentProductTask: { reason: "Payload 提交前预检缺少证据" } },
+  };
+  const draft = model();
+  assert.deepEqual(draft.stages.map((stage) => stage.status), ["complete", "current", "pending"]);
+  assert.equal(draft.status, "需要补充 2 项资料");
+  assert.equal(draft.actionKind, "workflow");
+  assert.equal(draft.reason, "还有 2 项资料无法自动判断，需要你确认。");
+  assert.equal(draft.userInstruction, "只补充系统无法确定的内容，不需要重做已经完成的资料。");
+  assert.equal(draft.systemNext, "系统会重新检查商品；通过后再通知你确认是否上架。");
+  assert.equal(draft.safetyBoundary, "现在不会提交到 Ozon，也不会调用任何付费 AI；两者都需你另行确认。");
+  assert.doesNotMatch(draft.reason, /Payload|预检|证据|workflow|snapshot/i);
+
+  run = {
+    ...run,
+    validatedDraftHash: "sha256:old-draft",
+    payloadDraftValidation: { ok: true, draftHash: "sha256:old-draft", issues: [] },
+  };
+  const stale = model();
+  assert.deepEqual(stale.stages.map((stage) => stage.status), ["complete", "current", "pending"]);
+  assert.equal(stale.status, "商品有更新，需要重新检查");
+  assert.equal(stale.actionLabel, "重新检查商品");
+
+  run = {
+    ...run,
+    validatedDraftHash: "sha256:draft-v1",
+    payloadDraftValidation: { ok: true, draftHash: "sha256:draft-v1", issues: [] },
+  };
+  const ready = model();
+  assert.deepEqual(ready.stages.map((stage) => stage.status), ["complete", "complete", "current"]);
+  assert.equal(ready.actionLabel, "确认上架");
+  assert.equal(ready.actionKind, "workflow");
+  assert.equal(ready.userInstruction, "核对商品摘要和价格，决定是否进入最后确认。");
+  assert.equal(ready.systemNext, "系统会先展示本次提交内容；仍需你再次确认才会提交。");
+});
+
+test("capture confirmation accepts canonical and legacy snapshot evidence", async () => {
+  const js = await readFile(new URL("../public/app.js", import.meta.url), "utf8");
+  const start = js.indexOf("function captureSnapshotHash");
+  const end = js.indexOf("function currentCaptureSellerTask", start);
+  assert.ok(start >= 0 && end > start);
+  const helper = new Function(`${js.slice(start, end)}\nreturn captureSnapshotHash;`)();
+  const canonical = `sha256:${"a".repeat(64)}`;
+  const legacy = `sha256:${"b".repeat(64)}`;
+  assert.equal(helper({ parsed: { sourceEvidenceRecord: { snapshot: { hash: canonical } } } }), canonical);
+  assert.equal(helper({ parsed: { sourceEvidence: { snapshotHash: legacy } } }), legacy);
+});
+
+test("current product action attributes match the business action promised by every state", async () => {
+  const js = await readFile(new URL("../public/app.js", import.meta.url), "utf8");
+  const start = js.indexOf("function currentProductActionAttributes");
+  const end = js.indexOf("function renderCurrentProductWorkspace", start);
+  assert.ok(start >= 0 && end > start);
+  const build = new Function("escapeHtml", `${js.slice(start, end)}\nreturn currentProductActionAttributes;`);
+  const attrs = build((value) => String(value));
+  assert.match(attrs({ actionKind: "view", actionView: "sourcing" }), /data-cockpit-view="sourcing"/);
+  assert.match(attrs({ actionKind: "capture", captureId: "c1", storeId: "s1" }), /data-current-capture-id="c1"/);
+  assert.match(attrs({ actionKind: "capture_review", captureId: "c1", storeId: "s1" }), /data-current-capture-review="c1"/);
+  assert.match(attrs({ actionKind: "capture_workflow", captureId: "c1", storeId: "s1" }), /data-current-capture-workflow="c1"/);
+  const workflowAttrs = attrs({ actionKind: "workflow", runId: "r1", storeId: "s1" });
+  assert.match(workflowAttrs, /data-current-workflow-id="r1"/);
+  assert.match(workflowAttrs, /data-current-workflow-store-id="s1"/);
+  assert.throws(() => attrs({ actionKind: "workflow", runId: "" }), /当前商品动作缺少工作流/);
+});
+
+test("seller workspace uses a product-grade visual shell without changing the three-step contract", async () => {
+  const [html, js, css] = await Promise.all([
+    readFile(new URL("../public/index.html", import.meta.url), "utf8"),
+    readFile(new URL("../public/app.js", import.meta.url), "utf8"),
+    readFile(new URL("../public/styles.css", import.meta.url), "utf8"),
+  ]);
+  assert.match(html, /<svg viewBox="0 0 24 24"/);
+  assert.match(html, /商品运营中心/);
+  assert.match(html, />检查连接</);
+  assert.match(js, /const imageUrl = \/\^https\?:\\\/\\\//);
+  assert.match(js, /class="current-product-thumbnail"/);
+  assert.match(js, /referrerpolicy="no-referrer"/);
+  assert.match(css, /Premium seller shell/);
+  assert.match(css, /body\[data-active-view="dashboard"\]\.auto-ozon-erp-shell \.main[\s\S]*padding-top: 0/);
+  assert.match(css, /\.current-product-progress[\s\S]*grid-template-columns: repeat\(3, 1fr\)/);
+  assert.match(css, /\.current-product-thumbnail img[\s\S]*object-fit: cover/);
+  assert.match(css, /@media \(max-width: 1023px\)[\s\S]*\.auto-ozon-erp-shell \.main \{[\s\S]*margin-left: 0[\s\S]*padding-top: 0/);
+  assert.match(css, /@media \(max-width: 1023px\)[\s\S]*\.auto-ozon-erp-shell \.global-current-task-bar \{[\s\S]*position: static[\s\S]*inset: auto/);
+});
+
+test("dashboard explains user responsibility, automation responsibility, and the next safe action", async () => {
+  const [html, js, css] = await Promise.all([
+    readFile(new URL("../public/index.html", import.meta.url), "utf8"),
+    readFile(new URL("../public/app.js", import.meta.url), "utf8"),
+    readFile(new URL("../public/styles.css", import.meta.url), "utf8"),
+  ]);
+  assert.match(html, /class="seller-responsibility-strip"/);
+  assert.match(html, /你只负责/);
+  assert.match(html, /系统和 AI 负责/);
+  assert.match(html, /选商品、确认必要资料、最后决定是否上架/);
+  assert.match(js, /现在只做这一步/);
+  assert.match(js, /点完以后/);
+  assert.match(js, /安全边界/);
+  assert.match(js, /model\.userInstruction/);
+  assert.match(js, /model\.systemNext/);
+  assert.match(js, /model\.safetyBoundary/);
+  assert.match(js, /aria-describedby="currentProductActionDescription currentProductActionSafety"/);
+  assert.match(js, /reviewCurrentProductFromWorkspace/);
+  assert.match(js, /openCurrentProductDraftFromWorkspace/);
+  assert.match(js, /openCurrentProductWorkflowFromWorkspace/);
+  assert.match(js, /switchStoreContext\(storeId, \{ loadWarehouses: false \}\)/);
+  assert.doesNotMatch(js, /确认快照 \$\{shortHash\}/);
+  assert.match(css, /\.seller-responsibility-strip/);
+  assert.match(css, /\.current-product-action-explanation/);
+});
+
+test("dashboard and listing share one current product workspace", async () => {
+  const [html, js] = await Promise.all([
+    readFile(new URL("../public/index.html", import.meta.url), "utf8"),
+    readFile(new URL("../public/app.js", import.meta.url), "utf8"),
+  ]);
+  assert.match(html, /id="currentProductWorkspace"/);
+  assert.match(html, /id="currentProductProgress"/);
+  assert.match(html, /id="currentProductCompleted"/);
+  assert.match(html, /id="currentProductRequired"/);
+  assert.match(html, /id="listingCurrentProductGate"/);
+  assert.match(html, /class="listing-advanced-workbench"/);
+  assert.match(js, /function currentProductWorkspaceModel/);
+  assert.match(js, /function renderCurrentProductWorkspace/);
+  assert.match(js, /renderCurrentProductWorkspace\(\)/);
+});
+
+test("ordinary current product workspace exposes three seller steps and hides internal process language", async () => {
+  const [html, js, css] = await Promise.all([
+    readFile(new URL("../public/index.html", import.meta.url), "utf8"),
+    readFile(new URL("../public/app.js", import.meta.url), "utf8"),
+    readFile(new URL("../public/styles.css", import.meta.url), "utf8"),
+  ]);
+  const headerStart = html.indexOf('<section id="dashboard"');
+  const headerEnd = html.indexOf('<details class="dashboard-advanced-workbench"', headerStart);
+  const ordinaryDashboard = html.slice(headerStart, headerEnd);
+  const modelStart = js.indexOf("function currentProductWorkspaceModel");
+  const modelEnd = js.indexOf("function renderCurrentProductWorkspace", modelStart);
+  const model = js.slice(modelStart, modelEnd);
+  assert.match(ordinaryDashboard, /今天只处理一件商品/);
+  assert.match(ordinaryDashboard, /系统和 AI 负责/);
+  assert.match(ordinaryDashboard, /class="current-product-task-card required-card" hidden/);
+  assert.match(html, /<body[^>]+data-active-view="dashboard"/);
+  assert.match(css, /body\[data-active-view="dashboard"\] \.global-current-task-bar[\s\S]*display: none/);
+  assert.match(model, /采集商品/);
+  assert.match(model, /检查商品/);
+  assert.match(model, /确认上架/);
+  assert.doesNotMatch(model, /来源快照|snapshot hash|提交前预检|本地草稿骨架/);
+});
+
+test("unconfirmed real capture remains the only seller action before a workflow exists", async () => {
+  const js = await readFile(new URL("../public/app.js", import.meta.url), "utf8");
+  const start = js.indexOf("function currentProductWorkspaceModel");
+  const end = js.indexOf("function renderCurrentProductWorkspace", start);
+  assert.ok(start >= 0 && end > start);
+  const model = js.slice(start, end);
+  assert.match(model, /等待你确认商品/);
+  assert.match(model, /确认这是我的商品/);
+  assert.match(model, /系统会建立本地商品草稿并打开资料页/);
+  assert.match(model, /actionKind = "capture_review"/);
+  assert.match(model, /reviewNeeded/);
+  assert.match(model, /currentListingWorkflowRun\(\)/);
+});
+
+test("current capture row stays highlighted and reports unique source SKUs", async () => {
+  const [js, css] = await Promise.all([
+    readFile(new URL("../public/app.js", import.meta.url), "utf8"),
+    readFile(new URL("../public/styles.css", import.meta.url), "utf8"),
+  ]);
+  const start = js.indexOf("function renderCaptureBox");
+  const end = js.indexOf("function selectedCaptureSelections", start);
+  assert.ok(start >= 0 && end > start);
+  const renderer = js.slice(start, end);
+  assert.match(renderer, /capture-current-product/);
+  assert.match(renderer, /当前要处理的商品/);
+  assert.match(renderer, /uniqueSkuIds/);
+  assert.match(renderer, /现在只做这一步/);
+  assert.match(css, /\.capture-current-product \.review-capture/);
+  assert.match(css, /\.capture-current-product \.preflight-capture[\s\S]*display: none/);
+});
+
+test("1688 sourcing is a plugin inbox instead of an expanded engineering console", async () => {
+  const [html, js, css] = await Promise.all([
+    readFile(new URL("../public/index.html", import.meta.url), "utf8"),
+    readFile(new URL("../public/app.js", import.meta.url), "utf8"),
+    readFile(new URL("../public/styles.css", import.meta.url), "utf8"),
+  ]);
+  const sourcingStart = html.indexOf('<section id="sourcing"');
+  const advancedStart = html.indexOf('class="sourcing-advanced-disclosure"', sourcingStart);
+  const ordinarySourcing = html.slice(sourcingStart, advancedStart);
+  assert.ok(sourcingStart >= 0 && advancedStart > sourcingStart);
+  assert.match(ordinarySourcing, /1688 商品采集/);
+  assert.match(ordinarySourcing, /补齐后入箱/);
+  assert.match(ordinarySourcing, /id="crawlerWorkerStatus"/);
+  assert.match(ordinarySourcing, /id="sourcingCurrentProduct"/);
+  assert.doesNotMatch(ordinarySourcing, /fixture|反向单入口|任务配置|自动铺货记录/);
+  assert.match(html, /高级采集工具与历史记录（通常不用）/);
+  assert.match(js, /function renderSourcingInbox/);
+  assert.match(js, /renderSourcingInbox\(\)/);
+  assert.match(js, /function initializeSourcingAdvancedDisclosure/);
+  assert.match(js, /content\.append\(sibling\)/);
+  assert.match(js, /on\("#refreshCaptureBox", "click", refreshCaptureBox\)/);
+  assert.match(js, /on\("#refreshCaptureBoxTop", "click", refreshCaptureBox\)/);
+  assert.match(js, /progressLabel = validationStale \? "需要重新检查" : "需要你补充"/);
+  assert.match(js, /model\.progressLabel \|\| "系统处理结果"/);
+  assert.match(js, /latest\?\.needsHuman \? "needs-human" : latest\?\.online \? "online"/);
+  assert.match(css, /body\[data-active-view="sourcing"\] \.global-current-task-bar[\s\S]*display: none/);
+  assert.match(css, /#sourcing > \.sourcing-advanced-disclosure ~ \*[\s\S]*display: none/);
+  assert.doesNotMatch(css, /sourcing-advanced-disclosure\[open\]/);
+});
+
+test("one-click listing reads trusted commission before starting the paid AI chain", async () => {
+  const js = await readFile(new URL("../public/app.js", import.meta.url), "utf8");
+  const start = js.indexOf("async function runListingAutoCompletion");
+  const end = js.indexOf("\nfunction ", start + 20);
+  const body = js.slice(start, end);
+  const commissionRead = body.indexOf("/commission-evidence/read");
+  const paidAiChain = body.indexOf("/controlled-chain");
+  assert.ok(commissionRead >= 0);
+  assert.ok(paidAiChain > commissionRead);
+  assert.match(body, /commissionEvidenceReady/);
+  assert.match(body, /coverageComplete === true/);
 });

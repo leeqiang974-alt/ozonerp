@@ -85,7 +85,7 @@ async function proxyErpRequest(message) {
       ok: response.ok,
       status: response.status,
       data,
-      error: response.ok ? "" : (data.error || `ERP 返回 HTTP ${response.status}`),
+      error: response.ok ? "" : [data.error || `ERP 返回 HTTP ${response.status}`, data.reasonCode].filter(Boolean).join(" · "),
     };
   } catch (error) {
     return {

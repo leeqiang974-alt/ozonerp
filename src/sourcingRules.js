@@ -19,6 +19,57 @@ function maxPositive(values = []) {
   return nums.length ? Math.max(...nums) : 0;
 }
 
+function expectedSnapshotEvidenceRef(sourceEvidence = {}) {
+  const snapshotHash = String(sourceEvidence?.snapshotHash || "").trim();
+  return /^sha256:[a-f0-9]{64}$/i.test(snapshotHash)
+    ? `snapshot:${snapshotHash.slice("sha256:".length)}`
+    : "";
+}
+
+/**
+ * A detail capture already binds every selected SKU row, including its price,
+ * into the source snapshot.  This is sufficient for a local procurement-cost
+ * calculation even when supplier identity, MOQ, or page-level ladder pricing
+ * were not separately parsed.  It must never be inferred from an unbound
+ * search-card price range.
+ */
+export function buildCapturedSkuPriceEvidence(candidate = {}) {
+  const parsed = getCandidateParsed(candidate);
+  const sourceEvidence = parsed.sourceEvidence || {};
+  const variantsField = sourceEvidence.fields?.variants || {};
+  const expectedRef = expectedSnapshotEvidenceRef(sourceEvidence);
+  const variants = Array.isArray(parsed.skuVariants) ? parsed.skuVariants : [];
+  const rows = variants.map((variant) => ({
+    sourceSkuId: String(variant?.sourceSkuId || variant?.source_sku_id || variant?.skuId || variant?.sku_id || "").trim(),
+    unitPriceCny: toNumber(variant?.price),
+  }));
+  const exactSnapshotBinding = sourceEvidence.platform === "1688"
+    && sourceEvidence.verificationState === "ok"
+    && expectedRef
+    && ["capture_hint", "page_content"].includes(String(variantsField.source || ""))
+    && String(variantsField.evidenceRef || "") === expectedRef;
+  const completeRows = rows.length > 0
+    && rows.every((row) => row.sourceSkuId && row.unitPriceCny > 0);
+  if (!exactSnapshotBinding || !completeRows) {
+    return {
+      ok: false,
+      evidenceRef: "",
+      rows: [],
+      sourceMode: "",
+    };
+  }
+  const unique = new Map();
+  rows.forEach((row) => unique.set(row.sourceSkuId, row));
+  return {
+    ok: unique.size > 0,
+    evidenceRef: expectedRef,
+    rows: [...unique.values()],
+    sourceMode: "sku_price_snapshot",
+    minPriceCny: Math.min(...[...unique.values()].map((row) => row.unitPriceCny)),
+    maxPriceCny: Math.max(...[...unique.values()].map((row) => row.unitPriceCny)),
+  };
+}
+
 /**
  * Summarize procurement facts without making them a hard sourcing filter.
  * A candidate can still enter the review pool with missing supplier/MOQ/tier
@@ -27,6 +78,28 @@ function maxPositive(values = []) {
  */
 export function buildProcurementEvidenceSummary(candidate = {}) {
   const parsed = getCandidateParsed(candidate);
+  const capturedSkuPrices = buildCapturedSkuPriceEvidence(parsed);
+  if (capturedSkuPrices.ok) {
+    return {
+      status: "observed",
+      code: "PROCUREMENT_SKU_PRICE_SNAPSHOT_OBSERVED",
+      missing: [],
+      supplierPresent: Boolean(
+        parsed.procurementEvidence?.supplierId?.value
+        || parsed.procurementEvidence?.supplierName?.value,
+      ),
+      moq: Number(parsed.procurementEvidence?.moq?.value || 0) || null,
+      priceTierCount: Array.isArray(parsed.procurementEvidence?.priceTiers?.values)
+        ? parsed.procurementEvidence.priceTiers.values.length
+        : 0,
+      skuPriceCount: capturedSkuPrices.rows.length,
+      sourceMode: capturedSkuPrices.sourceMode,
+      evidenceRef: capturedSkuPrices.evidenceRef,
+      minPriceCny: capturedSkuPrices.minPriceCny,
+      maxPriceCny: capturedSkuPrices.maxPriceCny,
+      nextAction: "已按当前采集快照中的 SKU 价格自动进入定价，无需重复填写供应商、MOQ 或采购价。",
+    };
+  }
   const evidence = parsed.procurementEvidence;
   const missing = [];
   if (!evidence || typeof evidence !== "object") {

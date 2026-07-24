@@ -11,6 +11,9 @@ const lastRequestAt = new Map();
 // be read-only in the current local API evidence matrix.  Write endpoints must
 // never become retryable merely because a caller passed retrySafe=true.
 export const RETRY_SAFE_POST_READ_ENDPOINTS = new Set([
+  "/v1/description-category/tree",
+  "/v1/description-category/attribute",
+  "/v1/description-category/attribute/values",
   "/v1/product/import/info",
   "/v2/warehouse/list",
   "/v3/posting/fbs/list",
@@ -20,6 +23,7 @@ export const RETRY_SAFE_POST_READ_ENDPOINTS = new Set([
   "/v3/product/list",
   "/v3/product/info/list",
   "/v4/product/info/prices",
+  "/v5/product/info/prices",
   "/v4/product/info/stocks",
   "/v1/actions/products",
   "/v1/actions/candidates",

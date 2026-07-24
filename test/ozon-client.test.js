@@ -42,6 +42,29 @@ test("retrySafe cannot opt a write POST into automatic replay", async () => {
   assert.equal(calls, 0);
 });
 
+test("category tree, attributes, and dictionary reads are retry-safe allowlisted", async () => {
+  const endpoints = [
+    "/v1/description-category/tree",
+    "/v1/description-category/attribute",
+    "/v1/description-category/attribute/values",
+  ];
+  for (const endpoint of endpoints) {
+    let calls = 0;
+    const result = await ozonRequest(store, endpoint, {}, {
+      retrySafe: true,
+      maxRetries: 0,
+      fetch: async () => {
+        calls += 1;
+        return response(200, { result: [] });
+      },
+      sleep: async () => {},
+      throttleMs: 0,
+    });
+    assert.deepEqual(result, { result: [] });
+    assert.equal(calls, 1);
+  }
+});
+
 test("retry-safe POST honors Retry-After and preserves final error context", async () => {
   let calls = 0;
   const sleeps = [];

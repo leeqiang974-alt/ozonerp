@@ -25,6 +25,21 @@ test("JSON job repository writes atomically and keeps the previous valid snapsho
   assert.deepEqual(await JobRepository.readAutoListingJobs(file), [{ id: "job-1", status: "running" }]);
 });
 
+test("JSON job repository serializes concurrent read-modify-write mutations", async (t) => {
+  const dir = await fs.mkdtemp(path.join(os.tmpdir(), "ozon-job-mutation-lock-"));
+  t.after(() => fs.rm(dir, { recursive: true, force: true }));
+  const file = path.join(dir, "jobs.json");
+  await JobRepository.writeAutoListingJobs(file, [{ id: "job-1", revision: 0 }]);
+
+  await Promise.all(Array.from({ length: 6 }, () => JobRepository.mutateAutoListingJobs(file, async (items) => {
+    const current = Number(items[0].revision || 0);
+    await new Promise((resolve) => setTimeout(resolve, 5));
+    items[0] = { ...items[0], revision: current + 1 };
+  })));
+
+  assert.deepEqual(await JobRepository.readAutoListingJobs(file), [{ id: "job-1", revision: 6 }]);
+});
+
 test("durable job writes fail closed when an item has no stable id", async (t) => {
   const dir = await fs.mkdtemp(path.join(os.tmpdir(), "ozon-job-id-required-"));
   t.after(() => fs.rm(dir, { recursive: true, force: true }));

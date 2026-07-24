@@ -1,5 +1,6 @@
 import fs from "node:fs/promises";
 import path from "node:path";
+import { createHash, randomUUID } from "node:crypto";
 import { createCrawlerTask } from "./crawler1688.js";
 import { listCrawlerCandidates } from "./crawler1688.js";
 import { getCollectionItem } from "./collectionBox.js";
@@ -12,7 +13,13 @@ import { getStore } from "./config.js";
 import { ozonRequest } from "./ozon.js";
 import { nextParentSku } from "./skuSequence.js";
 import { recordListingExperience } from "./learningMemory.js";
-import { attributeValueCacheKey, flattenCategories, loadCategoryCache, matchCategory } from "./ozonCategoryCache.js";
+import {
+  attributeValueCacheKey,
+  flattenCategories,
+  inspectCategoryCacheFreshness,
+  loadCategoryCache,
+  matchCategory,
+} from "./ozonCategoryCache.js";
 import {
   buildRequiredAttributeManualBacklog,
   buildRequiredAttributeFillPlan,
@@ -22,16 +29,18 @@ import {
 import { enqueueStockJob, recordFailedStockJob, resolveWarehouseIdForStore } from "./stockQueue.js";
 import { buildVisualCardPrompt } from "./visualCardTemplate.js";
 import { prepareOzonImages } from "./imageOss.js";
+import { categoryScopeForCommission } from "./commissionEvidence.js";
 import { JobRepository } from "./jobRepository.js";
 import { mapReasonCode } from "./reasonCodes.js";
 import { trackEvent } from "./observability.js";
-import { SOURCING_MAX_SKU_COUNT, SOURCING_MAX_SOURCE_WEIGHT_G, filterSourcingCandidates } from "./sourcingRules.js";
+import { SOURCING_MAX_SKU_COUNT, SOURCING_MAX_SOURCE_WEIGHT_G, buildCapturedSkuPriceEvidence, filterSourcingCandidates } from "./sourcingRules.js";
 import { buildProcurementEvidenceSummary } from "./sourcingRules.js";
 import {
   appendWorkflowEvent,
   buildPreflightGateNode,
   diagnoseWorkflowError,
   findOrCreateWorkflowForAutoListingJob,
+  invalidatePayloadDraftValidation,
   savePayloadDraft,
   upsertWorkflowNode,
   workflowDuplicateListingNode,
@@ -68,8 +77,6 @@ export function listingDraftStoreMatches(existingJob = {}, requestedStoreId = ""
 const JOB_FILE = path.join(DATA_DIR, "auto-listing-jobs.json");
 const RMB_TO_RUB = 13.5;
 const PURCHASE_COST_MARKUP_RMB = 5;
-const PACKAGE_WEIGHT_PADDING_G = 50;
-const PACKAGE_SIZE_PADDING_MM = 20;
 const MAX_OZON_IMAGE_PREPARE_COUNT = toNumber(process.env.OZON_IMAGE_PREPARE_COUNT, 8);
 const STRICT_MATCH_MIN_CONFIDENCE = toNumber(process.env.OZON_MATCH_STRICT_CONFIDENCE, 50);
 const SIMILAR_MATCH_MIN_CONFIDENCE = toNumber(process.env.OZON_MATCH_SIMILAR_CONFIDENCE, 35);
@@ -84,7 +91,6 @@ const ENABLE_IMAGE_OCR_FOR_LISTING = String(process.env.OZON_IMAGE_OCR_ENABLED |
 const JOB_STALE_TIMEOUT_MS = toNumber(process.env.OZON_JOB_STALE_TIMEOUT_MS, 30 * 60 * 1000);
 const AI_MATCH_LIMIT = toNumber(process.env.OZON_AI_MATCH_LIMIT, 8);
 const LLM_TIMEOUT_MS = toNumber(process.env.OZON_LLM_TIMEOUT_MS, 12_000);
-var jobsWriteChain = Promise.resolve();
 var jobsMutationChain = Promise.resolve();
 
 function nowIso() { return new Date().toISOString(); }
@@ -164,19 +170,53 @@ function defaultCommissionSource() {
   };
 }
 
+export function validateTrustedCommissionEvidenceForJob(job = {}, categoryMatch = null, expectedEnvironment = "") {
+  const category = categoryMatch ? {
+    descriptionCategoryId: Number(categoryMatch.description_category_id || categoryMatch.descriptionCategoryId || 0),
+    typeId: Number(categoryMatch.type_id || categoryMatch.typeId || 0),
+  } : categoryScopeForCommission(job);
+  const categoryKey = category?.descriptionCategoryId && category?.typeId
+    ? `${category.descriptionCategoryId}:${category.typeId}`
+    : "";
+  const source = job.commissionEvidence?.commissionSource || {};
+  const learnedRate = extractCommissionRate(job.commissions || []);
+  const exact = learnedRate > 0
+    && source.source === "learned_product"
+    && source.confidence === "medium"
+    && source.categoryKey === categoryKey
+    && source.storeId === String(job.storeId || "")
+    && source.sourceSnapshotHash === String(job.candidateData?.sourceEvidence?.snapshotHash || "")
+    && source.coverageComplete === true
+    && Number(source.sampleCount || 0) > 0
+    && Boolean(String(source.environment || "").trim())
+    && (!expectedEnvironment || String(source.environment) === String(expectedEnvironment))
+    && /^sha256:[a-f0-9]{64}$/i.test(String(source.evidenceRef || ""))
+    && Boolean(String(source.updatedAt || "").trim());
+  if (!exact) {
+    return {
+      ok: false,
+      reasonCode: "TRUSTED_COMMISSION_EVIDENCE_REQUIRED",
+      error: "当前商品缺少与店铺、类目、环境和来源快照精确绑定的 FBS 佣金证据；系统未调用付费 AI。",
+      paidAiCalled: false,
+    };
+  }
+  return { ok: true, commissionRate: learnedRate, commissionSource: source };
+}
+
 function resolveCommissionInput(job = {}, categoryMatch = null) {
-  const learnedRate = extractCommissionRate(job.ozonContext?.commissions || job.commissions || []);
   const categoryKey = categoryMatch
     ? [categoryMatch.description_category_id, categoryMatch.type_id].map((item) => String(item || "")).filter(Boolean).join(":")
     : "";
-  if (learnedRate > 0) {
+  const trusted = validateTrustedCommissionEvidenceForJob(job, categoryMatch);
+  if (trusted.ok) {
     return {
-      commissionRate: learnedRate,
+      commissionRate: trusted.commissionRate,
       commissionSource: {
         source: "learned_product",
         label: "同类已上架商品学习",
         confidence: "medium",
         categoryKey,
+        ...trusted.commissionSource,
       },
     };
   }
@@ -325,9 +365,18 @@ export async function selectBestMatchForOzon(ozonItem, candidates = [], options 
   var bestMatch = null;
   var volumeFallback = null;
   var rejected = [];
+  var paidAiCalled = false;
   for (var i = 0; i < candidates.length; i++) {
     var candidate = candidates[i];
-    var matchResult = shouldUseAiMatch(i, aiLimit) ? await judgeMatch(ozonItem, candidate) : localJudgeMatch(ozonItem, candidate);
+    var usePaidAi = shouldUseAiMatch(i, aiLimit);
+    if (usePaidAi && typeof options.beforePaidAiCall === "function") {
+      var callAuthorization = await options.beforePaidAiCall({ index: i, candidate, paidAiCalled });
+      if (!callAuthorization?.ok) {
+        return { ...callAuthorization, paidAiCalled, rejected, evaluatedCount: i };
+      }
+    }
+    var matchResult = usePaidAi ? await judgeMatch(ozonItem, candidate) : localJudgeMatch(ozonItem, candidate);
+    if (usePaidAi) paidAiCalled = true;
     var profit = calcProfit(ozonItem, candidate);
     if (ENABLE_VOLUME_FALLBACK && profit && profit.ok && isSameFamilyForFallback(ozonItem, candidate)) {
       var marginOk = toNumber(profit.margin) >= VOLUME_MIN_MARGIN;
@@ -393,25 +442,36 @@ export async function selectBestMatchForOzon(ozonItem, candidates = [], options 
 async function readJobs() {
   return JobRepository.readAutoListingJobs(JOB_FILE);
 }
-async function writeJobs(items) {
-  jobsWriteChain = jobsWriteChain.then(function() {
-    return JobRepository.writeAutoListingJobs(JOB_FILE, items);
-  }).catch(function() {
-    return JobRepository.writeAutoListingJobs(JOB_FILE, items);
-  });
-  await jobsWriteChain;
-}
-
 async function mutateJobs(mutator) {
-  let output;
   const run = jobsMutationChain.catch(function() {}).then(async function() {
-    const jobs = await readJobs();
-    output = await mutator(jobs);
-    await writeJobs(jobs);
+    return JobRepository.mutateAutoListingJobs(JOB_FILE, async function(jobs) {
+      const fencedJobs = new Map(jobs
+        .filter((job) => {
+          const expiresAtMs = Date.parse(String(job.paidAiSubmissionFence?.expiresAt || ""));
+          return job.paidAiSubmissionFence?.token && Number.isFinite(expiresAtMs) && expiresAtMs > Date.now();
+        })
+        .map((job) => [job.id, {
+          binding: canonicalReceiptJson(paidAiJobBinding(job)),
+          inputHash: paidAiContentInputHash(job),
+          contentHash: paidAiContentHash(job.listingContent || {}),
+        }]));
+      const result = await mutator(jobs);
+      for (const [jobId, before] of fencedJobs) {
+        const current = jobs.find((job) => job.id === jobId);
+        if (!current
+          || canonicalReceiptJson(paidAiJobBinding(current)) !== before.binding
+          || paidAiContentInputHash(current) !== before.inputHash
+          || paidAiContentHash(current.listingContent || {}) !== before.contentHash) {
+          const error = new Error("当前商品正在提交，不能修改 AI 生成输入或文案。");
+          error.code = "PAID_AI_SUBMISSION_FENCE_ACTIVE";
+          throw error;
+        }
+      }
+      return result;
+    });
   });
   jobsMutationChain = run.catch(function() {});
-  await run;
-  return output;
+  return run;
 }
 
 async function atomicWriteFileWithRetry(file, payload, retries) {
@@ -804,6 +864,88 @@ export function categoryReadPolicyForListing(job = {}, cache = {}, categoryMatch
     categoryEvidenceStoreId: storeId,
     categoryEvidenceEnvironmentRefHash: environmentRefHash,
     categoryEvidenceMaxAgeMs: undefined,
+  };
+}
+
+function signedCategoryReadEvidence(entry = {}, expectedReceiptId = "", expectedSessionRefHash = "") {
+  const receiptId = String(entry?.readReceiptId || "").trim();
+  const sessionRefHash = String(entry?.sessionRefHash || "").trim();
+  const authSource = String(entry?.authSource || "").trim();
+  return Boolean(
+    entry?.signedSessionBound === true
+    && ["session_cookie", "session_bearer"].includes(authSource)
+    && /^read-operator:[0-9a-f-]{36}$/i.test(receiptId)
+    && /^sha256:[a-f0-9]{64}$/i.test(sessionRefHash)
+    && (!expectedReceiptId || receiptId === expectedReceiptId)
+    && (!expectedSessionRefHash || sessionRefHash === expectedSessionRefHash),
+  );
+}
+
+export function categoryCacheForListingEvidence(cache = {}, categoryMatch = {}, storeId = "", environmentRefHash = "") {
+  const categoryKey = categoryAttributeCacheKey(categoryMatch);
+  const expectedStoreId = String(storeId || "").trim();
+  const expectedEnvironmentRefHash = String(environmentRefHash || "").trim();
+  const treeEvidence = cache?.categoryReadEvidence?.tree || null;
+  const attributeEvidence = cache?.categoryReadEvidence?.attributes?.[categoryKey] || null;
+  const metadataReady = Boolean(
+    categoryKey
+    && expectedStoreId
+    && expectedEnvironmentRefHash
+    && String(cache?.storeId || "").trim() === expectedStoreId
+    && String(treeEvidence?.storeId || "").trim() === expectedStoreId
+    && String(treeEvidence?.environmentRefHash || "").trim() === expectedEnvironmentRefHash
+    && String(attributeEvidence?.storeId || "").trim() === expectedStoreId
+    && String(attributeEvidence?.environmentRefHash || "").trim() === expectedEnvironmentRefHash
+    && String(attributeEvidence?.cacheKey || "").trim() === categoryKey
+    && signedCategoryReadEvidence(treeEvidence)
+    && signedCategoryReadEvidence(
+      attributeEvidence,
+      String(treeEvidence?.readReceiptId || "").trim(),
+      String(treeEvidence?.sessionRefHash || "").trim(),
+    ),
+  );
+  const attributes = { ...(cache?.attributes || {}) };
+  const attributeStores = { ...(cache?.attributeStores || {}) };
+  const attributeUpdatedAt = { ...(cache?.attributeUpdatedAt || {}) };
+  const attributeEvidenceByKey = { ...(cache?.categoryReadEvidence?.attributes || {}) };
+  if (!metadataReady) {
+    delete attributes[categoryKey];
+    delete attributeStores[categoryKey];
+    delete attributeUpdatedAt[categoryKey];
+    delete attributeEvidenceByKey[categoryKey];
+  }
+  const prefix = `${categoryKey}:`;
+  const attributeValues = {};
+  const attributeValueEvidence = {};
+  if (metadataReady) {
+    for (const [cacheKey, entry] of Object.entries(cache?.attributeValues || {})) {
+      if (!cacheKey.startsWith(prefix)) continue;
+      const evidence = cache?.categoryReadEvidence?.attributeValues?.[cacheKey] || null;
+      if (String(entry?.storeId || "").trim() !== expectedStoreId
+        || String(evidence?.storeId || "").trim() !== expectedStoreId
+        || String(evidence?.environmentRefHash || "").trim() !== expectedEnvironmentRefHash
+        || String(evidence?.cacheKey || "").trim() !== cacheKey
+        || evidence?.paginationComplete !== true
+        || !signedCategoryReadEvidence(
+          evidence,
+          String(treeEvidence?.readReceiptId || "").trim(),
+          String(treeEvidence?.sessionRefHash || "").trim(),
+        )) continue;
+      attributeValues[cacheKey] = entry;
+      attributeValueEvidence[cacheKey] = evidence;
+    }
+  }
+  return {
+    ...cache,
+    attributes,
+    attributeStores,
+    attributeUpdatedAt,
+    attributeValues,
+    categoryReadEvidence: {
+      ...(cache?.categoryReadEvidence || {}),
+      attributes: attributeEvidenceByKey,
+      attributeValues: attributeValueEvidence,
+    },
   };
 }
 
@@ -1380,8 +1522,10 @@ function needCategoryTypeRetry(importErrors) {
 
 export function shouldAutoRetryImport(itemCount, importErrors = []) {
   if (Number(itemCount || 0) !== 1 || !importErrors.length) return false;
+  // A size/weight rejection requires new seller/source evidence. Never retry
+  // by silently replacing the evidence-bound package measurements.
+  if (needSizeWeightRetry(importErrors)) return false;
   return needModelRetry(importErrors)
-    || needSizeWeightRetry(importErrors)
     || needCategoryTypeRetry(importErrors)
     || needTitleRetry(importErrors);
 }
@@ -1597,67 +1741,57 @@ function inferTimeoutStageFromHistory(job) {
 }
 
 async function recoverStuckJobs() {
-  var jobs = await readJobs();
   var now = Date.now();
-  var changed = false;
-  var recovered = jobs.map(function(job) {
-    if (!isRunningJobStatus(job.status)) return job;
-    var timeoutStage = timeoutStageByStatus(job.status);
-    var ts = Date.parse(job.updatedAt || job.createdAt || "");
-    if (!Number.isFinite(ts)) return job;
-    if (now - ts < JOB_STALE_TIMEOUT_MS) return job;
-    changed = true;
-    var steps = Array.isArray(job.steps) ? job.steps.slice() : [];
-    steps.push({
-      action: "failed",
-      detail: "任务超时自动回收(" + timeoutStage + ")（卡住超过 " + Math.round(JOB_STALE_TIMEOUT_MS / 60000) + " 分钟）",
-      time: nowIso(),
-    });
-    return Object.assign({}, job, {
-      status: "failed",
-      error: "任务超时自动回收(" + timeoutStage + ")",
-      timeoutStage: timeoutStage,
-      steps: steps,
-      updatedAt: nowIso(),
-    });
+  return mutateJobs(async function(jobs) {
+    for (var i = 0; i < jobs.length; i += 1) {
+      var job = jobs[i];
+      if (!isRunningJobStatus(job.status)) continue;
+      var timeoutStage = timeoutStageByStatus(job.status);
+      var ts = Date.parse(job.updatedAt || job.createdAt || "");
+      if (!Number.isFinite(ts) || now - ts < JOB_STALE_TIMEOUT_MS) continue;
+      var steps = Array.isArray(job.steps) ? job.steps.slice() : [];
+      steps.push({
+        action: "failed",
+        detail: "任务超时自动回收(" + timeoutStage + ")（卡住超过 " + Math.round(JOB_STALE_TIMEOUT_MS / 60000) + " 分钟）",
+        time: nowIso(),
+      });
+      jobs[i] = Object.assign({}, job, {
+        status: "failed",
+        error: "任务超时自动回收(" + timeoutStage + ")",
+        timeoutStage: timeoutStage,
+        steps: steps,
+        updatedAt: nowIso(),
+      });
+    }
+    return jobs;
   });
-  if (changed) await writeJobs(recovered);
-  return recovered;
 }
 
 export async function recoverInterruptedJobs() {
-  var jobs = await readJobs();
-  var changed = false;
-  var recovered = jobs.map(function(job) {
-    if (!isRunningJobStatus(job.status)) return job;
-    var timeoutStage = timeoutStageByStatus(job.status);
-    changed = true;
-    var steps = Array.isArray(job.steps) ? job.steps.slice() : [];
-    steps.push({
-      action: "failed",
-      detail: "后台重启后恢复中断任务(" + timeoutStage + ")",
-      time: nowIso(),
-    });
-    return Object.assign({}, job, {
-      status: "failed",
-      error: "后台重启中断任务(" + timeoutStage + ")",
-      reasonCode: "TIMEOUT",
-      timeoutStage: timeoutStage,
-      steps: steps,
-      updatedAt: nowIso(),
-    });
+  return mutateJobs(async function(jobs) {
+    var recovered = 0;
+    for (var i = 0; i < jobs.length; i += 1) {
+      var job = jobs[i];
+      if (!isRunningJobStatus(job.status)) continue;
+      var timeoutStage = timeoutStageByStatus(job.status);
+      var steps = Array.isArray(job.steps) ? job.steps.slice() : [];
+      steps.push({
+        action: "failed",
+        detail: "后台重启后恢复中断任务(" + timeoutStage + ")",
+        time: nowIso(),
+      });
+      jobs[i] = Object.assign({}, job, {
+        status: "failed",
+        error: "后台重启中断任务(" + timeoutStage + ")",
+        reasonCode: "TIMEOUT",
+        timeoutStage: timeoutStage,
+        steps: steps,
+        updatedAt: nowIso(),
+      });
+      recovered += 1;
+    }
+    return { ok: true, recovered };
   });
-  if (changed) await writeJobs(recovered);
-  return { ok: true, recovered: recovered.filter(function(job) { return String(job.error || "").startsWith("后台重启中断任务"); }).length };
-}
-
-function safeFallbackPackageInfo(packageInfo) {
-  return {
-    weight: Math.max(120, Math.min(1200, Number(packageInfo?.weight || 300))),
-    depth: Math.max(60, Math.min(300, Number(packageInfo?.depth || 120))),
-    width: Math.max(50, Math.min(240, Number(packageInfo?.width || 100))),
-    height: Math.max(30, Math.min(200, Number(packageInfo?.height || 80))),
-  };
 }
 
 function inferFamily(text) {
@@ -1946,25 +2080,24 @@ function packageSizeWeight(candidateData = {}) {
   var lengths = variants.map(function(v) { return toNumber(v.lengthMm); }).filter(Boolean);
   var widths = variants.map(function(v) { return toNumber(v.widthMm); }).filter(Boolean);
   var heights = variants.map(function(v) { return toNumber(v.heightMm); }).filter(Boolean);
-  var sourceWeight = weights.length ? Math.max.apply(null, weights) : toNumber(sw.weightG);
-  var sourceLength = lengths.length ? Math.max.apply(null, lengths) : toNumber(sw.lengthMm);
-  var sourceWidth = widths.length ? Math.max.apply(null, widths) : toNumber(sw.widthMm);
-  var sourceHeight = heights.length ? Math.max.apply(null, heights) : toNumber(sw.heightMm);
+  // A complete parent package is the evidence-bound package shared by the
+  // listing. Variant measurements may only fill a missing parent dimension;
+  // they cannot silently override a package whose evidence was verified
+  // against candidateData.sizeWeight.
+  var sourceWeight = toNumber(sw.weightG) || (weights.length ? Math.max.apply(null, weights) : 0);
+  var sourceLength = toNumber(sw.lengthMm) || (lengths.length ? Math.max.apply(null, lengths) : 0);
+  var sourceWidth = toNumber(sw.widthMm) || (widths.length ? Math.max.apply(null, widths) : 0);
+  var sourceHeight = toNumber(sw.heightMm) || (heights.length ? Math.max.apply(null, heights) : 0);
   if (!sourceWeight || !sourceLength || !sourceWidth || !sourceHeight) {
     return { ok: false, reason: "1688货源缺少可信尺重，禁止自动上架" };
   }
-  var weight = Math.round(sourceWeight + PACKAGE_WEIGHT_PADDING_G);
-  var depth = Math.round(sourceLength + PACKAGE_SIZE_PADDING_MM);
-  var width = Math.round(sourceWidth + PACKAGE_SIZE_PADDING_MM);
-  var height = Math.round(sourceHeight + PACKAGE_SIZE_PADDING_MM);
-  var safe = safeFallbackPackageInfo({ weight, depth, width, height });
-  weight = safe.weight;
-  depth = safe.depth;
-  width = safe.width;
-  height = safe.height;
-  if (weight < 10 || depth < 10 || width < 10 || height < 10) {
-    return { ok: false, reason: "尺重小于Ozon安全阈值，禁止自动上架" };
-  }
+  // Package measurements are evidence-bound business facts. Do not pad,
+  // clamp, or otherwise rewrite them while continuing to label the result as
+  // 1688/manual package evidence.
+  var weight = sourceWeight;
+  var depth = sourceLength;
+  var width = sourceWidth;
+  var height = sourceHeight;
   return {
     ok: true,
     sourceWeight,
@@ -1980,11 +2113,8 @@ function packageSizeWeight(candidateData = {}) {
 
 function trustedPackageInfoSourceForListingJob(job = {}) {
   const candidateData = job.candidateData || {};
-  const packageEvidence = candidateData.sourceEvidence?.fields?.package;
-  const snapshotHash = String(candidateData.sourceEvidence?.snapshotHash || "");
-  if (packageEvidence && (String(packageEvidence.source || "") !== "page_content" || String(packageEvidence.evidenceRef || "") !== `snapshot:${snapshotHash.replace(/^sha256:/, "")}`)) return "";
-  if (packageEvidence?.values && Object.entries(packageEvidence.values).some(([key, value]) => Number(value || 0) !== Number(candidateData.sizeWeight?.[key] || 0))) return "";
   const sizeWeight = candidateData.sizeWeight || {};
+  const snapshotHash = String(candidateData.sourceEvidence?.snapshotHash || "");
   const explicitSource = String(
     candidateData.packageInfoSource
     || sizeWeight.packageInfoSource
@@ -1992,9 +2122,40 @@ function trustedPackageInfoSourceForListingJob(job = {}) {
     || sizeWeight.source
     || "",
   ).trim();
-  if (["1688_package", "manual_measurement", "manual_measured", "supplier_package"].includes(explicitSource)) {
+  if (["manual_measurement", "manual_measured", "supplier_package"].includes(explicitSource)) {
+    const binding = sizeWeight.manualEvidenceBinding || candidateData.manualPackageEvidenceBinding || {};
+    const requiredBinding = {
+      captureId: String(job.candidateId || ""),
+      storeId: String(job.storeId || ""),
+      sourceSnapshotHash: snapshotHash,
+      workflowRunId: String(job.workflowRunId || ""),
+    };
+    if (Object.values(requiredBinding).some((value) => !value)
+      || Object.entries(requiredBinding).some(([key, value]) => String(binding[key] || "") !== value)) {
+      return "";
+    }
     return explicitSource;
   }
+  const packageEvidence = candidateData.sourceEvidence?.fields?.package;
+  if (packageEvidence) {
+    const exactCapturedPackage = candidateData.sourceEvidence?.platform === "1688"
+      && candidateData.sourceEvidence?.verificationState === "ok"
+      && /^sha256:[a-f0-9]{64}$/i.test(snapshotHash)
+      && ["page_content", "capture_hint", "1688_package"].includes(String(packageEvidence.source || ""))
+      && String(packageEvidence.evidenceRef || "") === `snapshot:${snapshotHash.replace(/^sha256:/, "")}`
+      && ["weightG", "lengthMm", "widthMm", "heightMm"].every((key) => (
+        Number(packageEvidence.values?.[key] || 0) > 0
+        && Number(packageEvidence.values?.[key] || 0) === Number(candidateData.sizeWeight?.[key] || 0)
+      ));
+    if (!exactCapturedPackage) return "";
+    return "1688_package";
+  }
+  // Only pre-evidence legacy jobs may use the historical source/URL fallback.
+  // A capture that already has an evidence envelope must carry an exact
+  // package field; otherwise a missing field could be upgraded merely because
+  // its URL points at 1688.
+  if (candidateData.sourceEvidence && Object.keys(candidateData.sourceEvidence).length) return "";
+  if (explicitSource === "1688_package") return explicitSource;
   const sourceText = [
     candidateData.source,
     candidateData.sourceType,
@@ -2013,6 +2174,134 @@ function trustedPackageInfoSourceForListingJob(job = {}) {
     return "1688_package";
   }
   return "";
+}
+
+function capturedPurchasePriceCny(candidate = {}) {
+  const evidence = buildCapturedSkuPriceEvidence(candidate);
+  return evidence.ok ? Number(evidence.maxPriceCny || 0) : 0;
+}
+
+export function buildAutomaticPricingPreviewFromCapture(job = {}, categoryMatch = null) {
+  const procurement = buildProcurementEvidenceSummary(job.candidateData || {});
+  if (procurement.status !== "observed" || procurement.sourceMode !== "sku_price_snapshot") return null;
+  const packageInfo = packageSizeWeight(job.candidateData || {});
+  if (!packageInfo.ok) return null;
+  packageInfo.packageInfoSource = trustedPackageInfoSourceForListingJob(job);
+  if (!packageInfo.packageInfoSource) return null;
+  const sourcePriceCny = Number(
+    procurement.maxPriceCny
+    || job.bestMatch?.purchasePriceCny
+    || capturedPurchasePriceCny(job.candidateData || {}),
+  );
+  if (!(sourcePriceCny > 0)) return null;
+  const purchaseCost = Math.max(sourcePriceCny + PURCHASE_COST_MARKUP_RMB, 1);
+  const commissionInput = resolveCommissionInput(job, categoryMatch);
+  const priceCalc = calculateOzonPrice({
+    purchaseCost,
+    weightG: packageInfo.weight,
+    lengthMm: packageInfo.depth,
+    widthMm: packageInfo.width,
+    heightMm: packageInfo.height,
+    profitRate: 0.3,
+    ...commissionInput,
+  });
+  const priceCny = roundMoney(priceCalc.priceCny || priceCalc.nextPriceCny || 0);
+  if (!(priceCny > 0)) return null;
+  const pricingFields = derivePricingPolicyFields({
+    priceCny,
+    baseCost: priceCalc.baseCost || 0,
+    policy: job.pricingPolicy || null,
+  });
+  const preview = pricingDiagnosisFromCalculation({
+    sourcePriceCny,
+    purchaseCost,
+    packageInfo,
+    priceCalc,
+    priceCny,
+    oldPriceCny: pricingFields.oldPriceCny,
+    minPriceCny: pricingFields.minPriceCny,
+    pricingFields,
+  });
+  preview.autoStarted = true;
+  preview.calculationStatus = "local_preview";
+  preview.procurementEvidence = {
+    ...procurement,
+    status: "verified",
+    verificationState: "source_verified",
+    sourceBacked: true,
+    reasonCode: "",
+    sellerAction: "",
+    sideEffect: "仅生成本地定价试算；不会提交 Ozon，不会修改价格或库存。",
+  };
+  preview.profitStatus = preview.commissionSource?.source === "manual_default" ? "unknown" : "estimate";
+  preview.profitConclusion = preview.profitStatus === "unknown"
+    ? "unknown_without_trusted_commission_and_settlement_rules"
+    : "estimated_from_local_policy";
+  preview.profitEvidence = {
+    settlement: {
+      status: "missing",
+      nextAction: "当前店铺 Seller API 尚未提供结算费率和订单财务回执",
+    },
+  };
+  preview.sourceEvidence = sourceEvidenceBindingForListing(
+    job.candidateData?.sourceEvidence || {},
+    job.candidateData?.skuVariants || [],
+  );
+  return preview;
+}
+
+export function listingPriceEvidenceForJob(job = {}) {
+  const candidateData = job.candidateData || {};
+  const captured = buildCapturedSkuPriceEvidence(candidateData);
+  if (captured.ok) {
+    return {
+      ok: true,
+      sourceMode: "sku_price_snapshot",
+      sourcePriceCny: Number(captured.maxPriceCny || 0),
+      evidenceRef: captured.evidenceRef,
+      sourceSnapshotHash: String(candidateData.sourceEvidence?.snapshotHash || ""),
+      skuPrices: Object.fromEntries(captured.rows.map((row) => [row.sourceSkuId, Number(row.unitPriceCny || 0)])),
+    };
+  }
+  const matchedPrice = Number(job.bestMatch?.purchasePriceCny || 0);
+  if (matchedPrice > 0) {
+    return {
+      ok: true,
+      sourceMode: "best_match",
+      sourcePriceCny: matchedPrice,
+      evidenceRef: "",
+      sourceSnapshotHash: "",
+      skuPrices: {},
+    };
+  }
+  return {
+    ok: false,
+    reasonCode: "PRICING_SOURCE_PRICE_EVIDENCE_MISSING",
+    error: "当前商品缺少与采集快照严格绑定的 SKU 采购价，不能生成上架草稿。",
+    sourceMode: "",
+    sourcePriceCny: 0,
+    evidenceRef: "",
+    sourceSnapshotHash: "",
+    skuPrices: {},
+  };
+}
+
+export function sourcePriceCnyForListingJob(job = {}) {
+  return Number(listingPriceEvidenceForJob(job).sourcePriceCny || 0);
+}
+
+function variantSourcePriceCny(variant = {}, priceEvidence = {}) {
+  if (priceEvidence.sourceMode !== "sku_price_snapshot") {
+    return Number(priceEvidence.sourcePriceCny || 0);
+  }
+  const sourceSkuId = String(
+    variant.sourceSkuId
+    || variant.source_sku_id
+    || variant.skuId
+    || variant.sku_id
+    || "",
+  ).trim();
+  return Number(priceEvidence.skuPrices?.[sourceSkuId] || 0);
 }
 
 function contentGenerationWorkflowSummary(listingContent = {}, candidate = {}, visualCard = null) {
@@ -2064,7 +2353,9 @@ export function buildListingPayloadDraftFromJob(job = {}, options = {}) {
   if (!packageInfo.ok) throw new Error(packageInfo.reason || "候选缺少尺重，无法生成 payload 草稿");
   packageInfo.packageInfoSource = trustedPackageInfoSourceForListingJob(job);
   if (!packageInfo.packageInfoSource) throw new Error("候选缺少可信尺重来源，无法生成 payload 草稿");
-  const bestMatchPrice = job.bestMatch ? job.bestMatch.purchasePriceCny : 0;
+  const listingPriceEvidence = listingPriceEvidenceForJob(job);
+  if (!listingPriceEvidence.ok) throw new Error(listingPriceEvidence.error);
+  const bestMatchPrice = listingPriceEvidence.sourcePriceCny;
   const purchaseCost = Math.max(Number(bestMatchPrice || 0) + PURCHASE_COST_MARKUP_RMB, 1);
   const commissionInput = resolveCommissionInput(job, categoryMatch);
   const priceCalc = calculateOzonPrice({
@@ -2099,8 +2390,20 @@ export function buildListingPayloadDraftFromJob(job = {}, options = {}) {
   const procurement = buildProcurementEvidenceSummary(job.candidateData || {});
   const rawProcurement = job.candidateData?.procurementEvidence || {};
   const sourceHash = String(job.candidateData?.sourceEvidence?.snapshotHash || "");
+  const expectedSourceRef = /^sha256:[a-f0-9]{64}$/i.test(sourceHash)
+    ? `snapshot:${sourceHash.replace(/^sha256:/, "")}`
+    : "";
   const refsMatch = [rawProcurement.supplierId, rawProcurement.supplierName, rawProcurement.moq, rawProcurement.priceTiers].filter(Boolean).every((field) => !field?.evidenceRef || field.evidenceRef === `snapshot:${sourceHash.replace(/^sha256:/, "")}`);
-  const verificationState = procurement.status === "observed" && sourceHash && refsMatch ? "source_verified" : procurement.status === "needs_review" ? "manual_unverified" : "";
+  const skuPriceSnapshotMatches = procurement.sourceMode === "sku_price_snapshot"
+    && expectedSourceRef
+    && procurement.evidenceRef === expectedSourceRef;
+  const verificationState = procurement.status === "observed"
+    && sourceHash
+    && (skuPriceSnapshotMatches || refsMatch)
+    ? "source_verified"
+    : procurement.status === "needs_review"
+      ? "manual_unverified"
+      : "";
   pricingDiagnosis.procurementEvidence = { ...procurement, status: verificationState === "source_verified" ? "verified" : procurement.status, verificationState, sourceBacked: verificationState === "source_verified", reasonCode: procurement.status === "blocked" ? "PRICING_PROCUREMENT_EVIDENCE_MISSING" : verificationState === "manual_unverified" ? "PRICING_PROCUREMENT_EVIDENCE_MANUAL_UNVERIFIED" : "" , sellerAction: verificationState === "manual_unverified" ? "核对来源快照并人工确认采购证据" : procurement.nextAction, sideEffect: "不会提交 Ozon，不会修改价格或库存" };
   pricingDiagnosis.profitStatus = pricingDiagnosis.commissionSource?.source === "manual_default" ? "unknown" : "estimated";
   pricingDiagnosis.profitConclusion = pricingDiagnosis.profitStatus === "unknown" ? "unknown_without_trusted_commission_and_settlement_rules" : "estimated_from_local_policy";
@@ -2172,7 +2475,7 @@ export function buildListingPayloadDraftFromJob(job = {}, options = {}) {
   };
   const skuVariants = (job.candidateData && job.candidateData.skuVariants) || [];
   let variantsForListing = Array.isArray(skuVariants)
-    ? skuVariants.filter(function(v) { return cleanSkuSpec(v.spec || "") && Number(v.price || bestMatchPrice || 0) > 0; }).slice(0, SOURCING_MAX_SKU_COUNT)
+    ? skuVariants.filter(function(v) { return cleanSkuSpec(v.spec || "") && variantSourcePriceCny(v, listingPriceEvidence) > 0; }).slice(0, SOURCING_MAX_SKU_COUNT)
     : [];
   // Keep a single real source SKU; it still needs a stable parent Offer ID.
   let submitItems = variantsForListing.length
@@ -2181,7 +2484,8 @@ export function buildListingPayloadDraftFromJob(job = {}, options = {}) {
       let variantPrice = finalPriceCny;
       let variantPricingFields = pricingFields;
       try {
-        const variantPurchase = Math.max(Number(variant.price || bestMatchPrice || 0) + PURCHASE_COST_MARKUP_RMB, 1);
+        const variantSourcePrice = variantSourcePriceCny(variant, listingPriceEvidence);
+        const variantPurchase = Math.max(variantSourcePrice + PURCHASE_COST_MARKUP_RMB, 1);
         const variantCalc = calculateOzonPrice({
           purchaseCost: variantPurchase,
           weightG: variantPackage.ok ? variantPackage.weight : packageInfo.weight,
@@ -2199,7 +2503,7 @@ export function buildListingPayloadDraftFromJob(job = {}, options = {}) {
         });
         pricingDiagnosis.variants.push({
           offerId: variantOfferId(parentSku, variant, index),
-          sourcePriceCny: roundMoney(Number(variant.price || bestMatchPrice || 0)),
+          sourcePriceCny: roundMoney(variantSourcePrice),
           purchaseCost: roundMoney(variantPurchase),
           priceCny: variantPrice,
           oldPriceCny: variantPricingFields.oldPriceCny,
@@ -2287,13 +2591,14 @@ async function saveWorkflowPayloadDraftForListingJob(job = {}) {
     skuVariants: job.candidateData?.skuVariants || [],
   };
   const sourceIs1688 = String(job.source || job.candidateData?.source || "").toLowerCase() === "1688";
-  const savedCategory = job.manualCategory || job.categorySelection || job.candidateData?.categorySelection || null;
+  const savedCategory = job.manualCategory || job.autoCategory || job.categorySelection || job.candidateData?.categorySelection || null;
   const savedCategoryIdsValid = Boolean(savedCategory && (savedCategory.description_category_id || savedCategory.descriptionCategoryId) && (savedCategory.type_id || savedCategory.typeId));
   const cache = await loadCategoryCache();
   const flatCategories = cache.flat || flattenCategories(cache.tree || []);
-  // A seller-confirmed category is a business decision, not just UI metadata.
-  // Re-resolve it against the current local dictionary before building the
-  // payload; never silently replace it with a different auto-match.
+  // A seller-confirmed or high-confidence automatic category is a business
+  // decision, not just UI metadata. Re-resolve it against the current local
+  // dictionary before building the payload; never silently replace it with a
+  // different match. Submission evidence remains enforced separately.
   const manualCategoryMatch = savedCategoryIdsValid ? findCachedManualCategory({ flat: flatCategories }, savedCategory) : null;
   if (savedCategoryIdsValid && !manualCategoryMatch) {
     throw new Error("卖家确认的 Ozon 类目不在当前类目缓存中，请刷新类目后重新确认");
@@ -2302,18 +2607,44 @@ async function saveWorkflowPayloadDraftForListingJob(job = {}) {
   if (!categoryMatch) throw new Error("未匹配到 Ozon 类目，无法刷新 payload 草稿");
   const attrsMeta = attrsMetaForCategory({ categoryCache: cache }, categoryMatch);
   const categoryReadPolicy = categoryReadPolicyForListing(job, cache, categoryMatch);
+  const listingCategoryCache = categoryCacheForListingEvidence(
+    cache,
+    categoryMatch,
+    categoryReadPolicy.categoryEvidenceStoreId,
+    categoryReadPolicy.categoryEvidenceEnvironmentRefHash,
+  );
   const draft = buildListingPayloadDraftFromJob({ ...job, pendingParentSku: parentSku }, {
     categoryMatch,
-    categoryCache: cache,
+    categoryCache: listingCategoryCache,
     parentSku,
   });
   draft.sourceEvidenceReview = job.candidateData?.sourceEvidence || null;
+  const reusableAiContent = reusablePaidAiContentReceipt(job, paidAiJobBinding(job));
+  draft.paidAiContentReceipt = reusableAiContent.ok ? {
+    version: reusableAiContent.receipt.version,
+    binding: reusableAiContent.receipt.binding,
+    inputHash: reusableAiContent.inputHash,
+    contentHash: reusableAiContent.contentHash,
+    generatedAt: reusableAiContent.receipt.generatedAt,
+  } : null;
+  const contentSummary = contentGenerationWorkflowSummary(
+    job.listingContent || {},
+    job.candidateData || {},
+    job.visualCard || null,
+  );
   draft.preflightPolicy = {
+    enforced: true,
+    sourceEvidence: job.candidateData?.sourceEvidence || null,
     sourceEvidenceRequired: sourceIs1688,
     sourceIdentityRequired: sourceIs1688,
     sourceVariantBindingRequired: sourceIs1688,
+    category: categoryMatch,
+    contentSummary,
+    pricingDiagnosis: draft.summary?.pricingDiagnosis || null,
+    variantCount: Number(draft.summary?.variantCount || draft.items?.length || 0),
     savedCategory,
     savedCategoryIdsValid,
+    paidAiContentReceipt: draft.paidAiContentReceipt,
     ...categoryReadPolicy,
   };
   await savePayloadDraft(workflowRun.id, draft, {
@@ -2330,7 +2661,7 @@ async function saveWorkflowPayloadDraftForListingJob(job = {}) {
       ...pricingNode,
       input: {
         autoListingJobId: job.id,
-        sourcePriceCny: job.bestMatch?.purchasePriceCny || 0,
+        sourcePriceCny: sourcePriceCnyForListingJob(job),
         purchaseMarkupRmb: PURCHASE_COST_MARKUP_RMB,
         package: draft.summary.pricingDiagnosis.package,
       },
@@ -2360,7 +2691,185 @@ async function saveWorkflowPayloadDraftForListingJob(job = {}) {
   return { workflowRunId: workflowRun.id, draft, categoryMatch, parentSku };
 }
 
-export async function createListingWorkflowFrom1688Capture(captureId, { parsed = {}, storeId = "", captureReview = {} } = {}) {
+function capturedVariantIdentity(variant = {}, index = 0) {
+  const sourceSkuId = String(variant?.sourceSkuId || variant?.source_sku_id || variant?.skuId || variant?.sku_id || "").trim();
+  if (sourceSkuId) return `sku:${sourceSkuId}`;
+  const spec = String(variant?.spec || variant?.skuSpec || variant?.name || "").trim().toLowerCase();
+  const image = String(variant?.image || variant?.imageUrl || "").trim().split(/[?#]/)[0].toLowerCase();
+  const price = Number(variant?.price || 0);
+  if (spec || image) return `fallback:${spec}|${image}|${Number.isFinite(price) ? price : ""}`;
+  return `row:${index}`;
+}
+
+function capturedVariantCompleteness(variant = {}) {
+  return [
+    variant?.spec,
+    variant?.image || variant?.imageUrl,
+    variant?.weightG,
+    variant?.lengthMm,
+    variant?.widthMm,
+    variant?.heightMm,
+    Array.isArray(variant?.specPairs) && variant.specPairs.length ? variant.specPairs : null,
+  ].filter((value) => value !== undefined && value !== null && value !== "" && value !== false).length;
+}
+
+export function normalizeCapturedSkuVariants(variants = []) {
+  const rows = Array.isArray(variants) ? variants.filter(Boolean) : [];
+  const byIdentity = new Map();
+  rows.forEach((variant, index) => {
+    const identity = capturedVariantIdentity(variant, index);
+    const existing = byIdentity.get(identity);
+    if (!existing) {
+      byIdentity.set(identity, { ...variant });
+      return;
+    }
+    const preferred = capturedVariantCompleteness(variant) > capturedVariantCompleteness(existing) ? variant : existing;
+    const fallback = preferred === variant ? existing : variant;
+    byIdentity.set(identity, {
+      ...fallback,
+      ...preferred,
+      specPairs: Array.isArray(preferred.specPairs) && preferred.specPairs.length ? preferred.specPairs : (fallback.specPairs || []),
+    });
+  });
+  return [...byIdentity.values()];
+}
+
+function captureDraftBlocker(reasonCode, title, nextAction) {
+  return { reasonCode, title, nextAction };
+}
+
+function exactPackageEvidence(candidate = {}) {
+  const sourceEvidence = candidate.sourceEvidence || {};
+  const field = sourceEvidence.fields?.package || {};
+  const snapshotHash = String(sourceEvidence.snapshotHash || "").trim();
+  const expectedRef = /^sha256:[a-f0-9]{64}$/i.test(snapshotHash) ? `snapshot:${snapshotHash.slice("sha256:".length)}` : "";
+  const values = field.values || {};
+  const current = candidate.sizeWeight || {};
+  const same = ["weightG", "lengthMm", "widthMm", "heightMm"].every((key) => (
+    Number(values[key]) > 0 && Number(values[key]) === Number(current[key])
+  ));
+  return candidate.sourceEvidence?.platform === "1688"
+    && candidate.sourceEvidence?.verificationState === "ok"
+    && ["1688_package", "page_content", "capture_hint"].includes(String(field.source || ""))
+    && expectedRef
+    && String(field.evidenceRef || "") === expectedRef
+    && same;
+}
+
+export function buildCaptureDraftSkeleton({ captureId = "", candidate = {}, job = {}, workflowRunId = "" } = {}) {
+  const variants = normalizeCapturedSkuVariants(candidate.skuVariants || []);
+  const normalization = candidate.captureVariantNormalization || {};
+  const rawVariantCount = Number(normalization.rawCount ?? (Array.isArray(candidate.skuVariants) ? candidate.skuVariants.length : 0));
+  const sourceSkuIds = variants.map((variant) => String(variant?.sourceSkuId || variant?.source_sku_id || variant?.skuId || variant?.sku_id || "").trim()).filter(Boolean);
+  const procurement = buildProcurementEvidenceSummary(candidate);
+  const procurementPresent = procurement.status === "observed";
+  const mediaReady = String(candidate.mediaCompliance?.status || "") === "ready";
+  const blockers = [];
+  if (!variants.length || sourceSkuIds.length !== variants.length) {
+    blockers.push(captureDraftBlocker("DRAFT_SOURCE_SKU_BINDING_REQUIRED", "来源 SKU 身份不完整", "重新采集并确保每个规格都带有唯一的 1688 SKU ID"));
+  }
+  if (!procurementPresent) blockers.push(captureDraftBlocker("DRAFT_PROCUREMENT_EVIDENCE_REQUIRED", "采购价格缺少可回放来源", "重新采集当前 SKU 价格，或补齐来源明确的 MOQ 与阶梯价"));
+  if (!exactPackageEvidence(candidate)) blockers.push(captureDraftBlocker("DRAFT_PACKAGE_EVIDENCE_REQUIRED", "包装尺重缺少可信来源", "补录实测包装尺重，或重新采集带 1688 包装证据的快照"));
+  if (!mediaReady) blockers.push(captureDraftBlocker("DRAFT_MEDIA_REVIEW_REQUIRED", "图片尚未通过合规检查", "完成图片 OCR、尺寸和来源风险检查"));
+  if (!String(job.listingContent?.title_ru || "").trim() || !String(job.listingContent?.description_ru || "").trim()) {
+    blockers.push(captureDraftBlocker("DRAFT_RUSSIAN_CONTENT_REQUIRED", "俄文标题和描述待生成或确认", "进入上架草稿补齐俄文标题和描述"));
+  }
+  const categoryDecision = job.categoryDecision || null;
+  const manualCategory = job.manualCategory || null;
+  const manualCategoryReady = Number(manualCategory?.description_category_id || 0) > 0 && Number(manualCategory?.type_id || 0) > 0;
+  const categorySelected = manualCategoryReady ? manualCategory : (categoryDecision?.selected || job.autoCategory || null);
+  const categoryIdsReady = Number(categorySelected?.description_category_id || 0) > 0 && Number(categorySelected?.type_id || 0) > 0;
+  if (!categoryIdsReady) {
+    const ambiguous = categoryDecision?.status === "ambiguous";
+    blockers.push(captureDraftBlocker(
+      ambiguous ? "DRAFT_CATEGORY_AMBIGUOUS" : "DRAFT_CATEGORY_REQUIRED",
+      ambiguous ? "Ozon 类目存在多个接近候选" : "尚未匹配到可靠的 Ozon 类目",
+      ambiguous ? "只需在系统给出的少量候选中确认一个" : "系统继续根据商品核心类型匹配类目",
+    ));
+  } else if (!manualCategoryReady && categoryDecision?.evidenceReady !== true) {
+    blockers.push(captureDraftBlocker(
+      "DRAFT_CATEGORY_EVIDENCE_REQUIRED",
+      `已自动匹配「${categorySelected.name || categorySelected.path || "Ozon 类目"}」，当前店铺类目证据待同步`,
+      "系统同步当前店铺类目和必填属性后自动继续",
+    ));
+  }
+  return {
+    status: blockers.length ? "needs_review" : "draft_ready",
+    captureId: String(captureId || job.candidateId || ""),
+    draftId: String(job.id || ""),
+    workflowRunId: String(workflowRunId || job.workflowRunId || ""),
+    storeId: String(job.storeId || ""),
+    title: String(candidate.title || job.bestMatch?.candidateTitle || "").trim(),
+    offerId: String(candidate.capture?.offerId || candidate.sourceEvidence?.offerId || "").trim(),
+    snapshotHash: String(candidate.sourceEvidence?.snapshotHash || "").trim(),
+    rawVariantCount,
+    variantCount: variants.length,
+    duplicateVariantCount: Math.max(0, rawVariantCount - variants.length),
+    sourceSkuIds,
+    imageCount: Array.isArray(candidate.images) ? candidate.images.length : 0,
+    attributeCount: Array.isArray(candidate.attributes) ? candidate.attributes.length : 0,
+    categoryDecision,
+    blockers,
+    nextAction: blockers[0]?.nextAction || "打开本地草稿检查自动带入字段并准备预检",
+    sideEffect: "仅创建并复用本地草稿骨架；不会调用 Ozon、不会生成付费内容、不会提交商品。",
+  };
+}
+
+export async function categoryDecisionForCaptureDraft(candidate = {}, storeId = "", expectedEnvironmentRefHash = "") {
+  const cache = await loadCategoryCache();
+  const flat = cache.flat || flattenCategories(cache.tree || []);
+  const matches = matchCategory({
+    title: candidate.title || "",
+    url: candidate.url || candidate.sourceEvidence?.canonicalUrl || "",
+    attributes: candidate.attributes || [],
+    skuVariants: candidate.skuVariants || [],
+  }, flat, 3);
+  const selected = matches[0]?.autoSelectable ? matches[0] : null;
+  const freshness = inspectCategoryCacheFreshness(cache);
+  const sameStore = Boolean(String(storeId || "").trim() && String(cache.storeId || "").trim() === String(storeId || "").trim());
+  const categoryKey = selected ? categoryAttributeCacheKey(selected) : "";
+  const treeEvidence = cache.categoryReadEvidence?.tree || null;
+  const attributeEvidence = categoryKey ? cache.categoryReadEvidence?.attributes?.[categoryKey] || null : null;
+  const attributeFreshness = inspectCategoryCacheFreshness({ updatedAt: categoryKey ? cache.attributeUpdatedAt?.[categoryKey] || "" : "" });
+  const environmentRefHash = String(expectedEnvironmentRefHash || "").trim();
+  const treeEvidenceReady = Boolean(
+    treeEvidence
+    && String(treeEvidence.storeId || "").trim() === String(storeId || "").trim()
+    && environmentRefHash
+    && String(treeEvidence.environmentRefHash || "").trim() === environmentRefHash,
+  );
+  const attributeEvidenceReady = Boolean(
+    attributeEvidence
+    && String(attributeEvidence.storeId || "").trim() === String(storeId || "").trim()
+    && String(attributeEvidence.cacheKey || "").trim() === categoryKey
+    && String(attributeEvidence.environmentRefHash || "").trim() === environmentRefHash
+    && attributeFreshness.usable,
+  );
+  const evidenceReady = Boolean(selected && sameStore && freshness.usable && treeEvidenceReady && attributeEvidenceReady);
+  return {
+    status: selected ? (evidenceReady ? "auto_matched" : "auto_matched_evidence_pending") : (matches.length ? "ambiguous" : "unmatched"),
+    selected,
+    candidates: matches,
+    evidenceReady,
+    cacheStoreId: String(cache.storeId || ""),
+    storeId: String(storeId || ""),
+    cacheUpdatedAt: String(cache.updatedAt || ""),
+    cacheFreshness: freshness.status,
+    treeEvidenceReady,
+    attributeEvidenceReady,
+    environmentRefHash,
+    reason: selected
+      ? (evidenceReady ? "核心商品词唯一且当前店铺类目缓存可用" : "核心商品词已匹配，仍需同步当前店铺类目证据")
+      : (matches.length ? "候选分数接近，不能安全盲选" : "本地类目库没有可靠候选"),
+  };
+}
+
+export async function createListingWorkflowFrom1688Capture(captureId, {
+  parsed = {},
+  storeId = "",
+  captureReview = {},
+  categoryEvidenceEnvironmentRefHash = "",
+} = {}) {
   const id = String(captureId || "").trim();
   const item = await getCollectionItem(id, { storeId: String(storeId || "").trim() });
   if (!item) return { ok: false, reasonCode: "CAPTURE_NOT_FOUND", error: "没有找到采集箱商品" };
@@ -2372,31 +2881,139 @@ export async function createListingWorkflowFrom1688Capture(captureId, { parsed =
   // must return its existing local draft/workflow instead of creating a second
   // seller task for every click or page refresh.
   const effectiveStoreId = String(storeId || item.storeId || "").trim();
-  const existingJobs = await readJobs();
-  const existing = existingJobs.find((job) => (
-    String(job?.candidateId || "").trim() === id
-      && listingDraftStoreMatches(job, effectiveStoreId)
-  ));
-  if (existing) {
-    const workflowRun = await findOrCreateWorkflowForAutoListingJob(existing).catch(() => null);
-    return {
-      ok: true,
-      duplicate: true,
-      job: existing,
-      workflowRunId: String(workflowRun?.id || existing.workflowRunId || ""),
-      captureReview: review,
-      nextAction: "打开已有商品草稿继续补齐资料并运行预检",
-    };
-  }
-  const job = {
-    id: makeId("al_"), candidateId: id, storeId: effectiveStoreId, source: "1688",
-    status: "draft_pending", stage: "capture_handoff", steps: [], candidateData: { ...candidate, source: "1688", sourceEvidence: candidate.sourceEvidence || {} },
-    bestMatch: { candidateTitle: candidate.title || "", candidateUrl: candidate.url || candidate.sourceEvidence?.canonicalUrl || "", source: "1688" },
-    listingContent: {}, createdAt: nowIso(), updatedAt: nowIso(), sourceEvidenceReview: review,
+  const normalizedVariants = normalizeCapturedSkuVariants(candidate.skuVariants || []);
+  const capturedPriceCny = capturedPurchasePriceCny({
+    ...candidate,
+    skuVariants: normalizedVariants,
+  });
+  const variantNormalization = {
+    rawCount: Array.isArray(candidate.skuVariants) ? candidate.skuVariants.length : 0,
+    uniqueCount: normalizedVariants.length,
+    duplicateCount: Math.max(0, (Array.isArray(candidate.skuVariants) ? candidate.skuVariants.length : 0) - normalizedVariants.length),
   };
-  await mutateJobs((jobs) => { jobs.push(job); });
+  let duplicate = false;
+  let snapshotConflict = null;
+  let job = null;
+  await mutateJobs((jobs) => {
+    const existing = jobs.find((entry) => (
+      String(entry?.candidateId || "").trim() === id
+        && listingDraftStoreMatches(entry, effectiveStoreId)
+    ));
+    if (existing) {
+      duplicate = true;
+      job = existing;
+      return;
+    }
+    const createdAt = nowIso();
+    job = {
+      id: makeId("al_"), candidateId: id, storeId: effectiveStoreId, source: "1688",
+      status: "draft_pending", stage: "capture_handoff", steps: [],
+      candidateData: {
+        ...candidate,
+        source: "1688",
+        sourceEvidence: candidate.sourceEvidence || {},
+        skuVariants: normalizedVariants,
+        captureVariantNormalization: variantNormalization,
+      },
+      bestMatch: {
+        candidateTitle: candidate.title || "",
+        candidateUrl: candidate.url || candidate.sourceEvidence?.canonicalUrl || "",
+        purchasePriceCny: capturedPriceCny,
+        source: "1688",
+      },
+      listingContent: {}, createdAt, updatedAt: createdAt, sourceEvidenceReview: review,
+    };
+    jobs.push(job);
+  });
+  if (duplicate) {
+    const previousSnapshotHash = String(job?.candidateData?.sourceEvidence?.snapshotHash || "").trim();
+    const currentSnapshotHash = String(candidate?.sourceEvidence?.snapshotHash || "").trim();
+    const snapshotChanged = Boolean(previousSnapshotHash && currentSnapshotHash && previousSnapshotHash !== currentSnapshotHash);
+    const progressedBeyondHandoff = !["", "capture_handoff"].includes(String(job?.stage || ""))
+      || !["", "draft", "draft_pending"].includes(String(job?.status || ""))
+      || Boolean(job?.payloadDraftHash || job?.listingResult?.taskId);
+    if (snapshotChanged && progressedBeyondHandoff) {
+      snapshotConflict = {
+        ok: false,
+        reasonCode: "CAPTURE_DRAFT_SNAPSHOT_CHANGED",
+        error: "当前采集快照已变化，旧草稿已有后续处理，不能自动覆盖。",
+        nextAction: "返回采集箱核对新快照，并显式新建或重置当前草稿后再继续。",
+      };
+      return snapshotConflict;
+    }
+    const existingVariantRows = Array.isArray(job?.candidateData?.skuVariants) ? job.candidateData.skuVariants : [];
+    const currentVariants = normalizeCapturedSkuVariants(snapshotChanged || !existingVariantRows.length
+      ? (candidate.skuVariants || [])
+      : existingVariantRows);
+    await updateJob(job.id, {
+      candidateData: {
+        ...(snapshotChanged ? candidate : (job.candidateData || candidate)),
+        source: "1688",
+        sourceEvidence: snapshotChanged ? (candidate.sourceEvidence || {}) : (job.candidateData?.sourceEvidence || candidate.sourceEvidence || {}),
+        skuVariants: currentVariants,
+        captureVariantNormalization: snapshotChanged ? variantNormalization : (job.candidateData?.captureVariantNormalization || variantNormalization),
+      },
+      bestMatch: {
+        ...(job.bestMatch || {}),
+        candidateTitle: job.bestMatch?.candidateTitle || candidate.title || "",
+        candidateUrl: job.bestMatch?.candidateUrl || candidate.url || candidate.sourceEvidence?.canonicalUrl || "",
+        purchasePriceCny: Number(snapshotChanged
+          ? (capturedPriceCny || 0)
+          : (job.bestMatch?.purchasePriceCny || capturedPriceCny || 0)),
+        source: "1688",
+      },
+      ...(snapshotChanged ? {
+        listingContent: {},
+        manualCategory: {},
+        draftSkeleton: null,
+        sourceEvidenceReview: review,
+      } : {}),
+    });
+    job = await getAutoListingJob(job.id) || job;
+  }
+  if (snapshotConflict) return snapshotConflict;
+  const manualCategoryReady = Number(job.manualCategory?.description_category_id || 0) > 0 && Number(job.manualCategory?.type_id || 0) > 0;
+  const categoryDecision = manualCategoryReady
+    ? null
+    : await categoryDecisionForCaptureDraft(job.candidateData || candidate, effectiveStoreId, categoryEvidenceEnvironmentRefHash);
+  const autoCategory = manualCategoryReady ? null : (categoryDecision.selected || null);
+  await updateJob(job.id, { categoryDecision, autoCategory });
+  job = await getAutoListingJob(job.id) || { ...job, categoryDecision, ...(autoCategory ? { autoCategory } : {}) };
   const workflowRun = await findOrCreateWorkflowForAutoListingJob(job).catch(() => null);
-  return { ok: true, duplicate: false, job, workflowRunId: workflowRun?.id || "", captureReview: review, nextAction: "补齐俄文内容、类目、采购成本和媒体后运行预检" };
+  const pricingPreview = buildAutomaticPricingPreviewFromCapture({
+    ...job,
+    workflowRunId: workflowRun?.id || job.workflowRunId || "",
+  }, autoCategory);
+  const draftSkeleton = buildCaptureDraftSkeleton({ captureId: id, candidate: job.candidateData || candidate, job, workflowRunId: workflowRun?.id || "" });
+  await updateJob(job.id, { workflowRunId: workflowRun?.id || "", draftSkeleton, pricingPreview });
+  job = await getAutoListingJob(job.id) || { ...job, workflowRunId: workflowRun?.id || "", draftSkeleton, pricingPreview };
+  if (workflowRun) {
+    await upsertWorkflowNode(workflowRun.id, {
+      key: "capture_handoff",
+      name: "真实货源进入草稿",
+      status: "success",
+      input: { captureId: id, storeId: effectiveStoreId, snapshotHash: draftSkeleton.snapshotHash },
+      output: { draftSkeleton, pricingPreview },
+      branch: draftSkeleton.blockers.length ? "seller_repair" : "draft_ready",
+      riskScore: draftSkeleton.blockers.length ? 55 : 10,
+      riskLevel: draftSkeleton.blockers.length ? "medium" : "low",
+      reason: draftSkeleton.blockers.length
+        ? `本地草稿骨架已创建，仍有 ${draftSkeleton.blockers.length} 项资料需要补齐。`
+        : "本地草稿骨架已创建，来源字段已完整绑定。",
+      recommendedActions: [draftSkeleton.nextAction],
+      actions: ["open_listing_draft"],
+      runStatus: "running",
+    });
+  }
+  return {
+    ok: true,
+    duplicate,
+    job,
+    workflowRunId: workflowRun?.id || "",
+    draftSkeleton,
+    captureReview: review,
+    nextAction: draftSkeleton.nextAction,
+  };
 }
 
 export async function createListingDraftFrom1688Candidate(candidateId, { storeId = "", storeIds = [], captureReview = {} } = {}) {
@@ -2451,16 +3068,8 @@ export async function createListingDraftFrom1688Candidate(candidateId, { storeId
 }
 
 export async function saveManualListingContent(jobId, input = {}) {
-  const id = String(jobId || "").trim();
-  const titleRu = String(input.title_ru || input.title || "").replace(/\s+/g, " ").trim();
-  const descriptionRu = String(input.description_ru || input.description || "").replace(/\s+/g, " ").trim();
-  if (!id) return { ok: false, reasonCode: "AUTO_LISTING_JOB_ID_REQUIRED" };
-  if (titleRu.length < 5 || titleRu.length > 200) return { ok: false, reasonCode: "LISTING_TITLE_LENGTH_INVALID" };
-  if (descriptionRu.length < 20 || descriptionRu.length > 5000) return { ok: false, reasonCode: "LISTING_DESCRIPTION_LENGTH_INVALID" };
-  const job = await getAutoListingJob(id); if (!job) return { ok: false, reasonCode: "AUTO_LISTING_JOB_NOT_FOUND" };
-  const next = await updateJob(id, { listingContent: { ...(job.listingContent || {}), ...input, title_ru: titleRu, description_ru: descriptionRu, contentSource: "manual_seller", contentUpdatedAt: nowIso() }, status: "content_ready", stage: "content_manual_saved", error: "" });
-  const payload = await saveWorkflowPayloadDraftForListingJob(next || job).catch(() => null);
-  return { ok: true, job: next || job, payloadDraftReady: Boolean(payload?.draft), nextAction: "继续补类目/采购成本和媒体确认，重新运行商品预检" };
+  const { expectedBinding, ...content } = input || {};
+  return saveManualSellerInputs(jobId, { expectedBinding, content });
 }
 
 export function findCachedManualCategory(cache = {}, selection = {}) {
@@ -2471,30 +3080,691 @@ export function findCachedManualCategory(cache = {}, selection = {}) {
   return rows.find((row) => !row.disabled && Number(row.description_category_id || 0) === descriptionCategoryId && Number(row.type_id || 0) === typeId && String(row.path || "").replace(/\s+/g, " ").trim() === path) || null;
 }
 export async function saveManualListingCategory(jobId, input = {}) {
-  const job = await getAutoListingJob(jobId); if (!job) return { ok: false, reasonCode: "AUTO_LISTING_JOB_NOT_FOUND" };
+  const job = await getAutoListingJobSnapshot(jobId);
+  if (!job) return { ok: false, reasonCode: "AUTO_LISTING_JOB_NOT_FOUND" };
+  const bindingCheck = applyManualSellerInputsToJob(job, { expectedBinding: input.expectedBinding });
+  if (!bindingCheck.ok) return bindingCheck;
   const savedCategory = { description_category_id: Number(input.description_category_id || input.descriptionCategoryId || 0), type_id: Number(input.type_id || input.typeId || 0), path: String(input.path || "") };
   if (!savedCategory.description_category_id || !savedCategory.type_id) return { ok: false, reasonCode: "LISTING_CATEGORY_REQUIRED" };
   const cache = await loadCategoryCache();
   if (!findCachedManualCategory(cache, savedCategory)) {
     return { ok: false, reasonCode: "LISTING_CATEGORY_NOT_IN_CACHE", nextAction: "先刷新 Ozon 类目缓存，再选择当前可用的类目和类型" };
   }
-  const next = await updateJob(jobId, { manualCategory: savedCategory, status: "category_ready", stage: "category_manual_saved" });
-  const payload = await saveWorkflowPayloadDraftForListingJob(next || job).catch(() => null);
-  return { ok: true, job: next || job, payloadDraftReady: Boolean(payload?.draft), nextAction: "运行预检" };
+  const workflowRun = await findOrCreateWorkflowForAutoListingJob(job).catch(() => null);
+  if (!workflowRun || String(workflowRun.id || "") !== String(input.expectedBinding?.workflowRunId || "")) {
+    return {
+      ok: false,
+      reasonCode: "MANUAL_SELLER_INPUT_WORKFLOW_MISMATCH",
+      nextAction: "刷新当前商品并重新进入精确绑定的商品工作流",
+    };
+  }
+  await invalidatePayloadDraftValidation(workflowRun.id, "seller_category_changed");
+  const saved = await mutateJobs(async function(jobs) {
+    const idx = jobs.findIndex((item) => item.id === jobId);
+    if (idx === -1) return { ok: false, reasonCode: "AUTO_LISTING_JOB_NOT_FOUND" };
+    const currentBinding = applyManualSellerInputsToJob(jobs[idx], { expectedBinding: input.expectedBinding });
+    if (!currentBinding.ok) return currentBinding;
+    jobs[idx] = {
+      ...jobs[idx],
+      manualCategory: savedCategory,
+      status: "category_ready",
+      stage: "category_manual_saved",
+      updatedAt: nowIso(),
+    };
+    return { ok: true, job: jobs[idx] };
+  });
+  if (!saved?.ok) return saved || { ok: false, reasonCode: "AUTO_LISTING_JOB_NOT_FOUND" };
+  try {
+    const payload = await saveWorkflowPayloadDraftForListingJob(saved.job);
+    if (!payload?.draft) throw new Error("payload draft was not rebuilt");
+    return {
+      ok: true,
+      job: saved.job,
+      workflowRunId: workflowRun.id,
+      payloadDraftReady: true,
+      nextAction: "运行预检",
+    };
+  } catch {
+    await updateJob(jobId, {
+      stage: "seller_input_saved_payload_pending",
+      reasonCode: "MANUAL_SELLER_INPUT_PAYLOAD_REFRESH_FAILED",
+      error: "类目已保存，但本地草稿刷新失败；旧预检已失效",
+    });
+    return {
+      ok: false,
+      reasonCode: "MANUAL_SELLER_INPUT_PAYLOAD_REFRESH_FAILED",
+      jobSaved: true,
+      preflightInvalidated: true,
+      nextAction: "类目已保存；重新生成本地草稿并预检后才能继续",
+    };
+  }
+}
+
+function normalizeManualProcurementInput(input = {}) {
+  const supplierId = String(input.supplierId || "").trim();
+  const supplierName = String(input.supplierName || "").trim();
+  const moq = Number(input.moq || 0);
+  const priceTiers = (Array.isArray(input.priceTiers) ? input.priceTiers : [])
+    .map((tier) => ({
+      minQuantity: Number(tier?.minQuantity || 0),
+      unitPriceCny: Number(tier?.unitPriceCny || 0),
+    }))
+    .filter((tier) => tier.minQuantity > 0 || tier.unitPriceCny > 0);
+  if ((!supplierId && !supplierName) || !(moq > 0) || !priceTiers.length
+    || priceTiers.some((tier) => !(tier.minQuantity > 0) || !(tier.unitPriceCny > 0))) {
+    return { ok: false, reasonCode: "MANUAL_PROCUREMENT_REQUIRED", nextAction: "填写供应商、MOQ 和至少一档完整采购价" };
+  }
+  const savedAt = nowIso();
+  return { ok: true, evidence: {
+    supplierId: supplierId ? { value: supplierId, source: "seller_manual" } : { source: "missing" },
+    supplierName: supplierName ? { value: supplierName, source: "seller_manual" } : { source: "missing" },
+    moq: { value: moq, source: "seller_manual" },
+    priceTiers: { values: priceTiers, source: "seller_manual" },
+    evidenceSource: "seller_manual",
+    savedAt,
+  } };
+}
+
+function normalizeManualContentInput(input = {}) {
+  const titleRu = String(input.title_ru || input.title || "").replace(/\s+/g, " ").trim();
+  const descriptionRu = String(input.description_ru || input.description || "").replace(/\s+/g, " ").trim();
+  if (titleRu.length < 5 || titleRu.length > 200) {
+    return { ok: false, reasonCode: "LISTING_TITLE_LENGTH_INVALID", nextAction: "填写 5–200 个字符的俄文标题" };
+  }
+  if (descriptionRu.length < 20 || descriptionRu.length > 5000) {
+    return { ok: false, reasonCode: "LISTING_DESCRIPTION_LENGTH_INVALID", nextAction: "填写 20–5000 个字符的俄文描述" };
+  }
+  return {
+    ok: true,
+    content: {
+      ...input,
+      title_ru: titleRu,
+      description_ru: descriptionRu,
+      annotation_ru: String(input.annotation_ru || input.annotation || "").trim().slice(0, 500),
+      contentSource: "manual_seller",
+      contentUpdatedAt: nowIso(),
+    },
+  };
+}
+
+function normalizeManualPackageInput(input = {}) {
+  const source = String(input.source || "").trim();
+  const sizeWeight = {
+    weightG: Number(input.weightG || 0),
+    lengthMm: Number(input.lengthMm || 0),
+    widthMm: Number(input.widthMm || 0),
+    heightMm: Number(input.heightMm || 0),
+  };
+  const validSource = ["manual_measurement", "supplier_package"].includes(source);
+  const validValues = sizeWeight.weightG > 0 && sizeWeight.weightG <= 100000
+    && [sizeWeight.lengthMm, sizeWeight.widthMm, sizeWeight.heightMm]
+      .every((value) => value > 0 && value <= 2000);
+  if (!validSource || !validValues) {
+    return { ok: false, reasonCode: "MANUAL_PACKAGE_REQUIRED", nextAction: "选择包装资料来源并填写完整的克重和毫米尺寸" };
+  }
+  const savedAt = nowIso();
+  const evidenceNote = String(input.note || "").trim().slice(0, 500);
+  return { ok: true, sizeWeight, source, evidenceNote, savedAt, evidence: {
+    ...sizeWeight,
+    source,
+    note: evidenceNote,
+    evidenceSource: "seller_manual",
+    savedAt,
+  } };
+}
+
+function manualSellerInputBinding(job = {}) {
+  return {
+    captureId: String(job.candidateId || ""),
+    storeId: String(job.storeId || ""),
+    sourceSnapshotHash: String(job.candidateData?.sourceEvidence?.snapshotHash || ""),
+    workflowRunId: String(job.workflowRunId || ""),
+  };
+}
+
+export function paidAiJobBinding(job = {}) {
+  return {
+    workflowRunId: String(job.workflowRunId || "").trim(),
+    autoListingJobId: String(job.id || "").trim(),
+    captureId: String(job.candidateId || "").trim(),
+    storeId: String(job.storeId || "").trim(),
+    sourceSnapshotHash: String(job.candidateData?.sourceEvidence?.snapshotHash || "").trim(),
+  };
+}
+
+function canonicalReceiptJson(value) {
+  if (Array.isArray(value)) return `[${value.map(canonicalReceiptJson).join(",")}]`;
+  if (value && typeof value === "object") {
+    return `{${Object.keys(value).sort().map((key) => `${JSON.stringify(key)}:${canonicalReceiptJson(value[key])}`).join(",")}}`;
+  }
+  return JSON.stringify(value);
+}
+
+function paidAiContentHash(listingContent = {}) {
+  return `sha256:${createHash("sha256").update(canonicalReceiptJson(listingContent || {}), "utf8").digest("hex")}`;
+}
+
+function paidAiContentInputHash(job = {}) {
+  const generationInput = {
+    candidateData: job.candidateData || {},
+    bestMatch: job.bestMatch || {},
+    pricingPreview: job.pricingPreview || {},
+    ozonContext: job.ozonContext || {},
+    ozonTitle: job.ozonTitle || "",
+    ozonPrice: job.ozonPrice || 0,
+    ozonUrl: job.ozonUrl || "",
+    category: job.manualCategory || job.autoCategory || job.categoryDecision?.selected || null,
+    commissionEvidence: job.commissionEvidence || null,
+  };
+  return `sha256:${createHash("sha256").update(canonicalReceiptJson(generationInput), "utf8").digest("hex")}`;
+}
+
+const PAID_AI_CONTENT_LEASE_TTL_MS = 15 * 60 * 1000;
+
+export function buildPaidAiContentReceipt(job = {}, listingContent = {}, expectedBinding = {}, options = {}) {
+  const authorization = validatePaidAiJobBinding(job, expectedBinding);
+  if (!authorization.ok) return null;
+  return {
+    version: "paid_ai_content_v1",
+    binding: authorization.binding,
+    inputHash: paidAiContentInputHash(job),
+    contentHash: paidAiContentHash(listingContent),
+    generatedAt: String(options.generatedAt || nowIso()),
+  };
+}
+
+export function reusablePaidAiContentReceipt(job = {}, expectedBinding = {}) {
+  const authorization = validatePaidAiJobBinding(job, expectedBinding);
+  if (!authorization.ok) return authorization;
+  const receipt = job.paidAiContentReceipt || {};
+  const bindingMatches = receipt.version === "paid_ai_content_v1"
+    && ["workflowRunId", "autoListingJobId", "captureId", "storeId", "sourceSnapshotHash"]
+      .every((key) => String(receipt.binding?.[key] || "") === String(authorization.binding[key] || ""));
+  const currentHash = paidAiContentHash(job.listingContent || {});
+  const currentInputHash = paidAiContentInputHash(job);
+  if (!bindingMatches || !/^sha256:[a-f0-9]{64}$/i.test(String(receipt.contentHash || ""))
+    || !/^sha256:[a-f0-9]{64}$/i.test(String(receipt.inputHash || ""))
+    || receipt.contentHash !== currentHash || receipt.inputHash !== currentInputHash) {
+    return {
+      ok: false,
+      reasonCode: "PAID_AI_CONTENT_RECEIPT_STALE",
+      error: "现有 AI 文案与当前商品、店铺、来源快照或内容不一致，不能免付费复用。",
+    };
+  }
+  return {
+    ok: true,
+    receipt,
+    binding: authorization.binding,
+    contentHash: currentHash,
+    inputHash: currentInputHash,
+  };
+}
+
+async function claimPaidAiContentWork(jobId, expectedBinding, {
+  forcePaidAiRegeneration = false,
+  expectedEnvironment = "",
+} = {}) {
+  const token = randomUUID();
+  let result = {
+    ok: false,
+    reasonCode: "PAID_AI_CONTENT_CLAIM_FAILED",
+    error: "未能取得当前商品的 AI 内容处理权。",
+  };
+  await mutateJobs(async function(jobs) {
+    const idx = jobs.findIndex((item) => item.id === jobId);
+    if (idx === -1) {
+      result = { ok: false, reasonCode: "AUTO_LISTING_JOB_NOT_FOUND", error: "自动上架任务不存在: " + jobId };
+      return;
+    }
+    const current = jobs[idx];
+    const authorization = validatePaidAiJobBinding(current, expectedBinding);
+    if (!authorization.ok) {
+      result = authorization;
+      return;
+    }
+    const commissionAuthorization = validateTrustedCommissionEvidenceForJob(current, null, expectedEnvironment);
+    if (!commissionAuthorization.ok) {
+      result = commissionAuthorization;
+      return;
+    }
+    const activeLease = current.paidAiContentLease || {};
+    const startedAtMs = Date.parse(String(activeLease.startedAt || ""));
+    const leaseFresh = activeLease.token
+      && Number.isFinite(startedAtMs)
+      && Date.now() - startedAtMs < PAID_AI_CONTENT_LEASE_TTL_MS;
+    if (leaseFresh) {
+      result = {
+        ok: false,
+        reasonCode: "PAID_AI_CONTENT_ALREADY_RUNNING",
+        error: "当前商品正在生成或复用 AI 文案，本次没有再次调用付费模型。",
+        paidAiCalled: false,
+      };
+      return;
+    }
+    const inputHash = paidAiContentInputHash(current);
+    const reusable = reusablePaidAiContentReceipt(current, expectedBinding);
+    const mode = reusable.ok && !forcePaidAiRegeneration ? "reuse" : "generate";
+    jobs[idx] = {
+      ...current,
+      paidAiContentLease: {
+        token,
+        mode,
+        binding: authorization.binding,
+        inputHash,
+        startedAt: nowIso(),
+      },
+      updatedAt: nowIso(),
+    };
+    result = {
+      ok: true,
+      token,
+      mode,
+      inputHash,
+      job: jobs[idx],
+      reusableReceipt: reusable.ok ? reusable.receipt : null,
+    };
+  });
+  return result;
+}
+
+async function releasePaidAiContentWork(jobId, token) {
+  await mutateJobs(async function(jobs) {
+    const idx = jobs.findIndex((item) => item.id === jobId);
+    if (idx === -1 || String(jobs[idx].paidAiContentLease?.token || "") !== String(token || "")) return;
+    const { paidAiContentLease, ...jobWithoutLease } = jobs[idx];
+    jobs[idx] = { ...jobWithoutLease, updatedAt: nowIso() };
+  });
+}
+
+async function commitPaidAiGeneratedContent(jobId, expectedBinding, claim, listingContent, visualCard) {
+  let result = {
+    ok: false,
+    reasonCode: "PAID_AI_CONTENT_CONTEXT_CHANGED",
+    error: "AI 运行期间当前商品输入已变化，系统未写入旧内容。",
+  };
+  await mutateJobs(async function(jobs) {
+    const idx = jobs.findIndex((item) => item.id === jobId);
+    if (idx === -1) return;
+    const current = jobs[idx];
+    const authorization = validatePaidAiJobBinding(current, expectedBinding);
+    const leaseMatches = String(current.paidAiContentLease?.token || "") === String(claim.token || "")
+      && current.paidAiContentLease?.mode === "generate";
+    const inputMatches = paidAiContentInputHash(current) === claim.inputHash;
+    if (!authorization.ok || !leaseMatches || !inputMatches) {
+      result = authorization.ok ? result : authorization;
+      return;
+    }
+    const receipt = buildPaidAiContentReceipt(current, listingContent, expectedBinding);
+    if (!receipt || receipt.inputHash !== claim.inputHash) return;
+    jobs[idx] = {
+      ...current,
+      status: "ready_for_listing",
+      stage: "guided",
+      error: "",
+      reasonCode: "",
+      listingContent,
+      visualCard,
+      paidAiContentReceipt: receipt,
+      paidAiContentLease: {
+        ...current.paidAiContentLease,
+        phase: "payload_refresh",
+      },
+      updatedAt: nowIso(),
+    };
+    result = { ok: true, job: jobs[idx], receipt };
+  });
+  return result;
+}
+
+async function finalizePaidAiContentWork(jobId, expectedBinding, claim) {
+  let result = {
+    ok: false,
+    reasonCode: "PAID_AI_CONTENT_CONTEXT_CHANGED",
+    error: "Payload 刷新期间当前商品输入或 AI 文案已变化，旧草稿不能继续预检。",
+  };
+  await mutateJobs(async function(jobs) {
+    const idx = jobs.findIndex((item) => item.id === jobId);
+    if (idx === -1) return;
+    const current = jobs[idx];
+    const leaseMatches = String(current.paidAiContentLease?.token || "") === String(claim.token || "");
+    const reusable = reusablePaidAiContentReceipt(current, expectedBinding);
+    if (!leaseMatches || !reusable.ok || reusable.inputHash !== claim.inputHash) return;
+    const { paidAiContentLease, ...jobWithoutLease } = current;
+    jobs[idx] = { ...jobWithoutLease, updatedAt: nowIso() };
+    result = { ok: true, job: jobs[idx], receipt: reusable.receipt };
+  });
+  return result;
+}
+
+export async function validatePaidAiPayloadDraftCurrent(jobId, expectedBinding, draftReceipt = {}) {
+  let result = {
+    ok: false,
+    reasonCode: "PAID_AI_PAYLOAD_CONTEXT_STALE",
+    error: "当前商品输入或 AI 文案已变化，旧 Payload 不能通过提交前预检。",
+  };
+  await mutateJobs(async function(jobs) {
+    const current = jobs.find((item) => item.id === jobId);
+    if (!current) {
+      result = {
+        ok: false,
+        reasonCode: "AUTO_LISTING_JOB_NOT_FOUND",
+        error: "当前商品对应的自动上架任务不存在。",
+      };
+      return;
+    }
+    const reusable = reusablePaidAiContentReceipt(current, expectedBinding);
+    if (!reusable.ok) {
+      result = {
+        ...result,
+        reasonCode: reusable.reasonCode || result.reasonCode,
+        error: reusable.error || result.error,
+      };
+      return;
+    }
+    const receiptMatches = String(draftReceipt.version || "") === String(reusable.receipt.version || "")
+      && canonicalReceiptJson(draftReceipt.binding || {}) === canonicalReceiptJson(reusable.receipt.binding || {})
+      && String(draftReceipt.inputHash || "") === String(reusable.inputHash || "")
+      && String(draftReceipt.contentHash || "") === String(reusable.contentHash || "");
+    if (!receiptMatches) return;
+    result = {
+      ok: true,
+      receipt: reusable.receipt,
+      inputHash: reusable.inputHash,
+      contentHash: reusable.contentHash,
+    };
+  });
+  return result;
+}
+
+const PAID_AI_SUBMISSION_FENCE_TTL_MS = 10 * 60 * 1000;
+
+export async function claimPaidAiSubmissionFence(jobId, expectedBinding, draftReceipt = {}, draftHash = "") {
+  const token = randomUUID();
+  let result = {
+    ok: false,
+    reasonCode: "PAID_AI_SUBMISSION_FENCE_FAILED",
+    error: "未能锁定当前商品的 AI 内容版本，禁止提交。",
+  };
+  await mutateJobs(async function(jobs) {
+    const idx = jobs.findIndex((item) => item.id === jobId);
+    if (idx === -1) return;
+    const current = jobs[idx];
+    const reusable = reusablePaidAiContentReceipt(current, expectedBinding);
+    const receiptMatches = reusable.ok
+      && String(draftReceipt.version || "") === String(reusable.receipt.version || "")
+      && canonicalReceiptJson(draftReceipt.binding || {}) === canonicalReceiptJson(reusable.receipt.binding || {})
+      && String(draftReceipt.inputHash || "") === String(reusable.inputHash || "")
+      && String(draftReceipt.contentHash || "") === String(reusable.contentHash || "");
+    if (!receiptMatches || !String(draftHash || "").trim()) return;
+    const active = current.paidAiSubmissionFence || {};
+    const activeExpiresAt = Date.parse(String(active.expiresAt || ""));
+    if (active.token && Number.isFinite(activeExpiresAt) && activeExpiresAt > Date.now()) {
+      result = {
+        ok: false,
+        reasonCode: "PAID_AI_SUBMISSION_FENCE_ACTIVE",
+        error: "当前商品已有提交正在进行，不能重复提交。",
+      };
+      return;
+    }
+    const claimedAt = nowIso();
+    jobs[idx] = {
+      ...current,
+      paidAiSubmissionFence: {
+        token,
+        workflowRunId: String(expectedBinding.workflowRunId || ""),
+        draftHash: String(draftHash),
+        inputHash: reusable.inputHash,
+        contentHash: reusable.contentHash,
+        claimedAt,
+        expiresAt: new Date(Date.parse(claimedAt) + PAID_AI_SUBMISSION_FENCE_TTL_MS).toISOString(),
+      },
+      updatedAt: nowIso(),
+    };
+    result = { ok: true, token, job: jobs[idx] };
+  });
+  return result;
+}
+
+export async function validatePaidAiSubmissionFence(jobId, expectedBinding, token, draftHash = "") {
+  let result = {
+    ok: false,
+    reasonCode: "PAID_AI_SUBMISSION_FENCE_STALE",
+    error: "当前商品的提交锁已失效，禁止调用 Ozon。",
+  };
+  await mutateJobs(async function(jobs) {
+    const current = jobs.find((item) => item.id === jobId);
+    if (!current) return;
+    const reusable = reusablePaidAiContentReceipt(current, expectedBinding);
+    const fence = current.paidAiSubmissionFence || {};
+    const expiresAtMs = Date.parse(String(fence.expiresAt || ""));
+    if (!reusable.ok
+      || String(fence.token || "") !== String(token || "")
+      || String(fence.workflowRunId || "") !== String(expectedBinding.workflowRunId || "")
+      || String(fence.draftHash || "") !== String(draftHash || "")
+      || String(fence.inputHash || "") !== String(reusable.inputHash || "")
+      || String(fence.contentHash || "") !== String(reusable.contentHash || "")
+      || !Number.isFinite(expiresAtMs)
+      || expiresAtMs <= Date.now()) return;
+    result = { ok: true, fence };
+  });
+  return result;
+}
+
+export async function releasePaidAiSubmissionFence(jobId, token) {
+  await mutateJobs(async function(jobs) {
+    const idx = jobs.findIndex((item) => item.id === jobId);
+    if (idx === -1 || String(jobs[idx].paidAiSubmissionFence?.token || "") !== String(token || "")) return;
+    const { paidAiSubmissionFence, ...jobWithoutFence } = jobs[idx];
+    jobs[idx] = { ...jobWithoutFence, updatedAt: nowIso() };
+  });
+}
+
+export function validatePaidAiJobBinding(job = {}, expected = {}) {
+  const actualBinding = paidAiJobBinding(job);
+  const bindingKeys = [
+    "workflowRunId",
+    "autoListingJobId",
+    "captureId",
+    "storeId",
+    "sourceSnapshotHash",
+  ];
+  const complete = bindingKeys.every((key) => (
+    String(actualBinding[key] || "").trim() && String(expected?.[key] || "").trim()
+  ));
+  const matches = complete && bindingKeys.every((key) => (
+    String(actualBinding[key]) === String(expected[key])
+  ));
+  return matches
+    ? { ok: true, binding: actualBinding }
+    : {
+      ok: false,
+      reasonCode: "PAID_AI_JOB_CONTEXT_STALE",
+      error: "自动上架任务与已授权商品不一致，系统未调用付费 AI。",
+      actualBinding,
+    };
+}
+
+export function validatePaidAiCandidateSourceBinding(candidate = {}, expected = {}) {
+  const candidateData = candidate?.parsed || candidate || {};
+  const actualBinding = {
+    captureId: String(candidate?.captureId || "").trim(),
+    storeId: String(candidate?.storeId || "").trim(),
+    sourceSnapshotHash: String(
+      candidateData?.sourceEvidence?.snapshotHash
+      || candidate?.sourceEvidence?.snapshotHash
+      || "",
+    ).trim(),
+  };
+  const bindingKeys = ["captureId", "storeId", "sourceSnapshotHash"];
+  const parsedStoreId = String(candidate?.parsed?.storeId || "").trim();
+  const hasConflictingParsedStore = Boolean(
+    parsedStoreId && parsedStoreId !== actualBinding.storeId,
+  );
+  const complete = bindingKeys.every((key) => (
+    String(actualBinding[key] || "").trim() && String(expected?.[key] || "").trim()
+  ));
+  const matches = complete && !hasConflictingParsedStore && bindingKeys.every((key) => (
+    String(actualBinding[key]) === String(expected[key])
+  ));
+  return matches
+    ? { ok: true, binding: actualBinding }
+    : {
+      ok: false,
+      reasonCode: "PAID_AI_MATCH_CHANGED_SOURCE",
+      error: "重新匹配候选的商品、店铺或 1688 快照与本次授权不一致，需要重新授权后再继续。",
+      actualBinding,
+    };
+}
+
+function manualSellerInputBindingMatches(job = {}, expected = {}) {
+  const actual = manualSellerInputBinding(job);
+  return ["captureId", "storeId", "sourceSnapshotHash", "workflowRunId"]
+    .every((key) => String(expected[key] || "").trim() && String(expected[key]) === actual[key]);
+}
+
+export function applyManualSellerInputsToJob(job = {}, input = {}) {
+  if (!job?.id) return { ok: false, reasonCode: "AUTO_LISTING_JOB_NOT_FOUND" };
+  const actualBinding = manualSellerInputBinding(job);
+  const bindingKeys = ["captureId", "storeId", "sourceSnapshotHash", "workflowRunId"];
+  if (!input.expectedBinding
+    || bindingKeys.some((key) => !String(input.expectedBinding?.[key] || "").trim())
+    || bindingKeys.some((key) => !String(actualBinding[key] || "").trim())) {
+    return {
+      ok: false,
+      reasonCode: "MANUAL_SELLER_INPUT_BINDING_REQUIRED",
+      nextAction: "刷新当前商品，确保采购和包装资料绑定到明确的商品、店铺、来源快照和工作流",
+    };
+  }
+  if (!manualSellerInputBindingMatches(job, input.expectedBinding)) {
+    return {
+      ok: false,
+      reasonCode: "MANUAL_SELLER_INPUT_STALE",
+      nextAction: "商品来源或店铺已变化，请刷新当前商品后重新填写",
+    };
+  }
+  const procurement = input.procurement ? normalizeManualProcurementInput(input.procurement) : null;
+  const content = input.content ? normalizeManualContentInput(input.content) : null;
+  const packageInput = input.package ? normalizeManualPackageInput(input.package) : null;
+  if (procurement && !procurement.ok) return procurement;
+  if (content && !content.ok) return content;
+  if (packageInput && !packageInput.ok) return packageInput;
+  if (!procurement && !content && !packageInput) {
+    return { ok: true, job, changed: false };
+  }
+
+  const currentCandidate = job.candidateData || {};
+  let candidateData = { ...currentCandidate };
+  const patch = {};
+  if (content) {
+    patch.listingContent = {
+      ...(job.listingContent || {}),
+      ...content.content,
+    };
+    patch.status = "content_ready";
+    patch.error = "";
+  }
+  if (procurement) {
+    candidateData.procurementEvidence = procurement.evidence;
+    patch.procurementEvidence = procurement.evidence;
+  }
+  if (packageInput) {
+    const binding = manualSellerInputBinding(job);
+    const normalizedSizeWeight = {
+      ...(currentCandidate.sizeWeight || {}),
+      ...packageInput.sizeWeight,
+      source: packageInput.source,
+      packageInfoSource: packageInput.source,
+      evidenceNote: packageInput.evidenceNote,
+      evidenceUpdatedAt: packageInput.savedAt,
+      manualEvidenceBinding: binding,
+    };
+    candidateData = {
+      ...candidateData,
+      sizeWeight: normalizedSizeWeight,
+      packageInfoSource: packageInput.source,
+      manualPackageEvidenceBinding: binding,
+      skuVariants: (Array.isArray(currentCandidate.skuVariants) ? currentCandidate.skuVariants : []).map((variant) => ({
+        ...variant,
+        ...packageInput.sizeWeight,
+        packageInfoSource: packageInput.source,
+      })),
+    };
+    patch.packageEvidence = packageInput.evidence;
+  }
+  return {
+    ok: true,
+    changed: true,
+    job: {
+      ...job,
+      ...patch,
+      candidateData,
+      stage: packageInput ? "package_manual_saved" : procurement ? "procurement_manual_saved" : "content_manual_saved",
+      updatedAt: nowIso(),
+    },
+  };
+}
+
+export async function saveManualSellerInputs(jobId, input = {}) {
+  const previewJob = await getAutoListingJobSnapshot(jobId);
+  const preview = applyManualSellerInputsToJob(previewJob || {}, input);
+  if (!preview.ok) return preview;
+  const workflowRun = await findOrCreateWorkflowForAutoListingJob(previewJob).catch(() => null);
+  if (!workflowRun || String(workflowRun.id || "") !== String(input.expectedBinding?.workflowRunId || "")) {
+    return {
+      ok: false,
+      reasonCode: "MANUAL_SELLER_INPUT_WORKFLOW_MISMATCH",
+      nextAction: "刷新当前商品并重新进入精确绑定的商品工作流",
+    };
+  }
+  if (preview.changed) {
+    await invalidatePayloadDraftValidation(workflowRun.id, "seller_input_changed");
+  }
+  const saved = await mutateJobs(async function(jobs) {
+    const idx = jobs.findIndex((job) => job.id === jobId);
+    if (idx === -1) return { ok: false, reasonCode: "AUTO_LISTING_JOB_NOT_FOUND" };
+    const applied = applyManualSellerInputsToJob(jobs[idx], input);
+    if (!applied.ok) return applied;
+    if (applied.changed) jobs[idx] = applied.job;
+    return { ...applied, job: jobs[idx] };
+  });
+  if (!saved?.ok) return saved || { ok: false, reasonCode: "AUTO_LISTING_JOB_NOT_FOUND" };
+  let payload = null;
+  if (saved.changed) {
+    try {
+      payload = await saveWorkflowPayloadDraftForListingJob(saved.job);
+      if (!payload?.draft) throw new Error("payload draft was not rebuilt");
+    } catch {
+      await updateJob(jobId, {
+        stage: "seller_input_saved_payload_pending",
+        reasonCode: "MANUAL_SELLER_INPUT_PAYLOAD_REFRESH_FAILED",
+        error: "商品资料已保存，但本地草稿刷新失败；旧预检已失效",
+      });
+      return {
+        ok: false,
+        reasonCode: "MANUAL_SELLER_INPUT_PAYLOAD_REFRESH_FAILED",
+        jobSaved: true,
+        preflightInvalidated: true,
+        nextAction: "商品资料已保存；重新生成本地草稿并预检后才能继续",
+      };
+    }
+  }
+  return {
+    ok: true,
+    job: saved.job,
+    changed: saved.changed,
+    payloadDraftReady: Boolean(payload?.draft),
+    nextAction: "运行预检",
+  };
 }
 
 export async function saveManualProcurementEvidence(jobId, input = {}) {
-  const job = await getAutoListingJob(jobId); if (!job) return { ok: false, reasonCode: "AUTO_LISTING_JOB_NOT_FOUND" };
-  const next = await updateJob(jobId, { procurementEvidence: { ...input, evidenceSource: "seller_manual", savedAt: nowIso() }, stage: "procurement_manual_saved" });
-  const payload = await saveWorkflowPayloadDraftForListingJob(next || job).catch(() => null);
-  return { ok: true, job: next || job, payloadDraftReady: Boolean(payload?.draft), nextAction: "运行预检" };
+  const { expectedBinding, ...procurement } = input || {};
+  return saveManualSellerInputs(jobId, { expectedBinding, procurement });
 }
 
 export async function saveManualPackageEvidence(jobId, input = {}) {
-  const job = await getAutoListingJob(jobId); if (!job) return { ok: false, reasonCode: "AUTO_LISTING_JOB_NOT_FOUND" };
-  const next = await updateJob(jobId, { packageEvidence: { ...input, evidenceSource: "seller_manual", savedAt: nowIso() }, stage: "package_manual_saved" });
-  const payload = await saveWorkflowPayloadDraftForListingJob(next || job).catch(() => null);
-  return { ok: true, job: next || job, payloadDraftReady: Boolean(payload?.draft), nextAction: "运行预检" };
+  const { expectedBinding, ...packageInput } = input || {};
+  return saveManualSellerInputs(jobId, { expectedBinding, package: packageInput });
 }
 
 async function waitForImportInfo(store, taskId, attempts = 8, deps = {}) {
@@ -2615,6 +3885,18 @@ function workflowBestMatchOutput(bestMatch = null) {
 export async function rerunAutoListingMatch(jobId, options = {}) {
   const job = await getAutoListingJob(jobId);
   if (!job) return { ok: false, error: "自动上架任务不存在: " + jobId };
+  const initialAuthorization = validatePaidAiJobBinding(job, options.expectedBinding);
+  if (!initialAuthorization.ok) return initialAuthorization;
+  if (!String(options.expectedEnvironment || "").trim()) {
+    return {
+      ok: false,
+      reasonCode: "COMMISSION_ENVIRONMENT_REQUIRED",
+      error: "付费 AI 前必须绑定当前 Seller 读取环境。",
+      paidAiCalled: false,
+    };
+  }
+  const commissionAuthorization = validateTrustedCommissionEvidenceForJob(job, null, options.expectedEnvironment);
+  if (!commissionAuthorization.ok) return commissionAuthorization;
   const { listCrawlerCandidates } = await import("./crawler1688.js");
   const learningItems = await listOzonLearningItems();
   const ozonItem = ozonItemFromJob(job, learningItems);
@@ -2626,9 +3908,22 @@ export async function rerunAutoListingMatch(jobId, options = {}) {
   await addStep(jobId, "match_rerun_started", "人工从工作流触发重新匹配，候选 " + rankedCandidates.length + " 个");
   await emitAutoListingWorkflowNode(job, "matching", { candidateCount: rankedCandidates.length });
 
+  const currentJob = await getAutoListingJob(jobId);
+  const currentAuthorization = validatePaidAiJobBinding(currentJob, options.expectedBinding);
+  if (!currentAuthorization.ok) return currentAuthorization;
   const matchResult = await selectBestMatchForOzon(ozonItem, rankedCandidates, {
     aiLimit: Object.prototype.hasOwnProperty.call(options, "aiLimit") ? options.aiLimit : AI_MATCH_LIMIT,
+    beforePaidAiCall: async function() {
+      const latestJob = await getAutoListingJob(jobId);
+      const bindingAuthorization = validatePaidAiJobBinding(latestJob, options.expectedBinding);
+      if (!bindingAuthorization.ok) return bindingAuthorization;
+      return validateTrustedCommissionEvidenceForJob(latestJob, null, options.expectedEnvironment);
+    },
   });
+  if (matchResult?.ok === false && matchResult?.reasonCode) return matchResult;
+  const postMatchJob = await getAutoListingJob(jobId);
+  const postMatchAuthorization = validatePaidAiJobBinding(postMatchJob, options.expectedBinding);
+  if (!postMatchAuthorization.ok) return { ...postMatchAuthorization, paidAiCalled: true };
 
   if (!matchResult.ok) {
     await emitAutoListingWorkflowNode(job, "matching", {
@@ -2656,11 +3951,24 @@ export async function rerunAutoListingMatch(jobId, options = {}) {
       candidateCount: rankedCandidates.length,
       evaluatedCount: matchResult.evaluatedCount,
       rejectedReasons: matchResult.rejectedReasons,
+      paidAiCalled: true,
     };
   }
 
   const bestMatch = matchResult.bestMatch;
-  await updateJob(jobId, {
+  const candidateAuthorization = validatePaidAiCandidateSourceBinding(
+    bestMatch.candidate,
+    options.expectedBinding,
+  );
+  if (!candidateAuthorization.ok) {
+    return {
+      ...candidateAuthorization,
+      jobId,
+      paidAiCalled: true,
+    };
+  }
+  const matchedCandidateData = bestMatch.candidate.parsed || bestMatch.candidate;
+  const matchedUpdate = await updateJobIfPaidAiBindingMatches(jobId, options.expectedBinding, {
     status: "matched",
     stage: "matching",
     error: "",
@@ -2684,12 +3992,16 @@ export async function rerunAutoListingMatch(jobId, options = {}) {
     },
     ozonContext: buildOzonContext(ozonItem),
     candidateData: {
-      images: (bestMatch.candidate.parsed || bestMatch.candidate).images || [],
-      sizeWeight: (bestMatch.candidate.parsed || bestMatch.candidate).sizeWeight || {},
-      skuVariants: (bestMatch.candidate.parsed || bestMatch.candidate).skuVariants || [],
-      attributes: (bestMatch.candidate.parsed || bestMatch.candidate).attributes || [],
+      ...(postMatchJob.candidateData || {}),
+      ...matchedCandidateData,
+      images: matchedCandidateData.images || [],
+      sizeWeight: matchedCandidateData.sizeWeight || {},
+      skuVariants: matchedCandidateData.skuVariants || [],
+      attributes: matchedCandidateData.attributes || [],
+      sourceEvidence: postMatchJob.candidateData?.sourceEvidence || null,
     },
   });
+  if (!matchedUpdate.ok) return { ...matchedUpdate, paidAiCalled: true };
   await addStep(jobId, "match_rerun_success", "重新匹配成功(" + bestMatch.tier + "): " + bestMatch.candidate.title);
   await emitAutoListingWorkflowNode({ ...job, bestMatch: { candidateId: bestMatch.candidate.id } }, "matching", {
     candidateCount: rankedCandidates.length,
@@ -2708,20 +4020,34 @@ export async function rerunAutoListingMatch(jobId, options = {}) {
     candidateCount: rankedCandidates.length,
     evaluatedCount: matchResult.evaluatedCount,
     bestMatch: workflowBestMatchOutput(bestMatch),
+    paidAiCalled: true,
   };
 }
 
-function candidateFromMatchedJob(job = {}) {
+function verifiedSourcingMatchForContent(job = {}) {
+  const match = job.bestMatch || {};
+  return Boolean(
+    String(match.id || match.candidateId || "").trim()
+    && String(match.candidateTitle || match.title || "").trim()
+    && /1688\.com/i.test(String(match.candidateUrl || match.url || ""))
+    && Number(match.purchasePriceCny || 0) > 0
+    && String(match.matchTier || match.tier || "").trim()
+    && Number(match.matchConfidence ?? match.confidence ?? 0) > 0
+  );
+}
+
+function candidateFromMatchedJob(job = {}, options = {}) {
   const base = job.candidateData || {};
+  const match = options.useBestMatch === true ? (job.bestMatch || {}) : {};
   return {
-    id: job.bestMatch?.id || job.bestMatch?.candidateId || "",
-    title: job.bestMatch?.candidateTitle || base.title || "",
-    url: job.bestMatch?.candidateUrl || base.url || "",
-    priceMin: job.bestMatch?.purchasePriceCny || base.priceMin || 0,
+    id: match.id || match.candidateId || "",
+    title: match.candidateTitle || base.title || "",
+    url: match.candidateUrl || base.url || "",
+    priceMin: match.purchasePriceCny || base.priceMin || 0,
     parsed: {
       ...base,
-      title: job.bestMatch?.candidateTitle || base.title || "",
-      url: job.bestMatch?.candidateUrl || base.url || "",
+      title: match.candidateTitle || base.title || "",
+      url: match.candidateUrl || base.url || "",
     },
   };
 }
@@ -2744,32 +4070,153 @@ function ozonItemFromMatchedJob(job = {}) {
   };
 }
 
-export async function rerunAutoListingContent(jobId) {
-  const job = await getAutoListingJob(jobId);
-  if (!job) return { ok: false, error: "自动上架任务不存在: " + jobId };
-  if (!job.bestMatch || !job.candidateData) {
-    return { ok: false, error: "缺少已匹配候选，需先续跑 match_profit" };
+export function contentGenerationContextForJob(job = {}) {
+  if (!job.candidateData || typeof job.candidateData !== "object") {
+    return {
+      ok: false,
+      reasonCode: "CONTENT_SOURCE_REQUIRED",
+      error: "当前商品缺少已绑定的 1688 来源资料，不能生成上架内容。",
+    };
   }
-
-  const candidate = candidateFromMatchedJob(job);
+  const hasSourcingMatch = verifiedSourcingMatchForContent(job);
+  const matched = hasSourcingMatch ? job.bestMatch : {};
+  const candidate = candidateFromMatchedJob(job, { useBestMatch: hasSourcingMatch });
   const ozonItem = ozonItemFromMatchedJob(job);
-  const ozonContext = buildOzonContext(ozonItem);
-  const match = {
-    match: true,
-    confidence: Number(job.bestMatch?.matchConfidence || 0),
-    reason: String(job.bestMatch?.matchTier || "matched"),
+  const pricing = job.pricingPreview || {};
+  if (!hasSourcingMatch) {
+    const sourceEvidence = job.candidateData.sourceEvidence || {};
+    const sourceSnapshotHash = String(sourceEvidence.snapshotHash || "");
+    const pricingEvidence = pricing.sourceEvidence || {};
+    const priceEvidence = listingPriceEvidenceForJob(job);
+    const exactCurrentCapture = sourceEvidence.platform === "1688"
+      && sourceEvidence.verificationState === "ok"
+      && /^sha256:[a-f0-9]{64}$/i.test(sourceSnapshotHash)
+      && pricingEvidence.status === "bound"
+      && pricingEvidence.source === "1688"
+      && String(pricingEvidence.snapshotHash || "") === sourceSnapshotHash
+      && priceEvidence.ok
+      && priceEvidence.sourceMode === "sku_price_snapshot"
+      && priceEvidence.sourceSnapshotHash === sourceSnapshotHash
+      && Number(pricing.sourcePriceCny || 0) === Number(priceEvidence.sourcePriceCny || 0);
+    if (!exactCurrentCapture) {
+      return {
+        ok: false,
+        reasonCode: "CONTENT_PRICING_EVIDENCE_STALE",
+        error: "当前商品的采集价格或定价预览与来源快照不一致，已在付费 AI 调用前停止。",
+      };
+    }
+  }
+  return {
+    ok: true,
+    candidate,
+    ozonItem,
+    ozonContext: buildOzonContext(ozonItem),
+    match: hasSourcingMatch ? {
+      match: true,
+      confidence: Number(matched.matchConfidence || 0),
+      reason: String(matched.matchTier || "matched"),
+    } : {
+      match: true,
+      confidence: 100,
+      reason: "seller_selected_current_1688_capture",
+    },
+    profit: {
+      basis: matched.profitBasis || pricing.calculationStatus || "current_capture_pricing",
+      purchasePriceCny: matched.purchasePriceCny ?? pricing.sourcePriceCny ?? null,
+      estProfitCny: matched.estProfitCny ?? pricing.profit ?? null,
+      margin: matched.margin ?? pricing.profitRate ?? null,
+      estSellPriceCny: matched.estSellPriceCny ?? pricing.priceCny ?? null,
+      estRubPrice: matched.estRubPrice ?? null,
+      actualOzonPrice: matched.actualOzonPrice ?? null,
+      marketPriceCny: matched.marketPriceCny ?? null,
+      priceDiff: matched.priceDiff ?? null,
+    },
+    sourceMode: hasSourcingMatch ? "sourcing_match" : "seller_selected_capture",
   };
-  const profit = {
-    basis: job.bestMatch?.profitBasis,
-    purchasePriceCny: job.bestMatch?.purchasePriceCny,
-    estProfitCny: job.bestMatch?.estProfitCny,
-    margin: job.bestMatch?.margin,
-    estSellPriceCny: job.bestMatch?.estSellPriceCny,
-    estRubPrice: job.bestMatch?.estRubPrice,
-    actualOzonPrice: job.bestMatch?.actualOzonPrice,
-    marketPriceCny: job.bestMatch?.marketPriceCny,
-    priceDiff: job.bestMatch?.priceDiff,
-  };
+}
+
+export async function rerunAutoListingContent(jobId, options = {}) {
+  const initialJob = await getAutoListingJob(jobId);
+  if (!initialJob) return { ok: false, error: "自动上架任务不存在: " + jobId };
+  const initialAuthorization = validatePaidAiJobBinding(initialJob, options.expectedBinding);
+  if (!initialAuthorization.ok) return initialAuthorization;
+  if (!String(options.expectedEnvironment || "").trim()) {
+    return {
+      ok: false,
+      reasonCode: "COMMISSION_ENVIRONMENT_REQUIRED",
+      error: "付费 AI 前必须绑定当前 Seller 读取环境。",
+      paidAiCalled: false,
+    };
+  }
+  const commissionAuthorization = validateTrustedCommissionEvidenceForJob(initialJob, null, options.expectedEnvironment);
+  if (!commissionAuthorization.ok) return commissionAuthorization;
+  const initialContext = contentGenerationContextForJob(initialJob);
+  if (!initialContext.ok) return initialContext;
+
+  const claim = await claimPaidAiContentWork(jobId, options.expectedBinding, {
+    forcePaidAiRegeneration: options.forcePaidAiRegeneration === true,
+    expectedEnvironment: options.expectedEnvironment,
+  });
+  if (!claim.ok) return claim;
+  const job = claim.job;
+  const generationContext = contentGenerationContextForJob(job);
+  if (!generationContext.ok) {
+    await releasePaidAiContentWork(jobId, claim.token);
+    return generationContext;
+  }
+  const {
+    candidate,
+    ozonContext,
+    match,
+    profit,
+  } = generationContext;
+
+  if (claim.mode === "reuse") {
+    const summary = contentGenerationWorkflowSummary(job.listingContent, candidate, job.visualCard || null);
+    try {
+      const payloadDraftResult = await saveWorkflowPayloadDraftForListingJob(job);
+      if (!payloadDraftResult?.draft) throw new Error("payload draft was not rebuilt");
+      const finalized = await finalizePaidAiContentWork(jobId, options.expectedBinding, claim);
+      if (!finalized.ok) {
+        await invalidatePayloadDraftValidation(job.workflowRunId, "paid_ai_content_context_changed").catch(function() {});
+        await releasePaidAiContentWork(jobId, claim.token);
+        return {
+          ...finalized,
+          jobId,
+          payloadDraftReady: false,
+          paidAiCalled: false,
+          reusedPaidAiContent: true,
+        };
+      }
+      await addStep(jobId, "paid_ai_content_reused", "复用当前商品已绑定的 AI 文案，未再次调用付费模型");
+      return {
+        ok: true,
+        jobId,
+        status: "ready_for_listing",
+        contentReady: summary.listingContentReady,
+        visualCardReady: summary.visualCardReady,
+        payloadDraftReady: true,
+        payloadDraftItemCount: payloadDraftResult.draft.items?.length || 0,
+        titleRu: summary.titleRu,
+        contentIssues: summary.contentIssues,
+        paidAiCalled: false,
+        reusedPaidAiContent: true,
+      };
+    } catch (error) {
+      await releasePaidAiContentWork(jobId, claim.token);
+      await addStep(jobId, "paid_ai_content_reuse_payload_failed", "已复用 AI 文案，但 Payload 草稿刷新失败: " + (error.message || String(error)));
+      return {
+        ok: false,
+        jobId,
+        reasonCode: "PAYLOAD_DRAFT_REFRESH_FAILED",
+        error: "已复用当前商品的 AI 文案且未再次收费，但 Payload 草稿刷新仍失败。",
+        contentReady: summary.listingContentReady,
+        payloadDraftReady: false,
+        paidAiCalled: false,
+        reusedPaidAiContent: true,
+      };
+    }
+  }
 
   await updateJob(jobId, { status: "generating_content", stage: "guided" });
   await addStep(jobId, "content_rerun_started", "人工从工作流触发重新生成上架内容");
@@ -2777,12 +4224,46 @@ export async function rerunAutoListingContent(jobId) {
     bestMatch: job.bestMatch?.id || job.bestMatch?.candidateTitle || "",
   });
 
-  const listingResult = await generateListingContentWithLlm(candidate.parsed || candidate, {
-    ozonContext,
-    match,
-    profit,
-  });
+  const currentJob = await getAutoListingJob(jobId);
+  const currentAuthorization = validatePaidAiJobBinding(currentJob, options.expectedBinding);
+  const currentCommissionAuthorization = validateTrustedCommissionEvidenceForJob(
+    currentJob,
+    null,
+    options.expectedEnvironment,
+  );
+  const leaseStillOwned = String(currentJob?.paidAiContentLease?.token || "") === String(claim.token || "")
+    && paidAiContentInputHash(currentJob || {}) === claim.inputHash;
+  if (!currentAuthorization.ok || !currentCommissionAuthorization.ok || !leaseStillOwned) {
+    await releasePaidAiContentWork(jobId, claim.token);
+    if (!currentAuthorization.ok) return currentAuthorization;
+    if (!currentCommissionAuthorization.ok) return currentCommissionAuthorization;
+    return currentAuthorization.ok
+      ? {
+        ok: false,
+        reasonCode: "PAID_AI_CONTENT_CONTEXT_CHANGED",
+        error: "AI 调用前当前商品输入已变化，系统未调用付费模型。",
+        paidAiCalled: false,
+      }
+      : currentAuthorization;
+  }
+  let listingResult;
+  try {
+    listingResult = await generateListingContentWithLlm(candidate.parsed || candidate, {
+      ozonContext,
+      match,
+      profit,
+    });
+  } catch (error) {
+    return {
+      ok: false,
+      jobId,
+      reasonCode: "CONTENT_GENERATION_OUTCOME_UNCERTAIN",
+      error: "AI 请求超时或连接中断，系统保留当前生成锁且不会立即重试，以避免重复计费。请稍后再检查。",
+      paidAiCalled: true,
+    };
+  }
   if (!listingResult.enabled) {
+    await releasePaidAiContentWork(jobId, claim.token);
     await emitAutoListingWorkflowNode(job, "generating_content", {
       nodeStatus: "failed",
       runStatus: "waiting_human",
@@ -2796,7 +4277,7 @@ export async function rerunAutoListingContent(jobId) {
       reasonCode: "CONTENT_GENERATION_FAILED",
     });
     await addStep(jobId, "content_rerun_failed", "LLM 未配置，无法生成上架内容");
-    return { ok: false, jobId, error: "LLM 未配置，无法生成上架内容" };
+    return { ok: false, jobId, error: "LLM 未配置，无法生成上架内容", paidAiCalled: true };
   }
 
   let visualCard = null;
@@ -2812,30 +4293,53 @@ export async function rerunAutoListingContent(jobId) {
   }
 
   const summary = contentGenerationWorkflowSummary(listingResult.content, candidate, visualCard);
-  const nextJob = {
-    ...job,
-    listingContent: listingResult.content,
+  const contentUpdate = await commitPaidAiGeneratedContent(
+    jobId,
+    options.expectedBinding,
+    claim,
+    listingResult.content,
     visualCard,
-  };
-  await updateJob(jobId, {
-    status: "ready_for_listing",
-    stage: "guided",
-    error: "",
-    reasonCode: "",
-    listingContent: listingResult.content,
-    visualCard,
-  });
+  );
+  if (!contentUpdate.ok) {
+    await releasePaidAiContentWork(jobId, claim.token);
+    return {
+      ...contentUpdate,
+      jobId,
+      paidAiCalled: true,
+    };
+  }
   let payloadDraftResult = null;
   try {
-    payloadDraftResult = await saveWorkflowPayloadDraftForListingJob(nextJob);
+    payloadDraftResult = await saveWorkflowPayloadDraftForListingJob(contentUpdate.job);
     if (payloadDraftResult?.draft) {
       await addStep(jobId, "payload_draft_refreshed", "已刷新提交前 Payload 草稿，等待人工校验");
     }
   } catch (error) {
+    await releasePaidAiContentWork(jobId, claim.token);
     await addStep(jobId, "payload_draft_refresh_failed", "Payload 草稿刷新失败: " + (error.message || String(error)));
+    return {
+      ok: false,
+      jobId,
+      reasonCode: "PAYLOAD_DRAFT_REFRESH_FAILED",
+      error: "AI 文案已生成，但当前商品 Payload 草稿刷新失败；系统未运行旧草稿预检。",
+      contentReady: summary.listingContentReady,
+      payloadDraftReady: false,
+      paidAiCalled: true,
+    };
+  }
+  const finalized = await finalizePaidAiContentWork(jobId, options.expectedBinding, claim);
+  if (!finalized.ok) {
+    await invalidatePayloadDraftValidation(job.workflowRunId, "paid_ai_content_context_changed").catch(function() {});
+    await releasePaidAiContentWork(jobId, claim.token);
+    return {
+      ...finalized,
+      jobId,
+      payloadDraftReady: false,
+      paidAiCalled: true,
+    };
   }
   await addStep(jobId, "content_rerun_success", "重新生成上架内容完成");
-  await emitAutoListingWorkflowNode(job, "generating_content", {
+  await emitAutoListingWorkflowNode(finalized.job, "generating_content", {
     bestMatch: {
       id: job.bestMatch?.id || "",
       title: job.bestMatch?.candidateTitle || "",
@@ -2854,6 +4358,7 @@ export async function rerunAutoListingContent(jobId) {
     payloadDraftItemCount: payloadDraftResult?.draft?.items?.length || 0,
     titleRu: summary.titleRu,
     contentIssues: summary.contentIssues,
+    paidAiCalled: true,
   };
 }
 
@@ -3340,6 +4845,45 @@ async function updateJob(id, patch) {
   });
 }
 
+async function updateJobIfPaidAiBindingMatches(id, expectedBinding, patch, validateCurrent = null) {
+  let result = {
+    ok: false,
+    reasonCode: "PAID_AI_JOB_CONTEXT_STALE",
+    error: "自动上架任务已变化，系统未写入旧 AI 结果。",
+  };
+  let workflowRunIdToInvalidate = "";
+  await mutateJobs(async function(jobs) {
+    const idx = jobs.findIndex(function(job) { return job.id === id; });
+    if (idx === -1) return;
+    const validation = validatePaidAiJobBinding(jobs[idx], expectedBinding);
+    if (!validation.ok) {
+      result = validation;
+      return;
+    }
+    if (typeof validateCurrent === "function") {
+      const currentValidation = validateCurrent(jobs[idx]);
+      if (!currentValidation?.ok) {
+        result = currentValidation || {
+          ok: false,
+          reasonCode: "AUTO_LISTING_JOB_CONTEXT_STALE",
+          error: "自动上架任务上下文已变化。",
+        };
+        return;
+      }
+    }
+    const previousInputHash = paidAiContentInputHash(jobs[idx]);
+    jobs[idx] = Object.assign({}, jobs[idx], patch, { updatedAt: nowIso() });
+    if (paidAiContentInputHash(jobs[idx]) !== previousInputHash) {
+      workflowRunIdToInvalidate = String(jobs[idx].workflowRunId || "").trim();
+    }
+    result = { ok: true, job: jobs[idx] };
+  });
+  if (workflowRunIdToInvalidate) {
+    await invalidatePayloadDraftValidation(workflowRunIdToInvalidate, "paid_ai_generation_input_changed");
+  }
+  return result;
+}
+
 async function addStep(id, action, detail) {
   await mutateJobs(async function(jobs) {
     var idx = jobs.findIndex(function(j) { return j.id === id; });
@@ -3426,6 +4970,82 @@ export async function getAutoListingJobSnapshot(id) {
   var jobs = await readJobs();
   var job = jobs.find(function(j) { return j.id === id; }) || null;
   return job ? normalizeAutoListingJobSnapshot(job) : null;
+}
+
+export async function saveLearnedCommissionEvidence(jobId, input = {}) {
+  const job = await getAutoListingJobSnapshot(jobId);
+  if (!job) {
+    return {
+      ok: false,
+      reasonCode: "AUTO_LISTING_JOB_NOT_FOUND",
+      error: "当前自动上架任务不存在。",
+    };
+  }
+  const authorization = validatePaidAiJobBinding(job, input.expectedBinding);
+  if (!authorization.ok) return authorization;
+  const category = categoryScopeForCommission(job);
+  const source = input.commissionSource || {};
+  const exactBinding = category
+    && source.source === "learned_product"
+    && source.confidence === "medium"
+    && source.categoryKey === category.categoryKey
+    && source.storeId === String(job.storeId || "")
+    && source.sourceSnapshotHash === String(job.candidateData?.sourceEvidence?.snapshotHash || "")
+    && /^sha256:[a-f0-9]{64}$/i.test(String(source.evidenceRef || ""))
+    && Boolean(String(source.updatedAt || "").trim())
+    && source.coverageComplete === true;
+  const commissions = Array.isArray(input.commissions) ? input.commissions : [];
+  const percent = Number(commissions[0]?.percent || 0);
+  if (!exactBinding || commissions.length !== 1 || !(percent > 0 && percent < 100)) {
+    return {
+      ok: false,
+      reasonCode: "COMMISSION_EVIDENCE_BINDING_STALE",
+      error: "佣金读取结果与当前商品、店铺、类目或来源快照不一致，系统未采用该比例。",
+    };
+  }
+  const nextJob = {
+    ...job,
+    commissions,
+    commissionEvidence: input.evidence || null,
+  };
+  const pricingPreview = buildAutomaticPricingPreviewFromCapture(nextJob, {
+    description_category_id: category.descriptionCategoryId,
+    type_id: category.typeId,
+    path: category.path,
+  });
+  if (!pricingPreview || pricingPreview.commissionSource?.source !== "learned_product") {
+    return {
+      ok: false,
+      reasonCode: "COMMISSION_PRICING_REFRESH_FAILED",
+      error: "可信佣金已读取，但当前商品定价未能安全刷新。",
+    };
+  }
+  pricingPreview.commissionSource = { ...pricingPreview.commissionSource, ...source };
+  pricingPreview.profitStatus = "estimate";
+  pricingPreview.profitConclusion = "estimated_from_same_store_exact_category_products";
+  const saved = await updateJobIfPaidAiBindingMatches(jobId, input.expectedBinding, {
+    commissions,
+    commissionEvidence: input.evidence || null,
+    pricingPreview,
+  }, (current) => {
+    const currentCategory = categoryScopeForCommission(current);
+    const stillExact = currentCategory?.categoryKey === source.categoryKey
+      && String(current.storeId || "") === source.storeId
+      && String(current.candidateData?.sourceEvidence?.snapshotHash || "") === source.sourceSnapshotHash;
+    return stillExact ? { ok: true } : {
+      ok: false,
+      reasonCode: "COMMISSION_EVIDENCE_CONTEXT_CHANGED",
+      error: "佣金读取期间当前商品类目或来源快照已变化，系统未保存旧读取结果。",
+    };
+  });
+  if (!saved.ok) return saved;
+  await addStep(jobId, "commission_evidence_learned", `已从当前店铺同类商品学习 FBS 佣金 ${percent}% 并自动刷新定价`);
+  return {
+    ok: true,
+    job: saved.job,
+    pricingPreview,
+    commissionSource: pricingPreview.commissionSource,
+  };
 }
 
 function normalizedMediaApprovalAssetIds(value) {
@@ -3539,22 +5159,22 @@ export async function rollbackAutoListingMediaApproval(jobId, binding = {}) {
 }
 
 export async function backfillTimeoutStages(limit = 1000) {
-  const jobs = await readJobs();
-  let changed = 0;
-  const max = Math.max(1, Number(limit || 1000));
-  for (let i = 0; i < jobs.length && changed < max; i += 1) {
-    const job = jobs[i];
-    const reasonCode = String(job.reasonCode || mapReasonCode(job.error || ""));
-    if (reasonCode !== "TIMEOUT") continue;
-    const current = String(job.timeoutStage || "");
-    if (current && current !== "unknown") continue;
-    const inferred = inferTimeoutStageFromHistory(job);
-    if (!inferred || inferred === "unknown") continue;
-    jobs[i] = Object.assign({}, job, { timeoutStage: inferred, updatedAt: nowIso() });
-    changed += 1;
-  }
-  if (changed > 0) await writeJobs(jobs);
-  return { ok: true, changed, total: jobs.length };
+  return mutateJobs(async function(jobs) {
+    let changed = 0;
+    const max = Math.max(1, Number(limit || 1000));
+    for (let i = 0; i < jobs.length && changed < max; i += 1) {
+      const job = jobs[i];
+      const reasonCode = String(job.reasonCode || mapReasonCode(job.error || ""));
+      if (reasonCode !== "TIMEOUT") continue;
+      const current = String(job.timeoutStage || "");
+      if (current && current !== "unknown") continue;
+      const inferred = inferTimeoutStageFromHistory(job);
+      if (!inferred || inferred === "unknown") continue;
+      jobs[i] = Object.assign({}, job, { timeoutStage: inferred, updatedAt: nowIso() });
+      changed += 1;
+    }
+    return { ok: true, changed, total: jobs.length };
+  });
 }
 
 function applyListingFixByReason(job, reasonCode) {
@@ -3612,25 +5232,22 @@ function applyListingFixByReason(job, reasonCode) {
   if (reasonCode === "CATEGORY_INVALID") {
     next.listingContent.categoryRetry = "auto_rematch";
   }
-  if (reasonCode === "WEIGHT_SIZE_INVALID") {
-    const cd = next.candidateData;
-    const sw = Object.assign({}, cd.sizeWeight || {});
-    const variants = Array.isArray(cd.skuVariants) ? cd.skuVariants : [];
-    const maxN = (arr, f) => {
-      const nums = arr.map(f).map((x) => Number(x || 0)).filter((x) => Number.isFinite(x) && x > 0);
-      return nums.length ? Math.max.apply(null, nums) : 0;
-    };
-    sw.weightG = Math.max(Number(sw.weightG || 0), maxN(variants, (v) => v.weightG));
-    sw.lengthMm = Math.max(Number(sw.lengthMm || 0), maxN(variants, (v) => v.lengthMm));
-    sw.widthMm = Math.max(Number(sw.widthMm || 0), maxN(variants, (v) => v.widthMm));
-    sw.heightMm = Math.max(Number(sw.heightMm || 0), maxN(variants, (v) => v.heightMm));
-    sw.weightG = Math.max(100, Number(sw.weightG || 0) + 50);
-    sw.lengthMm = Math.max(50, Number(sw.lengthMm || 0) + 20);
-    sw.widthMm = Math.max(50, Number(sw.widthMm || 0) + 20);
-    sw.heightMm = Math.max(30, Number(sw.heightMm || 0) + 20);
-    next.candidateData.sizeWeight = sw;
-  }
   return next;
+}
+
+export function canAutoRemediateListingReason(reasonCode = "") {
+  // A rejected package measurement is an evidence conflict, not a value that
+  // can be guessed. Keep the failed job intact for same-product correction and
+  // a new explicit confirmation.
+  return [
+    "CATEGORY_INVALID",
+    "BRAND_INVALID",
+    "TITLE_INVALID",
+    "RICH_CONTENT_INVALID",
+    "COUNTRY_INVALID",
+    "ATTRIBUTE_DUPLICATE",
+    "ATTRIBUTE_REQUIRED",
+  ].includes(String(reasonCode || ""));
 }
 
 export async function remediateFailedListingJobs(options = {}) {
@@ -3639,7 +5256,7 @@ export async function remediateFailedListingJobs(options = {}) {
   const limit = Math.max(1, rawLimit);
   const autoResubmit = Boolean(options.autoResubmit);
   const reasons = new Set(
-    String(options.reasonCodes || "CATEGORY_INVALID,WEIGHT_SIZE_INVALID,BRAND_INVALID,TITLE_INVALID,RICH_CONTENT_INVALID,COUNTRY_INVALID,ATTRIBUTE_DUPLICATE,ATTRIBUTE_REQUIRED")
+    String(options.reasonCodes || "CATEGORY_INVALID,BRAND_INVALID,TITLE_INVALID,RICH_CONTENT_INVALID,COUNTRY_INVALID,ATTRIBUTE_DUPLICATE,ATTRIBUTE_REQUIRED")
       .split(",")
       .map((x) => x.trim())
       .filter(Boolean),
@@ -3649,7 +5266,7 @@ export async function remediateFailedListingJobs(options = {}) {
     .filter((j) => {
       const text = [j.error || "", j.lastError || "", JSON.stringify(j.listingResult || {}).slice(0, 2000)].join(" ");
       const rc = String(j.reasonCode && j.reasonCode !== "UNKNOWN" ? j.reasonCode : mapReasonCode(text));
-      return String(j.status || "") === "failed" && reasons.has(rc);
+      return String(j.status || "") === "failed" && reasons.has(rc) && canAutoRemediateListingReason(rc);
     })
     .slice(0, limit);
   let patched = 0;
@@ -3707,7 +5324,7 @@ export async function remediateListingJobsByTaskIds(taskIds = [], options = {}) 
       JSON.stringify(job.listingResult?.importInfo || {}).slice(0, 4000),
     ].join(" ");
     const rc = mapReasonCode(text);
-    if (!["CATEGORY_INVALID", "WEIGHT_SIZE_INVALID", "BRAND_INVALID", "TITLE_INVALID", "RICH_CONTENT_INVALID", "COUNTRY_INVALID", "ATTRIBUTE_DUPLICATE", "ATTRIBUTE_REQUIRED"].includes(rc)) continue;
+    if (!canAutoRemediateListingReason(rc)) continue;
     const fixed = applyListingFixByReason(job, rc);
     fixed.status = "ready_for_listing";
     fixed.stage = "guided";
@@ -3860,7 +5477,12 @@ export async function completeListing(jobId, storeId) {
       return { ok: false, error: "候选缺少可信尺重来源" };
     }
     await addStep(jobId, "size_weight_checked", "尺重确认: " + packageInfo.weight + "g / " + packageInfo.depth + "x" + packageInfo.width + "x" + packageInfo.height + "mm");
-    var bestMatchPrice = job.bestMatch ? job.bestMatch.purchasePriceCny : 0;
+    var listingPriceEvidence = listingPriceEvidenceForJob(job);
+    if (!listingPriceEvidence.ok) {
+      await failJob(jobId, listingPriceEvidence.error);
+      return { ok: false, error: listingPriceEvidence.error };
+    }
+    var bestMatchPrice = listingPriceEvidence.sourcePriceCny;
     var productForCategory = {
       title: [
         title,
@@ -3966,7 +5588,7 @@ export async function completeListing(jobId, storeId) {
       .filter(Boolean));
     await addStep(jobId, "submitting", "提交商品到 Ozon...");
     var variantsForListing = Array.isArray(skuVariants)
-      ? skuVariants.filter(function(v) { return cleanSkuSpec(v.spec || "") && Number(v.price || bestMatchPrice || 0) > 0; }).slice(0, SOURCING_MAX_SKU_COUNT)
+      ? skuVariants.filter(function(v) { return cleanSkuSpec(v.spec || "") && variantSourcePriceCny(v, listingPriceEvidence) > 0; }).slice(0, SOURCING_MAX_SKU_COUNT)
       : [];
     if (variantsForListing.length < 2) variantsForListing = [];
     var submitItems = variantsForListing.length
@@ -3975,7 +5597,8 @@ export async function completeListing(jobId, storeId) {
         var vPrice = finalPriceCny;
         var variantPricingFields = pricingFields;
         try {
-          var variantPurchase = Math.max(Number(variant.price || bestMatchPrice || 0) + PURCHASE_COST_MARKUP_RMB, 1);
+          var variantSourcePrice = variantSourcePriceCny(variant, listingPriceEvidence);
+          var variantPurchase = Math.max(variantSourcePrice + PURCHASE_COST_MARKUP_RMB, 1);
           var variantCalc = calculateOzonPrice({
             purchaseCost: variantPurchase,
             weightG: variantPackage.ok ? variantPackage.weight : packageInfo.weight,
@@ -3993,7 +5616,7 @@ export async function completeListing(jobId, storeId) {
           });
           pricingDiagnosis.variants.push({
             offerId: variantOfferId(parentSku, variant, index),
-            sourcePriceCny: roundMoney(Number(variant.price || bestMatchPrice || 0)),
+            sourcePriceCny: roundMoney(variantSourcePrice),
             purchaseCost: roundMoney(variantPurchase),
             priceCny: vPrice,
             oldPriceCny: variantPricingFields.oldPriceCny,
@@ -4118,14 +5741,6 @@ export async function completeListing(jobId, storeId) {
       if (needModelRetry(importErrors)) {
         retryItem.attributes = mergeRetryModelAttributes(retryItem.attributes || [], brandAttr, modelAttributesForMeta(modelName + " " + parentSku, attrsMeta));
         await addStep(jobId, "retry_model", "检测到型号必填，自动补全型号后重试");
-      }
-      if (needSizeWeightRetry(importErrors)) {
-        var safe = safeFallbackPackageInfo(packageInfo);
-        retryItem.weight = safe.weight;
-        retryItem.depth = safe.depth;
-        retryItem.width = safe.width;
-        retryItem.height = safe.height;
-        await addStep(jobId, "retry_size_weight", "检测到尺重报错，切换安全尺重后重试");
       }
       if (needCategoryTypeRetry(importErrors) && categoryMatches[1]) {
         var alt = categoryMatches[1];

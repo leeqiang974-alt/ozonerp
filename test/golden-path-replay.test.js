@@ -122,11 +122,11 @@ test("single SKU replay feeds local category metadata into required-attribute pr
   assert.ok(result.stages.preflight.issues.includes("CONTENT_EVIDENCE_REVIEW_REQUIRED"));
 });
 
-test("golden path replay keeps missing procurement evidence blocked", async () => {
+test("golden path replay reuses snapshot-bound detail SKU prices without unlocking submission", async () => {
   const parsed = await fixture("complete-single");
   const result = replay1688ToOzonPreflight(parsed);
   assert.equal(result.stages.source.ok, true);
-  assert.equal(result.stages.pricing.status, "blocked");
+  assert.equal(result.stages.pricing.status, "verified");
   assert.equal(result.ok, false);
   assert.match(result.nextAction, /禁止提交/);
 });

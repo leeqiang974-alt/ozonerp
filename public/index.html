@@ -6,78 +6,53 @@
     <title>Ozon Seller ERP</title>
     <link rel="stylesheet" href="/styles.css" />
   </head>
-  <body class="business-erp-theme auto-ozon-erp-shell">
+  <body class="business-erp-theme auto-ozon-erp-shell" data-active-view="dashboard">
     <div class="app-shell auto-ozon-erp-shell">
       <aside class="app-rail app-rail-wide" aria-label="一级导航">
-        <button class="app-rail-logo" type="button" data-nav-group="store-overview" aria-label="Ozon ERP">OZ</button>
-        <button class="app-rail-button active" type="button" data-nav-group="store-overview" title="数据驾驶舱"><span>▦</span><small>驾驶舱</small></button>
-        <button class="app-rail-button" type="button" data-nav-group="product-management" title="商品管理"><span>◇</span><small>商品</small></button>
-        <button class="app-rail-button" type="button" data-nav-group="sourcing-procurement" title="智能选品"><span>⌕</span><small>选品</small></button>
-        <button class="app-rail-button" type="button" data-nav-group="listing-center" title="上传管理"><span>↑</span><small>上传</small></button>
-        <button class="app-rail-button" type="button" data-nav-group="order-fulfillment" title="订单管理"><span>≡</span><small>订单</small></button>
-        <button class="app-rail-button" type="button" data-nav-group="inventory-warehouse" title="仓库库存"><span>▦</span><small>库存</small></button>
-        <button class="app-rail-button" type="button" data-nav-group="marketing" title="营销活动"><span>％</span><small>营销</small></button>
-        <button class="app-rail-button" type="button" data-nav-group="finance-profit" title="财务利润"><span>¥</span><small>财务</small></button>
-        <button class="app-rail-button" type="button" data-nav-group="customer-service" title="客户售后"><span>✉</span><small>售后</small></button>
-        <button class="app-rail-button" type="button" data-nav-group="analytics" title="数据报表"><span>▤</span><small>报表</small></button>
-        <button class="app-rail-button app-rail-settings" type="button" data-nav-group="system" title="系统配置"><span>⚙</span><small>系统</small></button>
+        <button class="app-rail-logo" type="button" data-nav-group="store-overview" data-view="dashboard" aria-label="Ozon ERP">OZ</button>
+        <button class="app-rail-button active" type="button" data-nav-group="store-overview" data-view="dashboard" title="数据驾驶舱"><span>▦</span><small>驾驶舱</small></button>
+        <button class="app-rail-button" type="button" data-nav-group="product-management" data-view="products" title="商品管理"><span>◇</span><small>商品</small></button>
+        <button class="app-rail-button" type="button" data-nav-group="sourcing-procurement" data-view="sourcing" title="智能选品"><span>⌕</span><small>选品</small></button>
+        <button class="app-rail-button" type="button" data-nav-group="listing-center" data-view="listing" title="上传管理"><span>↑</span><small>上传</small></button>
+        <button class="app-rail-button" type="button" data-nav-group="order-fulfillment" data-view="orders" title="订单管理"><span>≡</span><small>订单</small></button>
+        <button class="app-rail-button" type="button" data-nav-group="inventory-warehouse" data-view="warehouse" title="仓库库存"><span>▦</span><small>库存</small></button>
+        <button class="app-rail-button" type="button" data-nav-group="marketing" data-view="promotions" title="营销活动"><span>％</span><small>营销</small></button>
+        <button class="app-rail-button" type="button" data-nav-group="finance-profit" data-view="finance" title="财务利润"><span>¥</span><small>财务</small></button>
+        <button class="app-rail-button" type="button" data-nav-group="customer-service" data-view="service" title="客户售后"><span>✉</span><small>售后</small></button>
+        <button class="app-rail-button" type="button" data-nav-group="analytics" data-view="reports" title="数据报表"><span>▤</span><small>报表</small></button>
+        <button class="app-rail-button app-rail-settings" type="button" data-nav-group="system" data-view="system" title="系统配置"><span>⚙</span><small>系统</small></button>
       </aside>
 
       <aside class="app-sidebar sidebar" id="appSidebar">
         <div class="brand sidebar-brand">
           <span class="brand-mark">OZ</span>
           <div>
-            <strong>Ozon 自动化 ERP</strong>
-            <small>业务驾驶舱</small>
+            <strong>Ozon ERP</strong>
+            <small>商品运营中心</small>
           </div>
         </div>
 
-        <nav class="tabs app-secondary-nav nav-group-always-visible" aria-label="模块">
-          <div class="nav-group active" data-nav-group-panel="store-overview" data-legacy-label="店铺总览 数据报表">
-            <span class="nav-group-label">数据驾驶舱</span>
-            <button class="tab active" data-view="dashboard"><span class="tab-icon">▦</span><span>今日概览</span></button>
+        <nav class="tabs app-secondary-nav" aria-label="模块">
+          <div class="seller-primary-nav" aria-label="日常主线">
+            <span class="nav-group-label">日常主线</span>
+            <button class="tab active" data-view="dashboard"><span class="tab-icon"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 4h6v6H4zM14 4h6v6h-6zM4 14h6v6H4zM14 14h6v6h-6z"/></svg></span><span>工作台</span></button>
+            <button class="tab" data-view="sourcing"><span class="tab-icon"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 7.5 12 3l8 4.5v9L12 21l-8-4.5zM4 7.5l8 4.5 8-4.5M12 12v9"/></svg></span><span>1688 采集</span></button>
+            <button class="tab" data-view="listing"><span class="tab-icon"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M6 3h9l4 4v14H6zM14 3v5h5M9 12h7M9 16h7"/></svg></span><span>商品草稿</span></button>
+            <button class="tab" data-view="products"><span class="tab-icon"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 6h16v14H4zM8 6V4h8v2M8 11h8M8 15h5"/></svg></span><span>商品状态</span></button>
+            <button class="tab" data-view="orders"><span class="tab-icon"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M7 4h10v3H7zM5 6h14v15H5zM8 11h8M8 15h8"/></svg></span><span>订单履约</span></button>
           </div>
-          <div class="nav-group" data-nav-group-panel="product-management" data-legacy-label="商品管理 商品状态">
-            <span class="nav-group-label">商品管理</span>
-            <button class="tab" data-view="products"><span class="tab-icon">◇</span><span>商品总览</span></button>
-          </div>
-          <div class="nav-group" data-nav-group-panel="sourcing-procurement" data-legacy-label="选品采购">
-            <span class="nav-group-label">智能选品</span>
-            <button class="tab" data-view="sourcing"><span class="tab-icon">⌕</span><span>选品采集</span></button>
-            <button class="tab" data-view="research"><span class="tab-icon">◈</span><span>竞品素材</span></button>
-          </div>
-          <div class="nav-group" data-nav-group-panel="listing-center" data-legacy-label="上架中心">
-            <span class="nav-group-label">上传管理</span>
-            <button class="tab" data-view="listing"><span class="tab-icon">↑</span><span>上传队列</span></button>
-            <button class="tab" data-view="workflow-console" data-legacy-label="工作流诊断 任务配置"><span class="tab-icon">⏱</span><span>自动化任务</span></button>
-          </div>
-          <div class="nav-group" data-nav-group-panel="order-fulfillment" data-legacy-label="订单履约">
-            <span class="nav-group-label">订单管理</span>
-            <button class="tab" data-view="orders"><span class="tab-icon">≡</span><span>订单履约</span></button>
-          </div>
-          <div class="nav-group" data-nav-group-panel="inventory-warehouse" data-legacy-label="库存仓库">
-            <span class="nav-group-label">仓库库存</span>
-            <button class="tab" data-view="warehouse"><span class="tab-icon">▦</span><span>仓库与库存</span></button>
-          </div>
-          <div class="nav-group" data-nav-group-panel="marketing">
-            <span class="nav-group-label">营销活动</span>
-            <button class="tab" data-view="promotions"><span class="tab-icon">％</span><span>营销活动</span></button>
-          </div>
-          <div class="nav-group" data-nav-group-panel="finance-profit">
-            <span class="nav-group-label">财务利润</span>
-            <button class="tab" data-view="finance"><span class="tab-icon">¥</span><span>利润核算</span></button>
-          </div>
-          <div class="nav-group" data-nav-group-panel="customer-service" data-legacy-label="客户售后">
-            <span class="nav-group-label">售后退货</span>
-            <button class="tab" data-view="service"><span class="tab-icon">✉</span><span>售后风险</span></button>
-          </div>
-          <div class="nav-group" data-nav-group-panel="analytics">
-            <span class="nav-group-label">经营报表</span>
-            <button class="tab" data-view="reports"><span class="tab-icon">▤</span><span>经营报表</span></button>
-          </div>
-          <div class="nav-group" data-nav-group-panel="system">
-            <span class="nav-group-label">系统配置</span>
-            <button class="tab" data-view="system"><span class="tab-icon">●</span><span>API 与自动化</span></button>
+          <button id="secondaryNavToggle" class="secondary-nav-toggle" type="button" aria-expanded="false" aria-controls="sellerSecondaryNav">
+            <span>更多功能</span><span aria-hidden="true">⌄</span>
+          </button>
+          <div class="seller-secondary-nav" id="sellerSecondaryNav">
+            <div class="nav-group" data-nav-group-panel="sourcing-procurement"><button class="tab" data-view="research"><span class="tab-icon">◈</span><span>竞品素材</span></button></div>
+            <div class="nav-group" data-nav-group-panel="listing-center"><button class="tab" data-view="workflow-console"><span class="tab-icon">⏱</span><span>自动化诊断</span></button></div>
+            <div class="nav-group" data-nav-group-panel="inventory-warehouse"><button class="tab" data-view="warehouse"><span class="tab-icon">▦</span><span>仓库与库存</span></button></div>
+            <div class="nav-group" data-nav-group-panel="marketing"><button class="tab" data-view="promotions"><span class="tab-icon">％</span><span>营销活动</span></button></div>
+            <div class="nav-group" data-nav-group-panel="finance-profit"><button class="tab" data-view="finance"><span class="tab-icon">¥</span><span>利润核算</span></button></div>
+            <div class="nav-group" data-nav-group-panel="customer-service"><button class="tab" data-view="service"><span class="tab-icon">✉</span><span>售后风险</span></button></div>
+            <div class="nav-group" data-nav-group-panel="analytics"><button class="tab" data-view="reports"><span class="tab-icon">▤</span><span>经营报表</span></button></div>
+            <div class="nav-group" data-nav-group-panel="system"><button class="tab" data-view="system"><span class="tab-icon">●</span><span>API 与系统</span></button></div>
           </div>
         </nav>
 
@@ -87,7 +62,7 @@
             <select id="storeSelect"></select>
           </label>
           <div class="sidebar-store-actions">
-            <button id="testButton" class="ghost">测试 API</button>
+            <button id="testButton" class="ghost">检查连接</button>
             <span class="sidebar-api-dot" aria-hidden="true"></span>
           </div>
           <p id="storeHint" class="hint"></p>
@@ -106,11 +81,50 @@
           <span id="erpExchangeRateStatus">汇率未同步</span>
           <span id="erpDataFreshness" data-sync-state="idle">数据尚未同步</span>
           <span>店铺 <b id="erpStoreCount">0</b></span>
-          <span>自动化：观察模式</span>
-          <span>工作流 <b id="workflowStatusCount">0</b></span>
+          <span class="internal-status-only">自动化：观察模式</span>
+          <span class="internal-status-only">工作流 <b id="workflowStatusCount">0</b></span>
         </div>
+        <section id="globalCurrentTaskBar" class="global-current-task-bar" aria-label="当前商品任务" aria-live="polite">
+          <span class="global-current-task-kicker">当前商品</span>
+          <div id="globalCurrentTaskBody"><strong>正在读取真实采集任务…</strong></div>
+        </section>
         <section id="appBootstrapRecovery" class="app-bootstrap-recovery" hidden aria-live="polite"></section>
-      <section id="dashboard" class="view active">
+      <section id="dashboard" class="view active" data-progressive-disclosure-ready="1">
+        <header class="page-head current-product-page-head">
+          <div>
+            <span class="page-eyebrow">商品上新</span>
+            <h1>今天只处理一件商品</h1>
+            <p>不用学习 ERP 流程。首页只会在需要你决定时，给出一个明确动作。</p>
+          </div>
+          <button id="refreshCurrentProduct" class="ghost" type="button">刷新</button>
+        </header>
+        <section class="seller-responsibility-strip" aria-label="上新分工">
+          <div class="seller-responsibility-item is-user">
+            <span>你只负责</span>
+            <strong>选商品、确认必要资料、最后决定是否上架</strong>
+          </div>
+          <div class="seller-responsibility-divider" aria-hidden="true"></div>
+          <div class="seller-responsibility-item is-system">
+            <span>系统和 AI 负责</span>
+            <strong>整理现有资料、检查风险；任何付费 AI 生成都需你另行授权</strong>
+          </div>
+        </section>
+        <section id="currentProductWorkspace" class="current-product-workspace" aria-label="当前商品上新工作台" aria-live="polite">
+          <div class="current-product-loading">正在读取真实采集商品…</div>
+        </section>
+        <ol id="currentProductProgress" class="current-product-progress" aria-label="商品上新进度"></ol>
+        <div class="current-product-task-columns">
+          <section class="current-product-task-card completed-card">
+            <span class="current-product-card-kicker">处理结果</span>
+            <div id="currentProductCompleted"><p>正在核对来源数据…</p></div>
+          </section>
+          <section class="current-product-task-card required-card" hidden>
+            <span class="current-product-card-kicker">需要你决定</span>
+            <div id="currentProductRequired"><p>正在判断唯一安全动作…</p></div>
+          </section>
+        </div>
+        <details class="dashboard-advanced-workbench">
+          <summary>更多信息</summary>
         <header class="page-head store-dashboard-head" data-legacy-title="店铺经营总览">
           <div>
             <span class="page-eyebrow">OPERATING DASHBOARD</span>
@@ -275,6 +289,7 @@
           <section class="panel api-gap-panel"><div class="section-headline"><div><h2>Seller API 缺口开发清单</h2></div><span class="module-map-badge warning">缺口优先级</span></div><div id="sellerApiGapGrid" class="seller-api-gap-grid"></div></section>
           <section class="panel"><h2>最近响应</h2><pre id="lastResponse">等待操作...</pre></section>
         </details>
+        </details>
       </section>
       <section id="workflow-console" class="view">
         <header class="page-head" data-legacy-title="商品资产台账">
@@ -307,6 +322,10 @@
           <button class="workflow-filter-chip" data-filter="high_risk">高风险</button>
           <button class="workflow-filter-chip" data-filter="blocking">阻塞</button>
           <button class="workflow-filter-chip" data-filter="live">已在售</button>
+        </div>
+        <div class="synthetic-workflow-control">
+          <span id="syntheticWorkflowNotice">测试数据默认隐藏。</span>
+          <button id="toggleSyntheticWorkflows" class="ghost" type="button">显示测试数据</button>
         </div>
 
         <div class="workflow-console-layout">
@@ -979,17 +998,43 @@
         </div>
       </section>
 
-      <section id="sourcing" class="view">
+      <section id="sourcing" class="view" data-progressive-disclosure-ready="1">
         <header class="page-head">
           <div>
-            <h1>选品采集</h1>
-            <p>从 1688/PDD/外部来源采集新商品，先进入候选池，再生成上传草稿。</p>
+            <span class="page-eyebrow">1688 → ERP</span>
+            <h1>1688 商品采集</h1>
+            <p>你只在 1688 商品页点一次插件；采集、整理和后续处理结果都回到这里。</p>
           </div>
           <div class="actions">
-            <button id="refreshCaptureBoxTop" class="ghost" type="button">刷新采集箱</button>
-            <button class="primary" type="button" data-cockpit-view="listing">生成上传草稿</button>
+            <button id="refreshCaptureBoxTop" class="ghost" type="button">刷新采集结果</button>
           </div>
         </header>
+
+        <section class="sourcing-plugin-inbox" aria-labelledby="sourcingPluginGuideTitle">
+          <div class="sourcing-plugin-guide">
+            <span class="sourcing-guide-kicker">你只需要做一次</span>
+            <h2 id="sourcingPluginGuideTitle">在 1688 商品页点击“补齐后入箱”</h2>
+            <p>插件会把当前商品送回 ERP。系统随后自动整理规格、图片、类目和上架资料；只有来源没有的真实数据才会请你补充。</p>
+            <ol class="sourcing-three-steps">
+              <li><span>1</span><div><strong>打开商品</strong><small>进入准备采购的 1688 商品详情页</small></div></li>
+              <li><span>2</span><div><strong>点插件</strong><small>点击橙色插件里的“补齐后入箱”</small></div></li>
+              <li><span>3</span><div><strong>等待结果</strong><small>成功后会自动打开这件商品</small></div></li>
+            </ol>
+          </div>
+          <div id="crawlerWorkerStatus" class="sourcing-plugin-status" aria-live="polite">正在检查插件连接...</div>
+        </section>
+
+        <section id="sourcingCurrentProduct" class="sourcing-current-product" aria-live="polite">
+          <div class="sourcing-current-empty">
+            <span>当前商品</span>
+            <strong>正在读取采集结果...</strong>
+          </div>
+        </section>
+
+        <details class="sourcing-advanced-disclosure">
+          <summary>高级采集工具与历史记录（通常不用）</summary>
+          <p>只有排查插件、回放测试数据或管理批量任务时才需要展开。这里不会影响日常采集。</p>
+        </details>
 
         <section id="sourcingOperatingPanel" class="panel business-primary-panel sourcing-operating-panel">
           <div class="section-headline">
@@ -1067,7 +1112,7 @@
           <div class="erp-section">
             <header>插件状态</header>
             <div class="erp-body">
-              <div id="crawlerWorkerStatus">加载中...</div>
+              <div id="crawlerWorkerStatusTechnical">加载中...</div>
             </div>
           </div>
 
@@ -1092,8 +1137,8 @@
               <button id="batchDraftCaptures" class="small-blue" type="button">批量生成草稿</button>
               <button id="batchPublishCaptures" class="primary" type="button">批量进入预检</button>
             </div>
-            <div class="table-wrap">
-              <table class="product-table">
+            <div class="table-wrap capture-table-wrap">
+              <table class="product-table capture-box-table">
                 <thead>
                   <tr>
                     <th><input id="captureSelectAll" type="checkbox" /></th>
@@ -1386,14 +1431,15 @@
 
       </section>
 
-      <section id="listing" class="view">
+      <section id="listing" class="view" data-progressive-disclosure-ready="1">
         <label class="field listing-read-environment-field">读取环境
           <input id="listingReadEnvironment" type="text" minlength="3" maxlength="120" autocomplete="off" placeholder="例如 seller-production-cn-1" />
         </label>
         <header class="page-head">
           <div>
-            <h1>上传管理</h1>
-            <p>管理准备上传的商品草稿、上传状态和最少必要修复项；完整编辑表默认后置。</p>
+            <span class="page-eyebrow">CURRENT PRODUCT</span>
+            <h1>编辑商品</h1>
+                  <p>点一次自动处理到预检；只有来源没有的真实数据才会停下，最后再确认是否提交。</p>
           </div>
           <div class="actions listing-action-groups">
             <div class="action-group">
@@ -1417,11 +1463,15 @@
           </div>
         </header>
 
+        <section id="listingCurrentProductGate" class="listing-current-product-gate" aria-live="polite">
+          <div class="current-product-loading">正在绑定当前真实商品…</div>
+        </section>
+
         <section id="listingSellerTaskSummary" class="panel business-primary-panel" aria-label="单商品卖家任务摘要">
           <div class="section-headline">
             <div>
-              <h2>当前商品任务</h2>
-              <p class="hint">只看商品证据、当前阻塞和一个安全下一步；技术字段保留在下方高级区域。</p>
+              <h2>商品资料</h2>
+              <p class="hint">自动匹配、固定默认值和 AI 结果直接填入商品单，无法确定的内容才需要你处理。</p>
             </div>
             <span class="module-map-badge soft">ONE PRODUCT</span>
           </div>
@@ -1430,6 +1480,8 @@
           </div>
         </section>
 
+        <details class="listing-advanced-workbench">
+          <summary>系统明细与高级工具（通常不用打开）</summary>
         <section id="listingUploadQueuePanel" class="panel business-primary-panel listing-upload-queue-panel">
           <div class="section-headline">
             <div>
@@ -1882,6 +1934,7 @@
   }
 ]</textarea>
         </div>
+        </details>
       </section>
 
       <section id="finance" class="view erp-domain-view">

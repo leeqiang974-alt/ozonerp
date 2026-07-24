@@ -24,6 +24,7 @@ test("endpoint request contracts never copy credentials and fail closed when dep
     assert.ok(result.ok === true || result.reasonCode, endpoint);
   }
   assert.equal(buildReadEndpointRequest("/v3/product/info/list").reasonCode, "READ_ENDPOINT_SCOPE_REQUIRES_IDENTIFIERS");
+  assert.equal(buildReadEndpointRequest("/v5/product/info/prices").reasonCode, "READ_ENDPOINT_SCOPE_REQUIRES_IDENTIFIERS");
   assert.equal(buildReadEndpointRequest("/v4/product/info/stocks").reasonCode, "READ_ENDPOINT_SCOPE_REQUIRES_IDENTIFIERS");
   assert.equal(buildReadEndpointRequest("/v3/posting/fbs/list").reasonCode, "READ_ENDPOINT_SCOPE_REQUIRES_DATE_RANGE");
   assert.equal(buildReadEndpointRequest("/v1/description-category/attribute").reasonCode, "READ_ENDPOINT_SCOPE_REQUIRES_CATEGORY");
@@ -37,6 +38,7 @@ test("endpoint request contracts match existing read model payload shapes", () =
   assert.equal(buildReadEndpointRequest("/v3/product/list", { offerIds: ["SKU-1"], productIds: ["11"] }).reasonCode, "READ_ENDPOINT_SCOPE_REQUIRES_SINGLE_IDENTIFIER_SET");
   assert.equal(buildReadEndpointRequest("/v3/product/list", { limit: 5000 }).body.limit, 1000);
   assert.deepEqual(buildReadEndpointRequest("/v3/product/info/list", { offerIds: ["SKU-1"] }).body, { offer_id: ["SKU-1"] });
+  assert.deepEqual(buildReadEndpointRequest("/v5/product/info/prices", { productIds: ["11"] }).body, { cursor: "", filter: { product_id: ["11"], visibility: "ALL" }, limit: 1 });
   assert.deepEqual(buildReadEndpointRequest("/v1/product/import/info", { taskId: 172549793 }).body, { task_id: 172549793 });
   assert.deepEqual(buildReadEndpointRequest("/v4/product/info/stocks", { offerIds: ["SKU-1"] }).body, { filter: { offer_id: ["SKU-1"], visibility: "ALL" }, limit: 100, cursor: "" });
   assert.deepEqual(buildReadEndpointRequest("/v4/product/info/stocks", { productIds: ["11"], limit: 5000, cursor: "next" }).body, { filter: { product_id: ["11"], visibility: "ALL" }, limit: 1000, cursor: "next" });

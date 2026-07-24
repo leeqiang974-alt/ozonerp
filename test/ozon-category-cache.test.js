@@ -8,6 +8,7 @@ import {
   attributeValueCacheKey,
   inspectCategoryCacheFreshness,
   loadCategoryCache,
+  mutateCategoryCache,
   upsertAttributeValuesCache,
 } from "../src/ozonCategoryCache.js";
 
@@ -98,4 +99,74 @@ test("normalized category cache keeps per-attribute store ownership metadata", a
   const key = "1:2:3:RU";
   assert.equal(cache.attributeValues[key].storeId, "store-b");
   assert.equal(cache.storeId, "store-b");
+});
+
+test("category cache mutations serialize concurrent scoped updates", async () => {
+  const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "ozon-category-cache-lock-"));
+  process.env.OZON_CATEGORY_CACHE_FILE = path.join(tmpDir, "cache.json");
+
+  await Promise.all([
+    mutateCategoryCache(async (cache) => {
+      await new Promise((resolve) => setTimeout(resolve, 35));
+      return { ...cache, attributes: { ...cache.attributes, "1:2": [{ id: 85 }] } };
+    }),
+    mutateCategoryCache(async (cache) => ({
+      ...cache,
+      attributeValues: {
+        ...cache.attributeValues,
+        "1:2:85:ZH_HANS": { storeId: "store-a", values: [{ id: 1, value: "A" }] },
+      },
+    })),
+  ]);
+
+  const cache = await loadCategoryCache();
+  assert.deepEqual(cache.attributes["1:2"], [{ id: 85 }]);
+  assert.deepEqual(cache.attributeValues["1:2:85:ZH_HANS"].values, [{ id: 1, value: "A" }]);
+});
+
+test("category cache commit guard is checked after serialization and before atomic rename", async () => {
+  const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "ozon-category-cache-guard-"));
+  process.env.OZON_CATEGORY_CACHE_FILE = path.join(tmpDir, "cache.json");
+  await mutateCategoryCache(() => ({ storeId: "current-store", updatedAt: "2026-07-24T00:00:00.000Z" }));
+
+  let commitCount = 0;
+  const returned = await mutateCategoryCache(
+    (cache) => ({ ...cache, storeId: "superseded-store" }),
+    {
+      shouldCommit: () => false,
+      onCommit: () => { commitCount += 1; },
+    },
+  );
+
+  const persisted = await loadCategoryCache();
+  assert.equal(returned.storeId, "current-store");
+  assert.equal(persisted.storeId, "current-store");
+  assert.equal(commitCount, 0);
+  assert.deepEqual(
+    fs.readdirSync(tmpDir).filter((name) => name.includes(".tmp.")),
+    [],
+  );
+});
+
+test("category cache atomic replacement preserves an existing file symlink", async (t) => {
+  const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "ozon-category-cache-link-"));
+  const target = path.join(tmpDir, "target.json");
+  const link = path.join(tmpDir, "cache.json");
+  fs.writeFileSync(target, JSON.stringify({ storeId: "before" }), "utf8");
+  try {
+    fs.symlinkSync(target, link, "file");
+  } catch (error) {
+    if (["EPERM", "EACCES", "UNKNOWN"].includes(error?.code)) {
+      t.skip("file symlinks are unavailable in this Windows session");
+      return;
+    }
+    throw error;
+  }
+  process.env.OZON_CATEGORY_CACHE_FILE = link;
+
+  await mutateCategoryCache((cache) => ({ ...cache, storeId: "after" }));
+
+  assert.equal(fs.lstatSync(link).isSymbolicLink(), true);
+  assert.equal(JSON.parse(fs.readFileSync(target, "utf8")).storeId, "after");
+  assert.equal((await loadCategoryCache()).storeId, "after");
 });

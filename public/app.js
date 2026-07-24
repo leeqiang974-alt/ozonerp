@@ -3,6 +3,8 @@ const state = {
   selectedStoreId: "",
   categoryTree: [],
   categoryEvidence: { tree: null, attributes: null },
+  categoryAutoSyncKeys: new Set(),
+  categoryAutoSyncPromises: new Map(),
   categoryAttributeRequestToken: 0,
   productStatus: "all",
   productRows: [],
@@ -99,6 +101,8 @@ const state = {
   crawlerCandidates: [],
   crawlerCandidateRequestToken: 0,
   listingHandoffNotice: "",
+  listingStoreSyncId: "",
+  listingAutoCompletionInFlight: new Set(),
   crawlerWorkerStatus: null,
   open1688Status: null,
   selectedCrawlerTaskId: "",
@@ -120,6 +124,7 @@ const state = {
   reverseGuidanceCards: [],
   workflowRuns: [],
   workflowSummary: null,
+  showSyntheticWorkflows: false,
   ruleApprovalAuditIntents: [],
   ruleApprovalAuditSummary: null,
   rulePublishReviewIntents: [],
@@ -1170,13 +1175,30 @@ function renderSellerOperatingModel() {
   `).join("");
 }
 
+function canonicalCurrentCaptureWorkflowRun() {
+  const captureTask = currentCaptureSellerTask();
+  if (!captureTask?.item) return null;
+  const captureId = String(captureTask.item.id || "").trim();
+  const storeId = String(captureTask.item.storeId || "").trim();
+  return (state.workflowRuns || [])
+    .filter((run) => !isSyntheticWorkflowRun(run))
+    .find((run) => String(run?.entity?.candidateId || "").trim() === captureId
+      && String(run?.entity?.storeId || "").trim() === storeId) || null;
+}
+
 function currentListingWorkflowRun() {
-  if (state.selectedWorkflowRunId === "__no_workflow__") return null;
-  const runs = Array.isArray(state.workflowRuns) ? state.workflowRuns : [];
-  if (!runs.length) return null;
-  const selected = runs.find((run) => run.id === state.selectedWorkflowRunId);
-  if (selected) return selected;
-  return [...runs].sort((left, right) => String(right.updatedAt || right.createdAt || "").localeCompare(String(left.updatedAt || left.createdAt || "")))[0] || null;
+  const captureTask = currentCaptureSellerTask();
+  if (captureTask?.item) return canonicalCurrentCaptureWorkflowRun();
+  return null;
+}
+
+function workflowCanActForCurrentProduct(run = null) {
+  if (!run || isSyntheticWorkflowRun(run)) return false;
+  const captureTask = currentCaptureSellerTask();
+  if (!captureTask?.item) return false;
+  return captureTask.reviewApproved === true
+    && String(run?.entity?.candidateId || "").trim() === String(captureTask.item.id || "").trim()
+    && String(run?.entity?.storeId || "").trim() === String(captureTask.item.storeId || "").trim();
 }
 
 function currentListingAutoListJob(run = null) {
@@ -1504,14 +1526,57 @@ const LISTING_SELLER_SUMMARY_STATUS_LABELS = {
   listing_progress: "上架准备中",
 };
 
+function sourceSnapshotEvidenceRef(sourceEvidence = {}) {
+  const snapshotHash = String(sourceEvidence?.snapshotHash || "").trim();
+  return /^sha256:[a-f0-9]{64}$/i.test(snapshotHash)
+    ? `snapshot:${snapshotHash.slice("sha256:".length)}`
+    : "";
+}
+
+function capturedSkuPriceEvidenceReady(context = {}, sourceEvidence = {}) {
+  const expectedRef = sourceSnapshotEvidenceRef(sourceEvidence);
+  const field = sourceEvidence?.fields?.variants || {};
+  const variants = Array.isArray(context.skuVariants) ? context.skuVariants : [];
+  return sourceEvidence?.platform === "1688"
+    && sourceEvidence?.verificationState === "ok"
+    && expectedRef
+    && ["capture_hint", "page_content"].includes(String(field.source || ""))
+    && String(field.evidenceRef || "") === expectedRef
+    && variants.length > 0
+    && variants.every((variant) => (
+      String(variant?.sourceSkuId || variant?.source_sku_id || variant?.skuId || variant?.sku_id || "").trim()
+      && Number(variant?.price || 0) > 0
+    ));
+}
+
+function capturedPackageEvidenceReady(context = {}, sourceEvidence = {}) {
+  const expectedRef = sourceSnapshotEvidenceRef(sourceEvidence);
+  const field = sourceEvidence?.fields?.package || {};
+  const sizeWeight = context.sizeWeight || {};
+  return sourceEvidence?.platform === "1688"
+    && sourceEvidence?.verificationState === "ok"
+    && expectedRef
+    && ["capture_hint", "page_content", "1688_package"].includes(String(field.source || ""))
+    && String(field.evidenceRef || "") === expectedRef
+    && ["weightG", "lengthMm", "widthMm", "heightMm"].every((key) => (
+      Number(sizeWeight[key] || 0) > 0
+      && Number(sizeWeight[key] || 0) === Number(field.values?.[key] || 0)
+    ));
+}
+
 function listingSellerTaskSummaryModel(run = null, context = {}) {
   const nodes = Array.isArray(run?.nodes) ? run.nodes : [];
   const task = run?.summary?.currentProductTask || null;
   const reviewNode = nodes.find((node) => node.key === "review_reconcile") || null;
-  const handoffNode = nodes.find((node) => node.key === "candidate_handoff") || null;
+  const handoffNode = nodes.find((node) => ["candidate_handoff", "capture_handoff"].includes(node.key)) || null;
   const stockNode = nodes.find((node) => node.key === "stock_sync") || null;
   const sourceEvidence = run?.sourceEvidence || run?.source?.sourceEvidence || context.sourceEvidence || null;
-  const procurementEvidence = run?.source?.procurementEvidence || context.procurementEvidence || null;
+  const procurementEvidence = context.procurementEvidence || run?.source?.procurementEvidence || null;
+  const procurementReady = Boolean(
+    capturedSkuPriceEvidenceReady(context, sourceEvidence)
+    || (procurementEvidence?.moq?.source && procurementEvidence.moq.source !== "missing"
+      && Number(procurementEvidence.priceTiers?.values?.length || 0) > 0),
+  );
   const mediaAssets = run?.source?.mediaAssets || context.mediaAssets || [];
   const mediaIssues = Array.isArray(context.mediaIssues)
     ? context.mediaIssues.filter(Boolean).map(String)
@@ -1521,25 +1586,45 @@ function listingSellerTaskSummaryModel(run = null, context = {}) {
   const contentEvidence = run?.contentEvidence || contentNode?.output?.contentEvidence || null;
   const contentSellerResult = run?.contentSellerResult || contentNode?.output?.sellerResult || null;
   const pricingNode = nodes.find((node) => node.key === "match_profit") || null;
-  const pricingDiagnosis = run?.pricingDiagnosis || pricingNode?.output?.pricingDiagnosis || null;
+  const pricingDiagnosis = run?.pricingDiagnosis || pricingNode?.output?.pricingDiagnosis || context.pricingDiagnosis || null;
   const pricingDiagnosisResult = pricingNode?.output?.diagnosis || null;
   const title = task?.productTitle || run?.source?.title || run?.payloadDraft?.items?.[0]?.name || context.title || "";
-  const skuCount = Array.isArray(run?.payloadDraft?.items) && run.payloadDraft.items.length
-    ? run.payloadDraft.items.length
-    : Number(sourceEvidence?.fields?.variants?.count || context.skuCount || 0);
+  const skuCount = Number(context.uniqueSkuCount || 0)
+    || (Array.isArray(run?.payloadDraft?.items) && run.payloadDraft.items.length
+      ? run.payloadDraft.items.length
+      : Number(sourceEvidence?.fields?.variants?.count || context.skuCount || 0));
   const validation = run?.payloadDraftValidation || null;
   const validationIssues = Array.isArray(validation?.issues) ? validation.issues.length : 0;
   const firstPayloadItem = run?.payloadDraft?.items?.[0] || null;
-  const category = run?.categoryMatch || run?.source?.categoryMatch || context.categoryMatch || firstPayloadItem || null;
-  const categoryReady = Number(category?.description_category_id || 0) > 0 && Number(category?.type_id || 0) > 0;
-  const categoryText = categoryReady
+  const categoryDecision = handoffNode?.output?.draftSkeleton?.categoryDecision || null;
+  const category = run?.categoryMatch
+    || run?.source?.categoryMatch
+    || context.categoryMatch
+    || firstPayloadItem
+    || categoryDecision?.selected
+    || null;
+  const categoryIdsAvailable = Number(category?.description_category_id || 0) > 0 && Number(category?.type_id || 0) > 0;
+  const categoryReady = categoryIdsAvailable && (!categoryDecision || categoryDecision.evidenceReady === true);
+  const categoryNeedsHuman = !categoryIdsAvailable || categoryDecision?.status === "ambiguous";
+  const categoryText = categoryIdsAvailable
     ? String(category.path || `${category.description_category_id} / ${category.type_id}`)
-    : "尚未确认 Ozon 类目";
+    : categoryDecision?.status === "ambiguous"
+      ? "系统找到多个接近类目"
+      : "系统尚未找到可靠类目";
+  const categoryStatusText = categoryReady
+    ? "自动匹配，不需要你操作"
+    : categoryIdsAvailable
+      ? "自动匹配，不需要你操作；系统正在后台载入店铺类目数据"
+      : categoryDecision?.status === "ambiguous"
+        ? "候选分数接近，请在本页选择一个类目"
+        : "系统将继续按商品标题与核心类型自动匹配";
   const attributeIssueCount = Array.isArray(validation?.issues)
     ? validation.issues.filter((issue) => /ATTRIBUTE|属性|CATEGORY/i.test(String(issue?.code || issue?.message || ""))).length
     : 0;
   const attributeText = !categoryReady
-    ? "先确认类目后检查必填属性"
+    ? categoryIdsAvailable
+      ? "系统将按已匹配类目自动载入"
+      : "类目确定后由系统自动填写"
     : !validation
       ? "尚未运行属性预检"
       : attributeIssueCount
@@ -1550,10 +1635,14 @@ function listingSellerTaskSummaryModel(run = null, context = {}) {
     ? "俄文内容被来源事实阻塞"
     : contentStatus === "reviewed"
       ? "俄文内容已人工复核"
-      : "俄文内容待人工核对";
-  const packageInfo = pricingDiagnosis?.package || run?.source?.sizeWeight || context.sizeWeight || {};
-  const packageReady = [packageInfo.weightG, packageInfo.lengthMm, packageInfo.widthMm, packageInfo.heightMm]
-    .every((value) => Number(value || 0) > 0);
+      : "等待 AI 一键补齐";
+  const packageInfo = context.sizeWeight || pricingDiagnosis?.package || run?.source?.sizeWeight || {};
+  const packageReady = Boolean(
+    capturedPackageEvidenceReady(context, sourceEvidence)
+    || (pricingDiagnosis?.packageInfoSource
+      && [packageInfo.weightG, packageInfo.lengthMm, packageInfo.widthMm, packageInfo.heightMm]
+        .every((value) => Number(value || 0) > 0)),
+  );
   const packageText = packageReady
     ? `包装 ${packageInfo.weightG}g / ${packageInfo.lengthMm}×${packageInfo.widthMm}×${packageInfo.heightMm}mm`
     : "包装尺重证据待补齐";
@@ -1629,21 +1718,22 @@ function listingSellerTaskSummaryModel(run = null, context = {}) {
   let action = actions[stateName];
   if (stateName === "listing_progress") {
     const missingSourceDomains = Array.isArray(sourceEvidence?.missingDomains)
-      ? sourceEvidence.missingDomains.length
-      : 0;
-    const sourceReady = Boolean(
+      ? sourceEvidence.missingDomains.map((item) => String(item || "").toLowerCase())
+      : [];
+    const sourceIdentityReady = Boolean(
       sourceEvidence?.snapshotHash
       && sourceEvidence?.verificationState === "ok"
-      && missingSourceDomains === 0,
     );
-    if (!sourceReady) {
+    const sourceCanBeCompletedInDraft = sourceIdentityReady
+      && missingSourceDomains.every((item) => ["supplier", "procurement"].includes(item));
+    if (!sourceIdentityReady || (!sourceCanBeCompletedInDraft && missingSourceDomains.length > 0)) {
       action = {
         label: "补齐来源证据",
         view: "sourcing",
         nodeKey: "candidate_parse",
         effect: "打开来源采集与证据修复；不会提交 Ozon。",
       };
-    } else if (!categoryReady) {
+    } else if (!categoryReady && categoryNeedsHuman) {
       action = {
         label: "确认 Ozon 类目",
         view: "listing",
@@ -1656,6 +1746,13 @@ function listingSellerTaskSummaryModel(run = null, context = {}) {
         view: "listing",
         nodeKey: "content_generation",
         effect: "打开俄文内容和来源事实冲突；不会提交 Ozon。",
+      };
+    } else if (!procurementReady) {
+      action = {
+        label: "补齐采购成本",
+        view: "listing",
+        nodeKey: "match_profit",
+        effect: "填写供应商、MOQ 和真实采购阶梯价；保存后系统自动重算，不会提交 Ozon。",
       };
     } else if (mediaBlocked) {
       action = {
@@ -1714,9 +1811,18 @@ function listingSellerTaskSummaryModel(run = null, context = {}) {
       : (run?.source?.url || title)
         ? "已有商品来源，页面证据待补齐"
         : "来源证据未绑定";
-  const procurementText = procurementEvidence?.moq?.source && procurementEvidence.moq.source !== "missing"
-    ? `MOQ ${String(procurementEvidence.moq.value || "已记录")}；阶梯价 ${Number(procurementEvidence.priceTiers?.values?.length || 0)} 档`
-    : "采购 MOQ/阶梯价证据待补齐";
+  const capturedSkuPriceRows = [...new Map((Array.isArray(context.skuVariants) ? context.skuVariants : [])
+    .filter((variant) => Number(variant?.price || 0) > 0)
+    .map((variant, index) => [
+      String(variant?.sourceSkuId || variant?.source_sku_id || variant?.skuId || variant?.sku_id || `row:${index}`).trim(),
+      variant,
+    ])).values()];
+  const capturedSkuPrices = capturedSkuPriceRows.map((variant) => Number(variant.price));
+  const procurementText = capturedSkuPriceEvidenceReady(context, sourceEvidence)
+    ? `已采集 ${capturedSkuPriceRows.length} 个 SKU 价格（${Math.min(...capturedSkuPrices)}–${Math.max(...capturedSkuPrices)} CNY）`
+    : procurementEvidence?.moq?.source && procurementEvidence.moq.source !== "missing"
+      ? `MOQ ${String(procurementEvidence.moq.value || "已记录")}；阶梯价 ${Number(procurementEvidence.priceTiers?.values?.length || 0)} 档`
+      : "采购价格来源待补齐";
   const mediaList = Array.isArray(mediaAssets) ? mediaAssets : [];
   const approvedMediaCount = mediaList.filter((asset) => asset?.checks?.humanApproved === true).length;
   const mediaText = mediaList.length
@@ -1733,7 +1839,7 @@ function listingSellerTaskSummaryModel(run = null, context = {}) {
     listing_progress: validationIssues
       ? `预检仍有 ${validationIssues} 个问题需要处理。`
       : handoffNode
-        ? "1688 候选已进入草稿，但还没有可提交 Payload；先补俄文内容、类目、采购成本和媒体资料。"
+        ? "1688 候选已进入草稿，但还没有可提交 Payload；系统将继续处理俄文内容、类目、媒体和预检。"
         : "商品仍在上架准备阶段。",
   };
   return {
@@ -1742,6 +1848,7 @@ function listingSellerTaskSummaryModel(run = null, context = {}) {
     title: title || "还没有当前商品",
     sourceText,
     categoryText,
+    categoryStatusText,
     attributeText,
     contentText,
     packageText,
@@ -1751,6 +1858,18 @@ function listingSellerTaskSummaryModel(run = null, context = {}) {
     preflightStatus,
     preflightNextStep,
     validationIssueCount: validationIssues,
+    sourceReady: Boolean(
+      sourceEvidence?.snapshotHash
+      && sourceEvidence?.verificationState === "ok"
+      && (!Array.isArray(sourceEvidence?.missingDomains) || sourceEvidence.missingDomains.length === 0)
+    ),
+    categoryReady,
+    attributeIssueCount,
+    contentStatus,
+    procurementReady,
+    packageReady,
+    pricingBlocked,
+    mediaBlocked,
     skuCount,
     stage: task?.blockedAt || task?.stage || (stateName === "no_product" ? "选择货源" : "上架准备"),
     reason: task?.reason || reviewNode?.reason || defaultReasons[stateName],
@@ -1759,6 +1878,31 @@ function listingSellerTaskSummaryModel(run = null, context = {}) {
     action,
     runId: run?.id || "",
   };
+}
+
+function renderListingFormRow(label, value, detail, stateName = "ready") {
+  const labels = {
+    ready: "已填写",
+    automatic: "系统自动",
+    review: "请检查",
+    required: "需要你补充",
+  };
+  return `<div class="listing-form-row is-${escapeHtml(stateName)}">
+    <span>${escapeHtml(label)}</span>
+    <div><strong>${escapeHtml(value || "-")}</strong><small>${escapeHtml(detail || "")}</small></div>
+    <em>${escapeHtml(labels[stateName] || labels.automatic)}</em>
+  </div>`;
+}
+
+function renderListingMediaStrip(mediaAssets = []) {
+  const items = (Array.isArray(mediaAssets) ? mediaAssets : [])
+    .map((asset) => typeof asset === "string" ? { sourceUrl: asset } : asset)
+    .filter((asset) => asset?.sourceUrl || asset?.url)
+    .slice(0, 8);
+  if (!items.length) return `<div class="listing-media-strip is-empty"><span>图片由采集结果自动带入</span></div>`;
+  return `<div class="listing-media-strip">${items.map((asset, index) => `
+    <img src="${escapeHtml(asset.sourceUrl || asset.url)}" alt="商品图 ${index + 1}" loading="lazy" referrerpolicy="no-referrer" />
+  `).join("")}</div>`;
 }
 
 // Keep the compact upload-queue card truthful to the same seller summary as
@@ -2095,58 +2239,164 @@ async function saveMediaApprovalDraft(button) {
 function renderListingSellerTaskSummary() {
   const body = $("#listingSellerTaskSummaryBody");
   if (!body) return;
+  const panel = $("#listingSellerTaskSummary");
   const run = currentListingWorkflowRun();
+  const captureTask = currentCaptureSellerTask();
+  renderCurrentProductWorkspace();
+  if (!run || captureTask?.reviewApproved !== true) {
+    if (panel) panel.hidden = true;
+    body.innerHTML = "";
+    return;
+  }
+  if (panel) panel.hidden = false;
   const autoListJob = currentListingAutoListJob(run);
+  const handoffNode = (run?.nodes || [])
+    .find((node) => ["candidate_handoff", "capture_handoff"].includes(node.key)) || null;
+  const handoffDraft = handoffNode?.output?.draftSkeleton || null;
+  const effectiveCategoryDecision = autoListJob?.categoryDecision || handoffDraft?.categoryDecision || null;
   const linkedCandidate = autoListJob?.candidateData || null;
+  const listingProductSource = linkedCandidate
+    || captureTask?.product
+    || run?.source
+    || state.collected1688
+    || state.currentCaptureDraft
+    || null;
+  const sourceVariants = Array.isArray(listingProductSource?.skuVariants) ? listingProductSource.skuVariants : [];
+  const uniqueSourceSkuCount = new Set(sourceVariants
+    .map((variant) => String(variant?.sourceSkuId || variant?.source_sku_id || variant?.skuId || variant?.sku_id || "").trim())
+    .filter(Boolean)).size || Number(captureTask?.item?.draft?.uniqueSourceSkuCount || sourceVariants.length || 0);
   const mediaAssets = run
-    ? (linkedCandidate?.mediaAssets || run.source?.mediaAssets || [])
-    : (state.collected1688?.mediaAssets || state.currentCaptureDraft?.mediaAssets || []);
+    ? (listingProductSource?.mediaAssets || listingProductSource?.images || run.source?.mediaAssets || [])
+    : (listingProductSource?.mediaAssets || listingProductSource?.images || []);
   const mediaIssues = run
-    ? (linkedCandidate?.mediaIssues || run.source?.mediaIssues || [])
-    : (state.collected1688?.mediaIssues || state.currentCaptureDraft?.mediaIssues || []);
+    ? (listingProductSource?.mediaIssues || run.source?.mediaIssues || [])
+    : (listingProductSource?.mediaIssues || []);
   const summary = listingSellerTaskSummaryModel(run, {
-    title: state.collected1688?.title || state.currentCaptureDraft?.title || "",
-    sourceEvidence: state.collected1688?.sourceEvidence || state.currentCaptureDraft?.sourceEvidence || null,
-    procurementEvidence: state.collected1688?.procurementEvidence || state.currentCaptureDraft?.procurementEvidence || null,
-    mediaAssets: state.collected1688?.mediaAssets || state.currentCaptureDraft?.mediaAssets || [],
+    title: listingProductSource?.title || "",
+    sourceEvidence: listingProductSource?.sourceEvidence || listingProductSource?.sourceEvidenceRecord || null,
+    procurementEvidence: listingProductSource?.procurementEvidence || null,
+    mediaAssets,
     mediaIssues,
-    skuCount: state.collected1688?.skuVariants?.length || state.currentCaptureDraft?.skuVariants?.length || 0,
+    skuCount: listingProductSource?.skuVariants?.length || 0,
+    uniqueSkuCount: uniqueSourceSkuCount,
+    skuVariants: sourceVariants,
+    sizeWeight: listingProductSource?.sizeWeight || null,
+    pricingDiagnosis: autoListJob?.pricingPreview || handoffNode?.output?.pricingPreview || null,
+    categoryMatch: autoListJob?.manualCategory || autoListJob?.autoCategory || effectiveCategoryDecision?.selected || null,
   });
+  const firstPayloadItem = run?.payloadDraft?.items?.[0] || {};
+  const offerId = String(firstPayloadItem.offer_id || autoListJob?.offerId || "").trim();
+  const parentSku = String(firstPayloadItem.parent_sku || captureTask?.item?.draft?.parentSku || autoListJob?.parentSku || offerId || "系统生成中").trim();
+  const listingSourceEvidence = listingProductSource?.sourceEvidenceRecord || listingProductSource?.sourceEvidence || {};
+  const sourceOfferId = String(
+    listingSourceEvidence?.captureIdentity?.offerId
+    || listingSourceEvidence?.offerId
+    || listingProductSource?.offerId
+    || captureTask?.item?.offerId
+    || "",
+  ).trim();
+  const displayedOfferId = offerId || sourceOfferId;
+  const displayedOfferLabel = offerId ? "Ozon Offer" : "1688 Offer";
+  const displayImages = Array.isArray(listingProductSource?.images) && listingProductSource.images.length
+    ? listingProductSource.images
+    : mediaAssets;
+  const listingStoreId = String(captureTask?.item?.storeId || autoListJob?.storeId || selectedStoreId() || "").trim();
+  const store = state.stores.find((item) => String(item.id) === listingStoreId);
+  const storeLabel = store?.name || listingStoreId || "店铺未绑定";
+  const autoCompletionAvailable = Boolean(autoListJob?.id && run?.id && listingProductSource?.title);
+  const categoryState = summary.categoryText.includes("多个") ? "review" : summary.categoryReady ? "ready" : "automatic";
+  const attributeState = summary.attributeIssueCount > 0 ? "review" : summary.categoryReady ? "ready" : "automatic";
+  const contentState = summary.contentStatus === "reviewed" ? "ready" : summary.contentStatus === "blocked" ? "review" : "automatic";
+  const procurementState = summary.procurementReady ? "ready" : "required";
+  const packageState = summary.packageReady ? "ready" : "required";
+  const pricingState = summary.pricingBlocked ? "review" : summary.pricingText.includes("尚未") ? "automatic" : "ready";
+  const mediaState = summary.mediaBlocked ? "review" : mediaAssets.length ? "ready" : "automatic";
+  const manualContent = summary.contentStatus === "blocked"
+    ? renderManualListingContentForm(autoListJob)
+    : "";
+  const manualProcurement = summary.procurementReady ? "" : renderManualProcurementForm(autoListJob);
+  const manualPackage = summary.packageReady ? "" : renderManualPackageForm(autoListJob);
+  const categorySyncIsAutomatic = effectiveCategoryDecision?.status === "auto_matched_evidence_pending";
+  const manualCategory = summary.categoryReady || categorySyncIsAutomatic ? "" : renderListingSellerEvidenceActions(run, autoListJob, listingProductSource);
+  const payloadRepairs = summary.validationIssueCount > 0 ? renderListingSellerPayloadIssues(run) : "";
+  const listingSellerInputSections = [manualCategory, manualContent, manualProcurement, manualPackage, payloadRepairs].filter(Boolean);
+  const autoCompletionInFlight = state.listingAutoCompletionInFlight.has(autoListJob?.id);
+  const currentDraftHash = String(run?.payloadDraftHash || "").trim();
+  const validatedDraftHash = String(run?.validatedDraftHash || run?.payloadDraftValidation?.draftHash || "").trim();
+  const preflightReady = run?.payloadDraftValidation?.ok === true
+    && Boolean(currentDraftHash)
+    && currentDraftHash === validatedDraftHash;
   renderListingUploadQueueSummary(summary, run);
   body.innerHTML = `
-    <article><span>当前商品</span><strong>${escapeHtml(summary.title)}</strong><small>${escapeHtml(summary.status)}</small></article>
-    <article><span>来源证据</span><strong>${escapeHtml(summary.sourceText)}</strong><small>SKU ${escapeHtml(summary.skuCount || "-")} 个</small></article>
-    <article><span>Ozon 类目</span><strong>${escapeHtml(summary.categoryText)}</strong><small>${escapeHtml(summary.categoryText === "尚未确认 Ozon 类目" ? "需从当前类目缓存中选择有效 type" : "类目/type 已绑定当前草稿")}</small></article>
-    <article><span>必填属性</span><strong>${escapeHtml(summary.attributeText)}</strong><small>字典值和敏感属性仍需按字段确认</small></article>
-     <article><span>俄文内容</span><strong>${escapeHtml(summary.contentText)}</strong><small>模型建议不能替代来源事实或人工确认</small></article>
-     <article><span>采购证据</span><strong>${escapeHtml(summary.procurementText)}</strong><small>展示价不能替代真实采购阶梯价</small></article>
-     <article><span>包装尺重</span><strong>${escapeHtml(summary.packageText)}</strong><small>缺少可信尺重时不能确认运费和利润</small></article>
-     <article><span>定价与利润</span><strong>${escapeHtml(summary.pricingText)}</strong><small>风险状态不会绕过预检或人工确认</small></article>
-     <article><span>媒体候选</span><strong>${escapeHtml(summary.mediaText)}</strong><small>未经人工批准不能作为可提交富内容</small></article>
-    <article><span>提交前预检</span><strong>${escapeHtml(summary.preflightStatus)}</strong><small>${escapeHtml(summary.preflightNextStep)}</small></article>
-    <article><span>当前阶段</span><strong>${escapeHtml(summary.stage)}</strong><small>${escapeHtml(summary.reason)}</small></article>
-    <article><span>审核状态</span><strong>${escapeHtml(summary.reviewStatus)}</strong><small>库存就绪：${escapeHtml(summary.stockStatus)}</small></article>
-    <article>
-      <span>安全下一步</span>
-      <strong>${escapeHtml(summary.action.label)}</strong>
-      <button class="primary" type="button" data-listing-seller-primary-view="${escapeHtml(summary.action.view)}" data-listing-seller-run-id="${escapeHtml(summary.runId)}" data-listing-seller-node-key="${escapeHtml(summary.action.nodeKey || "")}">${escapeHtml(summary.action.label)}</button>
-      <small>点击后：${escapeHtml(summary.action.effect)}</small>
-    </article>
-    ${renderListingSellerPayloadValidation(run)}
-    ${renderListingSellerContentEvidence(run)}
-    ${renderListingSellerPreflightResult(run)}
-    ${renderListingSellerPayloadIssues(run)}
-    ${renderListingSellerSourceBinding(run)}
-    ${renderListingSellerEvidenceActions(run, autoListJob)}
-    ${renderListingMediaReview(mediaAssets, mediaIssues, { run, sourceEvidence: linkedCandidate?.sourceEvidence || null, candidateApprovalDraft: linkedCandidate?.mediaApprovalDraft || null })}
-    ${renderListingProductReadiness(autoListJob)}
-    ${renderManualListingContentForm(autoListJob)}
-    ${renderManualProcurementForm(autoListJob)}
-    ${renderManualPackageForm(autoListJob)}
+    <div class="listing-simple-sheet">
+      <header class="listing-simple-sheet-head">
+        <div>
+          <span class="listing-sheet-status">${escapeHtml(summary.status)}</span>
+          <h3>${escapeHtml(summary.title)}</h3>
+          <p>${escapeHtml(storeLabel)} · Parent SKU ${escapeHtml(parentSku)} · ${escapeHtml(summary.skuCount || "-")} 个规格</p>
+        </div>
+        <span class="listing-sheet-automation">中间步骤由系统自动执行</span>
+      </header>
+
+      <div class="listing-fixed-defaults">
+        <span>站点：俄罗斯</span><span>语言：俄语</span><span>重量：克</span><span>尺寸：毫米</span><span>真实提交：人工确认</span>
+      </div>
+
+      <section class="listing-simple-section listing-product-form">
+        <div class="listing-simple-section-title"><div><span>01</span><h4>系统已填写的商品资料</h4></div><small>自动字段只展示结果，不要求你处理后台同步。</small></div>
+        <div class="listing-form-rows">
+          ${renderListingFormRow("Ozon 类目", summary.categoryText, summary.categoryStatusText, categoryState)}
+          ${renderListingFormRow("必填属性", summary.attributeText, "系统按当前类目字典自动填写和检查", attributeState)}
+          ${renderListingFormRow("俄文文案", summary.contentText, "点击底部按钮后由 AI 一次生成", contentState)}
+          ${renderListingFormRow("采购价格", summary.procurementText, "详情 SKU 价格已绑定当前采集快照，无需重复填写供应商资料", procurementState)}
+          ${renderListingFormRow("包装尺重", summary.packageText, "可信采集值自动带入，来源没有时才显示输入框", packageState)}
+          ${renderListingFormRow("定价与利润", summary.pricingText, "根据采购价、物流和佣金规则自动计算", pricingState)}
+          ${renderListingFormRow("商品图片", summary.mediaText, "1688 图片自动带入，仅风险图片需要检查", mediaState)}
+        </div>
+      </section>
+
+      <section class="listing-simple-section">
+        <div class="listing-simple-section-title"><div><span>02</span><h4>商品图片与规格</h4></div><small>图片和 SKU 已从 1688 自动带入。</small></div>
+        ${renderListingMediaStrip(displayImages)}
+        <div class="listing-variant-summary">
+          <span><b>${escapeHtml(summary.skuCount || "-")}</b> 个规格</span>
+          <span><b>${escapeHtml(displayImages.length || 0)}</b> 张采集图</span>
+          <span><b>${escapeHtml(displayedOfferId || "待生成")}</b> ${escapeHtml(displayedOfferLabel)}</span>
+        </div>
+      </section>
+
+      <section class="listing-simple-section listing-repair-section ${listingSellerInputSections.length ? "has-repairs" : "is-clear"}">
+        <div class="listing-simple-section-title"><div><span>03</span><h4>${listingSellerInputSections.length ? `需要你补充（${listingSellerInputSections.length} 项）` : "不需要你补充"}</h4></div><small>${listingSellerInputSections.length ? "输入框就在这里；填写后点一次底部按钮。" : "其余资料由系统和 AI 自动完成。"}</small></div>
+        <div class="listing-visible-repairs">${listingSellerInputSections.join("") || `<div class="listing-no-repairs">当前没有必须人工填写的商品字段。</div>`}</div>
+      </section>
+
+      <footer class="listing-simple-footer">
+        <div><strong>${preflightReady ? "商品资料已通过预检" : "系统自动处理到提交前"}</strong><small>${preflightReady ? "下一步只确认最终提交内容。" : "不再逐项确认；有真实缺口时才会停下。"}</small></div>
+        ${preflightReady
+          ? `<button class="primary" type="button" data-listing-seller-primary-view="${escapeHtml(summary.action.view)}" data-listing-seller-run-id="${escapeHtml(summary.runId)}" data-listing-seller-node-key="${escapeHtml(summary.action.nodeKey || "")}">进入最终提交确认</button>`
+          : `<button class="primary listing-auto-complete-button" type="button" data-listing-auto-complete ${autoCompletionAvailable && !autoCompletionInFlight ? "" : "disabled"}>${autoCompletionInFlight ? "系统自动处理中…" : listingSellerInputSections.length ? "保存并自动完成其余资料" : "自动完成其余资料"}</button>`}
+      </footer>
+    </div>
+
+    <details class="listing-technical-details">
+      <summary>查看系统证据、预检结果和高级诊断</summary>
+      <div class="listing-technical-details-body">
+        <p class="hint">高级校验规则：字典值和敏感属性仍需按字段确认；当前快照绑定的详情 SKU 价格可用于本地定价，未绑定的搜索页价格区间不可使用；未经人工批准不能作为可提交富内容。</p>
+        ${renderListingSellerPayloadValidation(run)}
+        ${renderListingSellerContentEvidence(run)}
+        ${renderListingSellerPreflightResult(run)}
+        ${renderListingSellerSourceBinding(run)}
+        ${renderListingMediaReview(mediaAssets, mediaIssues, { run, sourceEvidence: listingProductSource?.sourceEvidence || null, candidateApprovalDraft: linkedCandidate?.mediaApprovalDraft || null })}
+        ${renderListingProductReadiness(autoListJob)}
+      </div>
+    </details>
   `;
-  body.querySelector("[data-manual-content-save]")?.addEventListener("click", () => saveManualListingContentFromUi(autoListJob));
-  body.querySelector("[data-manual-procurement-save]")?.addEventListener("click", () => saveManualProcurementFromUi(autoListJob));
-  body.querySelector("[data-manual-package-save]")?.addEventListener("click", () => saveManualPackageFromUi(autoListJob));
+  body.querySelector("[data-listing-auto-complete]")?.addEventListener("click", (event) => runListingAutoCompletion({
+    run,
+    job: autoListJob,
+    productSource: listingProductSource,
+    button: event.currentTarget,
+  }));
   body.querySelector("[data-seller-validate-payload]")?.addEventListener("click", () => validateListingSellerPayload(body.querySelector("[data-seller-validate-payload]").dataset.runId));
   body.querySelectorAll("[data-seller-payload-issue]").forEach((button) => {
     button.addEventListener("click", () => openSellerPayloadIssue(button.dataset.runId, button));
@@ -2164,6 +2414,367 @@ function renderListingSellerTaskSummary() {
     document.querySelector("#listingCurrentDraftStatus")?.scrollIntoView({ behavior: "smooth", block: "center" });
     toast("已回到当前本地草稿；修复后点击重新校验 Payload", "ok");
   });
+}
+
+async function autoSyncListingCategoryEvidence(run = null, job = null) {
+  const handoff = run?.nodes?.find((node) => ["candidate_handoff", "capture_handoff"].includes(node.key))?.output?.draftSkeleton || null;
+  const decision = job?.categoryDecision || handoff?.categoryDecision || null;
+  if (decision?.status !== "auto_matched_evidence_pending" || !decision?.selected) return false;
+  const captureId = String(job?.candidateId || handoff?.captureId || "").trim();
+  const storeId = String(job?.storeId || handoff?.storeId || selectedStoreId() || "").trim();
+  const runId = String(run?.id || "").trim();
+  const jobId = String(job?.id || "").trim();
+  const environment = currentSellerReadEnvironment();
+  if (!captureId || !storeId) return false;
+  const syncKey = `${captureId}:${storeId}:${runId}:${jobId}:${environment}:${decision.selected.description_category_id}:${decision.selected.type_id}`;
+  if (state.categoryAutoSyncPromises.has(syncKey)) return state.categoryAutoSyncPromises.get(syncKey);
+  state.categoryAutoSyncKeys.add(syncKey);
+  const bindingMatches = () => {
+    const currentCapture = currentCaptureSellerTask();
+    const currentRun = currentListingWorkflowRun();
+    const currentJob = currentListingAutoListJob(currentRun);
+    return String(currentCapture?.item?.id || "") === captureId
+      && String(currentCapture?.item?.storeId || "") === storeId
+      && String(selectedStoreId() || "") === storeId
+      && String(currentSellerReadEnvironment() || "") === environment
+      && String(currentRun?.id || "") === runId
+      && String(currentJob?.id || "") === jobId;
+  };
+  const assertBinding = () => {
+    if (bindingMatches()) return;
+    const error = new Error("类目读取期间当前商品、店铺或环境已切换，系统已停止后续处理。");
+    error.code = "CATEGORY_READ_CONTEXT_CHANGED";
+    throw error;
+  };
+  const syncPromise = (async () => {
+    assertBinding();
+    const categoryPlan = {
+      store: { id: storeId },
+      environment,
+      descriptionCategoryId: decision.selected.description_category_id,
+      typeId: decision.selected.type_id,
+      attributeIds: [],
+      language: "ZH_HANS",
+      phase: "metadata",
+    };
+    const planGate = await api("/api/ozon/read-operator/category-plan", {
+      method: "POST",
+      body: JSON.stringify({ categoryPlan }),
+    });
+    assertBinding();
+    if (!planGate?.ok || !planGate.planBinding) throw new Error("CATEGORY_READ_PLAN_BINDING_REQUIRED");
+    const metadataResult = await api("/api/ozon/read-operator/category-execute", {
+      method: "POST",
+      body: JSON.stringify({
+        categoryPlan,
+        storeId,
+        planBinding: planGate.planBinding,
+        recordEvidence: true,
+        confirm: "I_CONFIRM_READ_ONLY",
+      }),
+    });
+    assertBinding();
+    if (!metadataResult?.ok) throw new Error(metadataResult?.reasonCode || "CATEGORY_METADATA_READ_INCOMPLETE");
+    if (metadataResult.continuationRequired) {
+      if (!metadataResult.continuationPlan || !metadataResult.continuationPlanBinding) {
+        throw new Error("CATEGORY_READ_CONTINUATION_BINDING_REQUIRED");
+      }
+      const dictionaryResult = await api("/api/ozon/read-operator/category-execute", {
+        method: "POST",
+        body: JSON.stringify({
+          categoryPlan: metadataResult.continuationPlan,
+          storeId,
+          planBinding: metadataResult.continuationPlanBinding,
+          recordEvidence: true,
+          confirm: "I_CONFIRM_READ_ONLY",
+        }),
+      });
+      assertBinding();
+      if (!dictionaryResult?.ok) throw new Error(dictionaryResult?.reasonCode || "CATEGORY_DICTIONARY_READ_INCOMPLETE");
+    }
+    assertBinding();
+    await api(`/api/1688/captures/${encodeURIComponent(captureId)}/workflow`, {
+      method: "POST",
+      body: JSON.stringify({ storeId, environment }),
+    });
+    assertBinding();
+    await loadAutoListJobs();
+    await loadWorkflowRuns();
+    toast(`已自动匹配并同步类目：${decision.selected.path || decision.selected.name}`, "ok");
+    return true;
+  })();
+  state.categoryAutoSyncPromises.set(syncKey, syncPromise);
+  try {
+    return await syncPromise;
+  } catch (error) {
+    console.warn("自动同步当前店铺类目证据失败", error);
+    if (error?.code === "CATEGORY_READ_CONTEXT_CHANGED") throw error;
+    const recovery = sellerReadAccessRecovery(error, "当前店铺类目只读证据同步失败；请检查签名会话和店铺权限后重试。本次没有调用 Ozon 写接口。");
+    const sellerError = new Error(recovery);
+    sellerError.code = String(error?.reasonCode || error?.code || "CATEGORY_READ_FAILED");
+    throw sellerError;
+  } finally {
+    state.categoryAutoSyncPromises.delete(syncKey);
+    state.categoryAutoSyncKeys.delete(syncKey);
+  }
+}
+
+function listingSellerInputRequired(message, selector = "") {
+  const error = new Error(message);
+  error.code = "SELLER_INPUT_REQUIRED";
+  error.selector = selector;
+  return error;
+}
+
+function listingManualEvidenceBinding(job = null) {
+  return {
+    captureId: String(job?.candidateId || ""),
+    storeId: String(job?.storeId || ""),
+    sourceSnapshotHash: String(job?.candidateData?.sourceEvidence?.snapshotHash || ""),
+    workflowRunId: String(job?.workflowRunId || ""),
+  };
+}
+
+async function saveListingSellerInputsBeforeAutoCompletion(job = null) {
+  const body = document.querySelector("#listingSellerTaskSummaryBody");
+  if (!job?.id || !body) throw listingSellerInputRequired("当前商品表单尚未准备好，请刷新后重试。");
+  const payload = {
+    expectedBinding: listingManualEvidenceBinding(job),
+  };
+
+  const contentForm = body.querySelector(".listing-manual-content-form");
+  if (contentForm) {
+    const titleRu = body.querySelector("[data-manual-content-title]")?.value.trim() || "";
+    const descriptionRu = body.querySelector("[data-manual-content-description]")?.value.trim() || "";
+    if (titleRu.length < 5 || descriptionRu.length < 20) {
+      throw listingSellerInputRequired("请填写俄文标题和至少 20 个字符的俄文描述。", "[data-manual-content-title]");
+    }
+    payload.content = {
+      title_ru: titleRu,
+      description_ru: descriptionRu,
+      annotation_ru: body.querySelector("[data-manual-content-annotation]")?.value || "",
+    };
+  }
+
+  const procurementForm = body.querySelector(".listing-manual-procurement-form");
+  if (procurementForm) {
+    const supplierId = body.querySelector("[data-procurement-supplier-id]")?.value.trim() || "";
+    const supplierName = body.querySelector("[data-procurement-supplier-name]")?.value.trim() || "";
+    const moq = Number(body.querySelector("[data-procurement-moq]")?.value || 0);
+    const priceTiers = [0, 1, 2].map((index) => ({
+      minQuantity: Number(body.querySelector(`[data-procurement-min="${index}"]`)?.value || 0),
+      unitPriceCny: Number(body.querySelector(`[data-procurement-price="${index}"]`)?.value || 0),
+    })).filter((tier) => tier.minQuantity > 0 || tier.unitPriceCny > 0);
+    if ((!supplierId && !supplierName) || !(moq > 0) || !priceTiers.length
+      || priceTiers.some((tier) => !(tier.minQuantity > 0) || !(tier.unitPriceCny > 0))) {
+      throw listingSellerInputRequired("请填写供应商、MOQ 和至少一档完整采购价。", "[data-procurement-supplier-name]");
+    }
+    payload.procurement = { supplierId, supplierName, moq, priceTiers };
+  }
+
+  const packageForm = body.querySelector(".listing-manual-package-form");
+  if (packageForm) {
+    const source = body.querySelector("[data-package-source]")?.value || "";
+    const weightG = Number(body.querySelector("[data-package-weight]")?.value || 0);
+    const lengthMm = Number(body.querySelector("[data-package-length]")?.value || 0);
+    const widthMm = Number(body.querySelector("[data-package-width]")?.value || 0);
+    const heightMm = Number(body.querySelector("[data-package-height]")?.value || 0);
+    if (!["manual_measurement", "supplier_package"].includes(source)
+      || ![weightG, lengthMm, widthMm, heightMm].every((value) => value > 0)) {
+      throw listingSellerInputRequired("请填写完整的包装重量和长宽高。", "[data-package-weight]");
+    }
+    payload.package = {
+      source,
+      weightG,
+      lengthMm,
+      widthMm,
+      heightMm,
+      note: body.querySelector("[data-package-note]")?.value || "",
+    };
+  }
+
+  if (payload.content || payload.procurement || payload.package) {
+    await api(`/api/ozon-learning/auto-list-jobs/${encodeURIComponent(job.id)}/manual-seller-inputs`, {
+      method: "POST",
+      body: JSON.stringify(payload),
+    });
+  }
+}
+
+async function runListingAutoCompletion({ run = null, job = null, productSource = null, button = null } = {}) {
+  const runId = String(run?.id || "").trim();
+  const jobId = String(job?.id || "").trim();
+  const captureId = String(job?.candidateId || run?.entity?.candidateId || "").trim();
+  const storeId = String(job?.storeId || run?.entity?.storeId || "").trim();
+  const environment = currentSellerReadEnvironment();
+  if (!runId || !jobId || !productSource?.title) {
+    toast("当前商品尚未形成可自动处理的本地草稿。", "error");
+    return;
+  }
+  const completionKey = `${jobId}:${environment}`;
+  if (state.listingAutoCompletionInFlight.has(completionKey)) {
+    toast("当前商品正在自动处理，请等待本次结果。", "warning");
+    return;
+  }
+  const bindingMatches = () => {
+    const currentCapture = currentCaptureSellerTask();
+    const currentRun = currentListingWorkflowRun();
+    const currentJob = currentListingAutoListJob(currentRun);
+    return String(currentCapture?.item?.id || "") === captureId
+      && String(currentCapture?.item?.storeId || "") === storeId
+      && String(selectedStoreId() || "") === storeId
+      && String(currentSellerReadEnvironment() || "") === environment
+      && String(currentRun?.id || "") === runId
+      && String(currentRun?.entity?.autoListingJobId || "") === jobId
+      && String(currentJob?.id || "") === jobId;
+  };
+  const assertBinding = () => {
+    if (bindingMatches()) return;
+    const error = new Error("自动处理期间当前商品、店铺或环境已切换，系统已停止后续处理。");
+    error.code = "LISTING_AUTO_COMPLETION_CONTEXT_CHANGED";
+    throw error;
+  };
+  if (!bindingMatches()) {
+    toast("当前商品或店铺已经切换，自动处理未启动。", "error");
+    return;
+  }
+  const sourceSnapshotHash = String(
+    job?.candidateData?.sourceEvidence?.snapshotHash
+    || run?.entity?.sourceEvidence?.snapshotHash
+    || "",
+  ).trim();
+  if (!sourceSnapshotHash) {
+    toast("当前商品缺少来源快照绑定，系统未调用付费 AI。", "error");
+    return;
+  }
+  if (!window.confirm("确认让系统自动完成当前商品文案、定价和提交前预检吗？首次生成可能产生 AI 调用费用；若当前商品已有未改动的 AI 文案，系统会直接复用且不重复调用。此操作不会提交 Ozon。")) {
+    return;
+  }
+  state.listingAutoCompletionInFlight.add(completionKey);
+  const originalButtonText = button?.textContent || "";
+  setBusy(button, true);
+  if (button) button.textContent = "系统自动处理中…";
+  let focusSelector = "";
+  let preserveSellerInputs = false;
+  try {
+    await saveListingSellerInputsBeforeAutoCompletion(job);
+    assertBinding();
+    const handoffDecision = (run?.nodes || [])
+      .find((node) => ["candidate_handoff", "capture_handoff"].includes(node.key))
+      ?.output?.draftSkeleton?.categoryDecision || null;
+    const categoryDecision = job?.categoryDecision || handoffDecision || null;
+    const categorySyncRequired = categoryDecision?.status === "auto_matched_evidence_pending";
+    const categorySynced = await autoSyncListingCategoryEvidence(run, job);
+    if (categorySyncRequired && !categorySynced) {
+      throw new Error("当前店铺类目证据尚未同步成功，已在调用 AI 前停止。");
+    }
+    assertBinding();
+    if (categorySynced) {
+      await loadAutoListJobs();
+      assertBinding();
+      await loadWorkflowRuns();
+      assertBinding();
+    }
+    const commissionJob = currentListingAutoListJob(currentListingWorkflowRun()) || job;
+    const commissionSource = commissionJob?.pricingPreview?.commissionSource || {};
+    const commissionEvidenceReady = commissionSource.source === "learned_product"
+      && commissionSource.confidence === "medium"
+      && commissionSource.coverageComplete === true
+      && /^sha256:[a-f0-9]{64}$/i.test(String(commissionSource.evidenceRef || ""))
+      && Boolean(String(commissionSource.updatedAt || "").trim())
+      && String(commissionSource.storeId || "") === storeId
+      && String(commissionSource.environment || "") === environment
+      && String(commissionSource.sourceSnapshotHash || "") === sourceSnapshotHash;
+    if (!commissionEvidenceReady) {
+      await api(`/api/ozon-learning/auto-list-jobs/${encodeURIComponent(jobId)}/commission-evidence/read`, {
+        method: "POST",
+        body: JSON.stringify({
+          storeId,
+          environment,
+          expectedBinding: {
+            workflowRunId: runId,
+            autoListingJobId: jobId,
+            captureId,
+            storeId,
+            sourceSnapshotHash,
+          },
+        }),
+      });
+      assertBinding();
+      await loadAutoListJobs();
+      assertBinding();
+      await loadWorkflowRuns();
+      assertBinding();
+    }
+    const result = await api(`/api/workflows/${encodeURIComponent(runId)}/controlled-chain`, {
+      method: "POST",
+      body: JSON.stringify({
+        startNode: "content_generate",
+        environment,
+        note: "卖家一次点击：自动完成类目、AI 文案、草稿刷新和提交前预检",
+        confirmPaidAi: true,
+        confirmation: "I_CONFIRM_PAID_AI_FOR_CURRENT_PRODUCT",
+        expectedBinding: {
+          workflowRunId: runId,
+          autoListingJobId: jobId,
+          captureId,
+          storeId,
+          sourceSnapshotHash,
+        },
+      }),
+    });
+    assertBinding();
+    showResponse(result);
+    await loadAutoListJobs();
+    assertBinding();
+    await loadWorkflowRuns();
+    assertBinding();
+    const refreshedRun = currentListingWorkflowRun();
+    const refreshedJob = currentListingAutoListJob(refreshedRun);
+    const resultBoundToOriginal = bindingMatches()
+      && String(refreshedRun?.id || "") === runId
+      && String(refreshedRun?.entity?.autoListingJobId || "") === jobId
+      && String(refreshedJob?.id || "") === jobId;
+    if (!result.completed || !resultBoundToOriginal) {
+      throw new Error("自动处理未完整到达提交前预检，未宣称商品资料完成。");
+    }
+    const remaining = Array.isArray(refreshedRun?.payloadDraftValidation?.issues)
+      ? refreshedRun.payloadDraftValidation.issues.length
+      : 0;
+    const refreshedDraftHash = String(refreshedRun?.payloadDraftHash || "").trim();
+    const refreshedValidatedHash = String(
+      refreshedRun?.validatedDraftHash
+      || refreshedRun?.payloadDraftValidation?.draftHash
+      || "",
+    ).trim();
+    const freshPreflightPassed = refreshedRun?.payloadDraftValidation?.ok === true
+      && Boolean(refreshedDraftHash)
+      && refreshedDraftHash === refreshedValidatedHash;
+    toast(freshPreflightPassed
+      ? "商品资料已自动完成并通过预检；下一步只需最终提交确认。"
+      : `自动处理已完成；系统只保留 ${remaining || "仍无法推断的"} 项真实缺口。`,
+    freshPreflightPassed ? "ok" : "warning");
+  } catch (error) {
+    if (error?.code !== "SELLER_INPUT_REQUIRED") {
+      await loadAutoListJobs().catch(() => {});
+      await loadWorkflowRuns().catch(() => {});
+    } else {
+      preserveSellerInputs = true;
+    }
+    if (error?.code === "SELLER_INPUT_REQUIRED" && error.selector) focusSelector = error.selector;
+    toast(error.message || "自动处理未完成；已停在安全状态，可直接重试。", "error");
+  } finally {
+    state.listingAutoCompletionInFlight.delete(completionKey);
+    setBusy(button, false);
+    if (preserveSellerInputs && button) button.textContent = originalButtonText;
+    else renderListingSellerTaskSummary();
+    if (focusSelector) {
+      const target = document.querySelector(focusSelector);
+      const details = target?.closest("details");
+      if (details) details.open = true;
+      target?.focus();
+    }
+  }
 }
 
 function renderListingSellerContentEvidence(run = null) {
@@ -2377,24 +2988,28 @@ function renderListingSellerSourceBinding(run = null) {
   </article>`;
 }
 
-function renderListingSellerEvidenceActions(run = null, job = null) {
+function renderListingSellerEvidenceActions(run = null, job = null, productSource = null) {
   if (!run && !job) return "";
-  const candidate = job?.candidateData || run?.source || {};
+  const candidate = job?.candidateData || productSource || run?.source || {};
   const sourceEvidence = candidate.sourceEvidence || run?.sourceEvidence || null;
   const sourceReady = Boolean(
     sourceEvidence?.snapshotHash
       && sourceEvidence?.canonicalUrl
       && sourceEvidence?.verificationState === "ok",
   );
-  const category = job?.categoryMatch || run?.source?.categoryMatch || null;
-  const categoryReady = Number(category?.description_category_id || 0) > 0 && Number(category?.type_id || 0) > 0;
+  const categoryDecision = job?.categoryDecision
+    || run?.nodes?.find((node) => node.key === "capture_handoff")?.output?.draftSkeleton?.categoryDecision
+    || null;
+  const category = job?.manualCategory || job?.categoryMatch || job?.autoCategory || run?.source?.categoryMatch || categoryDecision?.selected || null;
+  const categoryIdsAvailable = Number(category?.description_category_id || 0) > 0 && Number(category?.type_id || 0) > 0;
+  const categoryReady = categoryIdsAvailable && (!categoryDecision || categoryDecision.evidenceReady === true);
   if (sourceReady && categoryReady) return "";
   return `<article class="listing-seller-evidence-actions" aria-label="前置证据任务">
-    <span>上架前置资料</span><strong>${sourceReady ? "来源已记录" : "来源证据待补齐"} · ${categoryReady ? "类目已确认" : "类目待确认"}</strong>
-    <small>先补齐真实来源和当前店铺类目，系统不会根据标题猜测或把页面状态当成证据。</small>
+    <span>上架前置资料</span><strong>${sourceReady ? "来源已记录" : "来源证据待补齐"} · ${categoryReady ? "类目已自动绑定" : categoryIdsAvailable ? "类目已匹配，证据同步中" : "类目自动匹配中"}</strong>
+    <small>${categoryIdsAvailable ? `系统推荐：${escapeHtml(category.path || category.name || "")}。当前店铺证据同步完成后自动继续。` : "系统会按商品核心类型从本地类目库生成候选；只有候选确实接近时才需要确认。"}</small>
     <div class="listing-seller-evidence-buttons">
       ${sourceReady ? "" : `<button class="ghost" type="button" data-seller-source-task>回到 1688 采集</button>`}
-      ${categoryReady ? "" : `<button class="primary" type="button" data-seller-category-task>选择 Ozon 类目</button>`}
+      ${categoryReady || categoryDecision?.status !== "ambiguous" ? "" : `<button class="primary" type="button" data-seller-category-task>确认系统候选</button>`}
     </div>
   </article>`;
 }
@@ -2578,18 +3193,28 @@ function renderManualListingContentForm(job = null) {
   const ready = String(content.title_ru || "").trim() && String(content.description_ru || "").trim();
   if (ready && !["draft_pending", "content_ready"].includes(String(job.status || ""))) return "";
   return `<article class="listing-manual-content-form" aria-label="人工填写俄文内容">
-    <span>先完成商品内容</span>
-    <strong>人工填写俄文标题和描述</strong>
-    <small>只保存本地草稿，不调用 AI、不提交 Ozon；保存后继续补类目和采购证据。</small>
-    <label>俄文标题<input data-manual-content-title value="${escapeHtml(content.title_ru || "")}" maxlength="200" placeholder="例如：Органайзер для хранения" /></label>
-    <label>俄文描述<textarea data-manual-content-description maxlength="5000" placeholder="填写至少 20 个字符的俄文商品描述">${escapeHtml(content.description_ru || "")}</textarea></label>
-    <label>俄文短卖点（可选）<input data-manual-content-annotation value="${escapeHtml(content.annotation_ru || "")}" maxlength="500" /></label>
-    <button class="primary" type="button" data-manual-content-save>保存并重新预检</button>
+    <span>俄文商品文案</span>
+    <strong>优先点击页面顶部“AI 一键补齐文案”</strong>
+    <small>AI 结果自动回填本地草稿；只有 AI 不可用或你想改写时才需要手填。</small>
+    <details>
+      <summary>AI 不可用时手动填写</summary>
+      <div class="listing-manual-fallback">
+        <strong>人工填写俄文标题和描述</strong>
+        <label>俄文标题<input data-manual-content-title value="${escapeHtml(content.title_ru || "")}" maxlength="200" placeholder="例如：Органайзер для хранения" /></label>
+        <label>俄文描述<textarea data-manual-content-description maxlength="5000" placeholder="填写至少 20 个字符的俄文商品描述">${escapeHtml(content.description_ru || "")}</textarea></label>
+        <label>俄文短卖点（可选）<input data-manual-content-annotation value="${escapeHtml(content.annotation_ru || "")}" maxlength="500" /></label>
+      </div>
+    </details>
   </article>`;
 }
 
-async function saveManualListingContentFromUi(job = null) {
-  if (!job?.id) return;
+async function saveManualListingContentFromUi(job = null, options = {}) {
+  if (!job?.id) {
+    const error = new Error("当前商品缺少可保存的自动上品任务");
+    if (options.rethrow) throw error;
+    toast(error.message, "error");
+    return null;
+  }
   const body = document.querySelector("#listingSellerTaskSummaryBody");
   const button = body?.querySelector("[data-manual-content-save]");
   setBusy(button, true);
@@ -2597,6 +3222,7 @@ async function saveManualListingContentFromUi(job = null) {
     const data = await api(`/api/ozon-learning/auto-list-jobs/${encodeURIComponent(job.id)}/manual-content`, {
       method: "POST",
       body: JSON.stringify({
+        expectedBinding: listingManualEvidenceBinding(job),
         title_ru: body.querySelector("[data-manual-content-title]")?.value || "",
         description_ru: body.querySelector("[data-manual-content-description]")?.value || "",
         annotation_ru: body.querySelector("[data-manual-content-annotation]")?.value || "",
@@ -2607,8 +3233,11 @@ async function saveManualListingContentFromUi(job = null) {
     await loadAutoListJobs();
     await loadWorkflowRuns();
     await recheckListingAfterEvidenceSave(job, data);
+    return data;
   } catch (error) {
     toast(error.message || "保存内容失败", "error");
+    if (options.rethrow) throw error;
+    return null;
   } finally {
     setBusy(button, false);
   }
@@ -2631,7 +3260,6 @@ function renderManualProcurementForm(job = null) {
     <label>供应商名称（至少填一个）<input data-procurement-supplier-name value="${escapeHtml(evidence.supplierName?.value || "")}" /></label>
     <label>MOQ<input data-procurement-moq type="number" min="1" value="${escapeHtml(evidence.moq?.value || "")}" /></label>
     <label>采购阶梯（数量递增）${tierRows}</label>
-    <button class="primary" type="button" data-manual-procurement-save>保存并重新预检</button>
   </article>`;
 }
 
@@ -2648,6 +3276,7 @@ async function saveManualProcurementFromUi(job = null) {
     const data = await api(`/api/ozon-learning/auto-list-jobs/${encodeURIComponent(job.id)}/manual-procurement`, {
       method: "POST",
       body: JSON.stringify({
+        expectedBinding: listingManualEvidenceBinding(job),
         supplierId: body.querySelector("[data-procurement-supplier-id]")?.value || "",
         supplierName: body.querySelector("[data-procurement-supplier-name]")?.value || "",
         moq: Number(body.querySelector("[data-procurement-moq]")?.value || 0),
@@ -2684,7 +3313,6 @@ function renderManualPackageForm(job = null) {
     <div class="erp-inline"><label>重量（克）<input data-package-weight type="number" min="1" max="100000" value="${escapeHtml(sizeWeight.weightG || "")}" /></label><label>长度（毫米）<input data-package-length type="number" min="1" max="2000" value="${escapeHtml(sizeWeight.lengthMm || "")}" /></label></div>
     <div class="erp-inline"><label>宽度（毫米）<input data-package-width type="number" min="1" max="2000" value="${escapeHtml(sizeWeight.widthMm || "")}" /></label><label>高度（毫米）<input data-package-height type="number" min="1" max="2000" value="${escapeHtml(sizeWeight.heightMm || "")}" /></label></div>
     <label>测量备注（可选）<input data-package-note maxlength="500" value="${escapeHtml(sizeWeight.evidenceNote || "")}" placeholder="例如：含外包装，供应商 2026-07-16 提供" /></label>
-    <button class="primary" type="button" data-manual-package-save>保存尺重证据并重新预检</button>
   </article>`;
 }
 
@@ -2697,6 +3325,7 @@ async function saveManualPackageFromUi(job = null) {
     const data = await api(`/api/ozon-learning/auto-list-jobs/${encodeURIComponent(job.id)}/manual-package`, {
       method: "POST",
       body: JSON.stringify({
+        expectedBinding: listingManualEvidenceBinding(job),
         source: body.querySelector("[data-package-source]")?.value || "",
         weightG: Number(body.querySelector("[data-package-weight]")?.value || 0),
         lengthMm: Number(body.querySelector("[data-package-length]")?.value || 0),
@@ -3482,7 +4111,7 @@ function renderListingAutomationGuardrails() {
 }
 
 function singleListingOutcomeState() {
-  const latestRun = [...(state.workflowRuns || [])]
+  const latestRun = sellerWorkflowRuns()
     .sort((left, right) => String(right.updatedAt || right.createdAt || "").localeCompare(String(left.updatedAt || left.createdAt || "")))[0];
   const nodes = Array.isArray(latestRun?.nodes) ? latestRun.nodes : [];
   const blockingNode = nodes.find((node) => node.status === "failed" || node.status === "waiting_human")
@@ -3563,7 +4192,7 @@ function latestCurrentProductTask() {
     ready: 4,
     done: 5,
   };
-  return [...(state.workflowRuns || [])]
+  return sellerWorkflowRuns()
     .map((run) => ({
       task: run.summary?.currentProductTask || null,
       updatedAt: run.updatedAt || run.createdAt || "",
@@ -3763,7 +4392,7 @@ function cockpitWorkflowPhases() {
 // expose currentProductTask, so the fallback is deliberately labelled as a
 // workflow-derived summary rather than pretending it is an Ozon response.
 function latestGoldenPathSellerTask() {
-  const runs = [...(state.workflowRuns || [])]
+  const runs = sellerWorkflowRuns()
     .sort((left, right) => String(right.updatedAt || right.createdAt || "").localeCompare(String(left.updatedAt || left.createdAt || "")));
   for (const run of runs) {
     const explicit = run?.goldenPathSellerTask || run?.summary?.goldenPathSellerTask;
@@ -3843,8 +4472,8 @@ function renderStoreOperatingOverview() {
   const orders = state.orderRows || [];
   const products = state.productRows || [];
   const promotions = state.promotionRows || [];
-  const workflows = state.workflowRuns || [];
-  const summary = state.workflowSummary || {};
+  const workflows = sellerWorkflowRuns();
+  const summary = sellerWorkflowSummary();
   const currentProductTask = latestCurrentProductTask();
   renderGoldenPathSellerTask();
   // The dashboard must not derive a sales number from whatever order rows are
@@ -3874,7 +4503,7 @@ function renderStoreOperatingOverview() {
   const activePromotions = promotionCoverageKnown
     ? promotions.filter((item) => !/inactive|closed|finished/i.test(String(item.status || ""))).length
     : null;
-  const waitingHuman = Number(summary.waitingHuman || workflows.filter((run) => run.status === "waiting_human").length);
+  const waitingHuman = Number(summary.waitingHuman || 0);
   if ($("#workflowStatusCount")) $("#workflowStatusCount").textContent = String(workflows.length || 0);
   if ($("#erpDashboardOrderCell")) $("#erpDashboardOrderCell").textContent = String(orders.length || "-");
   if ($("#erpDashboardProductCell")) $("#erpDashboardProductCell").textContent = String(products.length || "-");
@@ -4044,8 +4673,8 @@ function domainPanelSnapshot() {
   const orders = state.orderRows || [];
   const products = state.productRows || [];
   const promotions = state.promotionRows || [];
-  const workflows = state.workflowRuns || [];
-  const summary = state.workflowSummary || {};
+  const workflows = sellerWorkflowRuns();
+  const summary = sellerWorkflowSummary();
   const orderBatch = state.orderBatch || null;
   const orderCoverageKnown = orderBatch?.loaded === true
     && orderBatch.failed !== true
@@ -5085,7 +5714,7 @@ async function logoutErpSession() {
 
 function renderCockpitDashboard() {
   renderStoreOperatingOverview();
-  const summary = state.workflowSummary || {};
+  const summary = sellerWorkflowSummary();
   const riskBanner = $("#cockpitRiskBanner");
   const waitingHuman = Number(summary.waitingHuman || 0);
   const blocking = Number(summary.blocking || 0);
@@ -5099,7 +5728,7 @@ function renderCockpitDashboard() {
   const kpis = $("#cockpitKpis");
   if (kpis) {
     kpis.innerHTML = `
-      <article><span>运行中工作流</span><strong>${Number(summary.running || 0)}</strong><small>总计 ${Number(summary.total || state.workflowRuns.length || 0)}</small></article>
+      <article><span>运行中工作流</span><strong>${Number(summary.running || 0)}</strong><small>真实任务 ${Number(summary.total || 0)}</small></article>
       <article class="${waitingHuman ? "is-warning" : ""}"><span>等待人工</span><strong>${waitingHuman}</strong><small>高风险 ${Number(summary.highRisk || 0)}</small></article>
       <article><span>近 14 天 FBS 单</span><strong id="orderCount">${escapeHtml($("#orderCount")?.textContent || "-")}</strong><small>订单履约</small></article>
       <article><span>系统状态</span><strong id="healthStatus">${escapeHtml($("#healthStatus")?.textContent || "未测试")}</strong><small><span id="storeCount">${state.stores.length}</span> 店铺 · <span id="warehouseCount">${escapeHtml($("#warehouseCount")?.textContent || "-")}</span> 仓库</small></article>
@@ -5107,13 +5736,13 @@ function renderCockpitDashboard() {
   }
   const focus = $("#cockpitWorkflowFocus");
   if (focus) {
-    const runs = [...(state.workflowRuns || [])].sort((left, right) => {
+    const runs = sellerWorkflowRuns().sort((left, right) => {
       const leftRisk = left.status === "waiting_human" ? 2 : (left.summary?.riskLevel === "high" ? 1 : 0);
       const rightRisk = right.status === "waiting_human" ? 2 : (right.summary?.riskLevel === "high" ? 1 : 0);
       return rightRisk - leftRisk;
     }).slice(0, 4);
     focus.innerHTML = `
-      <div class="section-headline"><div><h2>当前工作流焦点</h2><p class="hint">优先显示等待人工和高风险任务。</p></div><button class="ghost" type="button" data-cockpit-view="workflow-console">查看全部 ${state.workflowRuns.length}</button></div>
+      <div class="section-headline"><div><h2>当前工作流焦点</h2><p class="hint">优先显示真实业务中等待人工和高风险的任务。</p></div><button class="ghost" type="button" data-cockpit-view="workflow-console">查看真实任务 ${summary.total}</button></div>
       <div class="cockpit-focus-list">${runs.length ? runs.map((run) => `
         <button type="button" class="cockpit-focus-item" data-cockpit-run-id="${escapeHtml(run.id)}">
           <span><strong>${escapeHtml(run.title || run.id)}</strong><small>${escapeHtml(run.currentNode || run.summary?.currentNodeName || "等待节点")}</small></span>
@@ -6117,9 +6746,13 @@ async function loadCaptureBox() {
   const data = await api("/api/1688/captures");
   state.captureRows = data.items || [];
   renderCaptureBox();
+  renderSourcingInbox();
+  renderGlobalCurrentTaskBar();
+  renderCurrentProductWorkspace();
+  renderListingSellerTaskSummary();
 }
 
-function openCaptureFromDeepLink() {
+async function openCaptureFromDeepLink() {
   const captureId = String(new URLSearchParams(window.location.search).get("captureId") || "").trim();
   if (!captureId) return false;
   const item = state.captureRows.find((row) => String(row.id || "") === captureId);
@@ -6127,14 +6760,353 @@ function openCaptureFromDeepLink() {
     toast("采集结果已回传，但当前店铺看不到这条采集记录，请先检查店铺范围。", "error");
     return false;
   }
-  document.querySelector('[data-view="sourcing"]')?.click();
-  window.setTimeout(() => {
-    const row = document.querySelector(`#captureBoxTable tr[data-id="${CSS.escape(captureId)}"]`);
-    row?.scrollIntoView({ behavior: "smooth", block: "center" });
-    row?.classList.add("capture-deep-link-focus");
-    window.setTimeout(() => row?.classList.remove("capture-deep-link-focus"), 2200);
-  }, 0);
-  toast("已定位刚采集的商品；下一步生成本地草稿，不会自动提交 Ozon。", "ok");
+  await openCurrentCaptureTask(captureId, item.storeId);
+  return true;
+}
+
+function isSyntheticCapture(item = {}) {
+  const product = item.parsed || {};
+  const fixture = product.sourceEvidenceRecord?.fixtureProvenance || product.fixtureProvenance || item.fixtureProvenance || {};
+  const captureMode = String(fixture.captureMode || product.capture?.captureMode || item.captureMode || "").toLowerCase();
+  const title = String(product.title || item.title || "").toLowerCase();
+  return fixture.manifestHash || /fixture|replay|test/.test(captureMode) || /fixture product|test product|测试商品/.test(title);
+}
+
+function captureSnapshotHash(item = {}) {
+  const product = item.parsed || item;
+  return String(product.sourceEvidenceRecord?.snapshot?.hash || product.sourceEvidence?.snapshotHash || "").trim();
+}
+
+function currentCaptureSellerTask() {
+  const realCaptures = (state.captureRows || []).filter((item) => !isSyntheticCapture(item));
+  const requestedId = String(state.currentCaptureId || new URLSearchParams(window.location.search).get("captureId") || "").trim();
+  const ranked = realCaptures.map((item) => {
+    const product = item.parsed || {};
+    const snapshotHash = captureSnapshotHash(item);
+    const review = product.captureReview || item.captureReview || {};
+    const reviewApproved = review.humanConfirmed === true
+      && String(review.reviewedSnapshotHash || "").trim() === snapshotHash
+      && /^sha256:[a-f0-9]{64}$/i.test(snapshotHash);
+    const reviewPossible = /^sha256:[a-f0-9]{64}$/i.test(snapshotHash);
+    const reviewNeeded = !reviewApproved;
+    const hasDraft = Boolean(item.draft?.parentSku || item.draft?.payloadDraftHash || item.draft?.categoryId || item.draft?.typeId);
+    const captureMode = String(product.sourceEvidenceRecord?.captureIdentity?.captureMode || product.capture?.captureMode || item.captureMode || "").toLowerCase();
+    const rank = String(item.id || "") === requestedId ? 0 : /extension_browser|browser_extension/.test(captureMode) ? 1 : 2;
+    return { item, product, reviewApproved, reviewPossible, reviewNeeded, hasDraft, rank };
+  }).sort((left, right) => left.rank - right.rank
+    || String(right.item.updatedAt || right.item.receivedAt || "").localeCompare(String(left.item.updatedAt || left.item.receivedAt || "")));
+  return ranked[0] || null;
+}
+
+function currentProductWorkspaceModel() {
+  const captureTask = currentCaptureSellerTask();
+  if (!captureTask) {
+    return {
+      empty: true,
+      title: "还没有真实采集商品",
+      status: "等待采集商品",
+      reason: "请先采集一个准备上架的真实商品。",
+      actionLabel: "去采集商品",
+      actionKind: "view",
+      actionView: "sourcing",
+      actionEffect: "打开采集页面，不会自动上架或产生费用。",
+      userInstruction: "去 1688 选择一个商品，用 Ozon ERP 插件完成采集。",
+      systemNext: "采集成功后，商品会自动回到这个首页并开始整理。",
+      safetyBoundary: "现在不会提交到 Ozon，也不会调用任何付费 AI；两者都需你另行确认。",
+      completed: [],
+      required: ["采集一个真实 1688 商品"],
+      stages: ["采集商品", "检查商品", "确认上架"].map((label, index) => ({ label, status: index === 0 ? "current" : "pending" })),
+    };
+  }
+  const { item, product, reviewApproved, reviewPossible, reviewNeeded, hasDraft } = captureTask;
+  const run = currentListingWorkflowRun();
+  const store = state.stores.find((row) => String(row.id || "") === String(item.storeId || ""));
+  const source = product.sourceEvidenceRecord || product.sourceEvidence || {};
+  const offerId = String(source.captureIdentity?.offerId || source.offerId || product.offerId || item.offerId || "").trim();
+  const sourceVariants = Array.isArray(product.skuVariants) ? product.skuVariants : [];
+  const firstImage = Array.isArray(product.images) ? product.images[0] : "";
+  const rawImageUrl = String(typeof firstImage === "string" ? firstImage : firstImage?.url || "").trim();
+  const imageUrl = /^https?:\/\//i.test(rawImageUrl) ? rawImageUrl : "";
+  const uniqueSourceSkuIds = new Set(sourceVariants
+    .map((variant) => String(variant?.sourceSkuId || variant?.source_sku_id || variant?.skuId || variant?.sku_id || "").trim())
+    .filter(Boolean));
+  const skuCount = Number(item.draft?.uniqueSourceSkuCount || uniqueSourceSkuIds.size || sourceVariants.length || item.skuCount || 0);
+  const imageCount = Number(product.images?.length || product.imageCount || item.imageCount || 0);
+  const draftReady = reviewApproved === true && Boolean(run || hasDraft);
+  const currentDraftHash = String(run?.payloadDraftHash || "").trim();
+  const validatedDraftHash = String(run?.validatedDraftHash || run?.payloadDraftValidation?.draftHash || "").trim();
+  const validationReportedPassed = run?.payloadDraftValidation?.ok === true;
+  const validationHashMatches = Boolean(currentDraftHash && validatedDraftHash && currentDraftHash === validatedDraftHash);
+  const preflightPassed = reviewApproved === true && validationReportedPassed && validationHashMatches;
+  const validationStale = validationReportedPassed && !validationHashMatches;
+  const issueCount = Array.isArray(run?.payloadDraftValidation?.issues) ? run.payloadDraftValidation.issues.length : 0;
+  const confirmed = reviewApproved === true;
+  const completed = [
+    `已读取商品${offerId ? ` · 货号 ${offerId}` : ""} · ${skuCount || "-"} 个规格${imageCount ? ` · ${imageCount} 张图片` : ""}`,
+  ];
+  if (preflightPassed) completed.push("商品资料检查通过");
+  else if (draftReady) completed.push("系统和 AI 正在整理商品资料");
+  else if (confirmed) completed.push("商品已确认，等待系统继续处理");
+
+  let status = "等待你确认商品";
+  let reason = "请确认标题、规格和图片属于你刚刚采集的商品。";
+  let actionLabel = "确认这是我的商品";
+  let actionKind = "capture_review";
+  let progressLabel = "等待你确认";
+  let actionView = "sourcing";
+  let actionEffect = `确认 ${store?.name || item.storeId || "目标店铺"} 的当前商品；确认后建立本地草稿，不会自动上架。`;
+  let userInstruction = "确认标题、规格和图片是你刚刚采集的商品。";
+  let systemNext = "系统会建立本地商品草稿并打开资料页；只有无法判断的内容才会再问你。";
+  let safetyBoundary = "现在不会提交到 Ozon，也不会调用任何付费 AI；两者都需你另行确认。";
+  let required = ["确认标题、规格和图片是否正确"];
+  if (!reviewPossible) {
+    status = "商品资料不完整";
+    reason = "这次采集缺少必要信息，系统无法安全处理。";
+    actionLabel = "重新采集商品";
+    actionKind = "capture";
+    progressLabel = "需要重新采集";
+    actionEffect = `打开 ${store?.name || item.storeId || "目标店铺"} 的采集记录；重新采集不会自动上架。`;
+    userInstruction = "回到这个 1688 商品页面，用插件重新采集一次。";
+    systemNext = "系统会检查新数据，完整后自动回到商品确认。";
+    required = ["重新打开商品页面并采集"];
+  } else if (!reviewNeeded && !draftReady) {
+    status = "商品正在整理";
+    reason = "商品已经确认，系统正在准备商品资料。";
+    actionLabel = "建立商品草稿";
+    actionKind = "capture_workflow";
+    progressLabel = "准备建立草稿";
+    actionEffect = "建立或恢复当前商品的唯一本地草稿，不会自动上架。";
+    userInstruction = "点击建立当前商品的本地草稿。";
+    systemNext = "系统会整理已有规格和图片，并打开需要你确认的资料。";
+    required = ["继续当前商品"];
+  } else if (draftReady && !preflightPassed) {
+    status = validationStale ? "商品有更新，需要重新检查" : issueCount ? `需要补充 ${issueCount} 项资料` : "商品资料待完善";
+    reason = validationStale
+      ? "商品资料在上次检查后发生了变化，系统需要重新确认。"
+      : issueCount
+        ? `还有 ${issueCount} 项资料无法自动判断，需要你确认。`
+        : "系统和 AI 已完成可自动处理的内容，只留下必须确认的资料。";
+    actionLabel = validationStale ? "重新检查商品" : "完善商品资料";
+    actionKind = run ? "workflow" : "capture_workflow";
+    progressLabel = validationStale ? "需要重新检查" : "需要你补充";
+    if (!run) actionLabel = "打开商品资料";
+    actionView = "listing";
+    actionEffect = validationStale
+      ? "重新检查当前版本，检查通过前不会上架。"
+      : "只处理当前商品缺少的资料，检查通过前不会上架。";
+    userInstruction = !run
+      ? "打开当前商品资料，只处理系统无法确定的内容。"
+      : validationStale
+      ? "重新核对发生变化的商品资料。"
+      : "只补充系统无法确定的内容，不需要重做已经完成的资料。";
+    systemNext = run
+      ? "系统会重新检查商品；通过后再通知你确认是否上架。"
+      : "系统会恢复当前商品的唯一任务并打开资料页，不会让你寻找其他控件。";
+    required = [actionLabel];
+  } else if (preflightPassed) {
+    status = "商品已准备好";
+    reason = "系统检查已经通过，最后由你决定是否上架。";
+    actionLabel = "确认上架";
+    actionKind = "workflow";
+    progressLabel = "等待你确认";
+    actionView = "listing";
+    actionEffect = "先展示价格和商品摘要，只有你再次确认才会提交。";
+    userInstruction = "核对商品摘要和价格，决定是否进入最后确认。";
+    systemNext = "系统会先展示本次提交内容；仍需你再次确认才会提交。";
+    safetyBoundary = "点击这里不会直接提交；Ozon 提交和任何付费 AI 都需你另行确认。";
+    required = ["确认商品信息和价格后决定是否上架"];
+  }
+  return {
+    empty: false,
+    captureId: String(item.id || ""),
+    storeId: String(item.storeId || ""),
+    runId: String(run?.id || ""),
+    title: product.title || item.title || "未命名商品",
+    storeLabel: store?.name || item.storeId || "店铺未绑定",
+    offerId,
+    imageUrl,
+    skuCount,
+    imageCount,
+    reviewNeeded,
+    status,
+    reason,
+    actionLabel,
+    actionKind,
+    progressLabel,
+    actionView,
+    actionEffect,
+    userInstruction,
+    systemNext,
+    safetyBoundary,
+    completed,
+    required,
+    stages: [
+      { label: "采集商品", status: reviewPossible ? "complete" : "current" },
+      { label: "检查商品", status: preflightPassed ? "complete" : reviewPossible ? "current" : "pending" },
+      { label: "确认上架", status: preflightPassed ? "current" : "pending" },
+    ],
+  };
+}
+
+function currentProductActionAttributes(model = {}) {
+  const captureId = String(model.captureId || "").trim();
+  const storeId = String(model.storeId || "").trim();
+  const runId = String(model.runId || "").trim();
+  if (model.actionKind === "capture_review") {
+    if (!captureId) throw new Error("当前商品确认动作缺少采集记录");
+    return `data-current-capture-review="${escapeHtml(captureId)}" data-current-capture-store-id="${escapeHtml(storeId)}"`;
+  }
+  if (model.actionKind === "capture_workflow") {
+    if (!captureId) throw new Error("当前商品草稿动作缺少采集记录");
+    return `data-current-capture-workflow="${escapeHtml(captureId)}" data-current-capture-store-id="${escapeHtml(storeId)}"`;
+  }
+  if (model.actionKind === "capture") {
+    if (!captureId) throw new Error("当前商品采集动作缺少采集记录");
+    return `data-current-capture-id="${escapeHtml(captureId)}" data-current-capture-store-id="${escapeHtml(storeId)}"`;
+  }
+  if (model.actionKind === "workflow") {
+    if (!runId) throw new Error("当前商品动作缺少工作流");
+    return `data-current-workflow-id="${escapeHtml(runId)}" data-current-workflow-store-id="${escapeHtml(storeId)}"`;
+  }
+  return `data-cockpit-view="${escapeHtml(model.actionView || "sourcing")}"`;
+}
+
+function renderSourcingInbox() {
+  const target = $("#sourcingCurrentProduct");
+  if (!target) return;
+  const model = currentProductWorkspaceModel();
+  if (model.empty) {
+    target.innerHTML = `
+      <div class="sourcing-current-empty">
+        <span>当前商品</span>
+        <strong>等待第一件 1688 商品</strong>
+        <p>完成上面的插件操作后，商品会自动出现在这里，不需要先配置任务或创建候选池。</p>
+      </div>`;
+    return;
+  }
+  const actionAttributes = currentProductActionAttributes(model);
+  target.innerHTML = `
+    <div class="sourcing-current-media">
+      ${model.imageUrl ? `<img src="${escapeHtml(model.imageUrl)}" alt="" loading="lazy" referrerpolicy="no-referrer" />` : `<span>OZ</span>`}
+    </div>
+    <div class="sourcing-current-copy">
+      <span class="sourcing-current-kicker">当前采集商品 · 系统已接收</span>
+      <h2>${escapeHtml(model.title)}</h2>
+      <div class="sourcing-current-meta">
+        ${model.storeLabel ? `<span>${escapeHtml(model.storeLabel)}</span>` : ""}
+        ${model.offerId ? `<span>1688 货号 ${escapeHtml(model.offerId)}</span>` : ""}
+        ${model.skuCount ? `<span>${escapeHtml(model.skuCount)} 个规格</span>` : ""}
+        ${model.imageCount ? `<span>${escapeHtml(model.imageCount)} 张图片</span>` : ""}
+      </div>
+      <div class="sourcing-auto-result">
+        <span>${escapeHtml(model.progressLabel || "系统处理结果")}</span>
+        <strong>${escapeHtml(model.status)}</strong>
+        <p>${escapeHtml(model.reason)}</p>
+      </div>
+    </div>
+    <div class="sourcing-current-action">
+      <span>需要你时只显示一个动作</span>
+      <button class="primary" type="button" ${actionAttributes}>${escapeHtml(model.actionLabel)}</button>
+      <small>${escapeHtml(model.actionEffect)}</small>
+    </div>`;
+}
+
+function renderCurrentProductWorkspace() {
+  const model = currentProductWorkspaceModel();
+  const workspace = $("#currentProductWorkspace");
+  const progress = $("#currentProductProgress");
+  const completed = $("#currentProductCompleted");
+  const required = $("#currentProductRequired");
+  const listingGate = $("#listingCurrentProductGate");
+  const actionAttributes = currentProductActionAttributes(model);
+  if (workspace) {
+    workspace.innerHTML = `
+      <div class="current-product-main">
+        <div class="current-product-thumbnail">
+          ${model.imageUrl ? `<img src="${escapeHtml(model.imageUrl)}" alt="" loading="lazy" referrerpolicy="no-referrer" />` : `<span>OZ</span>`}
+        </div>
+        <div class="current-product-identity">
+          <span class="current-product-status">${escapeHtml(model.status)}</span>
+          <h2>${escapeHtml(model.title)}</h2>
+          <p>${escapeHtml(model.reason)}</p>
+          <div class="current-product-meta">
+            ${model.storeLabel ? `<span>${escapeHtml(model.storeLabel)}</span>` : ""}
+            ${model.offerId ? `<span>货号 ${escapeHtml(model.offerId)}</span>` : ""}
+            ${model.skuCount ? `<span>${escapeHtml(model.skuCount)} 个规格</span>` : ""}
+            ${model.imageCount ? `<span>${escapeHtml(model.imageCount)} 张图片</span>` : ""}
+          </div>
+        </div>
+      </div>
+      <div class="current-product-primary-action">
+        <span class="current-product-action-kicker">现在只做这一步</span>
+        <p class="current-product-user-instruction">${escapeHtml(model.userInstruction)}</p>
+        <button class="primary" type="button" aria-describedby="currentProductActionDescription currentProductActionSafety" ${actionAttributes}>${escapeHtml(model.actionLabel)}</button>
+        <div class="current-product-action-explanation">
+          <div><span>点完以后</span><strong id="currentProductActionDescription">${escapeHtml(model.systemNext)}</strong></div>
+          <div class="is-safe"><span>安全边界</span><strong id="currentProductActionSafety">${escapeHtml(model.safetyBoundary)}</strong></div>
+        </div>
+      </div>`;
+  }
+  if (progress) progress.innerHTML = model.stages.map((stage, index) => `<li class="${escapeHtml(stage.status)}"><span>${index + 1}</span><strong>${escapeHtml(stage.label)}</strong></li>`).join("");
+  if (completed) completed.innerHTML = model.completed.length
+    ? `<ul>${model.completed.map((item) => `<li>${escapeHtml(item)}</li>`).join("")}</ul>`
+    : `<p>采集完成后，系统会在这里显示处理结果。</p>`;
+  if (required) required.innerHTML = `<strong>${escapeHtml(model.status)}</strong><p>${escapeHtml(model.required.join("；"))}</p><small>${escapeHtml(model.actionEffect)}</small>`;
+  if (listingGate) {
+    listingGate.classList.toggle("is-blocked", model.reviewNeeded || model.empty);
+    listingGate.innerHTML = `
+      <div><span>当前商品</span><strong>${escapeHtml(model.title)}</strong><small>${escapeHtml(model.storeLabel || "尚未绑定店铺")}${model.offerId ? ` · Offer ${escapeHtml(model.offerId)}` : ""}</small></div>
+      <div><span>下一步</span><strong>${escapeHtml(model.status)}</strong><small>${escapeHtml(model.reason)}</small></div>
+      <button class="primary" type="button" ${actionAttributes}>${escapeHtml(model.actionLabel)}</button>`;
+  }
+}
+
+function renderGlobalCurrentTaskBar() {
+  const target = $("#globalCurrentTaskBody");
+  if (!target) return;
+  const task = currentCaptureSellerTask();
+  if (!task) {
+    target.innerHTML = `<div><strong>还没有商品</strong><small>先采集一个准备上架的商品。</small></div><button type="button" class="primary" data-cockpit-view="sourcing">去采集商品</button>`;
+    return;
+  }
+  const { item, product, reviewNeeded, hasDraft } = task;
+  const store = state.stores.find((row) => row.id === item.storeId);
+  const status = reviewNeeded ? "等待你确认商品" : hasDraft ? "继续完善商品资料" : "商品正在整理";
+  target.innerHTML = `
+    <div class="global-current-task-copy">
+      <strong title="${escapeHtml(product.title || "未命名商品")}">${escapeHtml(product.title || "未命名商品")}</strong>
+      <small>${escapeHtml(store?.name || item.storeId || "店铺未绑定")} · ${escapeHtml(status)}</small>
+    </div>
+    <button type="button" class="primary" data-global-capture-id="${escapeHtml(item.id)}" data-global-capture-store-id="${escapeHtml(item.storeId || "")}">${reviewNeeded ? "检查商品" : "继续处理"}</button>
+  `;
+}
+
+async function openCurrentCaptureTask(captureId = "", storeId = "") {
+  const id = String(captureId || "").trim();
+  const item = state.captureRows.find((row) => String(row.id || "") === id);
+  if (!item) {
+    toast("当前采集商品已不存在，请刷新采集箱。", "error");
+    return false;
+  }
+  storeId = String(storeId || item.storeId || "").trim();
+  await switchStoreContext(storeId, { loadWarehouses: false });
+  if ($("#captureStoreSelect")) $("#captureStoreSelect").value = storeId;
+  state.currentCaptureId = id;
+  const task = currentCaptureSellerTask();
+  if (task?.item?.id === id && task.hasDraft && task.reviewApproved === true) {
+    activateErpView("listing");
+    renderCurrentProductWorkspace();
+    renderListingSellerTaskSummary();
+    toast("已打开当前商品资料；系统先填，你只处理橙色待补项。", "ok");
+    return true;
+  }
+  activateErpView("sourcing");
+  renderCaptureBox();
+  const row = document.querySelector(`#captureBoxTable tr[data-id="${CSS.escape(id)}"]`);
+  row?.scrollIntoView({ behavior: "smooth", block: "center" });
+  row?.classList.add("capture-deep-link-focus");
+  window.setTimeout(() => row?.classList.remove("capture-deep-link-focus"), 2200);
+  toast("已打开当前真实商品；操作按钮固定在右侧，不需要横向查找。", "ok");
   return true;
 }
 
@@ -6213,14 +7185,35 @@ function renderOpen1688Status() {
 
 function renderCrawlerWorkerStatus() {
   const box = $("#crawlerWorkerStatus");
-  if (!box) return;
+  const technicalBox = $("#crawlerWorkerStatusTechnical");
   const workers = state.crawlerWorkerStatus?.items || [];
   const latest = workers[0] || null;
   const statusText = latest?.online ? "在线" : "离线";
   const currentJob = latest?.currentJobId
     ? `${latest.currentJobKind || "job"} / ${latest.currentTaskId || "-"}`
     : "空闲";
-  box.innerHTML = `
+  if (box) {
+    const headline = latest?.needsHuman
+      ? "1688 正在等待你完成人机验证"
+      : latest?.online
+        ? "插件已连接，可以开始采集"
+        : "暂未检测到插件连接";
+    const help = latest?.needsHuman
+      ? "回到 1688 页面完成验证，插件会从原任务继续。"
+      : latest?.online
+        ? "现在去 1688 商品页点击“补齐后入箱”。"
+        : "请确认浏览器扩展已启用，并保持 1688 登录状态。";
+    box.innerHTML = `
+      <span class="sourcing-plugin-status-dot ${latest?.needsHuman ? "needs-human" : latest?.online ? "online" : "offline"}" aria-hidden="true"></span>
+      <div>
+        <span>采集插件</span>
+        <strong>${escapeHtml(headline)}</strong>
+        <small>${escapeHtml(help)}</small>
+      </div>
+    `;
+  }
+  if (!technicalBox) return;
+  technicalBox.innerHTML = `
     <article class="${latest?.online ? "online" : "offline"}">
       <span>插件状态</span>
       <strong>${statusText}</strong>
@@ -7031,8 +8024,14 @@ function renderCaptureBox() {
           : `<span class="ok-badge capture-evidence-badge" title="${escapeHtml(sourceEvidenceNextAction)}">来源证据完整</span>`;
         const draftStatus = captureDraftVariantStatuses(item);
         const sellerTask = captureSellerTaskView(item, { sourceEvidenceStatus, evidenceIssues });
+        const sourceVariants = Array.isArray(product.skuVariants) ? product.skuVariants : [];
+        const uniqueSkuIds = new Set(sourceVariants
+          .map((variant) => String(variant?.sourceSkuId || variant?.source_sku_id || variant?.skuId || variant?.sku_id || "").trim())
+          .filter(Boolean));
+        const uniqueSkuCount = uniqueSkuIds.size || sourceVariants.length;
+        const isCurrentProduct = String(item.id || "") === String(state.currentCaptureId || "");
         return `
-          <tr data-id="${item.id}">
+          <tr class="${isCurrentProduct ? "capture-current-product" : "capture-other-product"}" data-id="${item.id}" data-store-id="${escapeHtml(item.storeId || "")}">
             <td><input class="capture-check" type="checkbox" /></td>
             <td>${formatDateTime(item.updatedAt || item.receivedAt)}</td>
             <td>
@@ -7041,8 +8040,9 @@ function renderCaptureBox() {
               </select>
             </td>
             <td>
+              ${isCurrentProduct ? `<span class="capture-current-label">当前要处理的商品</span>` : ""}
               <strong>${escapeHtml(product.title || "未命名商品")}</strong>
-              <div class="status-sub">${escapeHtml(product.url || "")}</div>
+              <div class="status-sub capture-source-url" title="${escapeHtml(product.url || "")}">${escapeHtml(product.url || "")}</div>
               ${warningBadge}
               ${evidenceBadge}
               <div class="status-sub capture-source-evidence" data-source-evidence-status="${escapeHtml(sourceEvidenceStatus)}">下一步：${escapeHtml(sourceEvidenceNextAction)}</div>
@@ -7050,7 +8050,7 @@ function renderCaptureBox() {
               <div class="status-sub capture-source-domain-coverage" data-missing-domains="${escapeHtml(missingDomains.join(","))}">证据覆盖：${escapeHtml(domainText)}</div>
               <div class="status-sub capture-identity-summary" data-capture-task-id="${escapeHtml(captureIdentity.taskId || "")}" data-capture-offer-id="${escapeHtml(captureIdentity.offerId || "")}">回传身份：${escapeHtml(captureIdentityText)}</div>
             </td>
-            <td>${product.skuVariants?.length || 0}</td>
+            <td title="${sourceVariants.length !== uniqueSkuCount ? `采集 ${sourceVariants.length} 行，去重后 ${uniqueSkuCount} 个` : `${uniqueSkuCount} 个唯一 SKU`}">${uniqueSkuCount}</td>
             <td>${product.video?.url ? "有" : "无"}</td>
             <td>
               <div class="capture-seller-task" data-capture-task-state="${escapeHtml(sellerTask.state)}">
@@ -7061,6 +8061,7 @@ function renderCaptureBox() {
               ${draftStatus ? `<div class="status-sub">${escapeHtml(draftStatus)}</div>` : ""}
             </td>
             <td class="row-actions">
+              ${isCurrentProduct && captureReviewNeeded ? `<span class="capture-current-action-guide">现在只做这一步</span>` : ""}
               <button class="small-blue edit-capture" type="button">${escapeHtml(sellerTask.actionLabel)}</button>
               ${sellerTask.state === "waiting_human" && captureTaskId ? `<button class="small-blue resume-capture-human" type="button" data-task-id="${escapeHtml(captureTaskId)}">打开采集任务</button>` : ""}
               ${captureReviewNeeded ? `<button class="small-blue review-capture" type="button">确认当前快照</button>` : ""}
@@ -7084,16 +8085,16 @@ function selectedCaptureSelections() {
     }));
 }
 
-async function switchStoreContext(storeId) {
+async function switchStoreContext(storeId, { loadWarehouses = true } = {}) {
   if (!storeId) throw new Error("采集记录没有归属店铺，请先在采集箱选择店铺");
   if (!state.stores.some((store) => store.id === storeId)) {
     throw new Error(`找不到采集记录归属店铺：${storeId}`);
   }
   if ($("#storeSelect").value !== storeId) {
     $("#storeSelect").value = storeId;
-    updateStoreHint();
+    $("#storeSelect").dispatchEvent(new Event("change"));
   }
-  await loadListingWarehouses();
+  if (loadWarehouses) await loadListingWarehouses();
 }
 
 function captureDraftVariantStatuses(item = {}) {
@@ -7198,26 +8199,77 @@ async function openCaptureHumanTask(taskId = "") {
 
 async function reviewCaptureSnapshot(id, storeId = "", button = null) {
   const item = state.captureRows.find((entry) => String(entry.id || "") === String(id || ""));
-  const hash = String(item?.parsed?.sourceEvidence?.snapshotHash || "").trim();
+  const hash = captureSnapshotHash(item);
   if (!/^sha256:[a-f0-9]{64}$/i.test(hash)) {
-    toast("当前采集没有有效快照 hash，不能确认", "error");
+    toast("当前采集缺少可核对的来源记录，请重新采集商品", "error");
     return;
   }
-  const shortHash = `${hash.slice(0, 15)}…${hash.slice(-8)}`;
-  if (!window.confirm(`确认你已核对当前 1688 商品，并确认快照 ${shortHash} 就是目标商品？`)) return;
+  if (!window.confirm("确认标题、规格和图片属于你刚刚采集的商品？确认后系统会建立本地草稿；不会提交到 Ozon，也不会调用付费 AI。")) return;
   setBusy(button, true);
   try {
-    await api(`/api/1688/captures/${encodeURIComponent(id)}/review`, {
+    const reviewResult = await api(`/api/1688/captures/${encodeURIComponent(id)}/review`, {
       method: "POST",
       body: JSON.stringify({ storeId }),
     });
-    await loadCaptureBox();
-    toast("当前 1688 快照已确认；现在可以生成草稿并预检", "ok");
+    const itemIndex = state.captureRows.findIndex((entry) => String(entry.id || "") === String(id || ""));
+    if (itemIndex >= 0 && reviewResult.item) state.captureRows[itemIndex] = reviewResult.item;
+    await openCaptureDraftSkeleton(id, storeId);
+    toast("已确认当前快照并创建本地草稿骨架；未提交 Ozon", "ok");
   } catch (error) {
-    toast(error.message || "来源快照确认失败", "error");
+    toast(error.message || "来源快照确认或本地草稿创建失败", "error");
   } finally {
     setBusy(button, false);
   }
+}
+
+async function reviewCurrentProductFromWorkspace(id, storeId = "", button = null) {
+  const item = state.captureRows.find((entry) => String(entry.id || "") === String(id || ""));
+  storeId = String(storeId || item?.storeId || "").trim();
+  await switchStoreContext(storeId, { loadWarehouses: false });
+  state.currentCaptureId = String(id || "");
+  return reviewCaptureSnapshot(id, storeId, button);
+}
+
+async function openCurrentProductDraftFromWorkspace(id, storeId = "") {
+  const item = state.captureRows.find((entry) => String(entry.id || "") === String(id || ""));
+  storeId = String(storeId || item?.storeId || "").trim();
+  await switchStoreContext(storeId, { loadWarehouses: false });
+  state.currentCaptureId = String(id || "");
+  return openCaptureDraftSkeleton(id, storeId);
+}
+
+async function openCurrentProductWorkflowFromWorkspace(runId, storeId = "") {
+  await switchStoreContext(String(storeId || "").trim(), { loadWarehouses: false });
+  state.selectedWorkflowRunId = String(runId || "").trim();
+  state.selectedWorkflowNodeKey = "";
+  activateErpView("listing");
+  renderListingSellerTaskSummary();
+}
+
+async function openCaptureDraftSkeleton(id, storeId = "") {
+  const data = await api(`/api/1688/captures/${encodeURIComponent(id)}/workflow`, {
+    method: "POST",
+    body: JSON.stringify({ storeId }),
+  });
+  const draftSkeleton = data.draftSkeleton || {};
+  const workflowRunId = String(data.workflowRunId || data.job?.workflowRunId || "").trim();
+  if (!workflowRunId) throw new Error("本地草稿骨架已创建，但没有绑定商品工作流；请重试当前交接");
+  state.selectedWorkflowRunId = workflowRunId;
+  state.selectedWorkflowNodeKey = "capture_handoff";
+  state.currentCaptureId = id;
+  const capture = state.captureRows.find((entry) => String(entry.id || "") === String(id || ""));
+  if (capture?.parsed) state.collected1688 = capture.parsed;
+  const blockerCount = Array.isArray(draftSkeleton.blockers) ? draftSkeleton.blockers.length : 0;
+  state.listingHandoffNotice = blockerCount
+    ? `本地草稿已建立：保留 ${draftSkeleton.variantCount || 0} 个唯一 SKU，集中列出 ${blockerCount} 项待补资料；未提交 Ozon。`
+    : `本地草稿已建立：保留 ${draftSkeleton.variantCount || 0} 个唯一 SKU；下一步运行提交前预检。`;
+  showResponse(data);
+  await loadWorkflowRuns();
+  await loadAutoListJobs();
+  await loadCaptureBox();
+  activateErpView("listing");
+  renderListingSellerTaskSummary();
+  return data;
 }
 
 async function createDraftFromCapture(id, storeId = "", button = null) {
@@ -10665,8 +11717,51 @@ function workflowRunMatchesFilter(run = {}, filter = "all") {
   return true;
 }
 
+function isSyntheticWorkflowRun(run = {}) {
+  if (run.synthetic === true || run.fixture === true || run.summary?.synthetic === true) return true;
+  const sourceMarkers = [
+    run.sourceType,
+    run.summary?.sourceType,
+    run.fixtureProvenance?.captureMode,
+  ].filter(Boolean).map((value) => String(value).trim().toLowerCase());
+  if (sourceMarkers.some((value) => ["fixture", "fixture_replay", "synthetic", "synthetic_fixture", "test"].includes(value))) return true;
+  const titles = [
+    run.title,
+    run.name,
+    run.summary?.productTitle,
+    run.currentProductTask?.title,
+    run.summary?.currentProductTask?.title,
+    run.goldenPathSellerTask?.title,
+  ].filter(Boolean).map((value) => String(value).trim().toLowerCase());
+  return titles.some((value) => /^(fixture product|test product|测试商品|demo product)(?:\b|\s|$)/.test(value));
+}
+
+function sellerWorkflowRuns() {
+  return state.showSyntheticWorkflows
+    ? [...(state.workflowRuns || [])]
+    : (state.workflowRuns || []).filter((run) => !isSyntheticWorkflowRun(run));
+}
+
+function sellerWorkflowSummary() {
+  const runs = sellerWorkflowRuns();
+  return {
+    total: runs.length,
+    running: runs.filter((run) => run.status === "running").length,
+    waitingHuman: runs.filter((run) => run.status === "waiting_human" || run.summary?.status === "waiting_human").length,
+    blocking: runs.filter((run) => Boolean(run.summary?.blockingNodeKey) || run.status === "blocked").length,
+    highRisk: runs.filter((run) => run.summary?.riskLevel === "high").length,
+    live: runs.filter((run) => run.status === "live" || run.summary?.status === "live").length,
+    failed: runs.filter((run) => run.status === "failed").length,
+    lockedWaitingHuman: runs.filter((run) => run.locks?.waitingHuman === true || run.locks?.waiting_human === true).length,
+    submitLocked: runs.filter((run) => run.locks?.submit === true || run.locks?.submitLocked === true).length,
+    lockedPaused: runs.filter((run) => run.locks?.paused === true).length,
+  };
+}
+
 function selectedWorkflowRun() {
-  return state.workflowRuns.find((run) => run.id === state.selectedWorkflowRunId) || state.workflowRuns[0] || null;
+  const captureTask = currentCaptureSellerTask();
+  if (!captureTask?.item || captureTask.reviewApproved !== true) return null;
+  return canonicalCurrentCaptureWorkflowRun();
 }
 
 function selectedWorkflowNode(run) {
@@ -10679,12 +11774,18 @@ async function loadWorkflowRuns() {
     const data = await api("/api/workflows");
     state.workflowRuns = data.items || data.runs || [];
     state.workflowSummary = data.summary || null;
-    if (!state.selectedWorkflowRunId && state.workflowRuns.length) {
-      state.selectedWorkflowRunId = state.workflowRuns[0].id;
-    }
-    if (!state.workflowRuns.some((run) => run.id === state.selectedWorkflowRunId)) {
-      state.selectedWorkflowRunId = state.workflowRuns[0]?.id || "";
+    const sellerRuns = sellerWorkflowRuns();
+    const captureTask = currentCaptureSellerTask();
+    if (captureTask?.item) {
+      const canonicalRun = canonicalCurrentCaptureWorkflowRun();
+      state.selectedWorkflowRunId = canonicalRun?.id || "__no_workflow__";
       state.selectedWorkflowNodeKey = "";
+    } else {
+      if (!state.selectedWorkflowRunId && sellerRuns.length) state.selectedWorkflowRunId = sellerRuns[0].id;
+      if (!sellerRuns.some((run) => run.id === state.selectedWorkflowRunId)) {
+        state.selectedWorkflowRunId = sellerRuns[0]?.id || "";
+        state.selectedWorkflowNodeKey = "";
+      }
     }
     renderWorkflowConsole();
     renderCockpitDashboard();
@@ -10693,6 +11794,8 @@ async function loadWorkflowRuns() {
     // summary as well; otherwise the upload queue may keep showing the prior
     // product's blocker and safe next action.
     renderListingSellerTaskSummary();
+    renderGlobalCurrentTaskBar();
+    renderCurrentProductWorkspace();
   } catch (error) {
     state.promotionProducts = [];
     state.promotionCandidates = [];
@@ -10733,14 +11836,22 @@ async function loadRulePublishReviewIntents() {
 function renderWorkflowRunList(run) {
   const list = $("#workflowRunList");
   if (!list) return;
-  if (!state.workflowRuns.length) {
+  const sellerRuns = sellerWorkflowRuns();
+  const hiddenCount = Math.max(0, (state.workflowRuns || []).length - sellerRuns.length);
+  const notice = $("#syntheticWorkflowNotice");
+  if (notice) notice.textContent = state.showSyntheticWorkflows
+    ? `正在显示全部 ${(state.workflowRuns || []).length} 条记录，其中包含测试数据。`
+    : `测试数据已隐藏 ${hiddenCount} 条，只显示真实业务记录。`;
+  const toggle = $("#toggleSyntheticWorkflows");
+  if (toggle) toggle.textContent = state.showSyntheticWorkflows ? "隐藏测试数据" : "显示测试数据";
+  if (!sellerRuns.length) {
     list.innerHTML = `<p class="hint">暂无工作流记录。跑一次自动上架后，这里会显示每个节点。</p>`;
     return;
   }
-  const filteredRuns = state.workflowRuns.filter((item) => workflowRunMatchesFilter(item, state.workflowFilter));
+  const filteredRuns = sellerRuns.filter((item) => workflowRunMatchesFilter(item, state.workflowFilter));
   list.innerHTML = `
     <h2>运行记录</h2>
-    <p class="hint">当前筛选：${escapeHtml(state.workflowFilter)} · ${filteredRuns.length}/${state.workflowRuns.length} 条</p>
+    <p class="hint">当前筛选：${escapeHtml(state.workflowFilter)} · ${filteredRuns.length}/${sellerRuns.length} 条真实业务记录</p>
     <div class="workflow-run-items">
       ${filteredRuns.length ? filteredRuns.map((item) => `
         <button class="workflow-run-card ${item.id === run?.id ? "active" : ""}" data-run-id="${escapeHtml(item.id)}">
@@ -10760,7 +11871,7 @@ function renderWorkflowRunList(run) {
 function renderWorkflowSummaryCards() {
   const el = $("#workflowSummaryCards");
   if (!el) return;
-  const summary = state.workflowSummary || {};
+  const summary = sellerWorkflowSummary();
   el.innerHTML = `
     <article>
       <span>工作流</span>
@@ -10780,7 +11891,7 @@ function renderWorkflowSummaryCards() {
     <article>
       <span>阻塞节点</span>
       <strong>${Number(summary.blocking || 0)}</strong>
-      <small>${escapeHtml((summary.topNextActions || [])[0]?.action || "暂无推荐动作")}</small>
+      <small>选择任务后查看安全下一步</small>
     </article>
   `;
 }
@@ -12547,7 +13658,8 @@ function renderWorkflowDetail(run, node) {
   const validatedDraftHash = String(run.validatedDraftHash || run.payloadDraftValidation?.draftHash || "").trim();
   const preflightPassed = run.payloadDraftValidation?.ok === true;
   const validationHashMatches = Boolean(currentDraftHash && validatedDraftHash && currentDraftHash === validatedDraftHash);
-  const submissionGateBlocked = !preflightPassed || !validationHashMatches;
+  const currentProductBindingReady = workflowCanActForCurrentProduct(run);
+  const submissionGateBlocked = !preflightPassed || !validationHashMatches || !currentProductBindingReady;
   const submissionButtonLabel = submissionState === "completed"
     ? "已提交，等待审核回查"
     : submissionState === "needs_review"
@@ -12559,7 +13671,9 @@ function renderWorkflowDetail(run, node) {
           : !validationHashMatches
             ? "草稿已修改，先重新预检"
             : "确认提交 Ozon";
-  const submissionButtonHint = submissionState === "completed"
+  const submissionButtonHint = !currentProductBindingReady
+    ? "当前工作流没有绑定已人工确认的真实商品；禁止保存、预检或提交另一个历史/测试商品。"
+    : submissionState === "completed"
     ? "当前草稿已提交过；请使用 task_id 回查审核，不要再次提交。"
     : submissionState === "needs_review"
       ? "上次提交结果未知；先人工回查 Ozon，不能自动重试。"
@@ -12590,10 +13704,12 @@ function renderWorkflowDetail(run, node) {
       <button class="ghost" data-workflow-action="pause">暂停</button>
       <button class="ghost" data-workflow-action="resume">恢复</button>
       <button class="primary" data-workflow-action="retry">重试节点</button>
-      <button class="primary" data-workflow-action="continue-node">从此继续</button>
+      ${["match_profit", "content_generate"].includes(node.key) ? "" : `
+        <button class="primary" data-workflow-action="continue-node">从此继续</button>
+      `}
       <button class="primary" data-workflow-action="controlled-chain">受控跑到总闸</button>
     </div>
-    ${run.status === "waiting_human" || run.locks?.waitingHuman ? `
+    ${currentProductBindingReady && (run.status === "waiting_human" || run.locks?.waitingHuman) ? `
       <section class="workflow-manual-panel">
         <strong>人工介入</strong>
         <p class="hint">当前流程已安全暂停，请选择一个处理结果，系统会记录事件并更新锁状态。</p>
@@ -12798,6 +13914,11 @@ async function handleWorkflowAction(action, button) {
   const run = selectedWorkflowRun();
   const node = selectedWorkflowNode(run);
   if (!run) return;
+  const readOnlyActions = new Set(["copy-run-summary", "focus-payload-draft"]);
+  if (!workflowCanActForCurrentProduct(run) && !readOnlyActions.has(action)) {
+    toast("当前没有精确绑定且已确认的真实商品；该工作流动作已阻断。", "error");
+    return;
+  }
   if (action === "pause") await api(`/api/workflows/${encodeURIComponent(run.id)}/pause`, { method: "POST", body: "{}" });
   if (action === "resume") await api(`/api/workflows/${encodeURIComponent(run.id)}/resume`, { method: "POST", body: "{}" });
   if (action === "request-new-source") {
@@ -12815,20 +13936,56 @@ async function handleWorkflowAction(action, button) {
     toast("已解除人工等待锁，并请求重试当前节点");
   }
   if (action === "continue-node" && node) {
-    await api(`/api/workflows/${encodeURIComponent(run.id)}/nodes/${encodeURIComponent(node.key)}/continue`, {
+    if (["match_profit", "content_generate"].includes(node.key)) {
+      toast("该节点可能调用付费 AI，请使用“受控跑到总闸”并确认当前商品授权。", "warning");
+      return;
+    }
+    const result = await api(`/api/workflows/${encodeURIComponent(run.id)}/nodes/${encodeURIComponent(node.key)}/continue`, {
       method: "POST",
       body: JSON.stringify({ note: "页面人工选择：从此继续", input: node.input || {} }),
     });
+    if (result?.ok !== true) {
+      throw new Error(result?.error || "节点继续请求未执行。");
+    }
     toast("已执行从此继续动作");
   }
   if (action === "controlled-chain") {
+    const expectedBinding = {
+      workflowRunId: String(run.id || ""),
+      autoListingJobId: String(run.entity?.autoListingJobId || ""),
+      captureId: String(run.entity?.candidateId || ""),
+      storeId: String(run.entity?.storeId || ""),
+      sourceSnapshotHash: String(run.entity?.sourceEvidence?.snapshotHash || ""),
+    };
+    const chainIncludesPaidAi = ["match_profit", "content_generate"]
+      .includes(node?.key || run.currentNode || "match_profit");
+    if (chainIncludesPaidAi
+      && !window.confirm("确认调用付费 AI 处理当前精确绑定的商品吗？流程只运行到提交前预检，不会提交 Ozon。")) {
+      return;
+    }
     const result = await api(`/api/workflows/${encodeURIComponent(run.id)}/controlled-chain`, {
       method: "POST",
-      body: JSON.stringify({ startNode: node?.key || run.currentNode || "match_profit", note: "页面人工选择：受控跑到总闸" }),
+      body: JSON.stringify({
+        startNode: node?.key || run.currentNode || "match_profit",
+        environment: currentSellerReadEnvironment(),
+        note: "页面人工选择：受控跑到总闸",
+        ...(chainIncludesPaidAi ? {
+          confirmPaidAi: true,
+          confirmation: "I_CONFIRM_PAID_AI_FOR_CURRENT_PRODUCT",
+          expectedBinding,
+        } : {}),
+      }),
     });
+    if (result?.ok !== true) {
+      throw new Error(result?.error || `受控链路未执行（${result?.reasonCode || "UNKNOWN"}）。`);
+    }
     toast(`受控链路已跑 ${result.steps?.length || 0} 步，未触发 Ozon 提交`);
   }
   if (action === "confirm-continue" && node) {
+    if (!workflowCanActForCurrentProduct(run)) {
+      toast("当前商品尚未完成来源确认，不能确认继续提交。", "error");
+      return;
+    }
     const ok = window.confirm("确认继续提交风险较高。请确认你已判断不是重复货源/重复卡片，是否继续？");
     if (!ok) return;
     await api(`/api/workflows/${encodeURIComponent(run.id)}/nodes/${encodeURIComponent(node.key)}/confirm-continue`, {
@@ -12989,6 +14146,10 @@ async function handleWorkflowAction(action, button) {
     return;
   }
   if (action === "submit-payload-draft") {
+    if (!workflowCanActForCurrentProduct(run)) {
+      toast("当前工作流未精确绑定已确认的真实商品，禁止提交。请回到当前商品完成来源确认。", "error");
+      return;
+    }
     const payloadText = $("#workflowPayloadEditor")?.value || "{}";
     if (!workflowPayloadDraftMatchesRun(run, payloadText)) {
       toast("草稿内容已修改。请先保存草稿并重新预检，再确认提交。", "error");
@@ -14116,6 +15277,7 @@ async function saveSelectedCategoryToListingDraft() {
     let data = await api(`/api/ozon-learning/auto-list-jobs/${encodeURIComponent(job.id)}/manual-category`, {
       method: "POST",
       body: JSON.stringify({
+        expectedBinding: listingManualEvidenceBinding(job),
         description_category_id: Number($("#listingCategoryId")?.value || 0),
         type_id: Number($("#listingTypeId")?.value || 0),
         path: $("#listingCategoryPath")?.value || $("#categoryKeyword")?.value || "已由当前店铺类目建议选择",
@@ -15316,6 +16478,21 @@ function renderTabTaskCards() {
   });
 }
 
+function initializeSourcingAdvancedDisclosure() {
+  const view = $("#sourcing");
+  const details = view?.querySelector(".sourcing-advanced-disclosure");
+  if (!view || !details || details.querySelector(".sourcing-advanced-content")) return;
+  const content = document.createElement("div");
+  content.className = "sourcing-advanced-content";
+  let sibling = details.nextElementSibling;
+  while (sibling) {
+    const next = sibling.nextElementSibling;
+    content.append(sibling);
+    sibling = next;
+  }
+  details.append(content);
+}
+
 function applyProgressiveDisclosure() {
   document.querySelectorAll(".view").forEach((view) => {
     if (view.dataset.progressiveDisclosureReady === "1") return;
@@ -15370,6 +16547,25 @@ function syncNavigationForView(view, activeTab = null) {
   });
 }
 
+async function syncListingStoreContext() {
+  const task = currentCaptureSellerTask();
+  const targetStoreId = String(task?.item?.storeId || "").trim();
+  if (!targetStoreId || targetStoreId === String(selectedStoreId() || "").trim()) return false;
+  if (state.listingStoreSyncId === targetStoreId) return false;
+  state.listingStoreSyncId = targetStoreId;
+  try {
+    await switchStoreContext(targetStoreId, { loadWarehouses: false });
+    renderListingSellerTaskSummary();
+    toast("已自动切换到当前商品所属店铺", "ok");
+    return true;
+  } catch (error) {
+    toast(error.message || "切换当前商品店铺失败", "error");
+    return false;
+  } finally {
+    state.listingStoreSyncId = "";
+  }
+}
+
 function activateErpView(view, sourceTab = null) {
   const tab = sourceTab || document.querySelector(`.tab[data-view="${view}"]`);
   const targetView = document.querySelector(`#${view}`);
@@ -15378,6 +16574,10 @@ function activateErpView(view, sourceTab = null) {
   syncNavigationForView(view, tab);
   targetView.classList.add("active");
   document.body.dataset.activeView = view;
+  if (view === "listing") void syncListingStoreContext();
+  if (!["dashboard", "sourcing", "listing", "products", "orders"].includes(view)) {
+    toggleSecondaryNavigation(true);
+  }
   return true;
 }
 
@@ -15392,9 +16592,24 @@ function toggleMobileNavigation(force) {
   return shouldOpen;
 }
 
+function toggleSecondaryNavigation(force) {
+  const nav = $("#sellerSecondaryNav");
+  const button = $("#secondaryNavToggle");
+  if (!nav || !button) return false;
+  const shouldOpen = typeof force === "boolean" ? force : !nav.classList.contains("is-open");
+  nav.classList.toggle("is-open", shouldOpen);
+  button.setAttribute("aria-expanded", String(shouldOpen));
+  button.classList.toggle("is-open", shouldOpen);
+  return shouldOpen;
+}
+
 function bindApplicationNavigation() {
   document.querySelectorAll("[data-nav-group]").forEach((button) => {
     button.addEventListener("click", () => {
+      if (button.dataset.view) {
+        activateErpView(button.dataset.view);
+        return;
+      }
       const groupKey = button.dataset.navGroup;
       const panel = document.querySelector(`[data-nav-group-panel="${groupKey}"]`);
       if (!panel) return;
@@ -15403,7 +16618,18 @@ function bindApplicationNavigation() {
     });
   });
   on("#mobileNavToggle", "click", () => toggleMobileNavigation());
+  on("#secondaryNavToggle", "click", () => toggleSecondaryNavigation());
   on("#sidebarBackdrop", "click", () => toggleMobileNavigation(false));
+  $("#globalCurrentTaskBar")?.addEventListener("click", (event) => {
+    const captureButton = event.target.closest("[data-global-capture-id]");
+    if (captureButton) {
+      openCurrentCaptureTask(captureButton.dataset.globalCaptureId, captureButton.dataset.globalCaptureStoreId)
+        .catch((error) => toast(error.message || "打开当前商品失败", "error"));
+      return;
+    }
+    const viewButton = event.target.closest("[data-cockpit-view]");
+    if (viewButton) activateErpView(viewButton.dataset.cockpitView);
+  });
   document.addEventListener("keydown", (event) => {
     if (event.key === "Escape") toggleMobileNavigation(false);
   });
@@ -15889,6 +17115,7 @@ async function init() {
   initDefaultDates();
   renderViewOwnershipBars();
   renderTabTaskCards();
+  initializeSourcingAdvancedDisclosure();
   applyProgressiveDisclosure();
   renderErpWorkflowNavigator();
   await loadStores();
@@ -16015,6 +17242,40 @@ async function init() {
     }
   });
   document.addEventListener("click", (event) => {
+    const currentCaptureReviewTarget = event.target.closest("[data-current-capture-review]");
+    if (currentCaptureReviewTarget) {
+      reviewCurrentProductFromWorkspace(
+        currentCaptureReviewTarget.dataset.currentCaptureReview,
+        currentCaptureReviewTarget.dataset.currentCaptureStoreId,
+        currentCaptureReviewTarget,
+      ).catch((error) => toast(error.message || "确认当前商品失败", "error"));
+      return;
+    }
+    const currentCaptureWorkflowTarget = event.target.closest("[data-current-capture-workflow]");
+    if (currentCaptureWorkflowTarget) {
+      setBusy(currentCaptureWorkflowTarget, true);
+      openCurrentProductDraftFromWorkspace(
+        currentCaptureWorkflowTarget.dataset.currentCaptureWorkflow,
+        currentCaptureWorkflowTarget.dataset.currentCaptureStoreId,
+      )
+        .catch((error) => toast(error.message || "打开当前商品资料失败", "error"))
+        .finally(() => setBusy(currentCaptureWorkflowTarget, false));
+      return;
+    }
+    const currentCaptureTarget = event.target.closest("[data-current-capture-id]");
+    if (currentCaptureTarget) {
+      openCurrentCaptureTask(currentCaptureTarget.dataset.currentCaptureId, currentCaptureTarget.dataset.currentCaptureStoreId)
+        .catch((error) => toast(error.message || "打开当前商品失败", "error"));
+      return;
+    }
+    const currentWorkflowTarget = event.target.closest("[data-current-workflow-id]");
+    if (currentWorkflowTarget) {
+      openCurrentProductWorkflowFromWorkspace(
+        currentWorkflowTarget.dataset.currentWorkflowId,
+        currentWorkflowTarget.dataset.currentWorkflowStoreId,
+      ).catch((error) => toast(error.message || "打开当前商品资料失败", "error"));
+      return;
+    }
     const reviewRepairLocateTarget = event.target.closest("[data-review-repair-locate]");
     if (reviewRepairLocateTarget) {
       event.preventDefault();
@@ -16210,6 +17471,11 @@ async function init() {
       updateDataFreshness("#erpDataFreshness", "error", "数据可能已过期");
     }
   });
+  on("#refreshCurrentProduct", "click", async () => {
+    await loadCaptureBox();
+    await loadWorkflowRuns();
+    toast("当前真实商品已刷新", "ok");
+  });
   on("#refreshWriteCommandAttention", "click", loadWriteCommandAttention);
   on("#loadWarehouses", "click", loadWarehouses);
   // Keep the legacy header action connected to the guarded tuple-read flow;
@@ -16335,10 +17601,12 @@ async function init() {
   // 库存写入不再从原始 JSON 直通；必须先完成只读证据、dry-run 和受控确认流程。
   on("#collect1688", "click", collect1688);
   on("#import1688Fixture", "click", import1688Fixture);
-  on("#refreshCaptureBox", "click", async () => {
+  const refreshCaptureBox = async () => {
     await loadCaptureBox();
     toast(`采集箱已刷新：${state.captureRows.length} 个商品`);
-  });
+  };
+  on("#refreshCaptureBox", "click", refreshCaptureBox);
+  on("#refreshCaptureBoxTop", "click", refreshCaptureBox);
   $("#crawlerTaskStart")?.addEventListener("click", createCrawlerTask);
   $("#ozonLearningStart")?.addEventListener("click", createOzonLearningTask);
   $("#ozonBlindStart")?.addEventListener("click", createOzonBlindRun);
@@ -16486,6 +17754,15 @@ $("#ozonManualParse")?.addEventListener("click", parseOzonSearchHtml);
     const chip = event.target.closest(".workflow-filter-chip");
     if (!chip) return;
     state.workflowFilter = chip.dataset.filter || "all";
+    renderWorkflowConsole();
+  });
+  $("#toggleSyntheticWorkflows")?.addEventListener("click", () => {
+    state.showSyntheticWorkflows = !state.showSyntheticWorkflows;
+    const runs = sellerWorkflowRuns();
+    if (!runs.some((run) => run.id === state.selectedWorkflowRunId)) {
+      state.selectedWorkflowRunId = runs[0]?.id || "";
+      state.selectedWorkflowNodeKey = "";
+    }
     renderWorkflowConsole();
   });
   $("#listingRulePoolWorkbench")?.addEventListener("input", (event) => {

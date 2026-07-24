@@ -6,6 +6,7 @@ const READ_ENDPOINT_PRIORITY = new Map([
   ["/v1/description-category/attribute/values", 30],
   ["/v3/product/list", 40],
   ["/v3/product/info/list", 50],
+  ["/v5/product/info/prices", 55],
   ["/v1/product/import/info", 55],
   ["/v4/product/info/stocks", 60],
   ["/v2/warehouse/list", 70],
@@ -72,6 +73,22 @@ export function buildReadEndpointRequest(endpoint = "", scope = {}) {
   if (path === "/v3/product/info/list") {
     if (!offerIds.length && !productIds.length) return { ok: false, endpoint: path, reasonCode: "READ_ENDPOINT_SCOPE_REQUIRES_IDENTIFIERS", message: "商品详情读取必须先由商品列表响应提供 offer_id/product_id。" };
     return { ok: true, endpoint: path, body: offerIds.length ? { offer_id: offerIds } : { product_id: productIds }, pagination: "identifier_batch" };
+  }
+  if (path === "/v5/product/info/prices") {
+    if (!offerIds.length && !productIds.length) return { ok: false, endpoint: path, reasonCode: "READ_ENDPOINT_SCOPE_REQUIRES_IDENTIFIERS", message: "商品价格/佣金读取必须绑定商品列表返回的 offer_id/product_id。" };
+    return {
+      ok: true,
+      endpoint: path,
+      body: {
+        cursor: text(input.cursor),
+        filter: {
+          ...(offerIds.length ? { offer_id: offerIds } : { product_id: productIds }),
+          visibility: text(input.visibility) || "ALL",
+        },
+        limit: boundedLimit(input.limit || offerIds.length || productIds.length, 100, MAX_PRODUCT_LIST_IDS),
+      },
+      pagination: "cursor",
+    };
   }
   if (path === "/v1/product/import/info") {
     const taskId = Number(input.taskId || input.task_id);

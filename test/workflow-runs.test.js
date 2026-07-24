@@ -3,6 +3,8 @@ import assert from "node:assert/strict";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
+import { execFile } from "node:child_process";
+import { promisify } from "node:util";
 import {
   acceptWorkflowPricingRisk,
   appendWorkflowEvent,
@@ -22,6 +24,7 @@ import {
   diagnoseWorkflowError,
   findOrCreateWorkflowForAutoListingJob,
   getWorkflowRun,
+  invalidatePayloadDraftValidation,
   listWorkflowRuns,
   recommendWorkflowDecision,
   reconcileStaleWorkflowRuns,
@@ -50,6 +53,7 @@ const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "ozon-workflow-runs-test-")
 const tmpFile = path.join(tmpDir, "workflow-runs.json");
 const tmpCategoryCacheFile = path.join(tmpDir, "ozon-category-cache.json");
 const multiSkuRepairFixture = JSON.parse(fs.readFileSync(new URL("./fixtures/1688/color-size-matrix/listing-repair.mocked.json", import.meta.url), "utf8"));
+const execFileAsync = promisify(execFile);
 
 test.after(() => {
   fs.rmSync(tmpDir, { recursive: true, force: true });
@@ -61,6 +65,25 @@ function reset() {
   process.env.WORKFLOW_RUNS_FILE = tmpFile;
   process.env.OZON_CATEGORY_CACHE_FILE = tmpCategoryCacheFile;
 }
+
+test("workflow store serializes concurrent writers across local processes", async () => {
+  reset();
+  const moduleUrl = new URL("../src/workflowRuns.js", import.meta.url).href;
+  await Promise.all(Array.from({ length: 8 }, (_, index) => execFileAsync(
+    process.execPath,
+    ["--input-type=module", "-e", `
+      process.env.WORKFLOW_RUNS_FILE = ${JSON.stringify(tmpFile)};
+      const { createWorkflowRun } = await import(${JSON.stringify(moduleUrl)});
+      await createWorkflowRun({ id: "wr_process_${index}", title: "process ${index}" });
+    `],
+    { cwd: path.resolve("."), windowsHide: true },
+  )));
+  const stored = JSON.parse(fs.readFileSync(tmpFile, "utf8"));
+  assert.deepEqual(
+    stored.items.map((run) => run.id).sort(),
+    Array.from({ length: 8 }, (_, index) => `wr_process_${index}`),
+  );
+});
 
 test("stale workflow reconciliation moves old running runs to human review", async () => {
   reset();
@@ -138,6 +161,219 @@ test("workflow runs can be created and node status can be updated", async () => 
   assert.equal(updated.nodes.find((node) => node.key === "preflight_check")?.status, "success");
   assert.equal((await listWorkflowRuns()).items.length, 1);
   assert.equal((await getWorkflowRun(run.id)).entity.parentSku, "SKUlq00999");
+});
+
+test("seller input changes invalidate old preflight and lock submission before payload rebuild", async () => {
+  reset();
+  const run = await createWorkflowRun({
+    title: "商品资料变更",
+    status: "waiting_human",
+    locks: { waitingHuman: true, submitLocked: false },
+  });
+  await savePayloadDraft(run.id, { items: [{ offer_id: "SKU-OLD" }] });
+  const file = JSON.parse(fs.readFileSync(tmpFile, "utf8"));
+  const persisted = file.items.find((item) => item.id === run.id);
+  persisted.payloadDraftValidation = { ok: true, draftHash: persisted.payloadDraftHash };
+  persisted.validatedDraftHash = persisted.payloadDraftHash;
+  persisted.locks.submitLocked = false;
+  fs.writeFileSync(tmpFile, JSON.stringify(file, null, 2));
+
+  await invalidatePayloadDraftValidation(run.id, "seller_input_changed");
+  const invalidated = await getWorkflowRun(run.id);
+  assert.equal(invalidated.payloadDraftValidation, null);
+  assert.equal(invalidated.validatedDraftHash, "");
+  assert.equal(invalidated.payloadDraftStale, true);
+  assert.equal(invalidated.payloadDraftStaleReason, "seller_input_changed");
+  assert.equal(invalidated.locks.submitLocked, true);
+  assert.equal(invalidated.payloadDraft.items[0].offer_id, "SKU-OLD");
+
+  const staleValidation = await validatePayloadDraft(run.id);
+  assert.equal(staleValidation.ok, false);
+  assert.equal(staleValidation.reasonCode, "PAYLOAD_DRAFT_STALE");
+  assert.equal((await getWorkflowRun(run.id)).locks.submitLocked, true);
+
+  let ozonCalled = false;
+  const staleSubmission = await submitPayloadDraftToOzon(run.id, {
+    confirmSubmit: true,
+    expectedDraftHash: invalidated.payloadDraftHash,
+  }, {
+    getStore: () => ({ id: "store-stale" }),
+    ozonRequest: async () => {
+      ozonCalled = true;
+      return {};
+    },
+  });
+  assert.equal(staleSubmission.ok, false);
+  assert.equal(staleSubmission.reasonCode, "PAYLOAD_DRAFT_STALE");
+  assert.equal(ozonCalled, false);
+
+  await savePayloadDraft(run.id, { items: [{ offer_id: "SKU-NEW" }] });
+  const rebuilt = await getWorkflowRun(run.id);
+  assert.equal(rebuilt.payloadDraftStale, false);
+  assert.equal(rebuilt.payloadDraftStaleReason, "");
+  assert.equal(rebuilt.validatedDraftHash, "");
+});
+
+test("auto-listing payload validation and submission fail closed without a current paid AI receipt", async () => {
+  reset();
+  const run = await createWorkflowRun({
+    title: "AI 回执总闸",
+    source: "auto_listing",
+    entity: {
+      autoListingJobId: "al_ai_gate",
+      candidateId: "capture_ai_gate",
+      storeId: "store_ai_gate",
+      sourceEvidence: { snapshotHash: "sha256:ai-gate" },
+    },
+  });
+  await savePayloadDraft(run.id, {
+    items: [{ offer_id: "AI-GATE-1" }],
+  });
+
+  const validation = await validatePayloadDraft(run.id);
+  assert.equal(validation.ok, false);
+  assert.equal(validation.reasonCode, "PAID_AI_PAYLOAD_RECEIPT_REQUIRED");
+  assert.equal((await getWorkflowRun(run.id)).locks.submitLocked, true);
+
+  let ozonCalled = false;
+  const submission = await submitPayloadDraftToOzon(run.id, {
+    confirmSubmit: true,
+    storeId: "store_ai_gate",
+  }, {
+    getStore: () => ({ id: "store_ai_gate" }),
+    ozonRequest: async () => {
+      ozonCalled = true;
+      return {};
+    },
+  });
+  assert.equal(submission.ok, false);
+  assert.equal(submission.reasonCode, "PAYLOAD_DRAFT_STALE");
+  assert.equal(ozonCalled, false);
+});
+
+test("auto-listing submission rechecks the current job against the paid AI receipt", async () => {
+  reset();
+  const run = await createWorkflowRun({
+    title: "AI 回执变更",
+    source: "auto_listing",
+    entity: {
+      autoListingJobId: "al_ai_changed",
+      candidateId: "capture_ai_changed",
+      storeId: "store_ai_changed",
+      sourceEvidence: { snapshotHash: "sha256:ai-changed" },
+    },
+  });
+  await savePayloadDraft(run.id, {
+    paidAiContentReceipt: {
+      version: "paid_ai_content_v1",
+      binding: {
+        workflowRunId: run.id,
+        autoListingJobId: "al_ai_changed",
+        captureId: "capture_ai_changed",
+        storeId: "store_ai_changed",
+        sourceSnapshotHash: "sha256:ai-changed",
+      },
+      inputHash: "sha256:old-input",
+      contentHash: "sha256:old-content",
+    },
+    items: [{ offer_id: "AI-CHANGED-1" }],
+  });
+
+  let ozonCalled = false;
+  const submission = await submitPayloadDraftToOzon(run.id, {
+    confirmSubmit: true,
+    storeId: "store_ai_changed",
+  }, {
+    validatePaidAiPayloadDraftCurrent: async () => ({
+      ok: false,
+      reasonCode: "PAID_AI_PAYLOAD_CONTEXT_STALE",
+      error: "当前商品输入已变化",
+    }),
+    getStore: () => ({ id: "store_ai_changed" }),
+    ozonRequest: async () => {
+      ozonCalled = true;
+      return {};
+    },
+  });
+
+  assert.equal(submission.ok, false);
+  assert.equal(submission.reasonCode, "PAID_AI_PAYLOAD_CONTEXT_STALE");
+  assert.equal(submission.submittedToOzon, false);
+  assert.equal(ozonCalled, false);
+});
+
+test("auto-listing submission clears its reservation when the paid AI fence cannot be established", async () => {
+  reset();
+  const run = await createWorkflowRun({
+    title: "AI 提交锁异常",
+    source: "auto_listing",
+    entity: {
+      autoListingJobId: "al_ai_fence_error",
+      candidateId: "capture_ai_fence_error",
+      storeId: "store_ai_fence_error",
+      sourceEvidence: { snapshotHash: "sha256:ai-fence-error" },
+    },
+  });
+  const receipt = {
+    version: "paid_ai_content_v1",
+    binding: {
+      workflowRunId: run.id,
+      autoListingJobId: "al_ai_fence_error",
+      captureId: "capture_ai_fence_error",
+      storeId: "store_ai_fence_error",
+      sourceSnapshotHash: "sha256:ai-fence-error",
+    },
+    inputHash: "sha256:current-input",
+    contentHash: "sha256:current-content",
+  };
+  const saved = await savePayloadDraft(run.id, {
+    paidAiContentReceipt: receipt,
+    items: [{
+      offer_id: "AI-FENCE-1",
+      name: "Товар с безопасной блокировкой",
+      description_category_id: 17028673,
+      type_id: 95183,
+      price: "100",
+      images: ["https://example.com/a.jpg", "https://example.com/b.jpg", "https://example.com/c.jpg"],
+      attributes: [
+        { id: 85, values: [{ value: "Нет бренда" }] },
+        { id: 9048, values: [{ value: "AI-FENCE-1" }] },
+      ],
+    }],
+  });
+  const validatePaidAiPayloadDraftCurrent = async () => ({
+    ok: true,
+    inputHash: receipt.inputHash,
+    contentHash: receipt.contentHash,
+  });
+  const validation = await validatePayloadDraft(run.id, {
+    validatePaidAiPayloadDraftCurrent,
+  });
+  assert.equal(validation.ok, true);
+  let ozonCalled = false;
+
+  const result = await submitPayloadDraftToOzon(run.id, {
+    confirmSubmit: true,
+    storeId: "store_ai_fence_error",
+    expectedDraftHash: saved.payloadDraftHash,
+  }, {
+    validatePaidAiPayloadDraftCurrent,
+    claimPaidAiSubmissionFence: async () => {
+      throw new Error("simulated job repository failure");
+    },
+    validatePaidAiSubmissionFence: async () => ({ ok: true }),
+    releasePaidAiSubmissionFence: async () => {},
+    getStore: () => ({ id: "store_ai_fence_error" }),
+    ozonRequest: async () => {
+      ozonCalled = true;
+      return { result: { task_id: 1 } };
+    },
+  });
+
+  assert.equal(result.ok, false);
+  assert.equal(result.reasonCode, "PAID_AI_SUBMISSION_FENCE_FAILED");
+  assert.equal(ozonCalled, false);
+  assert.equal((await getWorkflowRun(run.id)).submissionReservation, undefined);
 });
 
 test("listWorkflowRuns derives required attribute rule history from existing runs without persistence", async () => {
@@ -472,6 +708,10 @@ test("preflight accepts current same-store category evidence without affecting o
     responseHash: `sha256:${"c".repeat(64)}`,
     storeId: "2367028-1",
     environmentRefHash: `sha256:${"e".repeat(64)}`,
+    signedSessionBound: true,
+    authSource: "session_cookie",
+    sessionRefHash: `sha256:${"d".repeat(64)}`,
+    readReceiptId: "read-operator:22222222-2222-4222-8222-222222222222",
     ...extra,
   });
   const node = buildPreflightGateNode({
@@ -537,6 +777,10 @@ test("preflight rejects category evidence without strict store, environment, or 
     responseHash: `sha256:${"c".repeat(64)}`,
     storeId: "2367028-1",
     environmentRefHash: expectedEnvironment,
+    signedSessionBound: true,
+    authSource: "session_cookie",
+    sessionRefHash: `sha256:${"d".repeat(64)}`,
+    readReceiptId: "read-operator:22222222-2222-4222-8222-222222222222",
   };
   const run = (tree, attributes) => buildPreflightGateNode({
     payload,
@@ -563,6 +807,12 @@ test("preflight rejects category evidence without strict store, environment, or 
 
   const missingCacheKey = run(baseEvidence, { ...baseEvidence });
   assert.ok(missingCacheKey.output.issues.some((entry) => entry.code === "CATEGORY_EVIDENCE_MISSING"));
+
+  const unsigned = run(
+    { ...baseEvidence, signedSessionBound: false, sessionRefHash: "", readReceiptId: "" },
+    { ...baseEvidence, cacheKey: "17028673:95183", signedSessionBound: false, sessionRefHash: "", readReceiptId: "" },
+  );
+  assert.ok(unsigned.output.issues.some((entry) => entry.code === "CATEGORY_EVIDENCE_MISSING"));
 });
 
 test("preflight seller result exposes multi-SKU source binding coverage", () => {
@@ -2688,6 +2938,17 @@ test("1688 workflow draft validation and submit reuse the persisted strong prefl
     sourceVariantBindingRequired: true,
     categoryEvidenceRequired: false,
     contentSummary: { contentEvidence: { status: "reviewed", blockerCodes: [] }, sizeWeightReady: true },
+    pricing: {
+      priceCny: 100,
+      minPriceCny: 80,
+      logisticsFee: 10,
+      commissionRate: 0.15,
+      commissionSource: { source: "manual_default", confidence: "low" },
+      profit: 20,
+      level: { id: "small" },
+      package: { weightG: 100, lengthMm: 100, widthMm: 100, heightMm: 100 },
+      procurementEvidence: { status: "verified" },
+    },
     variantCount: 1,
   });
   await upsertWorkflowNode(run.id, gate);
@@ -2696,6 +2957,7 @@ test("1688 workflow draft validation and submit reuse the persisted strong prefl
   assert.equal(validation.ok, false);
   assert.equal(validation.issues.some((issue) => issue.code === "SOURCE_EVIDENCE_NOT_VERIFIED"), true);
   assert.equal(validation.issues.some((issue) => issue.code === "SOURCE_IDENTITY_MISSING"), true);
+  assert.equal(validation.issues.some((issue) => issue.code === "PRICING_COMMISSION_SOURCE_MISSING"), true);
 
   const calls = [];
   const result = await submitPayloadDraftToOzon(run.id, {
@@ -4064,6 +4326,39 @@ test("workflowCurrentProductTask maps review failure to listing repair", () => {
   assert.equal(task.view, "workflow-console");
   assert.equal(task.nodeKey, "review_reconcile");
   assert.match(task.nextAction, /修复/);
+});
+
+test("workflowCurrentProductTask exposes the capture draft skeleton blocker", () => {
+  const task = workflowCurrentProductTask({
+    title: "1688 captured product",
+    nodes: [{
+      key: "capture_handoff",
+      name: "真实货源进入草稿",
+      status: "success",
+      output: {
+        draftSkeleton: {
+          status: "needs_review",
+          offerId: "992997159052",
+          variantCount: 9,
+          blockers: [{
+            reasonCode: "DRAFT_SUPPLIER_EVIDENCE_REQUIRED",
+            title: "供应商身份待补齐",
+            nextAction: "补齐当前 1688 供应商名称或身份凭据",
+          }],
+          nextAction: "补齐当前 1688 供应商名称或身份凭据",
+        },
+      },
+    }],
+  });
+
+  assert.equal(task.stage, "draft_evidence_repair");
+  assert.equal(task.status, "blocked");
+  assert.equal(task.offerId, "992997159052");
+  assert.equal(task.blockedAt, "真实货源进入草稿");
+  assert.equal(task.reason, "供应商身份待补齐（另有 0 项）");
+  assert.equal(task.nextAction, "补齐当前 1688 供应商名称或身份凭据");
+  assert.equal(task.view, "listing");
+  assert.equal(task.nodeKey, "capture_handoff");
 });
 
 test("workflowCurrentProductTask exposes a waiting preflight repair gate", () => {

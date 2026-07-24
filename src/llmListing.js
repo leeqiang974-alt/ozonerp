@@ -13,6 +13,8 @@ const DEFAULT_DEEPSEEK_KEY_FILE = "D:\\Desktop\\api\\deepseek.txt";
 const DEFAULT_APIMART_BASE_URL = "https://api.apib.ai/v1";
 const DEFAULT_APIMART_MODEL = "gpt-5-nano-2025-08-07";
 const DEFAULT_APIMART_KEY_FILE = "D:\\Desktop\\api\\apid-api.txt";
+const DEFAULT_LISTING_LLM_TIMEOUT_MS = 2 * 60 * 1000;
+const MAX_LISTING_LLM_TIMEOUT_MS = 5 * 60 * 1000;
 
 function readKeyFromFile(filePath) {
   try {
@@ -128,8 +130,14 @@ export async function generateListingContentWithLlm(product, options = {}) {
   ].join("\\n");
   const userPrompt = buildListingPrompt(product, options);
 
+  const requestedTimeoutMs = Number(options.timeoutMs || DEFAULT_LISTING_LLM_TIMEOUT_MS);
+  const timeoutMs = Math.min(
+    MAX_LISTING_LLM_TIMEOUT_MS,
+    Math.max(1_000, Number.isFinite(requestedTimeoutMs) ? requestedTimeoutMs : DEFAULT_LISTING_LLM_TIMEOUT_MS),
+  );
   const response = await fetch(`${config.baseUrl.replace(/\/$/, "")}${useResponsesApi ? "/responses" : "/chat/completions"}`, {
     method: "POST",
+    signal: options.signal || AbortSignal.timeout(timeoutMs),
     headers: {
       Authorization: `Bearer ${apiKeyForProvider(config.provider)}`,
       "Content-Type": "application/json",

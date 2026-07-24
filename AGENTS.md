@@ -22,12 +22,20 @@ Read these before substantial Ozon ERP changes:
 - GitHub repositories are references, not truth. Verify source code, recent activity, tests, data model, API coverage, license, and whether the advertised workflow is actually implemented before borrowing it.
 - Distinguish `documented`, `mocked`, `locally tested`, `real-account read verified`, and `real-account write verified`. Do not label a feature complete without recording its verification level.
 - Prefer seller tasks and outcomes over technical surfaces. A normal screen should expose the business object, current state, blocker, recommended action, confirmation/side effect, and result; raw workflow nodes, JSON, prompts, and logs belong in advanced diagnostics.
+- 类目状态不能只显示“尚未确认”。卖家界面必须区分：本地库无候选、已有高置信候选、多个候选有歧义、当前店铺类目证据缺失/过期/跨店铺；若已有候选，应展示候选类目和系统推荐理由，不能让用户从 7422 个 type 中盲找。跨店铺缓存可用于明确标注的只读候选诊断，但不得升级为当前店铺可提交证据。
 - For the 1688-to-Ozon chain, validate each stage with replayable product fixtures and controlled real listings: source evidence, SKU normalization, category/type decision, legal attributes, Russian content, media, package data, pricing, preflight, confirmed submission, moderation reconciliation, and stock readiness.
 - Tests for API clients must fail closed before the first red-light run: inject or globally stub network transport before invoking the subject. A planned dependency-injection test is not sufficient if the old implementation can ignore the injected dependency and fall through to real network access.
 - 1688 包装尺重只有在 `sourceEvidence.fields.package` 的 source/evidenceRef 与当前 snapshot 对齐时才能升级为 `1688_package`；孤立数值、URL 推断或缺失证据必须保持阻塞。无历史 evidence envelope 的旧内部 job 可暂留 legacy 路径，但新采集回执必须补齐该字段。
 - 包装尺重证据不仅要校验来源和 snapshot 引用，还必须逐字段匹配当前待提交的 `sizeWeight` 数值；快照之后被改过的数字即使沿用旧 evidenceRef 也必须阻断。
+- 定价与 Payload 必须使用来源快照或绑定手工实测中的原始包装尺重；不得加缓冲、抬高最小值、截断后继续标记为 `1688_package`/人工实测。Ozon 返回尺重错误时必须回到同屏证据修复，禁止静默改值后自动重试写入。
+- 已有完整父级包装证据时，SKU 行中的孤立尺重不得覆盖父级证据进入定价或 Payload；除非 SKU 尺重本身具备同一快照下可逐项核验的独立证据。`WEIGHT_SIZE_INVALID` 必须排除在所有后台纠偏和自动重投入口之外。
+- 插件采集或插件内手填的包装尺重，只要 `sourceEvidence.fields.package` 使用 `capture_hint`、`page_content` 或 `1688_package`，并与当前 snapshot 引用及四项 `sizeWeight` 数值逐项一致，就应自动复用为 `1688_package`；不得要求卖家在 ERP 再录一次。
+- 1688 详情页若每个选中 SKU 都有正数价格和稳定 `sourceSkuId`，且 `sourceEvidence.fields.variants` 与当前 snapshot 精确绑定，可直接作为本地定价采购价证据；不得再强制卖家填写供应商、MOQ 或阶梯价。只有未绑定快照的搜索卡价格区间、缺失 SKU 标识或非正数价格继续阻塞。
+- 1688 采集行数不能直接当作唯一 SKU 数。进入草稿前必须按来源 `skuId/sourceSkuId` 归一化，重复行优先保留字段更完整的版本，同时记录 raw/unique/duplicate 计数；不得把同一来源 SKU 生成多个 Ozon Offer。
 - 媒体 `evidenceRef` 的 snapshot hash 必须严格等于当前 1688 `sourceEvidence.snapshotHash`；即使存在带 actor/时间戳的显式人工审批，跨快照媒体也必须保持 `needs_confirmation`。
-- `categoryEvidenceRequired` 时，tree/attributes 回执必须同时具备且严格匹配预期 `storeId` 与 `environmentRefHash`；attributes 还必须具备并匹配当前 category `cacheKey`，缺失字段不可按旧兼容路径放行。
+- `categoryEvidenceRequired` 时，tree/attributes/字典证据必须来自同一个已持久化的 signed-session read-operator 回执，并严格匹配预期 `storeId`、`environmentRefHash`、`sessionRefHash` 与 `readReceiptId`；attributes/value 还必须匹配当前 category cacheKey，缺失字段不可按旧兼容路径放行。必须先成功持久化回执，之后才能原子升级缓存。
+- Ozon 属性字典必须按官方 `last_value_id` 游标自动读取到显式布尔 `has_next=false`，单页上限 2000、总页数有界；缺失/非布尔 `has_next`、非法 ID、空标签、重复/缺失/倒退游标均保持 partial。partial 结果不得写完整缓存。缓存只保留当前店铺当前商品类目所需的精简 `{id,value}` 工作集，legacy 单字典读取不得写入或拼接该黄金链路缓存；由于缓存是全局单工作集，所有店铺/环境读取必须共用一个全局代次，并在临时文件序列化后、原子 rename 前再次校验，只有最新代次可提交。
+- 当前店铺类目字典必须两阶段读取：先用本次 server-observed attributes 推导必填且有字典的 attribute IDs，再执行 hash 绑定的字典计划；不得依赖跨店铺旧缓存预先提供 IDs。两阶段间属性范围变化、`has_next=true` 或任一端点失败都保持 partial；普通页面渲染不得静默发起该真实读取，只能由商品“一键自动完成”动作统一触发。
 - 库存写入成功响应必须保留 server-observed 写后回查时间与精确 `(offer_id, warehouse_id)` scope；前端不能只显示“已接受/已触发回查”，必须显示 exact tuple 已核对的结果。
 - FBS 回执摘要查询必须同时绑定当前 `environment` 与 `storeId`；缺少任一范围时 fail-closed，不得跨 local/staging 或跨店铺返回最近回执。
 - 活动商品前端的“当前价”只能来自 `current_price/currentPrice/price`；`old_price` 是划线原价，缺失当前价时必须显示未知，不得用于活动降幅或经营结论。
@@ -44,9 +52,16 @@ Read these before substantial Ozon ERP changes:
 
 ## Product Principle
 
+- 普通上架页必须是一张“单商品编辑单”：稳定默认值直接写入，来源、类目、属性、SKU、图片、定价等可自动确定的字段直接回填，AI 能完成的内容由一次明确点击生成；页面只展开系统确实无法确定的输入。证据、workflow、JSON、prompt、回执和安全门进入折叠高级区。可以写死站点、语言、单位和经过确认的经营默认值，但不得写死 Ozon 动态类目、必填属性、字典值或真实店铺证据。
+- 不得把类目证据同步、属性填充、AI 文案、媒体整理、定价和预检拆成卖家逐项确认。一次明确的“自动完成商品资料”应连续执行所有可自动化阶段；中途只因来源没有的事实、候选真实歧义或安全失败停下，真实 Ozon 提交仍只保留最后一次确认。
+- 同一商品的一键链在付费 AI 已成功返回、但后续 Payload 刷新或预检失败时，必须复用精确绑定且内容未变的 AI 回执，不得再次扣费。复用回执必须绑定 workflow/job/capture/store/source snapshot、生成输入哈希和内容哈希；任一输入、类目、内容或绑定变化都必须失效并重新取得明确授权。
+- 绑定 auto-listing job 的 Payload 在 canonical 预检和提交前都必须重验同一 AI 回执。真实提交必须用 workflow reservation + job submission fence 冻结 draft hash、完整 binding、输入哈希和内容哈希；任一并发变化、缺失回执或 fence 异常都要在 Ozon 调用前 fail-closed。
+- 普通卖家页凡显示“需要处理/需要补充”，必须在同一商品表单中立即提供对应输入或动作，并在保存后联动刷新下游字段与预检；禁止只给状态却让卖家去别处寻找入口。类目证据同步、属性载入等系统内部阶段只能显示为自动处理，不得使用橙色阻塞卡或卖家任务文案。
+
 ## Development Governance
 
 - 当前执行 `docs/TOP-LEVEL-DEVELOPMENT-PLAN.zh-CN.md` 的黄金链路阶段门；在 G4 MVP 通过前，暂停原五工作流轮转。
+- 工作台、全局任务条和商品草稿页必须共用同一个 canonical 当前商品上下文。存在真实 capture 时，只能使用与其 `captureId + storeId` 精确绑定的 workflow；没有精确绑定就停在该 capture 的来源确认/草稿交接状态，禁止回退到最近历史任务或 Fixture workflow。
 - WIP 必须为 1，只能开发计划中标记为 `CURRENT` 的切片。无法映射到当前阶段退出条件的工作进入停车场，不得顺手扩建。
 - C/FBS 与 D/活动、财务、售后冻结；E 只处理黄金链路的直接阻断，B 只在提交后审核/库存交接阶段进入。
 - 只有服务无法启动、数据损坏/丢失、凭据泄露或真实写入安全门旁路可中断当前切片。
@@ -61,6 +76,14 @@ Ozon ERP is a seller operating workbench. UI and workflow changes must help the 
 
 Do not turn ordinary seller screens into developer logs, long unscannable forms, or generic diagnostic walls.
 
+- 普通卖家前端必须始终显示一个全局“当前商品”任务条；真实 capture/store 要一键定位并切换到精确店铺，人工动作不能藏在横向滚动区或开发者工作流里。
+- 普通卖家前端只展示业务结果、需要人工决定的异常和唯一下一步；snapshot、evidence、workflow、preflight、Fixture、AI 推理过程等内部机制必须留在高级诊断中。商品上新主流程固定使用“采集商品—检查商品—确认上架”三步，不能把内部节点数量直接映射成卖家步骤。
+- 普通卖家首屏必须呈现为商品运营产品而非内部管理后台：优先展示真实商品图、商品身份、当前状态和单一主动作；使用一致的品牌色、字体层级、间距、圆角和响应式导航。禁止用序号字符充当导航图标、用大面积深色动作块制造视觉噪声，或让隐藏侧栏在窄屏参与文档流。
+- 普通卖家不能依赖说明书理解 ERP。当前商品首屏必须明确区分“用户负责”和“系统/AI 负责”，唯一主动作必须同时说明：现在具体做什么、点击后系统会做什么、何时才会真实提交或产生费用。
+- 1688 fixture、测试 workflow 和演示商品默认不参与卖家任务数量、当前商品选择或首页风险统计；只能在明确的“显示测试数据”高级入口中查看。
+- 普通 `1688 采集` 页必须是浏览器插件的收件箱，而不是采集实验室：首屏只显示插件连接状态、用户在 1688 商品页点击“补齐后入箱”的唯一操作、当前真实商品和系统处理结果。fixture、反向链路、候选池配置、crawler/API 状态、原始页面、任务列表和自动铺货历史默认全部折叠到高级工具；不得要求卖家先在 ERP 创建采集任务、配置候选池或理解内部回执。
+- G4 前日常主导航只保留黄金链路及必要经营入口；诊断、竞品、仓库、活动、财务、售后、报表和系统配置归入“更多功能”，不得再次平铺成十几个同级 tab。
+
 ## Hard Boundaries
 
 - Promotions cannot contain listing draft fields.
@@ -68,6 +91,8 @@ Do not turn ordinary seller screens into developer logs, long unscannable forms,
 - Workflow locks, paused states, and `waiting_human` must be respected.
 - Browser human verification must pause automation.
 - GPT/image generation requires user-confirmed action before cost.
+- Any golden-path backend route that can call paid AI must fail closed unless the request carries an explicit confirmation bound to the exact current workflow, auto-listing job, capture, store, and source snapshot. Client-side selection checks alone are not authorization. Recheck that binding between chained stages, and never report the chain complete unless the current payload draft hash exactly matches a successful strong-preflight validation hash.
+- A paid-AI match result may reuse the authorized source evidence only when the selected candidate itself still matches the authorized `captureId + storeId + sourceSnapshotHash`; candidate ID equality alone is insufficient. Missing or changed candidate binding must require fresh authorization before any matched fields are persisted.
 - Blocked pricing risk cannot be accepted as safe; fix it or replace the source.
 - Missing current stock for an `(offer_id, warehouse_id)` tuple is unknown evidence, never zero. Stock dry-run must block until the exact tuple is observed.
 - An Ozon write with an unknown outcome must remain `needs_review`. A different idempotency key must not bypass an unresolved command with the same store, scope, and payload hash.

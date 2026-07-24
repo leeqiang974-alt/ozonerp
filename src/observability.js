@@ -150,7 +150,10 @@ export function finalizeRequest(req, res, next) {
 
 export function errorHandler(error, req, res, _next) {
   counters.errors += 1;
-  const reasonCode = mapReasonCode(error?.message || "");
+  // Preserve bounded route/storage codes when a lower layer already
+  // classified the failure. Falling back to message mapping can collapse a
+  // useful capture failure into the generic UNKNOWN/500 shown by the plugin.
+  const reasonCode = String(error?.reasonCode || error?.code || mapReasonCode(error?.message || "")).slice(0, 80);
   captureException(error, {
     tags: {
       route: req?.path || "",

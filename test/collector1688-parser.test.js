@@ -258,6 +258,19 @@ test("1688 evidence hash is deterministic and query parameters do not alter cano
   assert.equal(first.skuVariants.length, 2);
 });
 
+test("1688 parser keeps a product title after removing the Alibaba page suffix", () => {
+  const parsed = parse1688Product({
+    url: "https://detail.1688.com/offer/992997159052.html",
+    html: "<html><title>小精灵卡通胸针徽章服装背包饰品配饰别针跨境外贸热销合金胸章 - 阿里巴巴</title></html>",
+    hints: {
+      title: "小精灵卡通胸针徽章服装背包饰品配饰别针跨境外贸热销合金胸章 - 阿里巴巴",
+      captureMode: "extension_browser",
+    },
+  });
+
+  assert.equal(parsed.title, "小精灵卡通胸针徽章服装背包饰品配饰别针跨境外贸热销合金胸章");
+});
+
 test("1688 structured SKU model preserves real matrix rows without inventing a cartesian product", () => {
   const sample = fixture("color-size-matrix");
   const parsed = parse1688Product({ url: sample.manifest.url, html: sample.html, hints: sample.manifest.hints });

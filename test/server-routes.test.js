@@ -43,7 +43,7 @@ test("server defaults to loopback hosting and an explicit local CORS allowlist",
   assert.match(source, /CORS_ALLOWED_ORIGINS/);
   assert.match(source, /http:\/\/localhost:/);
   assert.match(source, /http:\/\/127\.0\.0\.1:/);
-  assert.match(source, /if \(!origin\) return callback\(null, true\)/);
+  assert.match(source, /isAllowedCorsOrigin\(\{ origin, host: hostName, allowedOrigins \}\)/);
   assert.match(source, /CORS_ORIGIN_DENIED/);
   assert.match(source, /app\.use\(cors\(corsOptions\)\)/);
   assert.doesNotMatch(source, /Access-Control-Allow-Origin", "\*"/);
@@ -1514,9 +1514,13 @@ test("saving manual listing content invalidates the old preflight through a refr
   const end = source.indexOf("export function findCachedManualCategory", start);
   assert.ok(start >= 0 && end > start);
   const handler = source.slice(start, end);
-  assert.match(handler, /saveWorkflowPayloadDraftForListingJob/);
-  assert.match(handler, /saveWorkflowPayloadDraftForListingJob/);
-  assert.match(handler, /重新运行商品预检|运行预检/);
+  assert.match(handler, /expectedBinding/);
+  assert.match(handler, /saveManualSellerInputs/);
+  const combinedStart = source.indexOf("export async function saveManualSellerInputs");
+  const combinedEnd = source.indexOf("export async function saveManualProcurementEvidence", combinedStart);
+  const combined = source.slice(combinedStart, combinedEnd);
+  assert.match(combined, /invalidatePayloadDraftValidation/);
+  assert.match(combined, /saveWorkflowPayloadDraftForListingJob/);
 });
 
 test("1688 candidate routes apply principal store scope", async () => {
@@ -1600,6 +1604,9 @@ test("manual listing category route persists a seller-confirmed category without
   const startAuto = autoListing.indexOf("export async function saveManualListingCategory");
   const endAuto = autoListing.indexOf("export async function saveManualProcurementEvidence", startAuto);
   const handler = autoListing.slice(startAuto, endAuto);
+  assert.match(handler, /expectedBinding/);
+  assert.match(handler, /invalidatePayloadDraftValidation/);
+  assert.match(handler, /mutateJobs/);
   assert.match(handler, /saveWorkflowPayloadDraftForListingJob/);
   assert.match(handler, /payloadDraftReady/);
   const draftStart = autoListing.indexOf("async function saveWorkflowPayloadDraftForListingJob");
@@ -1618,6 +1625,11 @@ test("1688 saved draft policy persists the product identity gate for later reval
   assert.match(helper, /sourceEvidenceRequired:\s*sourceIs1688/);
   assert.match(helper, /sourceIdentityRequired:\s*sourceIs1688/);
   assert.match(helper, /sourceVariantBindingRequired:\s*sourceIs1688/);
+  assert.match(helper, /enforced:\s*true/);
+  assert.match(helper, /sourceEvidence:\s*job\.candidateData\?\.sourceEvidence/);
+  assert.match(helper, /pricingDiagnosis:\s*draft\.summary\?\.pricingDiagnosis/);
+  assert.match(helper, /contentSummary/);
+  assert.match(helper, /variantCount/);
 });
 
 test("manual procurement route keeps seller evidence distinct from official Ozon pricing", async () => {
@@ -1633,8 +1645,12 @@ test("manual procurement route keeps seller evidence distinct from official Ozon
   const startAuto = autoListing.indexOf("export async function saveManualProcurementEvidence");
   const endAuto = autoListing.indexOf("export async function saveManualPackageEvidence", startAuto);
   const handler = autoListing.slice(startAuto, endAuto);
-  assert.match(handler, /saveWorkflowPayloadDraftForListingJob/);
-  assert.match(handler, /payloadDraftReady/);
+  assert.match(handler, /saveManualSellerInputs/);
+  const applyStart = autoListing.indexOf("export function applyManualSellerInputsToJob");
+  const applyEnd = autoListing.indexOf("export async function saveManualSellerInputs", applyStart);
+  const apply = autoListing.slice(applyStart, applyEnd);
+  assert.match(apply, /candidateData\.procurementEvidence/);
+  assert.match(apply, /manualSellerInputBindingMatches/);
   assert.doesNotMatch(handler, /ozonRequest\(/);
 });
 
@@ -1651,9 +1667,36 @@ test("manual package route keeps measured dimensions local and blocks Ozon write
   const startAuto = autoListing.indexOf("export async function saveManualPackageEvidence");
   const endAuto = autoListing.indexOf("async function addStep", startAuto);
   const handler = autoListing.slice(startAuto, endAuto);
-  assert.match(handler, /saveWorkflowPayloadDraftForListingJob/);
-  assert.match(handler, /payloadDraftReady/);
+  assert.match(handler, /saveManualSellerInputs/);
+  const applyStart = autoListing.indexOf("export function applyManualSellerInputsToJob");
+  const applyEnd = autoListing.indexOf("export async function saveManualSellerInputs", applyStart);
+  const apply = autoListing.slice(applyStart, applyEnd);
+  assert.match(apply, /manualPackageEvidenceBinding/);
+  assert.match(apply, /skuVariants/);
+  assert.match(apply, /manualEvidenceBinding/);
   assert.doesNotMatch(handler, /ozonRequest\(/);
+});
+
+test("combined seller input route validates and persists procurement plus package atomically", async () => {
+  const [source, autoListing] = await Promise.all([
+    readFile(new URL("../src/server.js", import.meta.url), "utf8"),
+    readFile(new URL("../src/autoListing.js", import.meta.url), "utf8"),
+  ]);
+  assert.match(source, /\/api\/ozon-learning\/auto-list-jobs\/:id\/manual-seller-inputs/);
+  const routeStart = source.indexOf('app.post("/api/ozon-learning/auto-list-jobs/:id/manual-seller-inputs"');
+  const routeEnd = source.indexOf('app.post("/api/ozon-learning/auto-list-jobs/:id/manual-procurement"', routeStart);
+  const route = source.slice(routeStart, routeEnd);
+  assert.match(route, /saveManualSellerInputs/);
+  assert.match(route, /MANUAL_SELLER_INPUT_STALE/);
+  assert.match(route, /原子保存/);
+  assert.doesNotMatch(route, /ozonRequest|completeListing|directOzonWriteRoute/);
+
+  const saveStart = autoListing.indexOf("export async function saveManualSellerInputs");
+  const saveEnd = autoListing.indexOf("export async function saveManualProcurementEvidence", saveStart);
+  const save = autoListing.slice(saveStart, saveEnd);
+  assert.match(save, /mutateJobs/);
+  assert.match(save, /applyManualSellerInputsToJob\(jobs\[idx\], input\)/);
+  assert.match(save, /if \(applied\.changed\) jobs\[idx\] = applied\.job/);
 });
 
 test("media review request only enters waiting-human mode and does not approve or submit", async () => {
@@ -1927,6 +1970,27 @@ test("server exposes parameterized category read plan and evidence execution", a
   assert.match(route, /validateCategoryReadPlan/);
   assert.match(route, /validateCategoryReadPlanBinding/);
   assert.match(route, /buildCategoryReadRequests/);
+  assert.match(route, /summarizeCategoryReadObservations/);
+  assert.match(route, /classifyCategoryMetadataResponse/);
+  assert.match(route, /readCategoryValuePages/);
+  assert.match(route, /requestPage:\s*\(pageBody\)/);
+  assert.match(route, /pageCount:\s*valuesRead\.pageCount/);
+  assert.match(route, /pageLimitReached:\s*valuesRead\.pageLimitReached/);
+  assert.match(route, /mutateCategoryCache/);
+  assert.match(route, /buildCategoryReadContinuationPlan/);
+  assert.match(route, /validateCategoryReadAttributeScope/);
+  assert.match(route, /CATEGORY_READ_ATTRIBUTE_SCOPE_CHANGED/);
+  assert.match(route, /attributeScopeMismatch/);
+  assert.match(route, /metadataFailed/);
+  assert.match(route, /commitCompleteEvidence/);
+  assert.match(route, /paginationComplete:\s*valuesRead\.paginationComplete/);
+  assert.match(route, /hasNext:\s*valuesRead\.hasNext/);
+  assert.match(route, /validation\.phase === "complete"/);
+  assert.match(route, /observationSummary\.complete/);
+  assert.match(route, /if \(commitCompleteEvidence\)/);
+  assert.ok(route.indexOf("const observationSummary") < route.indexOf("if (commitCompleteEvidence)"));
+  assert.doesNotMatch(route, /validation\.phase === "metadata".*mutateCategoryCache/s);
+  assert.match(route, /continuationPlanBinding/);
   assert.match(route, /descriptionCategoryId/);
   assert.match(route, /attributeId/);
   assert.match(route, /categoryReadEvidence/);
@@ -1935,11 +1999,37 @@ test("server exposes parameterized category read plan and evidence execution", a
   assert.match(route, /endpoints: requests\.map\(\(request\) => request\.endpoint\)/);
   assert.match(route, /storeRef: scopeHash\(validation\.storeId\)/);
   assert.match(route, /categorySessionReceiptBinding/);
+  assert.match(route, /observations:\s*observations\.map/);
+  assert.ok(route.indexOf("readOperatorReceipts.record") < route.indexOf("mutateCategoryCache"));
+  assert.match(route, /readReceiptId/);
+  assert.match(route, /CATEGORY_READ_SUPERSEDED/);
+  assert.match(route, /categoryReadGenerationGate\.begin\(\)/);
+  assert.match(route, /categoryReadGenerationGate\.runIfCurrent\(categoryReadGeneration/);
+  assert.match(route, /shouldCommit:\s*\(\) => categoryReadGenerationGate\.isCurrent\(categoryReadGeneration\)/);
+  assert.doesNotMatch(route, /categoryReadGenerationKey/);
   assert.match(route, /CATEGORY_READ_EVIDENCE_PARTIAL/);
   assert.match(route, /sellerTask:/);
   assert.match(route, /receipt: categoryReceipt\.receipt/);
   assert.match(route, /未调用写接口/);
   assert.doesNotMatch(route, /body\.receipt|body\.response/);
+  assert.match(route, /attributes:\s*\{\s*\[attributesPatch\.cacheKey\]/);
+  assert.doesNotMatch(route, /attributes:\s*\{\s*\.\.\.\(cache\.attributes/);
+  assert.match(route, /const attributeValues = Object\.fromEntries/);
+});
+
+test("legacy category value reads paginate and never cache partial dictionaries", async () => {
+  const source = await readFile(new URL("../src/server.js", import.meta.url), "utf8");
+  const start = source.indexOf('app.post("/api/ozon/description-attribute-values"');
+  const end = source.indexOf('app.get("/api/ozon/orders"', start);
+  assert.ok(start >= 0 && end > start);
+  const route = source.slice(start, end);
+  assert.match(route, /readCategoryValuePages/);
+  assert.match(route, /limit:\s*2000/);
+  assert.match(route, /paginationComplete/);
+  assert.match(route, /CATEGORY_DICTIONARY_READ_INCOMPLETE/);
+  assert.match(route, /if \(!valuesRead\.paginationComplete\)/);
+  assert.match(route, /cachedValueEvidence\?\.paginationComplete === true/);
+  assert.doesNotMatch(route, /upsertAttributeValuesCache/);
 });
 
 test("readiness receipt response exposes a seller task projection for read failures", async () => {
@@ -2070,4 +2160,34 @@ test("legacy auto-list trigger requires explicit confirmation and store binding"
   assert.match(trigger, /storeId: scopedStoreId/);
   assert.match(autoListing, /createCrawlerTask\(\{[\s\S]*storeId: job\.storeId/);
   assert.match(autoListing, /listCrawlerCandidates\(\{ storeId: job\.storeId \}\)/);
+});
+
+test("same-category commission read is signed-session gated and happens before paid AI", async () => {
+  const source = await readFile(new URL("../src/server.js", import.meta.url), "utf8");
+  const start = source.indexOf('app.post("/api/ozon-learning/auto-list-jobs/:id/commission-evidence/read"');
+  const end = source.indexOf("\nasync function readAutoListingProductStatus", start);
+  const route = source.slice(start, end);
+  assert.ok(start >= 0 && end > start);
+  assert.match(route, /requireControlledSellerRead/);
+  assert.match(route, /validatePaidAiJobBinding/);
+  assert.match(route, /readSameStoreCommissionEvidence/);
+  assert.ok(route.indexOf("validatePaidAiJobBinding") < route.indexOf("readSameStoreCommissionEvidence"));
+  assert.match(route, /saveLearnedCommissionEvidence/);
+  assert.match(source, /buildReadEndpointRequest\("\/v5\/product\/info\/prices"/);
+  assert.match(source, /validateExactProductRows/);
+  assert.match(route, /未调用 AI、未调用 Ozon 写接口、未提交商品/);
+});
+
+test("paid AI workflow execution binds environment to the signed ERP session", async () => {
+  const source = await readFile(new URL("../src/server.js", import.meta.url), "utf8");
+  const continueStart = source.indexOf('app.post("/api/workflows/:id/nodes/:key/continue"');
+  const chainStart = source.indexOf('app.post("/api/workflows/:id/controlled-chain"');
+  const confirmStart = source.indexOf('app.post("/api/workflows/:id/nodes/:key/confirm-continue"', chainStart);
+  const continueRoute = source.slice(continueStart, chainStart);
+  const chainRoute = source.slice(chainStart, confirmStart);
+  assert.match(continueRoute, /controlledReadSessionBlock\(req, body\.environment\)/);
+  assert.match(continueRoute, /body\.environment = session\.sessionEnvironment/);
+  assert.match(chainRoute, /controlledReadSessionBlock\(req, body\.environment\)/);
+  assert.match(chainRoute, /body\.environment = session\.sessionEnvironment/);
+  assert.match(chainRoute, /READ_OPERATOR_SESSION_REQUIRED|session\.reasonCode/);
 });

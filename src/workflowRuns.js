@@ -66,23 +66,46 @@ async function writeStoreUnlocked(store) {
   if (lastError) return;
 }
 
-async function writeStore(store) {
-  const file = workflowFile();
-  const previous = writeChains.get(file) || Promise.resolve();
-  const next = previous.catch(() => {}).then(() => writeStoreUnlocked(store));
-  writeChains.set(file, next.catch(() => {}));
-  return next;
+async function withWorkflowFileLock(file, operation, { timeoutMs = 30000, staleMs = 120000 } = {}) {
+  const lockFile = `${file}.lock`;
+  const started = Date.now();
+  await fs.mkdir(path.dirname(lockFile), { recursive: true });
+  let handle = null;
+  while (!handle) {
+    try {
+      handle = await fs.open(lockFile, "wx");
+      await handle.writeFile(JSON.stringify({ pid: process.pid, acquiredAt: nowIso() }));
+    } catch (error) {
+      if (error?.code !== "EEXIST" || Date.now() - started >= timeoutMs) {
+        const lockError = new Error("workflow storage lock unavailable");
+        lockError.code = error?.code === "EEXIST" ? "WORKFLOW_STORAGE_LOCK_TIMEOUT" : error?.code;
+        throw lockError;
+      }
+      try {
+        const stat = await fs.stat(lockFile);
+        if (Date.now() - stat.mtimeMs > staleMs) await fs.rm(lockFile, { force: true });
+      } catch { /* another process may release it between stat and remove */ }
+      await new Promise((resolve) => setTimeout(resolve, 25));
+    }
+  }
+  try {
+    return await operation();
+  } finally {
+    await handle.close().catch(() => {});
+    await fs.rm(lockFile, { force: true }).catch(() => {});
+  }
 }
 
 function mutateStore(operation) {
   const file = workflowFile();
   const previous = writeChains.get(file) || Promise.resolve();
-  const next = previous.catch(() => {}).then(async () => {
-    const store = await readStore();
-    const result = await operation(store);
-    if (result?.write !== false) await writeStoreUnlocked(store);
-    return result?.value;
-  });
+  const next = previous.catch(() => {}).then(() => withWorkflowFileLock(file, async () => {
+      const store = await readStore();
+      const before = JSON.stringify(store);
+      const result = await operation(store);
+      if (result?.write !== false && JSON.stringify(store) !== before) await writeStoreUnlocked(store);
+      return result?.value;
+    }));
   writeChains.set(file, next.catch(() => {}));
   return next;
 }
@@ -145,151 +168,154 @@ export async function getWorkflowRun(id) {
 }
 
 export async function reconcileStaleWorkflowRuns(options = {}) {
-  const store = await readStore();
-  const now = options.now instanceof Date ? options.now : new Date(options.now || Date.now());
-  const staleAfterMs = Math.max(60 * 60 * 1000, Number(options.staleAfterMs || 2 * 60 * 60 * 1000));
-  const runIds = [];
-  for (const run of store.items) {
-    if (run.status !== "running") continue;
-    const updatedAt = Date.parse(run.updatedAt || run.createdAt || "");
-    if (!Number.isFinite(updatedAt) || now.getTime() - updatedAt < staleAfterMs) continue;
-    const nodeKey = run.currentNode || (run.nodes || []).find((node) => ["running", "retrying"].includes(node.status))?.key || "";
-    run.nodes = (run.nodes || []).map((node) => {
-      if (node.key !== nodeKey || !["running", "retrying", "pending"].includes(node.status)) return node;
-      return {
-        ...node,
-        status: "waiting_human",
-        finishedAt: now.toISOString(),
-        branch: "stale_manual_review",
-        riskScore: Math.max(Number(node.riskScore || 0), 60),
-        riskLevel: node.riskLevel === "high" ? "high" : "medium",
-        reason: "工作流长时间没有更新，已从运行中转为等待人工确认。",
-        recommendedActions: ["检查绑定任务是否仍存在", "人工选择重试、换货源或暂停"],
-        actions: ["retry_node", "request_new_source", "pause_workflow"],
-      };
-    });
-    run.status = "waiting_human";
-    run.currentNode = nodeKey;
-    run.locks = { ...(run.locks || {}), paused: false, waitingHuman: true };
-    run.events = [...(run.events || []), {
-      time: now.toISOString(),
-      node: nodeKey,
-      type: "workflow_stale_reconciled",
-      message: "陈旧运行状态已治理，等待人工确认下一步",
-      data: {
-        previousStatus: "running",
+  return mutateStore((store) => {
+    const now = options.now instanceof Date ? options.now : new Date(options.now || Date.now());
+    const staleAfterMs = Math.max(60 * 60 * 1000, Number(options.staleAfterMs || 2 * 60 * 60 * 1000));
+    const runIds = [];
+    for (const run of store.items) {
+      if (run.status !== "running") continue;
+      const updatedAt = Date.parse(run.updatedAt || run.createdAt || "");
+      if (!Number.isFinite(updatedAt) || now.getTime() - updatedAt < staleAfterMs) continue;
+      const nodeKey = run.currentNode || (run.nodes || []).find((node) => ["running", "retrying"].includes(node.status))?.key || "";
+      run.nodes = (run.nodes || []).map((node) => {
+        if (node.key !== nodeKey || !["running", "retrying", "pending"].includes(node.status)) return node;
+        return {
+          ...node,
+          status: "waiting_human",
+          finishedAt: now.toISOString(),
+          branch: "stale_manual_review",
+          riskScore: Math.max(Number(node.riskScore || 0), 60),
+          riskLevel: node.riskLevel === "high" ? "high" : "medium",
+          reason: "工作流长时间没有更新，已从运行中转为等待人工确认。",
+          recommendedActions: ["检查绑定任务是否仍存在", "人工选择重试、换货源或暂停"],
+          actions: ["retry_node", "request_new_source", "pause_workflow"],
+        };
+      });
+      run.status = "waiting_human";
+      run.currentNode = nodeKey;
+      run.locks = { ...(run.locks || {}), paused: false, waitingHuman: true };
+      run.events = [...(run.events || []), {
+        time: now.toISOString(),
+        node: nodeKey,
+        type: "workflow_stale_reconciled",
+        message: "陈旧运行状态已治理，等待人工确认下一步",
+        data: {
+          previousStatus: "running",
+          staleAfterMs,
+          staleAgeMs: now.getTime() - updatedAt,
+        },
+      }];
+      run.updatedAt = now.toISOString();
+      runIds.push(run.id);
+    }
+    return {
+      value: {
+        ok: true,
+        scanned: store.items.length,
+        reconciled: runIds.length,
+        runIds,
         staleAfterMs,
-        staleAgeMs: now.getTime() - updatedAt,
       },
-    }];
-    run.updatedAt = now.toISOString();
-    runIds.push(run.id);
-  }
-  if (runIds.length) await writeStore(store);
-  return {
-    ok: true,
-    scanned: store.items.length,
-    reconciled: runIds.length,
-    runIds,
-    staleAfterMs,
-  };
+      write: runIds.length > 0,
+    };
+  });
 }
 
 export async function createWorkflowRun(input = {}) {
-  const store = await readStore();
-  const now = nowIso();
-  const run = {
-    id: input.id || makeId(),
-    source: String(input.source || "manual"),
-    status: String(input.status || "draft"),
-    currentNode: String(input.currentNode || ""),
-    title: String(input.title || ""),
-    createdAt: now,
-    updatedAt: now,
-    entity: input.entity || {},
-    nodes: Array.isArray(input.nodes) ? input.nodes : [],
-    events: Array.isArray(input.events) ? input.events : [],
-    locks: {
-      paused: false,
-      waitingHuman: false,
-      submitLocked: false,
-      ...(input.locks || {}),
-    },
-  };
-  store.items.unshift(run);
-  await writeStore(store);
-  return run;
+  return mutateStore((store) => {
+    const now = nowIso();
+    const run = {
+      id: input.id || makeId(),
+      source: String(input.source || "manual"),
+      status: String(input.status || "draft"),
+      currentNode: String(input.currentNode || ""),
+      title: String(input.title || ""),
+      createdAt: now,
+      updatedAt: now,
+      entity: input.entity || {},
+      nodes: Array.isArray(input.nodes) ? input.nodes : [],
+      events: Array.isArray(input.events) ? input.events : [],
+      locks: {
+        paused: false,
+        waitingHuman: false,
+        submitLocked: false,
+        ...(input.locks || {}),
+      },
+    };
+    store.items.unshift(run);
+    return { value: run };
+  });
 }
 
 export async function upsertWorkflowNode(runId, nodeInput = {}) {
-  const store = await readStore();
-  const index = store.items.findIndex((item) => item.id === runId);
-  if (index < 0) throw new Error("工作流不存在: " + runId);
-  const run = store.items[index];
-  const key = String(nodeInput.key || "").trim();
-  if (!key) throw new Error("节点 key 不能为空");
-  const nodeIndex = (run.nodes || []).findIndex((node) => node.key === key);
-  const existingNode = nodeIndex >= 0 ? run.nodes[nodeIndex] : {};
-  const keep = (field, fallback) => Object.prototype.hasOwnProperty.call(nodeInput, field)
-    ? nodeInput[field]
-    : (existingNode[field] ?? fallback);
-  const now = nowIso();
-  const diagnosis = keep("diagnosis", {});
-  const nextNode = {
-    key,
-    name: String(keep("name", key) || key),
-    status: String(keep("status", "pending") || "pending"),
-    startedAt: nodeInput.startedAt || existingNode.startedAt || (nodeInput.status === "running" ? now : ""),
-    finishedAt: nodeInput.finishedAt || existingNode.finishedAt || (["success", "failed", "waiting_human", "skipped"].includes(String(nodeInput.status)) ? now : ""),
-    input: keep("input", {}),
-    output: keep("output", {}),
-    error: keep("error", {}),
-    diagnosis,
-    diagnostic: Object.prototype.hasOwnProperty.call(nodeInput, "diagnostic")
-      ? nodeInput.diagnostic
-      : (Object.prototype.hasOwnProperty.call(nodeInput, "diagnosis") ? diagnosis : (existingNode.diagnostic || diagnosis || {})),
-    branch: keep("branch", ""),
-    riskScore: Number(keep("riskScore", 0) || 0),
-    riskLevel: keep("riskLevel", ""),
-    reason: keep("reason", ""),
-    recommendedActions: Array.isArray(keep("recommendedActions", [])) ? keep("recommendedActions", []) : [],
-    actions: Array.isArray(keep("actions", [])) ? keep("actions", []) : [],
-  };
-  if (nodeIndex >= 0) {
-    run.nodes[nodeIndex] = { ...run.nodes[nodeIndex], ...nextNode };
-  } else {
-    run.nodes = [...(run.nodes || []), nextNode];
-  }
-  run.currentNode = key;
-  run.status = nodeInput.runStatus || run.status;
-  if (nodeInput.runStatus === "waiting_human") {
-    run.locks = { ...(run.locks || {}), waitingHuman: true };
-  }
-  if (nodeInput.runStatus === "running") {
-    run.locks = { ...(run.locks || {}), waitingHuman: false };
-  }
-  run.updatedAt = now;
-  store.items[index] = run;
-  await writeStore(store);
-  return run;
+  return mutateStore((store) => {
+    const index = store.items.findIndex((item) => item.id === runId);
+    if (index < 0) throw new Error("工作流不存在: " + runId);
+    const run = store.items[index];
+    const key = String(nodeInput.key || "").trim();
+    if (!key) throw new Error("节点 key 不能为空");
+    const nodeIndex = (run.nodes || []).findIndex((node) => node.key === key);
+    const existingNode = nodeIndex >= 0 ? run.nodes[nodeIndex] : {};
+    const keep = (field, fallback) => Object.prototype.hasOwnProperty.call(nodeInput, field)
+      ? nodeInput[field]
+      : (existingNode[field] ?? fallback);
+    const now = nowIso();
+    const diagnosis = keep("diagnosis", {});
+    const nextNode = {
+      key,
+      name: String(keep("name", key) || key),
+      status: String(keep("status", "pending") || "pending"),
+      startedAt: nodeInput.startedAt || existingNode.startedAt || (nodeInput.status === "running" ? now : ""),
+      finishedAt: nodeInput.finishedAt || existingNode.finishedAt || (["success", "failed", "waiting_human", "skipped"].includes(String(nodeInput.status)) ? now : ""),
+      input: keep("input", {}),
+      output: keep("output", {}),
+      error: keep("error", {}),
+      diagnosis,
+      diagnostic: Object.prototype.hasOwnProperty.call(nodeInput, "diagnostic")
+        ? nodeInput.diagnostic
+        : (Object.prototype.hasOwnProperty.call(nodeInput, "diagnosis") ? diagnosis : (existingNode.diagnostic || diagnosis || {})),
+      branch: keep("branch", ""),
+      riskScore: Number(keep("riskScore", 0) || 0),
+      riskLevel: keep("riskLevel", ""),
+      reason: keep("reason", ""),
+      recommendedActions: Array.isArray(keep("recommendedActions", [])) ? keep("recommendedActions", []) : [],
+      actions: Array.isArray(keep("actions", [])) ? keep("actions", []) : [],
+    };
+    if (nodeIndex >= 0) {
+      run.nodes[nodeIndex] = { ...run.nodes[nodeIndex], ...nextNode };
+    } else {
+      run.nodes = [...(run.nodes || []), nextNode];
+    }
+    run.currentNode = key;
+    run.status = nodeInput.runStatus || run.status;
+    if (nodeInput.runStatus === "waiting_human") {
+      run.locks = { ...(run.locks || {}), waitingHuman: true };
+    }
+    if (nodeInput.runStatus === "running") {
+      run.locks = { ...(run.locks || {}), waitingHuman: false };
+    }
+    run.updatedAt = now;
+    store.items[index] = run;
+    return { value: run };
+  });
 }
 
 export async function appendWorkflowEvent(runId, event = {}) {
-  const store = await readStore();
-  const index = store.items.findIndex((item) => item.id === runId);
-  if (index < 0) throw new Error("工作流不存在: " + runId);
-  const run = store.items[index];
-  run.events = [...(run.events || []), {
-    time: event.time || nowIso(),
-    node: String(event.node || ""),
-    type: String(event.type || "event"),
-    message: String(event.message || ""),
-    data: event.data || {},
-  }];
-  run.updatedAt = nowIso();
-  store.items[index] = run;
-  await writeStore(store);
-  return run;
+  return mutateStore((store) => {
+    const index = store.items.findIndex((item) => item.id === runId);
+    if (index < 0) throw new Error("工作流不存在: " + runId);
+    const run = store.items[index];
+    run.events = [...(run.events || []), {
+      time: event.time || nowIso(),
+      node: String(event.node || ""),
+      type: String(event.type || "event"),
+      message: String(event.message || ""),
+      data: event.data || {},
+    }];
+    run.updatedAt = nowIso();
+    store.items[index] = run;
+    return { value: run };
+  });
 }
 
 function errorText(error = {}) {
@@ -1772,6 +1798,10 @@ export function buildPreflightGateNode(input = {}) {
       const categoryMatches = kind !== "attributes"
         ? true
         : Boolean(expectedCategoryKey && String(entry?.cacheKey || "") === expectedCategoryKey);
+      const signedSessionMatches = entry?.signedSessionBound === true
+        && ["session_cookie", "session_bearer"].includes(String(entry?.authSource || "").trim())
+        && /^sha256:[a-f0-9]{64}$/i.test(String(entry?.sessionRefHash || ""))
+        && /^read-operator:[0-9a-f-]{36}$/i.test(String(entry?.readReceiptId || ""));
       return entry
       && String(entry.verificationLevel || "") === "server_observed"
       && /^sha256:[a-f0-9]{64}$/i.test(String(entry.responseHash || ""))
@@ -1782,15 +1812,23 @@ export function buildPreflightGateNode(input = {}) {
       && ageMs <= maxAgeMs
       && storeMatches
       && environmentMatches
-      && categoryMatches;
+      && categoryMatches
+      && signedSessionMatches;
     };
-    if (!validEvidence(evidence.tree, "tree") || !validEvidence(evidence.attributes, "attributes")) {
+    const treeEvidenceValid = validEvidence(evidence.tree, "tree");
+    const attributeEvidenceValid = validEvidence(evidence.attributes, "attributes");
+    const receiptBindingMatches = treeEvidenceValid
+      && attributeEvidenceValid
+      && String(evidence.tree?.readReceiptId || "") === String(evidence.attributes?.readReceiptId || "")
+      && String(evidence.tree?.sessionRefHash || "") === String(evidence.attributes?.sessionRefHash || "");
+    if (!treeEvidenceValid || !attributeEvidenceValid || !receiptBindingMatches) {
       issues.push({
         code: "CATEGORY_EVIDENCE_MISSING",
         message: "当前店铺缺少可追溯的 Ozon 类目/属性读取回执，禁止使用旧缓存提交。",
         missing: [
-          ...(validEvidence(evidence.tree, "tree") ? [] : ["tree"]),
-          ...(validEvidence(evidence.attributes, "attributes") ? [] : ["attributes"]),
+          ...(treeEvidenceValid ? [] : ["tree"]),
+          ...(attributeEvidenceValid ? [] : ["attributes"]),
+          ...(treeEvidenceValid && attributeEvidenceValid && !receiptBindingMatches ? ["receipt_binding"] : []),
         ],
       });
     }
@@ -1935,7 +1973,13 @@ async function updateRun(runId, updater) {
   return mutateStore((store) => {
     const index = store.items.findIndex((item) => item.id === runId);
     if (index < 0) throw new Error("工作流不存在: " + runId);
-    const next = updater({ ...store.items[index] });
+    const current = store.items[index];
+    if (current.submissionReservation?.state === "in_progress") {
+      const error = new Error("当前 Payload 正在提交，工作流已锁定，不能并发修改。");
+      error.code = "PAYLOAD_SUBMISSION_FENCE_ACTIVE";
+      throw error;
+    }
+    const next = updater({ ...current });
     next.updatedAt = nowIso();
     store.items[index] = next;
     return { value: next };
@@ -2206,6 +2250,10 @@ export async function savePayloadDraft(runId, payloadDraft, options = {}) {
     payloadDraftAttrsMeta: Array.isArray(options.attrsMeta) ? options.attrsMeta : (run.payloadDraftAttrsMeta || []),
     payloadDraftSourceVariants: Array.isArray(options.sourceVariants) ? options.sourceVariants : (run.payloadDraftSourceVariants || []),
     payloadDraftValidation: null,
+    validatedDraftHash: "",
+    payloadDraftStale: false,
+    payloadDraftStaleReason: "",
+    payloadDraftStaleAt: "",
     mediaApprovalDraft: run.mediaApprovalDraft?.expectedDraftHash
       && run.mediaApprovalDraft.expectedDraftHash !== payloadDraftHash
       ? {
@@ -2215,6 +2263,18 @@ export async function savePayloadDraft(runId, payloadDraft, options = {}) {
           staleAt: nowIso(),
         }
       : run.mediaApprovalDraft,
+    locks: { ...(run.locks || {}), submitLocked: true },
+  }));
+}
+
+export async function invalidatePayloadDraftValidation(runId, reason = "seller_input_changed") {
+  return updateRun(runId, (run) => ({
+    ...run,
+    payloadDraftValidation: null,
+    validatedDraftHash: "",
+    payloadDraftStale: true,
+    payloadDraftStaleReason: String(reason || "seller_input_changed"),
+    payloadDraftStaleAt: nowIso(),
     locks: { ...(run.locks || {}), submitLocked: true },
   }));
 }
@@ -2837,9 +2897,96 @@ export async function applyPayloadDraftAttributeRepair(runId, input = {}) {
   };
 }
 
-export async function validatePayloadDraft(runId) {
+function paidAiDraftReceiptFailure(reasonCode, message) {
+  return {
+    ok: false,
+    reasonCode,
+    issues: [{
+      code: reasonCode,
+      message,
+    }],
+    nextAction: "重新运行“自动完成商品资料”，生成与当前商品一致的新草稿后再预检。",
+  };
+}
+
+async function validateRunPaidAiDraftReceipt(run = {}, deps = {}) {
+  const jobId = String(run.entity?.autoListingJobId || "").trim();
+  if (!jobId) return { ok: true, required: false };
+  const receipt = run.payloadDraft?.paidAiContentReceipt;
+  if (!receipt) {
+    return paidAiDraftReceiptFailure(
+      "PAID_AI_PAYLOAD_RECEIPT_REQUIRED",
+      "当前自动上架商品缺少 AI 内容回执，不能验证或提交旧草稿。",
+    );
+  }
+  let validator = deps.validatePaidAiPayloadDraftCurrent;
+  if (typeof validator !== "function") {
+    const module = await import("./autoListing.js");
+    validator = module.validatePaidAiPayloadDraftCurrent;
+  }
+  if (typeof validator !== "function") {
+    return paidAiDraftReceiptFailure(
+      "PAID_AI_PAYLOAD_VALIDATOR_REQUIRED",
+      "当前商品缺少 AI 内容当前性校验器，已停止预检。",
+    );
+  }
+  const expectedBinding = {
+    workflowRunId: String(run.id || "").trim(),
+    autoListingJobId: jobId,
+    captureId: String(run.entity?.candidateId || "").trim(),
+    storeId: String(run.entity?.storeId || "").trim(),
+    sourceSnapshotHash: String(run.entity?.sourceEvidence?.snapshotHash || "").trim(),
+  };
+  const checked = await validator(jobId, expectedBinding, receipt);
+  return { ...checked, required: true };
+}
+
+async function paidAiSubmissionFenceDeps(deps = {}) {
+  if (typeof deps.claimPaidAiSubmissionFence === "function"
+    && typeof deps.validatePaidAiSubmissionFence === "function"
+    && typeof deps.releasePaidAiSubmissionFence === "function") {
+    return deps;
+  }
+  const module = await import("./autoListing.js");
+  return {
+    ...deps,
+    claimPaidAiSubmissionFence: module.claimPaidAiSubmissionFence,
+    validatePaidAiSubmissionFence: module.validatePaidAiSubmissionFence,
+    releasePaidAiSubmissionFence: module.releasePaidAiSubmissionFence,
+  };
+}
+
+export async function validatePayloadDraft(runId, deps = {}) {
   const categoryCache = await loadCategoryCache();
+  const before = await getWorkflowRun(runId);
+  if (!before) throw new Error("工作流不存在: " + runId);
+  const beforeDraftHash = hashPayloadDraft(before.payloadDraft || {});
+  const aiReceiptCheck = await validateRunPaidAiDraftReceipt(before, deps);
+  if (!aiReceiptCheck.ok) {
+    await invalidatePayloadDraftValidation(runId, "paid_ai_payload_context_stale");
+    return aiReceiptCheck;
+  }
   const run = await updateRun(runId, (current) => {
+    if (current.payloadDraftStale === true) {
+      return {
+        ...current,
+        payloadDraftValidation: null,
+        validatedDraftHash: "",
+        locks: { ...(current.locks || {}), submitLocked: true },
+      };
+    }
+    const currentDraftHash = hashPayloadDraft(current.payloadDraft || {});
+    if (currentDraftHash !== beforeDraftHash) {
+      return {
+        ...current,
+        payloadDraftValidation: null,
+        validatedDraftHash: "",
+        payloadDraftStale: true,
+        payloadDraftStaleReason: "payload_changed_during_preflight",
+        payloadDraftStaleAt: nowIso(),
+        locks: { ...(current.locks || {}), submitLocked: true },
+      };
+    }
     const { validation } = buildPayloadDraftValidationForRun(
       current,
       current.payloadDraft || {},
@@ -2849,10 +2996,37 @@ export async function validatePayloadDraft(runId) {
     return {
       ...current,
       payloadDraftHash: draftHash,
-      payloadDraftValidation: { ...validation, draftHash },
+      payloadDraftValidation: {
+        ...validation,
+        draftHash,
+        ...(aiReceiptCheck.required ? {
+          paidAiContentReceipt: {
+            version: String(before.payloadDraft?.paidAiContentReceipt?.version || ""),
+            binding: before.payloadDraft?.paidAiContentReceipt?.binding || {},
+            inputHash: String(aiReceiptCheck.inputHash || before.payloadDraft?.paidAiContentReceipt?.inputHash || ""),
+            contentHash: String(aiReceiptCheck.contentHash || before.payloadDraft?.paidAiContentReceipt?.contentHash || ""),
+          },
+        } : {}),
+      },
       locks: { ...(current.locks || {}), submitLocked: !validation.ok },
     };
   });
+  if (run.payloadDraftStale === true) {
+    return {
+      ok: false,
+      reasonCode: "PAYLOAD_DRAFT_STALE",
+      issues: [{
+        code: "PAYLOAD_DRAFT_STALE",
+        message: "商品资料已变化，旧 Payload 不能重新预检；请先生成当前商品的新草稿。",
+      }],
+      nextAction: "重新生成当前商品 Payload 草稿后再预检",
+    };
+  }
+  const finalAiReceiptCheck = await validateRunPaidAiDraftReceipt(run, deps);
+  if (!finalAiReceiptCheck.ok) {
+    await invalidatePayloadDraftValidation(runId, "paid_ai_payload_context_stale");
+    return finalAiReceiptCheck;
+  }
   return run.payloadDraftValidation;
 }
 
@@ -2865,11 +3039,14 @@ function extractTaskId(result = {}) {
   return result?.result?.task_id || result?.result?.taskId || result?.task_id || result?.taskId || "";
 }
 
-function reservePayloadSubmission(runId, draftHash, storeId) {
+function reservePayloadSubmission(runId, draftHash, storeId, paidAiReceipt = null) {
   return mutateStore((store) => {
     const index = store.items.findIndex((item) => item.id === runId);
     if (index < 0) throw new Error("工作流不存在: " + runId);
     const run = store.items[index];
+    if (run.payloadDraftStale === true) {
+      return { write: false, value: { acquired: false, status: "stale" } };
+    }
     const currentHash = hashPayloadDraft(run.payloadDraft || {});
     if (currentHash !== draftHash) {
       return { write: false, value: { acquired: false, status: "draft_changed", currentDraftHash: currentHash } };
@@ -2888,6 +3065,14 @@ function reservePayloadSubmission(runId, draftHash, storeId) {
       state: "in_progress",
       draftHash,
       storeId,
+      ...(paidAiReceipt ? {
+        paidAiReceipt: {
+          version: String(paidAiReceipt.version || ""),
+          binding: paidAiReceipt.binding || {},
+          inputHash: String(paidAiReceipt.inputHash || ""),
+          contentHash: String(paidAiReceipt.contentHash || ""),
+        },
+      } : {}),
       reservedAt: nowIso(),
     };
     store.items[index] = {
@@ -2931,11 +3116,48 @@ function finishPayloadSubmissionReservation(runId, draftHash, state, summary = {
   });
 }
 
+function cancelPayloadSubmissionReservation(runId, draftHash) {
+  return mutateStore((store) => {
+    const index = store.items.findIndex((item) => item.id === runId);
+    if (index < 0) throw new Error("工作流不存在: " + runId);
+    const run = store.items[index];
+    if (run.submissionReservation?.state !== "in_progress"
+      || run.submissionReservation?.draftHash !== draftHash) {
+      return { write: false, value: false };
+    }
+    const { submissionReservation, ...runWithoutReservation } = run;
+    store.items[index] = {
+      ...runWithoutReservation,
+      locks: { ...(run.locks || {}), submitLocked: true },
+      updatedAt: nowIso(),
+    };
+    return { value: true };
+  });
+}
+
 export async function submitPayloadDraftToOzon(runId, input = {}, deps = {}) {
   let run = await getWorkflowRun(runId);
   if (!run) throw new Error("工作流不存在: " + runId);
   if (run.locks?.paused || run.status === "paused") {
     return { ok: false, status: "paused", message: "工作流已暂停，不能提交 Ozon。" };
+  }
+  if (run.payloadDraftStale === true) {
+    return {
+      ok: false,
+      status: "blocked",
+      reasonCode: "PAYLOAD_DRAFT_STALE",
+      message: "商品资料已变化，旧 Payload 已失效；请先生成新草稿并重新预检。",
+    };
+  }
+  const aiReceiptCheck = await validateRunPaidAiDraftReceipt(run, deps);
+  if (!aiReceiptCheck.ok) {
+    await invalidatePayloadDraftValidation(runId, "paid_ai_payload_context_stale");
+    return {
+      ...aiReceiptCheck,
+      status: "blocked",
+      message: aiReceiptCheck.error || aiReceiptCheck.issues?.[0]?.message || "AI 内容回执已失效。",
+      submittedToOzon: false,
+    };
   }
   const existingReservation = run.submissionReservation;
   const existingDraftHash = hashPayloadDraft(run.payloadDraft || {});
@@ -3051,11 +3273,26 @@ export async function submitPayloadDraftToOzon(runId, input = {}, deps = {}) {
     attributeMatrix: validation.attributeMatrix,
     requiredAttributeFillPlan: validation.requiredAttributeFillPlan,
   }));
-  await updateRun(runId, (current) => ({
-    ...current,
-    payloadDraftValidation: validation,
-    locks: { ...(current.locks || {}), submitLocked: false },
-  }));
+  run = await updateRun(runId, (current) => current.payloadDraftStale === true
+    ? {
+        ...current,
+        payloadDraftValidation: null,
+        validatedDraftHash: "",
+        locks: { ...(current.locks || {}), submitLocked: true },
+      }
+    : {
+        ...current,
+        payloadDraftValidation: validation,
+        locks: { ...(current.locks || {}), submitLocked: false },
+      });
+  if (run.payloadDraftStale === true) {
+    return {
+      ok: false,
+      status: "blocked",
+      reasonCode: "PAYLOAD_DRAFT_STALE",
+      message: "商品资料在预检期间发生变化，旧 Payload 已失效；请先生成新草稿。",
+    };
+  }
 
   if (input.confirmSubmit !== true) {
     return {
@@ -3090,11 +3327,42 @@ export async function submitPayloadDraftToOzon(runId, input = {}, deps = {}) {
     };
   }
 
+  run = await getWorkflowRun(runId);
+  const finalDraftHash = hashPayloadDraft(run?.payloadDraft || {});
+  if (!run || run.payloadDraftStale === true || finalDraftHash !== currentDraftHash) {
+    return {
+      ok: false,
+      status: "blocked",
+      reasonCode: "PAYLOAD_DRAFT_STALE",
+      message: "商品资料在确认期间发生变化，旧 Payload 已失效；请重新预检并确认。",
+      submittedToOzon: false,
+    };
+  }
+  const finalAiReceiptCheck = await validateRunPaidAiDraftReceipt(run, deps);
+  if (!finalAiReceiptCheck.ok) {
+    await invalidatePayloadDraftValidation(runId, "paid_ai_payload_context_stale");
+    return {
+      ...finalAiReceiptCheck,
+      status: "blocked",
+      message: finalAiReceiptCheck.error || finalAiReceiptCheck.issues?.[0]?.message || "AI 内容回执已失效。",
+      submittedToOzon: false,
+    };
+  }
+
   const getStore = requireSubmitDep(deps, "getStore");
   const ozonRequest = requireSubmitDep(deps, "ozonRequest");
   const store = getStore(storeId);
-  const reservation = await reservePayloadSubmission(runId, currentDraftHash, storeId);
+  const paidAiReceipt = run.payloadDraft?.paidAiContentReceipt || null;
+  const reservation = await reservePayloadSubmission(runId, currentDraftHash, storeId, paidAiReceipt);
   if (!reservation.acquired) {
+    if (reservation.status === "stale") {
+      return {
+        ok: false,
+        status: "blocked",
+        reasonCode: "PAYLOAD_DRAFT_STALE",
+        message: "商品资料在确认期间发生变化，旧 Payload 已失效；请先生成新草稿。",
+      };
+    }
     if (reservation.status === "completed") {
       return {
         ok: true,
@@ -3120,12 +3388,78 @@ export async function submitPayloadDraftToOzon(runId, input = {}, deps = {}) {
       message: "同一 Payload 草稿已有提交占位，不能重复提交。",
     };
   }
+  let paidAiFence = null;
+  let fenceDeps = null;
+  const autoListingJobId = String(run.entity?.autoListingJobId || "").trim();
+  if (autoListingJobId) {
+    try {
+      fenceDeps = await paidAiSubmissionFenceDeps(deps);
+      const expectedBinding = {
+        workflowRunId: String(run.id || "").trim(),
+        autoListingJobId,
+        captureId: String(run.entity?.candidateId || "").trim(),
+        storeId: String(run.entity?.storeId || "").trim(),
+        sourceSnapshotHash: String(run.entity?.sourceEvidence?.snapshotHash || "").trim(),
+      };
+      paidAiFence = await fenceDeps.claimPaidAiSubmissionFence(
+        autoListingJobId,
+        expectedBinding,
+        paidAiReceipt,
+        currentDraftHash,
+      );
+      if (!paidAiFence?.ok) {
+        await cancelPayloadSubmissionReservation(runId, currentDraftHash);
+        return {
+          ...paidAiFence,
+          ok: false,
+          status: "blocked",
+          submittedToOzon: false,
+        };
+      }
+      const fencedRun = await getWorkflowRun(runId);
+      const workflowFenceValid = fencedRun?.submissionReservation?.state === "in_progress"
+        && fencedRun.submissionReservation?.draftHash === currentDraftHash
+        && hashPayloadDraft(fencedRun.payloadDraft || {}) === currentDraftHash;
+      const currentFence = await fenceDeps.validatePaidAiSubmissionFence(
+        autoListingJobId,
+        expectedBinding,
+        paidAiFence.token,
+        currentDraftHash,
+      );
+      if (!workflowFenceValid || !currentFence?.ok) {
+        await fenceDeps.releasePaidAiSubmissionFence(autoListingJobId, paidAiFence.token).catch(() => {});
+        await cancelPayloadSubmissionReservation(runId, currentDraftHash);
+        return {
+          ok: false,
+          status: "blocked",
+          reasonCode: currentFence?.reasonCode || "PAYLOAD_SUBMISSION_FENCE_STALE",
+          message: currentFence?.error || "当前商品或 Payload 在提交锁定期间发生变化，未调用 Ozon。",
+          submittedToOzon: false,
+        };
+      }
+    } catch {
+      if (paidAiFence?.ok && fenceDeps?.releasePaidAiSubmissionFence) {
+        await fenceDeps.releasePaidAiSubmissionFence(autoListingJobId, paidAiFence.token).catch(() => {});
+      }
+      await cancelPayloadSubmissionReservation(runId, currentDraftHash).catch(() => {});
+      return {
+        ok: false,
+        status: "blocked",
+        reasonCode: "PAID_AI_SUBMISSION_FENCE_FAILED",
+        message: "提交安全锁建立失败，未调用 Ozon；可以安全重试。",
+        submittedToOzon: false,
+      };
+    }
+  }
   const submitPayload = { items };
   const submissionSummary = buildPayloadSubmissionSummary(items);
   let result;
   try {
     result = await ozonRequest(store, "/v3/product/import", submitPayload);
   } catch {
+    if (paidAiFence?.ok) {
+      await fenceDeps.releasePaidAiSubmissionFence(autoListingJobId, paidAiFence.token).catch(() => {});
+    }
     await finishPayloadSubmissionReservation(runId, currentDraftHash, "needs_review", {
       reasonCode: "OZON_SUBMISSION_OUTCOME_UNKNOWN",
     });
@@ -3135,6 +3469,9 @@ export async function submitPayloadDraftToOzon(runId, input = {}, deps = {}) {
       reasonCode: "OZON_SUBMISSION_OUTCOME_UNKNOWN",
       message: "Ozon 提交结果未知，必须人工回查；系统不会自动重试。",
     };
+  }
+  if (paidAiFence?.ok) {
+    await fenceDeps.releasePaidAiSubmissionFence(autoListingJobId, paidAiFence.token).catch(() => {});
   }
   const taskId = extractTaskId(result);
   // A 2xx response without a task id cannot be reconciled to an Ozon import
@@ -3258,8 +3595,6 @@ export async function submitPayloadDraftToOzon(runId, input = {}, deps = {}) {
 export async function findOrCreateWorkflowForAutoListingJob(job = {}) {
   const autoListingJobId = String(job.id || "").trim();
   if (!autoListingJobId) throw new Error("自动上架任务 ID 不能为空");
-  const store = await readStore();
-  const existing = store.items.find((run) => run.entity?.autoListingJobId === autoListingJobId);
   const entityPatch = {
     autoListingJobId,
     source: String(job.source || job.candidateData?.source || "").trim(),
@@ -3271,19 +3606,32 @@ export async function findOrCreateWorkflowForAutoListingJob(job = {}) {
     storeId: job.listingResult?.storeId || job.storeId || "",
     ...(job.listingResult?.stockReadiness ? { stockReadiness: job.listingResult.stockReadiness } : {}),
   };
-  if (existing) {
-    return updateRun(existing.id, (run) => ({
-      ...run,
-      entity: {
-        ...(run.entity || {}),
+  return mutateStore((store) => {
+    const existing = store.items.find((run) => run.entity?.autoListingJobId === autoListingJobId);
+    if (existing) {
+      existing.entity = {
+        ...(existing.entity || {}),
         ...Object.fromEntries(Object.entries(entityPatch).filter(([, value]) => value !== "")),
-      },
-    }));
-  }
-  return createWorkflowRun({
-    source: "auto_listing",
-    title: job.bestMatch?.candidateTitle || job.ozonTitle || job.title || autoListingJobId,
-    entity: entityPatch,
+      };
+      existing.updatedAt = nowIso();
+      return { value: existing };
+    }
+    const now = nowIso();
+    const run = {
+      id: makeId(),
+      source: "auto_listing",
+      status: "draft",
+      currentNode: "",
+      title: String(job.bestMatch?.candidateTitle || job.ozonTitle || job.title || autoListingJobId),
+      createdAt: now,
+      updatedAt: now,
+      entity: entityPatch,
+      nodes: [],
+      events: [],
+      locks: { paused: false, waitingHuman: false, submitLocked: false },
+    };
+    store.items.unshift(run);
+    return { value: run };
   });
 }
 
@@ -3682,6 +4030,23 @@ export function workflowCurrentProductTask(run = {}) {
   const title = run.title || run.name || run.source?.title || run.entity?.candidateTitle || "当前商品";
   const reviewNode = nodes.find((node) => node.key === "review_reconcile");
   const stockNode = nodes.find((node) => node.key === "stock_sync");
+  const captureHandoffNode = nodes.find((node) => node.key === "capture_handoff") || null;
+  const draftSkeleton = captureHandoffNode?.output?.draftSkeleton || null;
+  const draftBlockers = Array.isArray(draftSkeleton?.blockers) ? draftSkeleton.blockers : [];
+  if (draftSkeleton && draftBlockers.length) {
+    const firstBlocker = draftBlockers[0] || {};
+    return {
+      stage: "draft_evidence_repair",
+      status: "blocked",
+      productTitle: title,
+      offerId: String(draftSkeleton.offerId || ""),
+      blockedAt: captureHandoffNode.name || "真实货源进入草稿",
+      reason: `${firstBlocker.title || firstBlocker.reasonCode || "草稿资料待补齐"}（另有 ${Math.max(0, draftBlockers.length - 1)} 项）`,
+      nextAction: firstBlocker.nextAction || draftSkeleton.nextAction || "打开本地草稿补齐来源证据",
+      view: "listing",
+      nodeKey: "capture_handoff",
+    };
+  }
   const stockReadiness = run.entity?.stockReadiness || reviewNode?.output?.stockReadiness || null;
   const failedReview = reviewNode && (
     ["failed", "waiting_human"].includes(String(reviewNode.status || ""))

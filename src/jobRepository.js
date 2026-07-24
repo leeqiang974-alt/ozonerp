@@ -315,7 +315,36 @@ export const JobRepository = {
   async writeAutoListingJobs(filePath, items) {
     const safeItems = sanitizePersistedValue(items || []);
     const ok = await replaceRows(TABLES.auto_listing_jobs, safeItems);
-    if (!ok) await writeJsonFile(filePath, { items: safeItems });
+    if (!ok) {
+      await withFileLock(`${filePath}.lock`, () => writeJsonFile(filePath, { items: safeItems }));
+    }
+  },
+  async mutateAutoListingJobs(filePath, mutator) {
+    await migrateOnce({
+      collectionKey: "auto_listing_jobs",
+      table: TABLES.auto_listing_jobs,
+      filePath,
+      parseFile: parseAutoListingFile,
+    });
+    const rows = await listRows(TABLES.auto_listing_jobs);
+    if (rows) {
+      const items = rows.map((row) => row.payload);
+      const before = JSON.stringify(items);
+      const output = await mutator(items);
+      if (JSON.stringify(items) !== before) {
+        await replaceRows(TABLES.auto_listing_jobs, sanitizePersistedValue(items));
+      }
+      return output;
+    }
+    return withFileLock(`${filePath}.lock`, async () => {
+      const items = await parseAutoListingFile(filePath);
+      const before = JSON.stringify(items);
+      const output = await mutator(items);
+      if (JSON.stringify(items) !== before) {
+        await writeJsonFile(filePath, { items: sanitizePersistedValue(items) });
+      }
+      return output;
+    });
   },
   async readStockQueueJobs(filePath) {
     await migrateOnce({

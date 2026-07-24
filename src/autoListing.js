@@ -31,7 +31,7 @@ import { prepareOzonImages } from "./imageOss.js";
 import { JobRepository } from "./jobRepository.js";
 import { mapReasonCode } from "./reasonCodes.js";
 import { trackEvent } from "./observability.js";
-import { SOURCING_MAX_SKU_COUNT, SOURCING_MAX_SOURCE_WEIGHT_G, filterSourcingCandidates } from "./sourcingRules.js";
+import { SOURCING_MAX_SKU_COUNT, SOURCING_MAX_SOURCE_WEIGHT_G, buildCapturedSkuPriceEvidence, filterSourcingCandidates } from "./sourcingRules.js";
 import { buildProcurementEvidenceSummary } from "./sourcingRules.js";
 import {
   appendWorkflowEvent,
@@ -1996,8 +1996,24 @@ function trustedPackageInfoSourceForListingJob(job = {}) {
     return explicitSource;
   }
   const packageEvidence = candidateData.sourceEvidence?.fields?.package;
-  if (packageEvidence && (String(packageEvidence.source || "") !== "page_content" || String(packageEvidence.evidenceRef || "") !== `snapshot:${snapshotHash.replace(/^sha256:/, "")}`)) return "";
-  if (packageEvidence?.values && Object.entries(packageEvidence.values).some(([key, value]) => Number(value || 0) !== Number(candidateData.sizeWeight?.[key] || 0))) return "";
+  if (packageEvidence) {
+    const exactCapturedPackage = candidateData.sourceEvidence?.platform === "1688"
+      && candidateData.sourceEvidence?.verificationState === "ok"
+      && /^sha256:[a-f0-9]{64}$/i.test(snapshotHash)
+      && ["page_content", "capture_hint", "1688_package"].includes(String(packageEvidence.source || ""))
+      && String(packageEvidence.evidenceRef || "") === `snapshot:${snapshotHash.replace(/^sha256:/, "")}`
+      && ["weightG", "lengthMm", "widthMm", "heightMm"].every((key) => (
+        Number(packageEvidence.values?.[key] || 0) > 0
+        && Number(packageEvidence.values?.[key] || 0) === Number(candidateData.sizeWeight?.[key] || 0)
+      ));
+    if (!exactCapturedPackage) return "";
+    return "1688_package";
+  }
+  // Only pre-evidence legacy jobs may use the historical source/URL fallback.
+  // A capture that already has an evidence envelope must carry an exact
+  // package field; otherwise a missing field could be upgraded merely because
+  // its URL points at 1688.
+  if (candidateData.sourceEvidence && Object.keys(candidateData.sourceEvidence).length) return "";
   if (explicitSource === "1688_package") return explicitSource;
   const sourceText = [
     candidateData.source,
@@ -2017,6 +2033,80 @@ function trustedPackageInfoSourceForListingJob(job = {}) {
     return "1688_package";
   }
   return "";
+}
+
+function capturedPurchasePriceCny(candidate = {}) {
+  const evidence = buildCapturedSkuPriceEvidence(candidate);
+  return evidence.ok ? Number(evidence.maxPriceCny || 0) : 0;
+}
+
+export function buildAutomaticPricingPreviewFromCapture(job = {}, categoryMatch = null) {
+  const procurement = buildProcurementEvidenceSummary(job.candidateData || {});
+  if (procurement.status !== "observed" || procurement.sourceMode !== "sku_price_snapshot") return null;
+  const packageInfo = packageSizeWeight(job.candidateData || {});
+  if (!packageInfo.ok) return null;
+  packageInfo.packageInfoSource = trustedPackageInfoSourceForListingJob(job);
+  if (!packageInfo.packageInfoSource) return null;
+  const sourcePriceCny = Number(
+    procurement.maxPriceCny
+    || job.bestMatch?.purchasePriceCny
+    || capturedPurchasePriceCny(job.candidateData || {}),
+  );
+  if (!(sourcePriceCny > 0)) return null;
+  const purchaseCost = Math.max(sourcePriceCny + PURCHASE_COST_MARKUP_RMB, 1);
+  const commissionInput = resolveCommissionInput(job, categoryMatch);
+  const priceCalc = calculateOzonPrice({
+    purchaseCost,
+    weightG: packageInfo.weight,
+    lengthMm: packageInfo.depth,
+    widthMm: packageInfo.width,
+    heightMm: packageInfo.height,
+    profitRate: 0.3,
+    ...commissionInput,
+  });
+  const priceCny = roundMoney(priceCalc.priceCny || priceCalc.nextPriceCny || 0);
+  if (!(priceCny > 0)) return null;
+  const pricingFields = derivePricingPolicyFields({
+    priceCny,
+    baseCost: priceCalc.baseCost || 0,
+    policy: job.pricingPolicy || null,
+  });
+  const preview = pricingDiagnosisFromCalculation({
+    sourcePriceCny,
+    purchaseCost,
+    packageInfo,
+    priceCalc,
+    priceCny,
+    oldPriceCny: pricingFields.oldPriceCny,
+    minPriceCny: pricingFields.minPriceCny,
+    pricingFields,
+  });
+  preview.autoStarted = true;
+  preview.calculationStatus = "local_preview";
+  preview.procurementEvidence = {
+    ...procurement,
+    status: "verified",
+    verificationState: "source_verified",
+    sourceBacked: true,
+    reasonCode: "",
+    sellerAction: "",
+    sideEffect: "仅生成本地定价试算；不会提交 Ozon，不会修改价格或库存。",
+  };
+  preview.profitStatus = preview.commissionSource?.source === "manual_default" ? "unknown" : "estimate";
+  preview.profitConclusion = preview.profitStatus === "unknown"
+    ? "unknown_without_trusted_commission_and_settlement_rules"
+    : "estimated_from_local_policy";
+  preview.profitEvidence = {
+    settlement: {
+      status: "missing",
+      nextAction: "当前店铺 Seller API 尚未提供结算费率和订单财务回执",
+    },
+  };
+  preview.sourceEvidence = sourceEvidenceBindingForListing(
+    job.candidateData?.sourceEvidence || {},
+    job.candidateData?.skuVariants || [],
+  );
+  return preview;
 }
 
 function contentGenerationWorkflowSummary(listingContent = {}, candidate = {}, visualCard = null) {
@@ -2103,8 +2193,20 @@ export function buildListingPayloadDraftFromJob(job = {}, options = {}) {
   const procurement = buildProcurementEvidenceSummary(job.candidateData || {});
   const rawProcurement = job.candidateData?.procurementEvidence || {};
   const sourceHash = String(job.candidateData?.sourceEvidence?.snapshotHash || "");
+  const expectedSourceRef = /^sha256:[a-f0-9]{64}$/i.test(sourceHash)
+    ? `snapshot:${sourceHash.replace(/^sha256:/, "")}`
+    : "";
   const refsMatch = [rawProcurement.supplierId, rawProcurement.supplierName, rawProcurement.moq, rawProcurement.priceTiers].filter(Boolean).every((field) => !field?.evidenceRef || field.evidenceRef === `snapshot:${sourceHash.replace(/^sha256:/, "")}`);
-  const verificationState = procurement.status === "observed" && sourceHash && refsMatch ? "source_verified" : procurement.status === "needs_review" ? "manual_unverified" : "";
+  const skuPriceSnapshotMatches = procurement.sourceMode === "sku_price_snapshot"
+    && expectedSourceRef
+    && procurement.evidenceRef === expectedSourceRef;
+  const verificationState = procurement.status === "observed"
+    && sourceHash
+    && (skuPriceSnapshotMatches || refsMatch)
+    ? "source_verified"
+    : procurement.status === "needs_review"
+      ? "manual_unverified"
+      : "";
   pricingDiagnosis.procurementEvidence = { ...procurement, status: verificationState === "source_verified" ? "verified" : procurement.status, verificationState, sourceBacked: verificationState === "source_verified", reasonCode: procurement.status === "blocked" ? "PRICING_PROCUREMENT_EVIDENCE_MISSING" : verificationState === "manual_unverified" ? "PRICING_PROCUREMENT_EVIDENCE_MANUAL_UNVERIFIED" : "" , sellerAction: verificationState === "manual_unverified" ? "核对来源快照并人工确认采购证据" : procurement.nextAction, sideEffect: "不会提交 Ozon，不会修改价格或库存" };
   pricingDiagnosis.profitStatus = pricingDiagnosis.commissionSource?.source === "manual_default" ? "unknown" : "estimated";
   pricingDiagnosis.profitConclusion = pricingDiagnosis.profitStatus === "unknown" ? "unknown_without_trusted_commission_and_settlement_rules" : "estimated_from_local_policy";
@@ -2313,10 +2415,21 @@ async function saveWorkflowPayloadDraftForListingJob(job = {}) {
     parentSku,
   });
   draft.sourceEvidenceReview = job.candidateData?.sourceEvidence || null;
+  const contentSummary = contentGenerationWorkflowSummary(
+    job.listingContent || {},
+    job.candidateData || {},
+    job.visualCard || null,
+  );
   draft.preflightPolicy = {
+    enforced: true,
+    sourceEvidence: job.candidateData?.sourceEvidence || null,
     sourceEvidenceRequired: sourceIs1688,
     sourceIdentityRequired: sourceIs1688,
     sourceVariantBindingRequired: sourceIs1688,
+    category: categoryMatch,
+    contentSummary,
+    pricingDiagnosis: draft.summary?.pricingDiagnosis || null,
+    variantCount: Number(draft.summary?.variantCount || draft.items?.length || 0),
     savedCategory,
     savedCategoryIdsValid,
     ...categoryReadPolicy,
@@ -2422,7 +2535,12 @@ function exactPackageEvidence(candidate = {}) {
   const same = ["weightG", "lengthMm", "widthMm", "heightMm"].every((key) => (
     Number(values[key]) > 0 && Number(values[key]) === Number(current[key])
   ));
-  return field.source === "1688_package" && expectedRef && String(field.evidenceRef || "") === expectedRef && same;
+  return candidate.sourceEvidence?.platform === "1688"
+    && candidate.sourceEvidence?.verificationState === "ok"
+    && ["1688_package", "page_content", "capture_hint"].includes(String(field.source || ""))
+    && expectedRef
+    && String(field.evidenceRef || "") === expectedRef
+    && same;
 }
 
 export function buildCaptureDraftSkeleton({ captureId = "", candidate = {}, job = {}, workflowRunId = "" } = {}) {
@@ -2430,19 +2548,14 @@ export function buildCaptureDraftSkeleton({ captureId = "", candidate = {}, job 
   const normalization = candidate.captureVariantNormalization || {};
   const rawVariantCount = Number(normalization.rawCount ?? (Array.isArray(candidate.skuVariants) ? candidate.skuVariants.length : 0));
   const sourceSkuIds = variants.map((variant) => String(variant?.sourceSkuId || variant?.source_sku_id || variant?.skuId || variant?.sku_id || "").trim()).filter(Boolean);
-  const evidenceFields = candidate.sourceEvidence?.fields || {};
-  const supplierPresent = evidenceFields.supplier?.source && evidenceFields.supplier.source !== "missing"
-    && Boolean(evidenceFields.supplier.id || evidenceFields.supplier.name);
-  const procurementPresent = evidenceFields.procurement?.source && evidenceFields.procurement.source !== "missing"
-    && Number(evidenceFields.procurement.moq || 0) > 0
-    && Number(evidenceFields.procurement.priceTierCount || 0) > 0;
+  const procurement = buildProcurementEvidenceSummary(candidate);
+  const procurementPresent = procurement.status === "observed";
   const mediaReady = String(candidate.mediaCompliance?.status || "") === "ready";
   const blockers = [];
   if (!variants.length || sourceSkuIds.length !== variants.length) {
     blockers.push(captureDraftBlocker("DRAFT_SOURCE_SKU_BINDING_REQUIRED", "来源 SKU 身份不完整", "重新采集并确保每个规格都带有唯一的 1688 SKU ID"));
   }
-  if (!supplierPresent) blockers.push(captureDraftBlocker("DRAFT_SUPPLIER_EVIDENCE_REQUIRED", "供应商身份待补齐", "补齐当前 1688 供应商名称或身份凭据"));
-  if (!procurementPresent) blockers.push(captureDraftBlocker("DRAFT_PROCUREMENT_EVIDENCE_REQUIRED", "采购 MOQ 与阶梯价待补齐", "补齐并核对当前商品的起订量和采购阶梯价"));
+  if (!procurementPresent) blockers.push(captureDraftBlocker("DRAFT_PROCUREMENT_EVIDENCE_REQUIRED", "采购价格缺少可回放来源", "重新采集当前 SKU 价格，或补齐来源明确的 MOQ 与阶梯价"));
   if (!exactPackageEvidence(candidate)) blockers.push(captureDraftBlocker("DRAFT_PACKAGE_EVIDENCE_REQUIRED", "包装尺重缺少可信来源", "补录实测包装尺重，或重新采集带 1688 包装证据的快照"));
   if (!mediaReady) blockers.push(captureDraftBlocker("DRAFT_MEDIA_REVIEW_REQUIRED", "图片尚未通过合规检查", "完成图片 OCR、尺寸和来源风险检查"));
   if (!String(job.listingContent?.title_ru || "").trim() || !String(job.listingContent?.description_ru || "").trim()) {
@@ -2556,6 +2669,10 @@ export async function createListingWorkflowFrom1688Capture(captureId, {
   // seller task for every click or page refresh.
   const effectiveStoreId = String(storeId || item.storeId || "").trim();
   const normalizedVariants = normalizeCapturedSkuVariants(candidate.skuVariants || []);
+  const capturedPriceCny = capturedPurchasePriceCny({
+    ...candidate,
+    skuVariants: normalizedVariants,
+  });
   const variantNormalization = {
     rawCount: Array.isArray(candidate.skuVariants) ? candidate.skuVariants.length : 0,
     uniqueCount: normalizedVariants.length,
@@ -2585,7 +2702,12 @@ export async function createListingWorkflowFrom1688Capture(captureId, {
         skuVariants: normalizedVariants,
         captureVariantNormalization: variantNormalization,
       },
-      bestMatch: { candidateTitle: candidate.title || "", candidateUrl: candidate.url || candidate.sourceEvidence?.canonicalUrl || "", source: "1688" },
+      bestMatch: {
+        candidateTitle: candidate.title || "",
+        candidateUrl: candidate.url || candidate.sourceEvidence?.canonicalUrl || "",
+        purchasePriceCny: capturedPriceCny,
+        source: "1688",
+      },
       listingContent: {}, createdAt, updatedAt: createdAt, sourceEvidenceReview: review,
     };
     jobs.push(job);
@@ -2618,6 +2740,15 @@ export async function createListingWorkflowFrom1688Capture(captureId, {
         skuVariants: currentVariants,
         captureVariantNormalization: snapshotChanged ? variantNormalization : (job.candidateData?.captureVariantNormalization || variantNormalization),
       },
+      bestMatch: {
+        ...(job.bestMatch || {}),
+        candidateTitle: job.bestMatch?.candidateTitle || candidate.title || "",
+        candidateUrl: job.bestMatch?.candidateUrl || candidate.url || candidate.sourceEvidence?.canonicalUrl || "",
+        purchasePriceCny: Number(snapshotChanged
+          ? (capturedPriceCny || 0)
+          : (job.bestMatch?.purchasePriceCny || capturedPriceCny || 0)),
+        source: "1688",
+      },
       ...(snapshotChanged ? {
         listingContent: {},
         manualCategory: {},
@@ -2636,16 +2767,20 @@ export async function createListingWorkflowFrom1688Capture(captureId, {
   await updateJob(job.id, { categoryDecision, autoCategory });
   job = await getAutoListingJob(job.id) || { ...job, categoryDecision, ...(autoCategory ? { autoCategory } : {}) };
   const workflowRun = await findOrCreateWorkflowForAutoListingJob(job).catch(() => null);
+  const pricingPreview = buildAutomaticPricingPreviewFromCapture({
+    ...job,
+    workflowRunId: workflowRun?.id || job.workflowRunId || "",
+  }, autoCategory);
   const draftSkeleton = buildCaptureDraftSkeleton({ captureId: id, candidate: job.candidateData || candidate, job, workflowRunId: workflowRun?.id || "" });
-  await updateJob(job.id, { workflowRunId: workflowRun?.id || "", draftSkeleton });
-  job = await getAutoListingJob(job.id) || { ...job, workflowRunId: workflowRun?.id || "", draftSkeleton };
+  await updateJob(job.id, { workflowRunId: workflowRun?.id || "", draftSkeleton, pricingPreview });
+  job = await getAutoListingJob(job.id) || { ...job, workflowRunId: workflowRun?.id || "", draftSkeleton, pricingPreview };
   if (workflowRun) {
     await upsertWorkflowNode(workflowRun.id, {
       key: "capture_handoff",
       name: "真实货源进入草稿",
       status: "success",
       input: { captureId: id, storeId: effectiveStoreId, snapshotHash: draftSkeleton.snapshotHash },
-      output: { draftSkeleton },
+      output: { draftSkeleton, pricingPreview },
       branch: draftSkeleton.blockers.length ? "seller_repair" : "draft_ready",
       riskScore: draftSkeleton.blockers.length ? 55 : 10,
       riskLevel: draftSkeleton.blockers.length ? "medium" : "low",

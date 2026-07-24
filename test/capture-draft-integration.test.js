@@ -216,12 +216,13 @@ test("capture workflow persists one seller-facing draft skeleton with unique sou
   ];
   item.parsed.images = ["https://img.example/a.jpg", "https://img.example/b.jpg"];
   item.parsed.attributes = [{ name: "材质", value: "合金" }];
+  item.parsed.sizeWeight = { weightG: 1, lengthMm: 1, widthMm: 1, heightMm: 1 };
   item.parsed.sourceEvidence.fields = {
-    variants: { source: "capture_hint", count: 4 },
+    variants: { source: "capture_hint", evidenceRef: `snapshot:${"9".repeat(64)}`, count: 4, skuIds: ["sku-a", "sku-b", "sku-a", "sku-b"] },
     images: { source: "capture_hint", count: 2 },
     supplier: { source: "missing" },
     procurement: { source: "missing" },
-    package: { source: "capture_hint", values: { weightG: 1, lengthMm: 1, widthMm: 1, heightMm: 1 } },
+    package: { source: "capture_hint", evidenceRef: `snapshot:${"9".repeat(64)}`, values: { weightG: 1, lengthMm: 1, widthMm: 1, heightMm: 1 } },
   };
   item.parsed.mediaCompliance = { status: "blocked", blockers: [{ code: "MEDIA_OCR_UNKNOWN" }] };
   await fs.mkdir(path.join(tempDir, "data"), { recursive: true });
@@ -255,9 +256,14 @@ test("capture workflow persists one seller-facing draft skeleton with unique sou
   const handoff = output.workflows[0].nodes.find((node) => node.key === "capture_handoff");
   assert.equal(handoff.status, "success");
   assert.deepEqual(handoff.output.draftSkeleton, first.draftSkeleton);
-  assert.ok(first.draftSkeleton.blockers.some((entry) => entry.reasonCode === "DRAFT_SUPPLIER_EVIDENCE_REQUIRED"));
-  assert.ok(first.draftSkeleton.blockers.some((entry) => entry.reasonCode === "DRAFT_PROCUREMENT_EVIDENCE_REQUIRED"));
-  assert.ok(first.draftSkeleton.blockers.some((entry) => entry.reasonCode === "DRAFT_PACKAGE_EVIDENCE_REQUIRED"));
+  assert.equal(handoff.output.pricingPreview.autoStarted, true);
+  assert.ok(handoff.output.pricingPreview.priceCny > 0);
+  assert.equal(first.draftSkeleton.blockers.some((entry) => entry.reasonCode === "DRAFT_SUPPLIER_EVIDENCE_REQUIRED"), false);
+  assert.equal(first.draftSkeleton.blockers.some((entry) => entry.reasonCode === "DRAFT_PROCUREMENT_EVIDENCE_REQUIRED"), false);
+  assert.equal(first.draftSkeleton.blockers.some((entry) => entry.reasonCode === "DRAFT_PACKAGE_EVIDENCE_REQUIRED"), false);
+  assert.equal(output.jobs[0].bestMatch.purchasePriceCny, 2.4);
+  assert.equal(output.jobs[0].pricingPreview.autoStarted, true);
+  assert.ok(output.jobs[0].pricingPreview.priceCny > 0);
   assert.ok(first.draftSkeleton.blockers.some((entry) => entry.reasonCode === "DRAFT_MEDIA_REVIEW_REQUIRED"));
   assert.ok(first.draftSkeleton.blockers.some((entry) => entry.reasonCode === "DRAFT_RUSSIAN_CONTENT_REQUIRED"));
   assert.ok(first.draftSkeleton.blockers.some((entry) => entry.reasonCode === "DRAFT_CATEGORY_REQUIRED"));
@@ -513,8 +519,15 @@ test("a newly confirmed capture snapshot refreshes an untouched handoff draft", 
   const item = candidate("capture-refresh", firstHash, "88112233", "store-fixture");
   item.parsed.captureReview = { status: "approved", humanConfirmed: true, reviewedSnapshotHash: firstHash };
   item.parsed.skuVariants = [{ skuId: "sku-old", spec: "旧规格", price: 1 }];
+  item.parsed.sourceEvidence.fields = {
+    variants: {
+      source: "capture_hint",
+      evidenceRef: `snapshot:${"1".repeat(64)}`,
+    },
+  };
   const refreshed = structuredClone(item.parsed);
   refreshed.sourceEvidence.snapshotHash = secondHash;
+  refreshed.sourceEvidence.fields.variants.evidenceRef = `snapshot:${"2".repeat(64)}`;
   refreshed.captureReview = { status: "approved", humanConfirmed: true, reviewedSnapshotHash: secondHash };
   refreshed.skuVariants = [{ skuId: "sku-new", spec: "新规格", price: 2 }];
   await fs.mkdir(path.join(tempDir, "data"), { recursive: true });
@@ -534,6 +547,7 @@ test("a newly confirmed capture snapshot refreshes an untouched handoff draft", 
   assert.deepEqual(output.results[1].draftSkeleton.sourceSkuIds, ["sku-new"]);
   assert.equal(output.jobs[0].candidateData.sourceEvidence.snapshotHash, secondHash);
   assert.deepEqual(output.jobs[0].candidateData.skuVariants.map((row) => row.skuId), ["sku-new"]);
+  assert.equal(output.jobs[0].bestMatch.purchasePriceCny, 2);
 });
 
 test("draft skeleton blocks a variant without a traceable source SKU id", async () => {

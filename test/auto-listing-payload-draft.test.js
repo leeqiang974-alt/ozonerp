@@ -67,7 +67,19 @@ test("single-SKU payload binds the parent offer to its only 1688 source SKU", ()
     candidateData: {
       title: "单 SKU 商品",
       url: "https://detail.1688.com/offer/single.html",
-      sourceEvidence: { snapshotHash, canonicalUrl: "https://detail.1688.com/offer/single.html", verificationState: "ok" },
+      sourceEvidence: {
+        platform: "1688",
+        snapshotHash,
+        canonicalUrl: "https://detail.1688.com/offer/single.html",
+        verificationState: "ok",
+        fields: {
+          package: {
+            source: "page_content",
+            evidenceRef: `snapshot:${snapshotHash.slice(7)}`,
+            values: { weightG: 400, lengthMm: 300, widthMm: 200, heightMm: 100 },
+          },
+        },
+      },
       skuVariants: [{ skuId: "SOURCE-SINGLE", spec: "颜色: 白色", price: 12, image: "https://example.com/single.jpg" }],
       images: ["https://example.com/main.jpg", "https://example.com/second.jpg"],
       detailImages: ["https://example.com/detail.jpg"],
@@ -105,7 +117,19 @@ test("payload draft carries a compact source snapshot binding beside Ozon items"
     bestMatch: { candidateTitle: "收纳盒", purchasePriceCny: 12 },
     candidateData: {
       source: "1688",
-      sourceEvidence: { snapshotHash, canonicalUrl: "https://detail.1688.com/offer/fixture.html", verificationState: "ok" },
+      sourceEvidence: {
+        platform: "1688",
+        snapshotHash,
+        canonicalUrl: "https://detail.1688.com/offer/fixture.html",
+        verificationState: "ok",
+        fields: {
+          package: {
+            source: "page_content",
+            evidenceRef: `snapshot:${snapshotHash.slice(7)}`,
+            values: { weightG: 200, lengthMm: 100, widthMm: 100, heightMm: 100 },
+          },
+        },
+      },
       images: ["https://example.com/main.jpg"],
       sizeWeight: { weightG: 200, lengthMm: 100, widthMm: 100, heightMm: 100 },
       skuVariants: [{ skuId: "fixture-white", spec: "白色", price: 12 }],
@@ -176,6 +200,95 @@ test("buildListingPayloadDraftFromJob creates workflow payload draft without Ozo
   assert.equal(draft.summary.pricingDiagnosis.profitConclusion, "unknown_without_trusted_commission_and_settlement_rules");
   assert.equal(draft.summary.pricingDiagnosis.profitEvidence.settlement.status, "missing");
   assert.equal(validateSubmitPayload(draft).ok, true);
+});
+
+test("payload draft reuses snapshot-bound SKU prices and collector package data without seller re-entry", () => {
+  const hashBody = "7".repeat(64);
+  const snapshotHash = `sha256:${hashBody}`;
+  const evidenceRef = `snapshot:${hashBody}`;
+  const draft = buildListingPayloadDraftFromJob({
+    source: "1688",
+    pendingParentSku: "CAPTURED-PIN-1",
+    listingContent: {
+      title_ru: "Металлический значок для одежды",
+      description_ru: "Металлический значок для одежды и рюкзака.",
+    },
+    bestMatch: { candidateTitle: "胸针", purchasePriceCny: 2.6 },
+    candidateData: {
+      source: "1688",
+      url: "https://detail.1688.com/offer/992997159052.html",
+      images: ["https://example.com/main.jpg"],
+      sizeWeight: { weightG: 1, lengthMm: 1, widthMm: 1, heightMm: 1 },
+      procurementEvidence: {
+        supplierName: { value: "", source: "missing", evidenceRef: "" },
+        moq: { value: null, source: "missing", evidenceRef: "" },
+        priceTiers: { values: [], source: "missing", evidenceRef: "" },
+      },
+      skuVariants: [
+        { skuId: "sku-a", spec: "A", price: 2.3, weightG: 1, lengthMm: 1, widthMm: 1, heightMm: 1 },
+        { skuId: "sku-b", spec: "B", price: 2.6, weightG: 1, lengthMm: 1, widthMm: 1, heightMm: 1 },
+      ],
+      sourceEvidence: {
+        platform: "1688",
+        verificationState: "ok",
+        snapshotHash,
+        fields: {
+          variants: { source: "capture_hint", evidenceRef, count: 2, skuIds: ["sku-a", "sku-b"] },
+          package: {
+            source: "capture_hint",
+            evidenceRef,
+            values: { weightG: 1, lengthMm: 1, widthMm: 1, heightMm: 1 },
+          },
+        },
+      },
+    },
+  }, {
+    categoryMatch: { description_category_id: 17027899, type_id: 87458886, path: "胸针" },
+    pricingPolicy: { commissionRate: 0.15, commissionSource: "controlled_fixture" },
+  });
+
+  assert.equal(draft.summary.pricingDiagnosis.packageInfoSource, "1688_package");
+  assert.equal(draft.summary.pricingDiagnosis.procurementEvidence.status, "verified");
+  assert.equal(draft.summary.pricingDiagnosis.procurementEvidence.sourceMode, "sku_price_snapshot");
+  assert.equal(draft.summary.pricingDiagnosis.procurementEvidence.skuPriceCount, 2);
+  assert.equal(draft.items.length, 2);
+});
+
+test("new 1688 evidence envelopes cannot use the legacy URL fallback for missing package proof", () => {
+  const snapshotHash = `sha256:${"8".repeat(64)}`;
+  assert.throws(() => buildListingPayloadDraftFromJob({
+    source: "1688",
+    pendingParentSku: "CAPTURE-MISSING-PACKAGE",
+    listingContent: {
+      title_ru: "Металлический значок",
+      description_ru: "Металлический значок для одежды и рюкзака.",
+    },
+    bestMatch: {
+      candidateTitle: "金属胸针",
+      candidateUrl: "https://detail.1688.com/offer/998877.html",
+      purchasePriceCny: 2.5,
+    },
+    candidateData: {
+      source: "1688",
+      url: "https://detail.1688.com/offer/998877.html",
+      images: ["https://example.com/a.jpg", "https://example.com/b.jpg", "https://example.com/c.jpg"],
+      sizeWeight: { weightG: 50, lengthMm: 20, widthMm: 20, heightMm: 10 },
+      sourceEvidence: {
+        platform: "1688",
+        offerId: "998877",
+        canonicalUrl: "https://detail.1688.com/offer/998877.html",
+        snapshotHash,
+        verificationState: "ok",
+        fields: {},
+      },
+    },
+  }, {
+    categoryMatch: {
+      description_category_id: 17027899,
+      type_id: 87458886,
+      path: "小百货和配饰 / 服装首饰 / 胸针",
+    },
+  }), /可信尺重来源/);
 });
 
 test("manual package measurement cannot inherit stale SKU dimensions in the payload", () => {
@@ -274,7 +387,16 @@ test("manual procurement values remain needs_review instead of masquerading as s
     bestMatch: { candidateTitle: "收纳盒", purchasePriceCny: 12 },
     candidateData: {
       source: "1688",
-      sourceEvidence: { snapshotHash: `sha256:${"a".repeat(64)}` },
+      sourceEvidence: {
+        platform: "1688",
+        snapshotHash: `sha256:${"a".repeat(64)}`,
+        verificationState: "ok",
+        fields: { package: {
+          source: "page_content",
+          evidenceRef: `snapshot:${"a".repeat(64)}`,
+          values: { weightG: 200, lengthMm: 100, widthMm: 100, heightMm: 100 },
+        } },
+      },
       sizeWeight: { weightG: 200, lengthMm: 100, widthMm: 100, heightMm: 100 },
       procurementEvidence: {
         verificationState: "manual_unverified",
@@ -304,7 +426,16 @@ test("procurement values are verified only when refs bind to the candidate snaps
     bestMatch: { candidateTitle: "收纳盒", purchasePriceCny: 12 },
     candidateData: {
       source: "1688",
-      sourceEvidence: { snapshotHash: `sha256:${hash}` },
+      sourceEvidence: {
+        platform: "1688",
+        snapshotHash: `sha256:${hash}`,
+        verificationState: "ok",
+        fields: { package: {
+          source: "page_content",
+          evidenceRef,
+          values: { weightG: 200, lengthMm: 100, widthMm: 100, heightMm: 100 },
+        } },
+      },
       sizeWeight: { weightG: 200, lengthMm: 100, widthMm: 100, heightMm: 100 },
       procurementEvidence: {
         supplierName: { value: "页面供应商", source: "page_content", evidenceRef },
@@ -331,7 +462,16 @@ test("capture hints remain unverified even when stored beside a snapshot", () =>
     bestMatch: { candidateTitle: "收纳盒", purchasePriceCny: 12 },
     candidateData: {
       source: "1688",
-      sourceEvidence: { snapshotHash: `sha256:${hash}` },
+      sourceEvidence: {
+        platform: "1688",
+        snapshotHash: `sha256:${hash}`,
+        verificationState: "ok",
+        fields: { package: {
+          source: "page_content",
+          evidenceRef,
+          values: { weightG: 200, lengthMm: 100, widthMm: 100, heightMm: 100 },
+        } },
+      },
       sizeWeight: { weightG: 200, lengthMm: 100, widthMm: 100, heightMm: 100 },
       procurementEvidence: {
         supplierName: { value: "提示供应商", source: "capture_hint", evidenceRef },
@@ -425,7 +565,16 @@ test("buildListingPayloadDraftFromJob submits collected rich content only after 
     ...job,
     candidateData: {
       ...job.candidateData,
-      sourceEvidence: { snapshotHash: `sha256:${"a".repeat(64)}` },
+      sourceEvidence: {
+        platform: "1688",
+        snapshotHash: `sha256:${"a".repeat(64)}`,
+        verificationState: "ok",
+        fields: { package: {
+          source: "page_content",
+          evidenceRef: `snapshot:${"a".repeat(64)}`,
+          values: { weightG: 700, lengthMm: 220, widthMm: 160, heightMm: 80 },
+        } },
+      },
       mediaApprovalPublished: {
         status: "stale",
         expectedDraftHash: `sha256:${"b".repeat(64)}`,
@@ -469,7 +618,16 @@ test("buildListingPayloadDraftFromJob submits collected rich content only after 
     ...job,
     candidateData: {
       ...job.candidateData,
-      sourceEvidence: { snapshotHash: `sha256:${"a".repeat(64)}`, verificationState: "ok" },
+      sourceEvidence: {
+        platform: "1688",
+        snapshotHash: `sha256:${"a".repeat(64)}`,
+        verificationState: "ok",
+        fields: { package: {
+          source: "page_content",
+          evidenceRef: `snapshot:${"a".repeat(64)}`,
+          values: { weightG: 700, lengthMm: 220, widthMm: 160, heightMm: 80 },
+        } },
+      },
       mediaApproval: {
         confirmed: true,
         confirmedAt: "2026-07-12T09:00:00.000Z",

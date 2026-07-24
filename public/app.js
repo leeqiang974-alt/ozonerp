@@ -1527,6 +1527,44 @@ const LISTING_SELLER_SUMMARY_STATUS_LABELS = {
   listing_progress: "上架准备中",
 };
 
+function sourceSnapshotEvidenceRef(sourceEvidence = {}) {
+  const snapshotHash = String(sourceEvidence?.snapshotHash || "").trim();
+  return /^sha256:[a-f0-9]{64}$/i.test(snapshotHash)
+    ? `snapshot:${snapshotHash.slice("sha256:".length)}`
+    : "";
+}
+
+function capturedSkuPriceEvidenceReady(context = {}, sourceEvidence = {}) {
+  const expectedRef = sourceSnapshotEvidenceRef(sourceEvidence);
+  const field = sourceEvidence?.fields?.variants || {};
+  const variants = Array.isArray(context.skuVariants) ? context.skuVariants : [];
+  return sourceEvidence?.platform === "1688"
+    && sourceEvidence?.verificationState === "ok"
+    && expectedRef
+    && ["capture_hint", "page_content"].includes(String(field.source || ""))
+    && String(field.evidenceRef || "") === expectedRef
+    && variants.length > 0
+    && variants.every((variant) => (
+      String(variant?.sourceSkuId || variant?.source_sku_id || variant?.skuId || variant?.sku_id || "").trim()
+      && Number(variant?.price || 0) > 0
+    ));
+}
+
+function capturedPackageEvidenceReady(context = {}, sourceEvidence = {}) {
+  const expectedRef = sourceSnapshotEvidenceRef(sourceEvidence);
+  const field = sourceEvidence?.fields?.package || {};
+  const sizeWeight = context.sizeWeight || {};
+  return sourceEvidence?.platform === "1688"
+    && sourceEvidence?.verificationState === "ok"
+    && expectedRef
+    && ["capture_hint", "page_content", "1688_package"].includes(String(field.source || ""))
+    && String(field.evidenceRef || "") === expectedRef
+    && ["weightG", "lengthMm", "widthMm", "heightMm"].every((key) => (
+      Number(sizeWeight[key] || 0) > 0
+      && Number(sizeWeight[key] || 0) === Number(field.values?.[key] || 0)
+    ));
+}
+
 function listingSellerTaskSummaryModel(run = null, context = {}) {
   const nodes = Array.isArray(run?.nodes) ? run.nodes : [];
   const task = run?.summary?.currentProductTask || null;
@@ -1535,8 +1573,11 @@ function listingSellerTaskSummaryModel(run = null, context = {}) {
   const stockNode = nodes.find((node) => node.key === "stock_sync") || null;
   const sourceEvidence = run?.sourceEvidence || run?.source?.sourceEvidence || context.sourceEvidence || null;
   const procurementEvidence = context.procurementEvidence || run?.source?.procurementEvidence || null;
-  const procurementReady = Boolean(procurementEvidence?.moq?.source && procurementEvidence.moq.source !== "missing"
-    && Number(procurementEvidence.priceTiers?.values?.length || 0) > 0);
+  const procurementReady = Boolean(
+    capturedSkuPriceEvidenceReady(context, sourceEvidence)
+    || (procurementEvidence?.moq?.source && procurementEvidence.moq.source !== "missing"
+      && Number(procurementEvidence.priceTiers?.values?.length || 0) > 0),
+  );
   const mediaAssets = run?.source?.mediaAssets || context.mediaAssets || [];
   const mediaIssues = Array.isArray(context.mediaIssues)
     ? context.mediaIssues.filter(Boolean).map(String)
@@ -1546,7 +1587,7 @@ function listingSellerTaskSummaryModel(run = null, context = {}) {
   const contentEvidence = run?.contentEvidence || contentNode?.output?.contentEvidence || null;
   const contentSellerResult = run?.contentSellerResult || contentNode?.output?.sellerResult || null;
   const pricingNode = nodes.find((node) => node.key === "match_profit") || null;
-  const pricingDiagnosis = run?.pricingDiagnosis || pricingNode?.output?.pricingDiagnosis || null;
+  const pricingDiagnosis = run?.pricingDiagnosis || pricingNode?.output?.pricingDiagnosis || context.pricingDiagnosis || null;
   const pricingDiagnosisResult = pricingNode?.output?.diagnosis || null;
   const title = task?.productTitle || run?.source?.title || run?.payloadDraft?.items?.[0]?.name || context.title || "";
   const skuCount = Number(context.uniqueSkuCount || 0)
@@ -1597,8 +1638,12 @@ function listingSellerTaskSummaryModel(run = null, context = {}) {
       ? "俄文内容已人工复核"
       : "等待 AI 一键补齐";
   const packageInfo = context.sizeWeight || pricingDiagnosis?.package || run?.source?.sizeWeight || {};
-  const packageReady = [packageInfo.weightG, packageInfo.lengthMm, packageInfo.widthMm, packageInfo.heightMm]
-    .every((value) => Number(value || 0) > 0);
+  const packageReady = Boolean(
+    capturedPackageEvidenceReady(context, sourceEvidence)
+    || (pricingDiagnosis?.packageInfoSource
+      && [packageInfo.weightG, packageInfo.lengthMm, packageInfo.widthMm, packageInfo.heightMm]
+        .every((value) => Number(value || 0) > 0)),
+  );
   const packageText = packageReady
     ? `包装 ${packageInfo.weightG}g / ${packageInfo.lengthMm}×${packageInfo.widthMm}×${packageInfo.heightMm}mm`
     : "包装尺重证据待补齐";
@@ -1767,9 +1812,18 @@ function listingSellerTaskSummaryModel(run = null, context = {}) {
       : (run?.source?.url || title)
         ? "已有商品来源，页面证据待补齐"
         : "来源证据未绑定";
-  const procurementText = procurementEvidence?.moq?.source && procurementEvidence.moq.source !== "missing"
-    ? `MOQ ${String(procurementEvidence.moq.value || "已记录")}；阶梯价 ${Number(procurementEvidence.priceTiers?.values?.length || 0)} 档`
-    : "采购 MOQ/阶梯价证据待补齐";
+  const capturedSkuPriceRows = [...new Map((Array.isArray(context.skuVariants) ? context.skuVariants : [])
+    .filter((variant) => Number(variant?.price || 0) > 0)
+    .map((variant, index) => [
+      String(variant?.sourceSkuId || variant?.source_sku_id || variant?.skuId || variant?.sku_id || `row:${index}`).trim(),
+      variant,
+    ])).values()];
+  const capturedSkuPrices = capturedSkuPriceRows.map((variant) => Number(variant.price));
+  const procurementText = capturedSkuPriceEvidenceReady(context, sourceEvidence)
+    ? `已采集 ${capturedSkuPriceRows.length} 个 SKU 价格（${Math.min(...capturedSkuPrices)}–${Math.max(...capturedSkuPrices)} CNY）`
+    : procurementEvidence?.moq?.source && procurementEvidence.moq.source !== "missing"
+      ? `MOQ ${String(procurementEvidence.moq.value || "已记录")}；阶梯价 ${Number(procurementEvidence.priceTiers?.values?.length || 0)} 档`
+      : "采购价格来源待补齐";
   const mediaList = Array.isArray(mediaAssets) ? mediaAssets : [];
   const approvedMediaCount = mediaList.filter((asset) => asset?.checks?.humanApproved === true).length;
   const mediaText = mediaList.length
@@ -1786,7 +1840,7 @@ function listingSellerTaskSummaryModel(run = null, context = {}) {
     listing_progress: validationIssues
       ? `预检仍有 ${validationIssues} 个问题需要处理。`
       : handoffNode
-        ? "1688 候选已进入草稿，但还没有可提交 Payload；先补俄文内容、类目、采购成本和媒体资料。"
+        ? "1688 候选已进入草稿，但还没有可提交 Payload；系统将继续处理俄文内容、类目、媒体和预检。"
         : "商品仍在上架准备阶段。",
   };
   return {
@@ -2198,9 +2252,9 @@ function renderListingSellerTaskSummary() {
   if (panel) panel.hidden = false;
   const autoListJob = currentListingAutoListJob(run);
   void autoSyncListingCategoryEvidence(run, autoListJob);
-  const handoffDraft = (run?.nodes || [])
-    .find((node) => ["candidate_handoff", "capture_handoff"].includes(node.key))
-    ?.output?.draftSkeleton || null;
+  const handoffNode = (run?.nodes || [])
+    .find((node) => ["candidate_handoff", "capture_handoff"].includes(node.key)) || null;
+  const handoffDraft = handoffNode?.output?.draftSkeleton || null;
   const effectiveCategoryDecision = autoListJob?.categoryDecision || handoffDraft?.categoryDecision || null;
   const linkedCandidate = autoListJob?.candidateData || null;
   const listingProductSource = linkedCandidate
@@ -2227,6 +2281,9 @@ function renderListingSellerTaskSummary() {
     mediaIssues,
     skuCount: listingProductSource?.skuVariants?.length || 0,
     uniqueSkuCount: uniqueSourceSkuCount,
+    skuVariants: sourceVariants,
+    sizeWeight: listingProductSource?.sizeWeight || null,
+    pricingDiagnosis: autoListJob?.pricingPreview || handoffNode?.output?.pricingPreview || null,
     categoryMatch: autoListJob?.manualCategory || autoListJob?.autoCategory || effectiveCategoryDecision?.selected || null,
   });
   const firstPayloadItem = run?.payloadDraft?.items?.[0] || {};
@@ -2252,6 +2309,7 @@ function renderListingSellerTaskSummary() {
   const categoryState = summary.categoryText.includes("多个") ? "review" : summary.categoryReady ? "ready" : "automatic";
   const attributeState = summary.attributeIssueCount > 0 ? "review" : summary.categoryReady ? "ready" : "automatic";
   const contentState = summary.contentStatus === "reviewed" ? "ready" : summary.contentStatus === "blocked" ? "review" : "automatic";
+  const procurementState = summary.procurementReady ? "ready" : "required";
   const packageState = summary.packageReady ? "ready" : "required";
   const pricingState = summary.pricingBlocked ? "review" : summary.pricingText.includes("尚未") ? "automatic" : "ready";
   const mediaState = summary.mediaBlocked ? "review" : mediaAssets.length ? "ready" : "automatic";
@@ -2292,6 +2350,7 @@ function renderListingSellerTaskSummary() {
           ${renderListingFormRow("Ozon 类目", summary.categoryText, summary.categoryStatusText, categoryState)}
           ${renderListingFormRow("必填属性", summary.attributeText, "系统按当前类目字典自动填写和检查", attributeState)}
           ${renderListingFormRow("俄文文案", summary.contentText, "点击底部按钮后由 AI 一次生成", contentState)}
+          ${renderListingFormRow("采购价格", summary.procurementText, "详情 SKU 价格已绑定当前采集快照，无需重复填写供应商资料", procurementState)}
           ${renderListingFormRow("包装尺重", summary.packageText, "可信采集值自动带入，来源没有时才显示输入框", packageState)}
           ${renderListingFormRow("定价与利润", summary.pricingText, "根据采购价、物流和佣金规则自动计算", pricingState)}
           ${renderListingFormRow("商品图片", summary.mediaText, "1688 图片自动带入，仅风险图片需要检查", mediaState)}
@@ -2324,7 +2383,7 @@ function renderListingSellerTaskSummary() {
     <details class="listing-technical-details">
       <summary>查看系统证据、预检结果和高级诊断</summary>
       <div class="listing-technical-details-body">
-        <p class="hint">高级校验规则：字典值和敏感属性仍需按字段确认；展示价不能替代真实采购阶梯价；未经人工批准不能作为可提交富内容。</p>
+        <p class="hint">高级校验规则：字典值和敏感属性仍需按字段确认；当前快照绑定的详情 SKU 价格可用于本地定价，未绑定的搜索页价格区间不可使用；未经人工批准不能作为可提交富内容。</p>
         ${renderListingSellerPayloadValidation(run)}
         ${renderListingSellerContentEvidence(run)}
         ${renderListingSellerPreflightResult(run)}

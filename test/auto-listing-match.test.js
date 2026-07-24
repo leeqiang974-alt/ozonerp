@@ -2,7 +2,7 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
 import { fileURLToPath } from "node:url";
-import { applyManualSellerInputsToJob, buildProcurementEvidenceSummary, evaluateSourcingCandidate, filterSourcingCandidates, listingDraftStoreMatches, localJudgeMatch, shouldUseAiMatch } from "../src/autoListing.js";
+import { applyManualSellerInputsToJob, buildAutomaticPricingPreviewFromCapture, buildProcurementEvidenceSummary, evaluateSourcingCandidate, filterSourcingCandidates, listingDraftStoreMatches, localJudgeMatch, shouldUseAiMatch } from "../src/autoListing.js";
 
 test("shouldUseAiMatch limits expensive per-candidate AI matching", () => {
   assert.equal(shouldUseAiMatch(0, 3), true);
@@ -124,6 +124,67 @@ test("procurement summary distinguishes observed, manual review and missing evid
     priceTiers: { values: [{ minQuantity: 2, unitPriceCny: 3 }], source: "manual_seller" },
   } } }).status, "needs_review");
   assert.deepEqual(buildProcurementEvidenceSummary({ parsed: { procurementEvidence: {} } }).missing, ["supplier", "moq", "price_tiers"]);
+});
+
+test("snapshot-bound 1688 SKU prices are sufficient procurement evidence without duplicate supplier entry", () => {
+  const snapshotHash = `sha256:${"8".repeat(64)}`;
+  const evidenceRef = `snapshot:${"8".repeat(64)}`;
+  const candidate = {
+    parsed: {
+      source: "1688",
+      sourceEvidence: {
+        platform: "1688",
+        verificationState: "ok",
+        snapshotHash,
+        fields: {
+          variants: { source: "capture_hint", evidenceRef, count: 2, skuIds: ["sku-a", "sku-b"] },
+        },
+      },
+      procurementEvidence: {
+        supplierId: { value: "", source: "missing", evidenceRef: "" },
+        supplierName: { value: "", source: "missing", evidenceRef: "" },
+        moq: { value: null, source: "missing", evidenceRef: "" },
+        priceTiers: { values: [], source: "missing", evidenceRef: "" },
+      },
+      skuVariants: [
+        { skuId: "sku-a", price: 2.3 },
+        { skuId: "sku-b", price: 2.6 },
+      ],
+    },
+  };
+
+  const summary = buildProcurementEvidenceSummary(candidate);
+  assert.equal(summary.status, "observed");
+  assert.equal(summary.code, "PROCUREMENT_SKU_PRICE_SNAPSHOT_OBSERVED");
+  assert.equal(summary.sourceMode, "sku_price_snapshot");
+  assert.equal(summary.evidenceRef, evidenceRef);
+  assert.deepEqual(summary.missing, []);
+  assert.equal(summary.skuPriceCount, 2);
+
+  const preview = buildAutomaticPricingPreviewFromCapture({
+    source: "1688",
+    candidateData: {
+      ...candidate.parsed,
+      sizeWeight: { weightG: 1, lengthMm: 1, widthMm: 1, heightMm: 1 },
+      sourceEvidence: {
+        ...candidate.parsed.sourceEvidence,
+        fields: {
+          ...candidate.parsed.sourceEvidence.fields,
+          package: {
+            source: "capture_hint",
+            evidenceRef,
+            values: { weightG: 1, lengthMm: 1, widthMm: 1, heightMm: 1 },
+          },
+        },
+      },
+    },
+    bestMatch: { purchasePriceCny: 2.6 },
+  }, { description_category_id: 17027899, type_id: 87458886, path: "胸针" });
+  assert.equal(preview.autoStarted, true);
+  assert.equal(preview.sourcePriceCny, 2.6);
+  assert.equal(preview.packageInfoSource, "1688_package");
+  assert.equal(preview.procurementEvidence.verificationState, "source_verified");
+  assert.ok(preview.priceCny > 0);
 });
 
 test("combined seller input validation is all-or-nothing and rejects stale product bindings", () => {

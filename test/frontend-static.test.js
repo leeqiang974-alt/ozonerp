@@ -4046,10 +4046,10 @@ test("1688 candidate handoff keeps source evidence state and human-verification 
   assert.match(js, /生成的只是本地草稿/);
 });
 
-test("listing seller summary keeps procurement and media evidence as blockers", async () => {
+test("listing seller summary reuses captured SKU prices while keeping media evidence blocking", async () => {
   const js = await readFile(new URL("../public/app.js", import.meta.url), "utf8");
 
-  assert.match(js, /采购 MOQ\/阶梯价证据待补齐/);
+  assert.match(js, /已采集 \${capturedSkuPriceRows\.length} 个 SKU 价格/);
   assert.match(js, /媒体候选证据待补齐/);
   assert.match(js, /采购、运费和利润诊断；不会提交 Ozon/);
   assert.match(js, /未经人工批准不能作为可提交富内容/);
@@ -4059,7 +4059,8 @@ test("procurement evidence summary requires supplier, MOQ, tier binding, and sna
   const js = await readFile(new URL("../public/app.js", import.meta.url), "utf8");
 
   assert.match(js, /供应商\/MOQ\/采购阶梯价待核/);
-  assert.match(js, /展示价不能替代真实采购阶梯价/);
+  assert.match(js, /当前快照绑定的详情 SKU 价格可用于本地定价/);
+  assert.match(js, /未绑定的搜索页价格区间不可使用/);
   assert.match(js, /无法证明当前数量对应的真实采购成本/);
   assert.match(js, /补充来源快照后才可标记为来源已验证/);
   assert.match(js, /打开采购、运费和利润诊断；不会提交 Ozon/);
@@ -4487,6 +4488,25 @@ test("listing seller summary exposes automatic category recommendation and syncs
   assert.match(sync, /categoryAutoSyncKeys/);
   assert.match(sync, /categoryAutoSyncRetryAt/);
   assert.match(sync, /5 \* 60 \* 1000/);
+});
+
+test("listing seller form reuses captured SKU prices and package values instead of asking for duplicate input", async () => {
+  const js = await readFile(new URL("../public/app.js", import.meta.url), "utf8");
+  const summaryStart = js.indexOf("function listingSellerTaskSummaryModel");
+  const summaryEnd = js.indexOf("function mediaSellerRiskItems", summaryStart);
+  const renderStart = js.indexOf("function renderListingSellerTaskSummary");
+  const renderEnd = js.indexOf("async function saveListingSellerInputsBeforeAutoCompletion", renderStart);
+  const summary = js.slice(summaryStart, summaryEnd);
+  const render = js.slice(renderStart, renderEnd);
+
+  assert.match(js, /function capturedSkuPriceEvidenceReady/);
+  assert.match(js, /function capturedPackageEvidenceReady/);
+  assert.match(summary, /capturedSkuPriceEvidenceReady\(context, sourceEvidence\)/);
+  assert.match(summary, /capturedPackageEvidenceReady\(context, sourceEvidence\)/);
+  assert.match(summary, /context\.pricingDiagnosis/);
+  assert.match(render, /sizeWeight: listingProductSource\?\.sizeWeight/);
+  assert.match(render, /pricingDiagnosis: autoListJob\?\.pricingPreview \|\| handoffNode\?\.output\?\.pricingPreview/);
+  assert.match(render, /skuVariants: sourceVariants/);
 });
 
 test("preflight success is labeled as not submitted until the submit reservation exists", async () => {

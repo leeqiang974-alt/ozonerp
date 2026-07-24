@@ -2762,6 +2762,17 @@ test("1688 workflow draft validation and submit reuse the persisted strong prefl
     sourceVariantBindingRequired: true,
     categoryEvidenceRequired: false,
     contentSummary: { contentEvidence: { status: "reviewed", blockerCodes: [] }, sizeWeightReady: true },
+    pricing: {
+      priceCny: 100,
+      minPriceCny: 80,
+      logisticsFee: 10,
+      commissionRate: 0.15,
+      commissionSource: { source: "manual_default", confidence: "low" },
+      profit: 20,
+      level: { id: "small" },
+      package: { weightG: 100, lengthMm: 100, widthMm: 100, heightMm: 100 },
+      procurementEvidence: { status: "verified" },
+    },
     variantCount: 1,
   });
   await upsertWorkflowNode(run.id, gate);
@@ -2770,6 +2781,7 @@ test("1688 workflow draft validation and submit reuse the persisted strong prefl
   assert.equal(validation.ok, false);
   assert.equal(validation.issues.some((issue) => issue.code === "SOURCE_EVIDENCE_NOT_VERIFIED"), true);
   assert.equal(validation.issues.some((issue) => issue.code === "SOURCE_IDENTITY_MISSING"), true);
+  assert.equal(validation.issues.some((issue) => issue.code === "PRICING_COMMISSION_SOURCE_MISSING"), true);
 
   const calls = [];
   const result = await submitPayloadDraftToOzon(run.id, {

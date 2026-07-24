@@ -1625,6 +1625,11 @@ test("1688 saved draft policy persists the product identity gate for later reval
   assert.match(helper, /sourceEvidenceRequired:\s*sourceIs1688/);
   assert.match(helper, /sourceIdentityRequired:\s*sourceIs1688/);
   assert.match(helper, /sourceVariantBindingRequired:\s*sourceIs1688/);
+  assert.match(helper, /enforced:\s*true/);
+  assert.match(helper, /sourceEvidence:\s*job\.candidateData\?\.sourceEvidence/);
+  assert.match(helper, /pricingDiagnosis:\s*draft\.summary\?\.pricingDiagnosis/);
+  assert.match(helper, /contentSummary/);
+  assert.match(helper, /variantCount/);
 });
 
 test("manual procurement route keeps seller evidence distinct from official Ozon pricing", async () => {

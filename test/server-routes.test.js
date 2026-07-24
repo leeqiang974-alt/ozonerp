@@ -1972,6 +1972,10 @@ test("server exposes parameterized category read plan and evidence execution", a
   assert.match(route, /buildCategoryReadRequests/);
   assert.match(route, /summarizeCategoryReadObservations/);
   assert.match(route, /classifyCategoryMetadataResponse/);
+  assert.match(route, /readCategoryValuePages/);
+  assert.match(route, /requestPage:\s*\(pageBody\)/);
+  assert.match(route, /pageCount:\s*valuesRead\.pageCount/);
+  assert.match(route, /pageLimitReached:\s*valuesRead\.pageLimitReached/);
   assert.match(route, /mutateCategoryCache/);
   assert.match(route, /buildCategoryReadContinuationPlan/);
   assert.match(route, /validateCategoryReadAttributeScope/);
@@ -1995,11 +1999,37 @@ test("server exposes parameterized category read plan and evidence execution", a
   assert.match(route, /endpoints: requests\.map\(\(request\) => request\.endpoint\)/);
   assert.match(route, /storeRef: scopeHash\(validation\.storeId\)/);
   assert.match(route, /categorySessionReceiptBinding/);
+  assert.match(route, /observations:\s*observations\.map/);
+  assert.ok(route.indexOf("readOperatorReceipts.record") < route.indexOf("mutateCategoryCache"));
+  assert.match(route, /readReceiptId/);
+  assert.match(route, /CATEGORY_READ_SUPERSEDED/);
+  assert.match(route, /categoryReadGenerationGate\.begin\(\)/);
+  assert.match(route, /categoryReadGenerationGate\.runIfCurrent\(categoryReadGeneration/);
+  assert.match(route, /shouldCommit:\s*\(\) => categoryReadGenerationGate\.isCurrent\(categoryReadGeneration\)/);
+  assert.doesNotMatch(route, /categoryReadGenerationKey/);
   assert.match(route, /CATEGORY_READ_EVIDENCE_PARTIAL/);
   assert.match(route, /sellerTask:/);
   assert.match(route, /receipt: categoryReceipt\.receipt/);
   assert.match(route, /未调用写接口/);
   assert.doesNotMatch(route, /body\.receipt|body\.response/);
+  assert.match(route, /attributes:\s*\{\s*\[attributesPatch\.cacheKey\]/);
+  assert.doesNotMatch(route, /attributes:\s*\{\s*\.\.\.\(cache\.attributes/);
+  assert.match(route, /const attributeValues = Object\.fromEntries/);
+});
+
+test("legacy category value reads paginate and never cache partial dictionaries", async () => {
+  const source = await readFile(new URL("../src/server.js", import.meta.url), "utf8");
+  const start = source.indexOf('app.post("/api/ozon/description-attribute-values"');
+  const end = source.indexOf('app.get("/api/ozon/orders"', start);
+  assert.ok(start >= 0 && end > start);
+  const route = source.slice(start, end);
+  assert.match(route, /readCategoryValuePages/);
+  assert.match(route, /limit:\s*2000/);
+  assert.match(route, /paginationComplete/);
+  assert.match(route, /CATEGORY_DICTIONARY_READ_INCOMPLETE/);
+  assert.match(route, /if \(!valuesRead\.paginationComplete\)/);
+  assert.match(route, /cachedValueEvidence\?\.paginationComplete === true/);
+  assert.doesNotMatch(route, /upsertAttributeValuesCache/);
 });
 
 test("readiness receipt response exposes a seller task projection for read failures", async () => {

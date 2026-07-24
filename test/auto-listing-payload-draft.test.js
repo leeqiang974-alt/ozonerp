@@ -19,6 +19,10 @@ test("1688 listing policy carries exact-store category read receipts into re-pre
     responseHash: `sha256:${"a".repeat(64)}`,
     storeId: "store-1",
     environmentRefHash: `sha256:${"b".repeat(64)}`,
+    signedSessionBound: true,
+    authSource: "session_cookie",
+    sessionRefHash: `sha256:${"c".repeat(64)}`,
+    readReceiptId: "read-operator:11111111-1111-4111-8111-111111111111",
   };
   const policy = categoryReadPolicyForListing({ source: "1688", storeId: "store-1" }, {
     categoryReadEvidence: {
@@ -30,6 +34,7 @@ test("1688 listing policy carries exact-store category read receipts into re-pre
   assert.equal(policy.categoryEvidenceStoreId, "store-1");
   assert.equal(policy.categoryEvidence.attributes.cacheKey, "10:20");
   assert.equal(policy.categoryEvidenceEnvironmentRefHash, evidence.environmentRefHash);
+  assert.equal(policy.categoryEvidence.tree.signedSessionBound, true);
 
   const missing = categoryReadPolicyForListing({ source: "1688" }, {}, { description_category_id: 10, type_id: 20 });
   assert.equal(missing.categoryEvidenceRequired, true);
@@ -39,6 +44,12 @@ test("1688 listing policy carries exact-store category read receipts into re-pre
 
 test("listing category cache excludes dictionaries from another store or read environment", () => {
   const environmentRefHash = `sha256:${"b".repeat(64)}`;
+  const signedEvidence = {
+    signedSessionBound: true,
+    authSource: "session_cookie",
+    sessionRefHash: `sha256:${"c".repeat(64)}`,
+    readReceiptId: "read-operator:11111111-1111-4111-8111-111111111111",
+  };
   const categoryMatch = { description_category_id: 10, type_id: 20 };
   const scoped = categoryCacheForListingEvidence({
     storeId: "store-1",
@@ -50,11 +61,11 @@ test("listing category cache excludes dictionaries from another store or read en
       "10:20:86:ZH_HANS": { storeId: "store-1", values: [{ id: 2, value: "current" }] },
     },
     categoryReadEvidence: {
-      tree: { storeId: "store-1", environmentRefHash },
-      attributes: { "10:20": { storeId: "store-1", environmentRefHash, cacheKey: "10:20" } },
+      tree: { storeId: "store-1", environmentRefHash, ...signedEvidence },
+      attributes: { "10:20": { storeId: "store-1", environmentRefHash, cacheKey: "10:20", ...signedEvidence } },
       attributeValues: {
-        "10:20:85:ZH_HANS": { storeId: "store-2", environmentRefHash, cacheKey: "10:20:85:ZH_HANS", paginationComplete: true },
-        "10:20:86:ZH_HANS": { storeId: "store-1", environmentRefHash, cacheKey: "10:20:86:ZH_HANS", paginationComplete: true },
+        "10:20:85:ZH_HANS": { storeId: "store-2", environmentRefHash, cacheKey: "10:20:85:ZH_HANS", paginationComplete: true, ...signedEvidence },
+        "10:20:86:ZH_HANS": { storeId: "store-1", environmentRefHash, cacheKey: "10:20:86:ZH_HANS", paginationComplete: true, ...signedEvidence },
       },
     },
   }, categoryMatch, "store-1", environmentRefHash);

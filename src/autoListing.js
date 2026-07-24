@@ -800,6 +800,20 @@ export function categoryReadPolicyForListing(job = {}, cache = {}, categoryMatch
   };
 }
 
+function signedCategoryReadEvidence(entry = {}, expectedReceiptId = "", expectedSessionRefHash = "") {
+  const receiptId = String(entry?.readReceiptId || "").trim();
+  const sessionRefHash = String(entry?.sessionRefHash || "").trim();
+  const authSource = String(entry?.authSource || "").trim();
+  return Boolean(
+    entry?.signedSessionBound === true
+    && ["session_cookie", "session_bearer"].includes(authSource)
+    && /^read-operator:[0-9a-f-]{36}$/i.test(receiptId)
+    && /^sha256:[a-f0-9]{64}$/i.test(sessionRefHash)
+    && (!expectedReceiptId || receiptId === expectedReceiptId)
+    && (!expectedSessionRefHash || sessionRefHash === expectedSessionRefHash),
+  );
+}
+
 export function categoryCacheForListingEvidence(cache = {}, categoryMatch = {}, storeId = "", environmentRefHash = "") {
   const categoryKey = categoryAttributeCacheKey(categoryMatch);
   const expectedStoreId = String(storeId || "").trim();
@@ -815,7 +829,13 @@ export function categoryCacheForListingEvidence(cache = {}, categoryMatch = {}, 
     && String(treeEvidence?.environmentRefHash || "").trim() === expectedEnvironmentRefHash
     && String(attributeEvidence?.storeId || "").trim() === expectedStoreId
     && String(attributeEvidence?.environmentRefHash || "").trim() === expectedEnvironmentRefHash
-    && String(attributeEvidence?.cacheKey || "").trim() === categoryKey,
+    && String(attributeEvidence?.cacheKey || "").trim() === categoryKey
+    && signedCategoryReadEvidence(treeEvidence)
+    && signedCategoryReadEvidence(
+      attributeEvidence,
+      String(treeEvidence?.readReceiptId || "").trim(),
+      String(treeEvidence?.sessionRefHash || "").trim(),
+    ),
   );
   const attributes = { ...(cache?.attributes || {}) };
   const attributeStores = { ...(cache?.attributeStores || {}) };
@@ -838,7 +858,12 @@ export function categoryCacheForListingEvidence(cache = {}, categoryMatch = {}, 
         || String(evidence?.storeId || "").trim() !== expectedStoreId
         || String(evidence?.environmentRefHash || "").trim() !== expectedEnvironmentRefHash
         || String(evidence?.cacheKey || "").trim() !== cacheKey
-        || evidence?.paginationComplete !== true) continue;
+        || evidence?.paginationComplete !== true
+        || !signedCategoryReadEvidence(
+          evidence,
+          String(treeEvidence?.readReceiptId || "").trim(),
+          String(treeEvidence?.sessionRefHash || "").trim(),
+        )) continue;
       attributeValues[cacheKey] = entry;
       attributeValueEvidence[cacheKey] = evidence;
     }

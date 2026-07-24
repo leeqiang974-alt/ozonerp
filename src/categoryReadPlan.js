@@ -6,17 +6,56 @@ export const CATEGORY_READ_ENDPOINTS = Object.freeze({
   values: "/v1/description-category/attribute/values",
 });
 
+export class LatestGenerationGate {
+  constructor() {
+    this.latest = 0;
+    this.tail = Promise.resolve();
+  }
+
+  async exclusive(operation) {
+    const previous = this.tail;
+    let release;
+    this.tail = new Promise((resolve) => { release = resolve; });
+    await previous;
+    try {
+      return await operation();
+    } finally {
+      release();
+    }
+  }
+
+  begin() {
+    return this.exclusive(() => {
+      this.latest += 1;
+      return this.latest;
+    });
+  }
+
+  isCurrent(generation) {
+    return Number(generation) > 0 && Number(generation) === this.latest;
+  }
+
+  runIfCurrent(generation, operation) {
+    return this.exclusive(async () => {
+      if (!this.isCurrent(generation)) return { executed: false, value: null };
+      return { executed: true, value: await operation() };
+    });
+  }
+}
+
 // The Seller API returns `has_next` for dictionary values.  A response with
 // `has_next: true` is a valid page, but it is not complete category evidence.
 export function classifyCategoryValuesResponse(response = {}) {
   const values = response?.result;
   const recognized = Array.isArray(values);
+  const hasNextRecognized = typeof response?.has_next === "boolean";
   const hasNext = response?.has_next === true;
   return {
     recognized,
     hasNext,
-    paginationComplete: recognized && !hasNext,
-    status: !recognized ? "unknown" : hasNext ? "partial" : "completed",
+    malformedHasNext: !hasNextRecognized,
+    paginationComplete: recognized && hasNextRecognized && !hasNext,
+    status: !recognized || !hasNextRecognized ? "unknown" : hasNext ? "partial" : "completed",
   };
 }
 
@@ -25,6 +64,104 @@ export function classifyCategoryMetadataResponse(response = {}) {
   return {
     recognized,
     status: recognized ? "success" : "unknown",
+  };
+}
+
+export async function readCategoryValuePages({
+  requestPage,
+  initialBody = {},
+  maxPages = 50,
+} = {}) {
+  if (typeof requestPage !== "function") {
+    throw new TypeError("requestPage is required");
+  }
+  const pageLimit = Math.min(50, Math.max(1, Number(maxPages) || 50));
+  const values = [];
+  const seenValueIds = new Set();
+  const seenCursors = new Set();
+  let cursor = positiveInt(initialBody.last_value_id);
+  seenCursors.add(cursor);
+  let pageCount = 0;
+  let repeatedCursor = false;
+  let cursorMissing = false;
+  let pageLimitReached = false;
+  let recognized = true;
+  let hasNext = false;
+  let malformedHasNext = false;
+  let invalidValue = false;
+  let cursorNotAdvanced = false;
+  for (let page = 0; page < pageLimit; page += 1) {
+    const response = await requestPage({ ...initialBody, last_value_id: cursor });
+    pageCount += 1;
+    const classification = classifyCategoryValuesResponse(response);
+    if (!classification.recognized || classification.malformedHasNext) {
+      recognized = classification.recognized;
+      malformedHasNext = classification.malformedHasNext;
+      hasNext = classification.hasNext;
+      break;
+    }
+    for (const entry of response.result) {
+      const id = positiveInt(entry?.id || entry?.dictionary_value_id || entry?.value_id);
+      const value = String(entry?.value || "").trim();
+      if (!id || !value) {
+        invalidValue = true;
+        if (classification.hasNext && !id) cursorMissing = true;
+        break;
+      }
+      if (id && seenValueIds.has(id)) continue;
+      if (id) seenValueIds.add(id);
+      // Ozon dictionary rows can carry large auxiliary payloads (for example
+      // pictures and descriptive metadata).  Listing validation only needs
+      // the legal value id and its localized label.  Persisting the raw rows
+      // made a single brand dictionary hundreds of megabytes and could abort
+      // the browser request before the read receipt was saved.
+      values.push({ id, value });
+    }
+    if (invalidValue) {
+      hasNext = classification.hasNext;
+      break;
+    }
+    hasNext = classification.hasNext;
+    if (!hasNext) break;
+    const last = response.result.at(-1);
+    const nextCursor = positiveInt(last?.id || last?.dictionary_value_id || last?.value_id);
+    if (!nextCursor) {
+      cursorMissing = true;
+      break;
+    }
+    if (seenCursors.has(nextCursor)) {
+      repeatedCursor = true;
+      break;
+    }
+    if (nextCursor <= cursor) {
+      cursorNotAdvanced = true;
+      break;
+    }
+    cursor = nextCursor;
+    seenCursors.add(cursor);
+    if (page === pageLimit - 1) pageLimitReached = true;
+  }
+  const paginationComplete = recognized
+    && !hasNext
+    && !malformedHasNext
+    && !invalidValue
+    && !repeatedCursor
+    && !cursorMissing
+    && !cursorNotAdvanced
+    && !pageLimitReached;
+  return {
+    recognized,
+    values,
+    pageCount,
+    hasNext,
+    paginationComplete,
+    repeatedCursor,
+    cursorMissing,
+    cursorNotAdvanced,
+    pageLimitReached,
+    malformedHasNext,
+    invalidValue,
+    status: !recognized ? "unknown" : paginationComplete ? "completed" : "partial",
   };
 }
 
@@ -180,7 +317,7 @@ export function buildCategoryReadRequests(plan = {}) {
         key: "values",
         attributeId,
         endpoint: CATEGORY_READ_ENDPOINTS.values,
-        body: { ...common, attribute_id: attributeId, limit: 200, last_value_id: 0 },
+        body: { ...common, attribute_id: attributeId, limit: 2000, last_value_id: 0 },
       })),
     ],
   };

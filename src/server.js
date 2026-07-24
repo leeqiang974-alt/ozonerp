@@ -29,7 +29,6 @@ import {
   loadCategoryCache,
   matchCategory,
   mutateCategoryCache,
-  upsertAttributeValuesCache,
 } from "./ozonCategoryCache.js";
 import { prepareOzonImages } from "./imageOss.js";
 import { nextParentSku, reserveParentSkus } from "./skuSequence.js";
@@ -145,12 +144,13 @@ import { buildReadEndpointRequest, extractBoundedProductIdentifiers, orderReadEn
 import { reconcilePriceWriteReadback, validatePriceWritePreflight } from "./priceWriteGate.js";
 import {
   CATEGORY_READ_ENDPOINTS,
+  LatestGenerationGate,
   buildCategoryReadContinuationPlan,
   buildCategoryReadPlanBinding,
   buildCategoryReadPlanSummary,
   buildCategoryReadRequests,
   classifyCategoryMetadataResponse,
-  classifyCategoryValuesResponse,
+  readCategoryValuePages,
   summarizeCategoryReadObservations,
   validateCategoryReadAttributeScope,
   validateCategoryReadPlan,
@@ -231,6 +231,7 @@ import { ReadOperatorReceiptRepository } from "./readOperatorReceipt.js";
 
 
 const app = express();
+const categoryReadGenerationGate = new LatestGenerationGate();
 const port = Number(process.env.PORT || 5178);
 const host = String(process.env.HOST || "127.0.0.1").trim();
 const trustProxy = String(process.env.OZON_ERP_TRUST_PROXY || process.env.TRUST_PROXY || "") === "1";
@@ -2894,6 +2895,11 @@ app.post("/api/ozon/read-operator/category-execute", asyncRoute(async (req, res)
   const store = getStore(validation.storeId);
   const requests = buildCategoryReadRequests(plan).requests;
   const environmentRefHash = scopeHash(validation.environment);
+  // The category cache is one global current-product working set, so every
+  // store/environment/category read participates in the same generation.
+  // A per-scope generation would still let two different stores overwrite one
+  // another even though both writes target the same file.
+  const categoryReadGeneration = await categoryReadGenerationGate.begin();
   const observations = [];
   let observedAttributes = [];
   let metadataFailed = false;
@@ -2913,7 +2919,27 @@ app.post("/api/ozon/read-operator/category-execute", asyncRoute(async (req, res)
       continue;
     }
     try {
-      const data = await ozonRequest(store, request.endpoint, request.body, { maxRetries: 0, retrySafe: true });
+      let valuesRead = null;
+      const data = request.key === "values"
+        ? await (async () => {
+          valuesRead = await readCategoryValuePages({
+            initialBody: request.body,
+            requestPage: (pageBody) => ozonRequest(store, request.endpoint, pageBody, { maxRetries: 0, retrySafe: true }),
+          });
+          return {
+            result: valuesRead.values,
+            has_next: valuesRead.hasNext,
+            page_count: valuesRead.pageCount,
+            pagination_complete: valuesRead.paginationComplete,
+            repeated_cursor: valuesRead.repeatedCursor,
+            cursor_missing: valuesRead.cursorMissing,
+            cursor_not_advanced: valuesRead.cursorNotAdvanced,
+            page_limit_reached: valuesRead.pageLimitReached,
+            malformed_has_next: valuesRead.malformedHasNext,
+            invalid_value: valuesRead.invalidValue,
+          };
+        })()
+        : await ozonRequest(store, request.endpoint, request.body, { maxRetries: 0, retrySafe: true });
       const operationEvidence = {
         ...buildOperationEvidenceRecord({
           operationPath: request.endpoint,
@@ -2925,16 +2951,36 @@ app.post("/api/ozon/read-operator/category-execute", asyncRoute(async (req, res)
         }),
         storeId: store.id,
         environmentRefHash,
+        ...(valuesRead ? {
+          pageCount: valuesRead.pageCount,
+          paginationComplete: valuesRead.paginationComplete,
+          hasNext: valuesRead.hasNext,
+          repeatedCursor: valuesRead.repeatedCursor,
+          cursorMissing: valuesRead.cursorMissing,
+          cursorNotAdvanced: valuesRead.cursorNotAdvanced,
+          pageLimitReached: valuesRead.pageLimitReached,
+          malformedHasNext: valuesRead.malformedHasNext,
+          invalidValue: valuesRead.invalidValue,
+        } : {}),
         ...(request.key === "attributes" || request.key === "values" ? { cacheKey: `${validation.descriptionCategoryId}:${validation.typeId}${request.key === "values" ? `:${request.attributeId}:${validation.language}` : ""}` } : {}),
       };
-      const valuesRead = request.key === "values" ? classifyCategoryValuesResponse(data) : null;
       const metadataRead = request.key === "values" ? null : classifyCategoryMetadataResponse(data);
       observations.push({
         key: request.key,
         attributeId: request.attributeId || 0,
         endpoint: request.endpoint,
         status: valuesRead ? valuesRead.status : metadataRead.status,
-        ...(valuesRead ? { paginationComplete: valuesRead.paginationComplete, hasNext: valuesRead.hasNext } : {}),
+        ...(valuesRead ? {
+          pageCount: valuesRead.pageCount,
+          paginationComplete: valuesRead.paginationComplete,
+          hasNext: valuesRead.hasNext,
+          repeatedCursor: valuesRead.repeatedCursor,
+          cursorMissing: valuesRead.cursorMissing,
+          cursorNotAdvanced: valuesRead.cursorNotAdvanced,
+          pageLimitReached: valuesRead.pageLimitReached,
+          malformedHasNext: valuesRead.malformedHasNext,
+          invalidValue: valuesRead.invalidValue,
+        } : {}),
         operationEvidence: {
           ...operationEvidence,
           ...(valuesRead ? { paginationComplete: valuesRead.paginationComplete, hasNext: valuesRead.hasNext } : {}),
@@ -2986,61 +3032,17 @@ app.post("/api/ozon/read-operator/category-execute", asyncRoute(async (req, res)
       observations.push({ key: request.key, attributeId: request.attributeId || 0, endpoint: request.endpoint, status: "failed", reasonCode: String(error?.code || "CATEGORY_READ_FAILED").slice(0, 80) });
     }
   }
-  const observationSummary = summarizeCategoryReadObservations(observations);
-  // Metadata is a discovery phase only.  Persist the current tree, attributes,
-  // and all required dictionaries together after the complete phase succeeds.
-  // This prevents an older metadata request from clearing or mixing a newer
-  // complete result and prevents partial reads from upgrading cached evidence.
-  const commitCompleteEvidence = validation.phase === "complete"
-    && observationSummary.complete
-    && !metadataFailed
-    && !attributeScopeMismatch
-    && treePatch
-    && attributesPatch
-    && valuePatches.size === validation.attributeIds.length;
-  if (commitCompleteEvidence) {
-    await mutateCategoryCache((cache) => {
-      const prefix = `${validation.descriptionCategoryId}:${validation.typeId}:`;
-      const attributeValues = { ...(cache.attributeValues || {}) };
-      const attributeEvidence = { ...(cache.categoryReadEvidence?.attributeValues || {}) };
-      for (const cacheKey of new Set([...Object.keys(attributeValues), ...Object.keys(attributeEvidence)])) {
-        if (!cacheKey.startsWith(prefix)) continue;
-        delete attributeValues[cacheKey];
-        delete attributeEvidence[cacheKey];
-      }
-      for (const [cacheKey, patch] of valuePatches) {
-        attributeValues[cacheKey] = patch.value;
-        attributeEvidence[cacheKey] = patch.operationEvidence;
-      }
-      return {
-        ...cache,
-        storeId: store.id,
-        updatedAt: treePatch.updatedAt,
-        tree: treePatch.tree,
-        flat: treePatch.flat,
-        attributeStores: { ...(cache.attributeStores || {}), [attributesPatch.cacheKey]: store.id },
-        attributeUpdatedAt: { ...(cache.attributeUpdatedAt || {}), [attributesPatch.cacheKey]: attributesPatch.updatedAt },
-        attributes: { ...(cache.attributes || {}), [attributesPatch.cacheKey]: attributesPatch.attributes },
-        attributeValues,
-        categoryReadEvidence: {
-          ...(cache.categoryReadEvidence || {}),
-          tree: treePatch.operationEvidence,
-          attributes: {
-            ...(cache.categoryReadEvidence?.attributes || {}),
-            [attributesPatch.cacheKey]: attributesPatch.operationEvidence,
-          },
-          attributeValues: attributeEvidence,
-        },
-      };
+  if (!categoryReadGenerationGate.isCurrent(categoryReadGeneration)) {
+    observations.push({
+      key: "read_generation",
+      attributeId: 0,
+      endpoint: CATEGORY_READ_ENDPOINTS.tree,
+      status: "failed",
+      reasonCode: "CATEGORY_READ_SUPERSEDED",
     });
   }
+  const observationSummary = summarizeCategoryReadObservations(observations);
   const failures = observationSummary.failures;
-  const continuationPlan = validation.phase === "metadata" && observationSummary.complete
-    ? buildCategoryReadContinuationPlan(plan, observedAttributes)
-    : null;
-  const continuationPlanBinding = continuationPlan
-    ? buildCategoryReadPlanBinding(continuationPlan)
-    : "";
   // The category plan has its own validation/binding shape and does not carry
   // the generic read-operator `endpoints`/scope fields. Project it into the
   // durable receipt contract explicitly; otherwise a successful category
@@ -3076,24 +3078,139 @@ app.post("/api/ozon/read-operator/category-execute", asyncRoute(async (req, res)
     observedFailure: failures.length > 0,
     failureScenario: failures.length ? "category_read_partial" : "",
     endpointCoverageComplete: failures.length === 0,
-    endpoints: observations.map((item) => item.endpoint),
-    operationEvidence: observations.flatMap((item) => item.operationEvidence ? [item.operationEvidence] : []),
+    observations: observations.map((item) => ({
+      endpoint: item.endpoint,
+      status: item.status,
+      responseHash: item.operationEvidence?.responseHash || "",
+    })),
     observedAt: new Date().toISOString(),
     readOnly: true,
     writeAttempted: false,
   });
+  const receiptReady = Boolean(
+    categoryReceipt.ok
+    && categoryReceipt.receipt?.status === "success"
+    && categoryReceipt.receipt?.signedSessionBound === true,
+  );
+  const receiptEvidenceBinding = receiptReady ? {
+    signedSessionBound: true,
+    authSource: String(categoryReceipt.receipt.authSource || categorySessionReceiptBinding.authSource).trim(),
+    sessionRefHash: String(categoryReceipt.receipt.sessionRefHash || categorySessionReceiptBinding.sessionRefHash).trim(),
+    readReceiptId: String(categoryReceipt.receipt.id || "").trim(),
+  } : null;
+  // Metadata is a discovery phase only. Persist the current tree, attributes,
+  // and required dictionaries together only after the signed durable receipt
+  // exists. The generation check is repeated inside the cache mutation so an
+  // older slow request can never overwrite a newer current-product read.
+  const commitCompleteEvidence = validation.phase === "complete"
+    && observationSummary.complete
+    && !metadataFailed
+    && !attributeScopeMismatch
+    && treePatch
+    && attributesPatch
+    && valuePatches.size === validation.attributeIds.length
+    && receiptReady;
+  let cacheCommitted = false;
+  if (commitCompleteEvidence) {
+    await categoryReadGenerationGate.runIfCurrent(categoryReadGeneration, () => (
+      mutateCategoryCache((cache) => {
+        const attributeValues = Object.fromEntries(
+          [...valuePatches].map(([cacheKey, patch]) => [cacheKey, patch.value]),
+        );
+        const attributeEvidence = Object.fromEntries(
+          [...valuePatches].map(([cacheKey, patch]) => [cacheKey, {
+            ...patch.operationEvidence,
+            ...receiptEvidenceBinding,
+          }]),
+        );
+        return {
+          ...cache,
+          storeId: store.id,
+          updatedAt: treePatch.updatedAt,
+          tree: treePatch.tree,
+          flat: treePatch.flat,
+          attributeStores: { [attributesPatch.cacheKey]: store.id },
+          attributeUpdatedAt: { [attributesPatch.cacheKey]: attributesPatch.updatedAt },
+          attributes: { [attributesPatch.cacheKey]: attributesPatch.attributes },
+          attributeValues,
+          categoryReadEvidence: {
+            tree: { ...treePatch.operationEvidence, ...receiptEvidenceBinding },
+            attributes: {
+              [attributesPatch.cacheKey]: {
+                ...attributesPatch.operationEvidence,
+                ...receiptEvidenceBinding,
+              },
+            },
+            attributeValues: attributeEvidence,
+          },
+        };
+      }, {
+        shouldCommit: () => categoryReadGenerationGate.isCurrent(categoryReadGeneration),
+        onCommit: () => {
+          cacheCommitted = true;
+        },
+      })
+    ));
+  }
+  const supersededAfterReceipt = !categoryReadGenerationGate.isCurrent(categoryReadGeneration);
+  const responseFailures = [
+    ...failures,
+    ...(!categoryReceipt.ok ? [{
+      key: "receipt",
+      endpoint: "read-operator-receipt",
+      status: "failed",
+      reasonCode: "CATEGORY_READ_RECEIPT_PERSIST_FAILED",
+    }] : []),
+    ...(supersededAfterReceipt && !failures.some((failure) => failure.reasonCode === "CATEGORY_READ_SUPERSEDED") ? [{
+      key: "read_generation",
+      endpoint: CATEGORY_READ_ENDPOINTS.tree,
+      status: "failed",
+      reasonCode: "CATEGORY_READ_SUPERSEDED",
+    }] : []),
+    ...(validation.phase === "complete" && receiptReady && !cacheCommitted && !supersededAfterReceipt ? [{
+      key: "cache",
+      endpoint: "category-cache",
+      status: "failed",
+      reasonCode: "CATEGORY_READ_CACHE_COMMIT_FAILED",
+    }] : []),
+  ];
+  const responseOk = responseFailures.length === 0;
+  const continuationPlan = validation.phase === "metadata" && responseOk
+    ? buildCategoryReadContinuationPlan(plan, observedAttributes)
+    : null;
+  const continuationPlanBinding = continuationPlan
+    ? buildCategoryReadPlanBinding(continuationPlan)
+    : "";
   res.json({
-    ok: failures.length === 0,
-    status: failures.length ? "partial" : "success",
-    observations: observations.map((item) => ({ key: item.key, attributeId: item.attributeId, endpoint: item.endpoint, status: item.status, reasonCode: item.reasonCode || "", operationEvidence: item.operationEvidence || null })),
+    ok: responseOk,
+    status: responseOk ? "success" : "partial",
+    observations: observations.map((item) => ({
+      key: item.key,
+      attributeId: item.attributeId,
+      endpoint: item.endpoint,
+      status: item.status,
+      reasonCode: item.reasonCode || "",
+      ...(item.key === "values" ? {
+        pageCount: item.pageCount || 0,
+        paginationComplete: item.paginationComplete === true,
+        hasNext: item.hasNext === true,
+        repeatedCursor: item.repeatedCursor === true,
+        cursorMissing: item.cursorMissing === true,
+        cursorNotAdvanced: item.cursorNotAdvanced === true,
+        pageLimitReached: item.pageLimitReached === true,
+        malformedHasNext: item.malformedHasNext === true,
+        invalidValue: item.invalidValue === true,
+      } : {}),
+      operationEvidence: item.operationEvidence || null,
+    })),
     ...(categoryReceipt.ok ? { receipt: categoryReceipt.receipt, sellerTask: buildReadFailureSellerTask(categoryReceipt.receipt) } : {}),
     continuationRequired: Boolean(continuationPlan),
     continuationPlan,
     continuationPlanBinding,
-    reasonCode: failures.length ? "CATEGORY_READ_EVIDENCE_PARTIAL" : "",
+    reasonCode: responseOk ? "" : responseFailures[0]?.reasonCode || "CATEGORY_READ_EVIDENCE_PARTIAL",
     verificationLevel: "server_observed",
     sideEffect: "仅执行类目/属性白名单只读请求并保存脱敏 operation evidence；未调用写接口。",
-    nextAction: failures.length ? "按失败端点重新执行同一计划，不要把部分回执当作完整类目证据。" : "回到黄金商品预检，确认类目/type 与属性覆盖后再人工确认。",
+    nextAction: responseOk ? "回到黄金商品预检，确认类目/type 与属性覆盖后再人工确认。" : "按失败端点重新执行同一计划，不要把部分回执当作完整类目证据。",
   });
 }));
 
@@ -3922,7 +4039,7 @@ app.post("/api/ozon/description-attribute-values", asyncRoute(async (req, res) =
   const cachedValues = cache.attributeValues?.[cacheKey];
   const valueFreshness = inspectCategoryCacheFreshness({ updatedAt: cachedValues?.updatedAt || "" });
   const cachedValueEvidence = cache.categoryReadEvidence?.attributeValues?.[cacheKey] || null;
-  if (!refresh && cachedValues?.storeId === store.id && cachedValueEvidence?.storeId === store.id && cachedValueEvidence?.environmentRefHash === environmentRefHash && Array.isArray(cachedValues?.values) && valueFreshness.usable) {
+  if (!refresh && cachedValues?.storeId === store.id && cachedValueEvidence?.storeId === store.id && cachedValueEvidence?.environmentRefHash === environmentRefHash && cachedValueEvidence?.paginationComplete === true && Array.isArray(cachedValues?.values) && valueFreshness.usable) {
     res.json({
       result: cachedValues.values,
       cached: true,
@@ -3933,32 +4050,70 @@ app.post("/api/ozon/description-attribute-values", asyncRoute(async (req, res) =
     });
     return;
   }
-  const data = await ozonRequest(store, "/v1/description-category/attribute/values", {
-    attribute_id: attributeId,
-    description_category_id: descriptionCategoryId,
-    type_id: typeId,
-    language,
-    limit: Number(req.body.limit || 100),
-    last_value_id: Number(req.body.last_value_id || 0),
+  const valuesRead = await readCategoryValuePages({
+    initialBody: {
+      attribute_id: attributeId,
+      description_category_id: descriptionCategoryId,
+      type_id: typeId,
+      language,
+      limit: 2000,
+      last_value_id: 0,
+    },
+    requestPage: (pageBody) => ozonRequest(
+      store,
+      "/v1/description-category/attribute/values",
+      pageBody,
+      { maxRetries: 0, retrySafe: true },
+    ),
   });
   const operationEvidence = buildOperationEvidenceRecord({
     operationPath: "/v1/description-category/attribute/values",
     checkedAt: new Date().toISOString(),
     statusCode: 200,
-    response: data,
+    response: {
+      valueCount: valuesRead.values.length,
+      pageCount: valuesRead.pageCount,
+      paginationComplete: valuesRead.paginationComplete,
+      hasNext: valuesRead.hasNext,
+    },
     verificationLevel: "server_observed",
     source: "ozon-category-attribute-values-read",
   });
-  await upsertAttributeValuesCache({
+  const scopedEvidence = {
+    ...operationEvidence,
     storeId: store.id,
-    descriptionCategoryId,
-    typeId,
-    attributeId,
-    language,
-    values: data.result || [],
-    operationEvidence: { ...operationEvidence, storeId: store.id, cacheKey, environmentRefHash },
+    cacheKey,
+    environmentRefHash,
+    pageCount: valuesRead.pageCount,
+    paginationComplete: valuesRead.paginationComplete,
+    hasNext: valuesRead.hasNext,
+    repeatedCursor: valuesRead.repeatedCursor,
+    cursorMissing: valuesRead.cursorMissing,
+    cursorNotAdvanced: valuesRead.cursorNotAdvanced,
+    pageLimitReached: valuesRead.pageLimitReached,
+    malformedHasNext: valuesRead.malformedHasNext,
+    invalidValue: valuesRead.invalidValue,
+  };
+  if (!valuesRead.paginationComplete) {
+    res.status(409).json({
+      ok: false,
+      reasonCode: "CATEGORY_DICTIONARY_READ_INCOMPLETE",
+      result: [],
+      operationEvidence: scopedEvidence,
+      cached: false,
+      sideEffect: "字典分页读取未完成，因此没有覆盖当前店铺缓存。",
+    });
+    return;
+  }
+  res.json({
+    ok: true,
+    result: valuesRead.values,
+    has_next: false,
+    operationEvidence: scopedEvidence,
+    cached: false,
+    cacheFreshness: inspectCategoryCacheFreshness({ updatedAt: new Date().toISOString() }),
+    sideEffect: "仅返回本次完整字典读取结果；不覆盖黄金链路类目缓存。",
   });
-  res.json({ ...data, operationEvidence: { ...operationEvidence, storeId: store.id, cacheKey, environmentRefHash }, cached: false, cacheFreshness: inspectCategoryCacheFreshness({ updatedAt: new Date().toISOString() }) });
 }));
 
 app.get("/api/ozon/orders", asyncRoute(async (req, res) => {

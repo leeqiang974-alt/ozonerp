@@ -1798,6 +1798,10 @@ export function buildPreflightGateNode(input = {}) {
       const categoryMatches = kind !== "attributes"
         ? true
         : Boolean(expectedCategoryKey && String(entry?.cacheKey || "") === expectedCategoryKey);
+      const signedSessionMatches = entry?.signedSessionBound === true
+        && ["session_cookie", "session_bearer"].includes(String(entry?.authSource || "").trim())
+        && /^sha256:[a-f0-9]{64}$/i.test(String(entry?.sessionRefHash || ""))
+        && /^read-operator:[0-9a-f-]{36}$/i.test(String(entry?.readReceiptId || ""));
       return entry
       && String(entry.verificationLevel || "") === "server_observed"
       && /^sha256:[a-f0-9]{64}$/i.test(String(entry.responseHash || ""))
@@ -1808,15 +1812,23 @@ export function buildPreflightGateNode(input = {}) {
       && ageMs <= maxAgeMs
       && storeMatches
       && environmentMatches
-      && categoryMatches;
+      && categoryMatches
+      && signedSessionMatches;
     };
-    if (!validEvidence(evidence.tree, "tree") || !validEvidence(evidence.attributes, "attributes")) {
+    const treeEvidenceValid = validEvidence(evidence.tree, "tree");
+    const attributeEvidenceValid = validEvidence(evidence.attributes, "attributes");
+    const receiptBindingMatches = treeEvidenceValid
+      && attributeEvidenceValid
+      && String(evidence.tree?.readReceiptId || "") === String(evidence.attributes?.readReceiptId || "")
+      && String(evidence.tree?.sessionRefHash || "") === String(evidence.attributes?.sessionRefHash || "");
+    if (!treeEvidenceValid || !attributeEvidenceValid || !receiptBindingMatches) {
       issues.push({
         code: "CATEGORY_EVIDENCE_MISSING",
         message: "当前店铺缺少可追溯的 Ozon 类目/属性读取回执，禁止使用旧缓存提交。",
         missing: [
-          ...(validEvidence(evidence.tree, "tree") ? [] : ["tree"]),
-          ...(validEvidence(evidence.attributes, "attributes") ? [] : ["attributes"]),
+          ...(treeEvidenceValid ? [] : ["tree"]),
+          ...(attributeEvidenceValid ? [] : ["attributes"]),
+          ...(treeEvidenceValid && attributeEvidenceValid && !receiptBindingMatches ? ["receipt_binding"] : []),
         ],
       });
     }

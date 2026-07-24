@@ -546,6 +546,10 @@ test("preflight accepts current same-store category evidence without affecting o
     responseHash: `sha256:${"c".repeat(64)}`,
     storeId: "2367028-1",
     environmentRefHash: `sha256:${"e".repeat(64)}`,
+    signedSessionBound: true,
+    authSource: "session_cookie",
+    sessionRefHash: `sha256:${"d".repeat(64)}`,
+    readReceiptId: "read-operator:22222222-2222-4222-8222-222222222222",
     ...extra,
   });
   const node = buildPreflightGateNode({
@@ -611,6 +615,10 @@ test("preflight rejects category evidence without strict store, environment, or 
     responseHash: `sha256:${"c".repeat(64)}`,
     storeId: "2367028-1",
     environmentRefHash: expectedEnvironment,
+    signedSessionBound: true,
+    authSource: "session_cookie",
+    sessionRefHash: `sha256:${"d".repeat(64)}`,
+    readReceiptId: "read-operator:22222222-2222-4222-8222-222222222222",
   };
   const run = (tree, attributes) => buildPreflightGateNode({
     payload,
@@ -637,6 +645,12 @@ test("preflight rejects category evidence without strict store, environment, or 
 
   const missingCacheKey = run(baseEvidence, { ...baseEvidence });
   assert.ok(missingCacheKey.output.issues.some((entry) => entry.code === "CATEGORY_EVIDENCE_MISSING"));
+
+  const unsigned = run(
+    { ...baseEvidence, signedSessionBound: false, sessionRefHash: "", readReceiptId: "" },
+    { ...baseEvidence, cacheKey: "17028673:95183", signedSessionBound: false, sessionRefHash: "", readReceiptId: "" },
+  );
+  assert.ok(unsigned.output.issues.some((entry) => entry.code === "CATEGORY_EVIDENCE_MISSING"));
 });
 
 test("preflight seller result exposes multi-SKU source binding coverage", () => {

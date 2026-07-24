@@ -1,6 +1,8 @@
 # Ozon ERP 产品与交付路线图
 
-> 当前派工以 `docs/TOP-LEVEL-DEVELOPMENT-PLAN.zh-CN.md` 为准。本文件记录已交付内容和验证等级，不再从历史条目反向领取开发任务。G1、G2 已完成；当前唯一切片：G3-S1 当前店铺胸针类目只读证据闭环；G4 MVP 通过前冻结 FBS、活动、财务和售后扩建。
+> 当前派工以 `docs/TOP-LEVEL-DEVELOPMENT-PLAN.zh-CN.md` 为准。本文件记录已交付内容和验证等级，不再从历史条目反向领取开发任务。G1、G2、G3 已完成；当前唯一切片：G4-S1 当前真实商品一键处理到强预检；G4 MVP 通过前冻结 FBS、活动、财务和售后扩建。
+
+> 2026-07-24 G3-S1 真实当前店铺类目证据闭环完成：signed session 绑定 `local-read-2026-07-24 / 3815760-4`，真实读取 `17027899:87458886` tree、40 个属性和必填字典 `85/8229/9163`；品牌 71,757 项按 `last_value_id` 完成 36 页，其余各 1 页，全部完整。最终成功回执 `read-operator:4929ef94-93f5-46c6-bfdb-b5746ccc5371` 已持久化，且 tree/attributes/字典证据全部绑定同一个 signed-session `readReceiptId/sessionRefHash`。缓存升级晚于回执持久化；异常 `has_next`、非法字典值、游标倒退、慢旧请求和 legacy 字典写入均 fail-closed。当前店铺/当前类目精简缓存约 8.94MB。真实 capture `c1784812672342zraqu` 商品页显示“胸针 / 自动匹配，不需要你操作”、9 个 SKU 价格、50g/10×10×10mm 与售价 25.37 CNY 自动带入。安全边界定向 343/343、全量 1305/1305、lint 76 files、runtime 浏览器 smoke 与 offline acceptance 通过；真实网络仅 Seller API 白名单只读，未调用付费 AI、未执行 Ozon 写入。G3 退出，唯一下一入口为 G4-S1。
 
 > 2026-07-24 G3-S1 当前店铺类目两阶段自动读取：修复旧流程必须先从跨店铺缓存知道 attribute IDs，以及字典响应 `status=completed` 被聚合成失败的断点。商品页一次“自动完成商品资料”现在先提交绑定当前 store/environment/category/type 的 metadata 只读计划，服务端从本次 attributes 回执推导必填且有字典的属性 ID，再返回 hash 绑定的 complete 续读计划并自动读取字典；页面渲染不再自行发起 Seller API 请求。metadata 只负责发现且不落缓存；complete 仅在 tree、attributes、全部必填字典和属性范围同时通过时原子提交整组证据。payload 只消费 store/environment/cacheKey/paginationComplete 全匹配的字典，两次读取间范围变化以 `CATEGORY_READ_ATTRIBUTE_SCOPE_CHANGED` fail-closed，`has_next=true` 仍保持 partial；商品、店铺或环境在链路中切换会停止后续 AI/预检。独立复审关闭缓存拼接、并发覆盖、跨环境继续和分页证据漏存后给出 `Ready: Yes`。5178 已重启；本地真实 scope `3815760-4 / 17027899:87458886` 的计划生成 2 个 metadata 请求，执行因缺 signed session 在调用 Seller API 前返回 403 `READ_OPERATOR_SESSION_REQUIRED`。定向 519/519、全量 `npm test` 1294/1294、lint 76 files、runtime smoke、offline acceptance 通过；验证等级仍为 locally tested，未调用 Seller API、未执行 Ozon 写入。G3-S1 仍需 signed session 下真实 server-observed 回执才能退出。
 

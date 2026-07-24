@@ -31,7 +31,8 @@ Read these before substantial Ozon ERP changes:
 - 1688 详情页若每个选中 SKU 都有正数价格和稳定 `sourceSkuId`，且 `sourceEvidence.fields.variants` 与当前 snapshot 精确绑定，可直接作为本地定价采购价证据；不得再强制卖家填写供应商、MOQ 或阶梯价。只有未绑定快照的搜索卡价格区间、缺失 SKU 标识或非正数价格继续阻塞。
 - 1688 采集行数不能直接当作唯一 SKU 数。进入草稿前必须按来源 `skuId/sourceSkuId` 归一化，重复行优先保留字段更完整的版本，同时记录 raw/unique/duplicate 计数；不得把同一来源 SKU 生成多个 Ozon Offer。
 - 媒体 `evidenceRef` 的 snapshot hash 必须严格等于当前 1688 `sourceEvidence.snapshotHash`；即使存在带 actor/时间戳的显式人工审批，跨快照媒体也必须保持 `needs_confirmation`。
-- `categoryEvidenceRequired` 时，tree/attributes 回执必须同时具备且严格匹配预期 `storeId` 与 `environmentRefHash`；attributes 还必须具备并匹配当前 category `cacheKey`，缺失字段不可按旧兼容路径放行。
+- `categoryEvidenceRequired` 时，tree/attributes/字典证据必须来自同一个已持久化的 signed-session read-operator 回执，并严格匹配预期 `storeId`、`environmentRefHash`、`sessionRefHash` 与 `readReceiptId`；attributes/value 还必须匹配当前 category cacheKey，缺失字段不可按旧兼容路径放行。必须先成功持久化回执，之后才能原子升级缓存。
+- Ozon 属性字典必须按官方 `last_value_id` 游标自动读取到显式布尔 `has_next=false`，单页上限 2000、总页数有界；缺失/非布尔 `has_next`、非法 ID、空标签、重复/缺失/倒退游标均保持 partial。partial 结果不得写完整缓存。缓存只保留当前店铺当前商品类目所需的精简 `{id,value}` 工作集，legacy 单字典读取不得写入或拼接该黄金链路缓存；由于缓存是全局单工作集，所有店铺/环境读取必须共用一个全局代次，并在临时文件序列化后、原子 rename 前再次校验，只有最新代次可提交。
 - 当前店铺类目字典必须两阶段读取：先用本次 server-observed attributes 推导必填且有字典的 attribute IDs，再执行 hash 绑定的字典计划；不得依赖跨店铺旧缓存预先提供 IDs。两阶段间属性范围变化、`has_next=true` 或任一端点失败都保持 partial；普通页面渲染不得静默发起该真实读取，只能由商品“一键自动完成”动作统一触发。
 - 库存写入成功响应必须保留 server-observed 写后回查时间与精确 `(offer_id, warehouse_id)` scope；前端不能只显示“已接受/已触发回查”，必须显示 exact tuple 已核对的结果。
 - FBS 回执摘要查询必须同时绑定当前 `environment` 与 `storeId`；缺少任一范围时 fail-closed，不得跨 local/staging 或跨店铺返回最近回执。

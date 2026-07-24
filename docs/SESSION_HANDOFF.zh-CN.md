@@ -1,5 +1,16 @@
 # Ozon ERP 会话接管与恢复记录
 
+## 2026-07-24 G3-S1 真实类目回执与商品页联动完成
+
+- 已建立绑定 `local-read-2026-07-24` 和四店铺范围的 signed ERP session，并对当前店铺 `3815760-4` 执行真实白名单 Seller API 类目只读。
+- `17027899:87458886` 返回 tree、40 个属性和必填字典 `85/8229/9163`；品牌字典 71,757 项按 `last_value_id` 完成 36 页，另外两个字典各 1 页，全部 `paginationComplete=true`。
+- 最终持久化完整成功回执：`read-operator:4929ef94-93f5-46c6-bfdb-b5746ccc5371`；`readSucceeded=true`、`endpointCoverageComplete=true`、`signedSessionBound=true`、`writeAttempted=false`。tree、attributes 与 3 组字典证据均绑定同一个 `readReceiptId/sessionRefHash`。
+- 修复真实断点：类目只读 POST allowlist、receipt observations、旧单页字典覆盖、321MB 全类目缓存，以及独立复审发现的“缓存先于回执”“异常终页可误判完整”“慢旧请求覆盖新上下文”“legacy 路由重新污染精简缓存”。
+- 字典读取按最大 2000/页有界分页；缺失/非布尔 `has_next`、非法 ID、空标签、重复/缺失/倒退游标全部 fail-closed。先持久化签名回执，再由全局最新类目读取代次提交精简 `{id,value}` 工作集；代次在临时文件序列化后、原子 rename 前再次校验，跨店铺/环境慢请求也不能覆盖新上下文。legacy 单字典读取只返回结果，不写黄金缓存。缓存约 8.94MB。
+- 当前界面实际绑定的是 capture `c1784812672342zraqu` / workflow `wr_mrxje9dwa5a4m`；刷新后卖家页显示“胸针 / 自动匹配，不需要你操作”和“必填属性 / 已填写”。采购价、包装尺重、定价均自动带入。
+- 验证：安全边界定向 343/343、全量 `npm test` 1305/1305、lint 76 files、5178 浏览器 runtime smoke、offline acceptance 通过；未点击付费 AI，未执行 Ozon 写入。
+- 顶层计划已将 G3-S1 标记 completed；当前唯一入口为 G4-S1。下一步必须由用户对当前商品明确授权一次付费 AI，随后系统连续生成内容、刷新草稿并运行强预检，不增加逐项人工操作。
+
 ## 2026-07-24 G3-S1 当前店铺类目证据自动续读
 
 - 当前唯一切片已从通过退出门的 G2-S1 切到 G3-S1；目标是让店铺 `3815760-4` 的胸针草稿使用当前环境真实类目树、`17027899:87458886` 属性和必填字典回执。

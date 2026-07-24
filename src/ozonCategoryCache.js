@@ -1,4 +1,4 @@
-import { mkdir, readFile, writeFile } from "node:fs/promises";
+import { mkdir, readFile, realpath, rename, unlink, writeFile } from "node:fs/promises";
 import path from "node:path";
 
 const DATA_DIR = path.join(process.cwd(), "data");
@@ -24,12 +24,31 @@ export async function saveCategoryCache(cache) {
   return mutateCategoryCache(() => cache);
 }
 
-async function writeCategoryCacheUnlocked(cache) {
-  const file = categoryCacheFile();
+async function writeCategoryCacheUnlocked(cache, { shouldCommit } = {}) {
+  const configuredFile = categoryCacheFile();
+  // Disk cleanup may leave the configured C: path as a symlink/junction to a
+  // D: target. Resolve an existing link before creating the adjacent temp
+  // file; renaming onto the link path would replace the link itself.
+  const file = await realpath(configuredFile).catch((error) => {
+    if (error?.code === "ENOENT") return configuredFile;
+    throw error;
+  });
   await mkdir(path.dirname(file), { recursive: true });
   const tmp = `${file}.tmp.${Date.now()}.${Math.random().toString(36).slice(2)}`;
   await writeFile(tmp, JSON.stringify(normalizeCategoryCache(cache), null, 2), "utf8");
+  let commitAllowed = true;
+  try {
+    if (typeof shouldCommit === "function") commitAllowed = await shouldCommit() !== false;
+  } catch (error) {
+    await unlink(tmp).catch(() => {});
+    throw error;
+  }
+  if (!commitAllowed) {
+    await unlink(tmp).catch(() => {});
+    return false;
+  }
   await renameFile(tmp, file);
+  return true;
 }
 
 async function withCategoryCacheFileLock(file, operation, { timeoutMs = 30000, staleMs = 120000 } = {}) {
@@ -63,14 +82,16 @@ async function withCategoryCacheFileLock(file, operation, { timeoutMs = 30000, s
   }
 }
 
-export function mutateCategoryCache(operation) {
+export function mutateCategoryCache(operation, { shouldCommit, onCommit } = {}) {
   const file = categoryCacheFile();
   const previous = categoryMutationChains.get(file) || Promise.resolve();
   const next = previous.catch(() => {}).then(() => withCategoryCacheFileLock(file, async () => {
     const current = await loadCategoryCache();
     const result = await operation(current);
     const updated = normalizeCategoryCache(result && typeof result === "object" ? result : current);
-    await writeCategoryCacheUnlocked(updated);
+    const committed = await writeCategoryCacheUnlocked(updated, { shouldCommit });
+    if (!committed) return current;
+    if (typeof onCommit === "function") await onCommit(updated, current);
     return updated;
   }));
   categoryMutationChains.set(file, next.catch(() => {}));
@@ -177,9 +198,11 @@ function normalizeCategoryCache(cache = {}) {
 }
 
 async function renameFile(from, to) {
-  const { copyFile, unlink } = await import("node:fs/promises");
-  await copyFile(from, to);
-  await unlink(from);
+  // The temporary file is created beside the destination, so this is a
+  // same-volume atomic replacement. Never fall back to copyFile: a copied
+  // destination can be observed half-written and reopens the generation
+  // check-to-commit race.
+  await rename(from, to);
 }
 
 export function flattenCategories(nodes, parents = [], inheritedCategoryId = 0) {

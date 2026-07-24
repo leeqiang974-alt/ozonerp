@@ -4,12 +4,14 @@ import fs from "node:fs/promises";
 import path from "node:path";
 import {
   CATEGORY_READ_ENDPOINTS,
+  LatestGenerationGate,
   buildCategoryReadContinuationPlan,
   buildCategoryReadPlanBinding,
   buildCategoryReadPlanSummary,
   buildCategoryReadRequests,
   classifyCategoryMetadataResponse,
   classifyCategoryValuesResponse,
+  readCategoryValuePages,
   requiredDictionaryAttributeIds,
   summarizeCategoryReadObservations,
   validateCategoryReadAttributeScope,
@@ -122,6 +124,7 @@ test("dictionary value pages with has_next remain partial evidence", () => {
   assert.deepEqual(classifyCategoryValuesResponse({ result: [{ id: 1, value: "A" }], has_next: true }), {
     recognized: true,
     hasNext: true,
+    malformedHasNext: false,
     paginationComplete: false,
     status: "partial",
   });
@@ -159,4 +162,137 @@ test("completed dictionary observations count as successful category evidence", 
   assert.equal(partial.complete, false);
   assert.equal(partial.status, "partial");
   assert.equal(partial.failures.length, 1);
+});
+
+test("category dictionary reads consume bounded pages until has_next is false", async () => {
+  const bodies = [];
+  const pages = [
+    {
+      result: [
+        { id: 10, value: "A", info: "must not enter the cache", picture: "https://example.test/a.jpg" },
+        { id: 20, value: "B", extra: { large: true } },
+      ],
+      has_next: true,
+    },
+    { result: [{ id: 30, value: "C", nested: ["discard"] }], has_next: false },
+  ];
+  const result = await readCategoryValuePages({
+    initialBody: { attribute_id: 85, limit: 200, last_value_id: 0 },
+    requestPage: async (body) => {
+      bodies.push(body);
+      return pages.shift();
+    },
+  });
+  assert.equal(result.status, "completed");
+  assert.equal(result.paginationComplete, true);
+  assert.equal(result.pageCount, 2);
+  assert.equal(result.repeatedCursor, false);
+  assert.deepEqual(result.values, [
+    { id: 10, value: "A" },
+    { id: 20, value: "B" },
+    { id: 30, value: "C" },
+  ]);
+  assert.deepEqual(bodies.map((body) => body.last_value_id), [0, 20]);
+});
+
+test("category dictionary pagination fails closed on a repeated or missing cursor", async () => {
+  const repeated = await readCategoryValuePages({
+    initialBody: { last_value_id: 0 },
+    requestPage: async () => ({ result: [{ id: 10, value: "A" }], has_next: true }),
+    maxPages: 3,
+  });
+  assert.equal(repeated.status, "partial");
+  assert.equal(repeated.paginationComplete, false);
+  assert.equal(repeated.repeatedCursor, true);
+  assert.equal(repeated.pageCount, 2);
+
+  const missing = await readCategoryValuePages({
+    initialBody: { last_value_id: 0 },
+    requestPage: async () => ({ result: [{ value: "no id" }], has_next: true }),
+  });
+  assert.equal(missing.status, "partial");
+  assert.equal(missing.paginationComplete, false);
+  assert.equal(missing.cursorMissing, true);
+  assert.equal(missing.pageCount, 1);
+});
+
+test("category dictionary pagination remains partial at the bounded page limit", async () => {
+  let id = 0;
+  const result = await readCategoryValuePages({
+    initialBody: { last_value_id: 0 },
+    maxPages: 2,
+    requestPage: async () => {
+      id += 1;
+      return { result: [{ id, value: String(id) }], has_next: true };
+    },
+  });
+  assert.equal(result.status, "partial");
+  assert.equal(result.paginationComplete, false);
+  assert.equal(result.pageLimitReached, true);
+  assert.equal(result.pageCount, 2);
+});
+
+test("category dictionary pagination rejects malformed terminal pages", async () => {
+  const missingHasNext = await readCategoryValuePages({
+    requestPage: async () => ({ result: [{ id: 1, value: "A" }] }),
+  });
+  assert.equal(missingHasNext.paginationComplete, false);
+  assert.equal(missingHasNext.malformedHasNext, true);
+
+  const missingId = await readCategoryValuePages({
+    requestPage: async () => ({ result: [{ value: "A" }], has_next: false }),
+  });
+  assert.equal(missingId.paginationComplete, false);
+  assert.equal(missingId.invalidValue, true);
+
+  const emptyLabel = await readCategoryValuePages({
+    requestPage: async () => ({ result: [{ id: 1, value: " " }], has_next: false }),
+  });
+  assert.equal(emptyLabel.paginationComplete, false);
+  assert.equal(emptyLabel.invalidValue, true);
+});
+
+test("category dictionary pagination rejects a cursor that does not advance", async () => {
+  const result = await readCategoryValuePages({
+    initialBody: { last_value_id: 20 },
+    requestPage: async () => ({ result: [{ id: 10, value: "A" }], has_next: true }),
+  });
+  assert.equal(result.paginationComplete, false);
+  assert.equal(result.cursorNotAdvanced, true);
+  assert.equal(result.pageCount, 1);
+});
+
+test("latest generation gate serializes commit with later read starts", async () => {
+  const gate = new LatestGenerationGate();
+  const first = await gate.begin();
+  let releaseCommit;
+  const commitHeld = new Promise((resolve) => { releaseCommit = resolve; });
+  const events = [];
+  const commit = gate.runIfCurrent(first, async () => {
+    events.push("commit-start");
+    await commitHeld;
+    events.push("commit-end");
+  });
+  await new Promise((resolve) => setImmediate(resolve));
+  const next = gate.begin().then((generation) => {
+    events.push("next-begin");
+    return generation;
+  });
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.deepEqual(events, ["commit-start"]);
+  releaseCommit();
+  assert.equal((await commit).executed, true);
+  assert.equal(await next, 2);
+  assert.deepEqual(events, ["commit-start", "commit-end", "next-begin"]);
+});
+
+test("latest generation gate rejects an older read before cache commit", async () => {
+  const gate = new LatestGenerationGate();
+  const first = await gate.begin();
+  const second = await gate.begin();
+  let executed = false;
+  const oldCommit = await gate.runIfCurrent(first, async () => { executed = true; });
+  assert.equal(oldCommit.executed, false);
+  assert.equal(executed, false);
+  assert.equal(gate.isCurrent(second), true);
 });

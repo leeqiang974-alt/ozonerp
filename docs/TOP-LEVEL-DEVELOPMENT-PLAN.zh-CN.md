@@ -64,8 +64,8 @@ MVP 达成必须同时满足：
 | G0 基线恢复 | ERP 本机可运行、可验证、可同步 | 服务启动、测试、lint、离线验收、GitHub 同步 | runtime smoke 通过且本机/远端一致 | `completed` |
 | G1 可信采集入口 | 手工采集结果稳定进入一个本地商品 | 采集输入契约、来源身份、SKU、图片、采购、尺重、快照回执 | 1 个真实 1688 商品可重复导入；缺失信息变成明确任务 | `completed` |
 | G2 自动商品草稿 | ERP 自动生成可审查的 Ozon 草稿 | SKU/Offer、俄文内容、媒体、包装、定价、店铺绑定 | 同一商品生成唯一草稿；自动字段完整；未知字段集中展示 | `completed` |
-| G3 真实类目属性 | 草稿使用当前店铺真实 Seller API 只读证据 | signed session、类目树、属性、字典值、证据绑定 | 目标店铺真实只读回执绑定草稿；不跨店/环境复用 | `CURRENT` |
-| G4 一键预检 MVP | 用户只处理少量必要确认，草稿进入等待提交 | 当前商品工作台、修复任务、强预检、重跑 | 真实商品从导入连续走到“预检通过/等待确认提交” | `pending` |
+| G3 真实类目属性 | 草稿使用当前店铺真实 Seller API 只读证据 | signed session、类目树、属性、字典值、证据绑定 | 目标店铺真实只读回执绑定草稿；不跨店/环境复用 | `completed` |
+| G4 一键预检 MVP | 用户只处理少量必要确认，草稿进入等待提交 | 当前商品工作台、修复任务、强预检、重跑 | 真实商品从导入连续走到“预检通过/等待确认提交” | `CURRENT` |
 | G5 受控提交审核 | 用户确认后提交，并读取审核结果 | payload 对照、幂等提交、未知结果复核、审核回读 | 1 个受控商品真实写入并取得审核回读 | `pending` |
 | G6 库存就绪 | 已审核商品安全进入库存准备 | Offer×仓库只读、dry-run、确认写入、写后回查 | 精确 tuple 写后回查完成 | `pending` |
 | G7 批量与生产化 | 单商品闭环稳定后才扩展规模 | 队列、重试、监控、备份、批量控制 | 多商品可控运行且故障可恢复 | `pending` |
@@ -156,7 +156,7 @@ MVP 达成必须同时满足：
 
 ## 5.2 当前阶段 G3 的唯一切片
 
-### G3-S1 `CURRENT`：当前店铺胸针类目只读证据闭环
+### G3-S1 `completed`：当前店铺胸针类目只读证据闭环
 
 用户结果：当前商品自动匹配到“胸针”后，系统以店铺 `3815760-4` 的真实 Seller API 只读回执载入类目树、`17027899:87458886` 属性和必需字典值，不再使用跨店铺缓存冒充可提交证据。
 
@@ -174,13 +174,34 @@ MVP 达成必须同时满足：
 - 当前商品页从“店铺类目证据待同步”联动刷新为属性可检查状态；卖家不需要手工搜索类目或逐个触发内部读取。
 - 定向测试、全量测试、lint、runtime smoke 和 offline acceptance 通过；无 Ozon 写入。
 
-当前事实：
+完成证据（2026-07-24）：
 
 - 本地 7422 type 缓存已唯一高置信匹配“胸针”；旧属性缓存来自店铺 `3770019-3`，只能提供只读候选，不能作为当前店铺提交证据。
 - 两阶段自动链已实现：一次商品自动处理会先执行 `metadata` 计划读取当前店铺 tree + attributes，由服务端只根据本次属性回执推导必填字典属性，再执行精确绑定的 `complete` 计划；页面渲染不再后台偷偷读取。metadata 不落缓存，complete 只有在 tree、attributes、全部必填字典和属性范围同时成功时才原子提交；payload 只消费 store/environment/cacheKey/paginationComplete 全匹配的字典。成功字典页的 `completed` 状态不再误判为失败，属性范围变化、partial、异常格式或上下文切换均 fail-closed。
-- 当前 5178 服务已重启到新代码；本地计划验证对 `3815760-4 / 17027899:87458886` 生成 2 个 metadata 请求。执行端在 Seller API 调用前以 HTTP 403 `READ_OPERATOR_SESSION_REQUIRED` fail-closed，并明确“未调用 Seller API”。
-- 独立复审关闭缓存拼接、并发覆盖、跨环境继续和分页完整标记漏存后给出 `Ready: Yes`。本轮验证：类目/前端/路由定向 519/519、全量 `npm test` 1294/1294、lint 76 文件、frontend runtime smoke 与 offline acceptance 通过；未访问 Seller API、未执行 Ozon 写入。
-- G3-S1 尚未退出：仍需建立覆盖当前 environment 与店铺 `3815760-4` 的 signed session，随后由商品页一次主动作形成并持久化真实 server-observed tree + attributes + 必填字典值回执。
+- signed session 已绑定 `local-read-2026-07-24` 与店铺 `3815760-4`；真实只读执行成功读取 tree、40 个当前类目属性，以及必填字典 `85/8229/9163`。品牌字典 71,757 项按 `last_value_id` 完成 36 页，另外两个字典各 1 页；全部 `paginationComplete=true`。
+- 最终完整回执 `read-operator:4929ef94-93f5-46c6-bfdb-b5746ccc5371` 已持久化，`status=success`、`readSucceeded=true`、`endpointCoverageComplete=true`、`signedSessionBound=true`、`writeAttempted=false`；tree、attributes 与 3 组字典证据均绑定同一个 `readReceiptId/sessionRefHash`。
+- 修复 Seller 只读 POST 未加入 retry-safe allowlist、完整分类结果没有传入通用 receipt observations、旧字典入口覆盖缓存，以及 321MB 全类目旧缓存拖慢回执和页面联动的问题。完整缓存现在必须晚于签名回执落盘；缺失/非布尔 `has_next`、非法值行、游标倒退和并发旧请求全部 fail-closed，legacy 单字典路由不再写黄金链路缓存。缓存仅保留当前店铺当前类目所需的精简 `{id,value}` 工作集，约 8.94MB。
+- 当前真实 capture `c1784812672342zraqu` 已刷新到同一 workflow；商品页实测显示“胸针 / 自动匹配，不需要你操作”和“必填属性 / 已填写”，采购价、包装尺重和定价继续自动带入，卖家无需触发内部读取。
+- 验证：安全边界定向 343/343、全量 `npm test` 1305/1305、lint 76 文件、5178 runtime 浏览器 smoke 与 offline acceptance 全部通过；真实网络仅执行 Seller API 白名单只读，未调用付费 AI、未执行任何 Ozon 写入。
+
+## 5.3 当前阶段 G4 的唯一切片
+
+### G4-S1 `CURRENT`：当前真实商品一键处理到强预检
+
+用户结果：在现有类目、采购、包装和定价证据基础上，用户只明确授权一次 AI 内容生成，系统连续刷新草稿并运行强预检；只有真实来源缺口或安全失败才停下，最终停在“预检通过、等待确认提交”。
+
+本切片只解决：
+
+- 以当前 capture/workflow/store 为唯一上下文运行现有“自动完成其余资料”链，不再新增逐项按钮或内部流程卡。
+- 将 AI 结果、当前店铺属性字典、媒体、尺重、采购和定价统一写入同一 payload draft 并运行强预检。
+- 把仍不能自动确定的真实字段集中为同屏卖家任务；不执行 Ozon 提交。
+
+退出条件：
+
+- 当前真实商品从编辑单一次动作连续到达强预检结果。
+- 草稿 hash 与验证 hash 一致；失败项有同屏输入/动作，成功时只显示最终提交确认。
+- 付费 AI 必须由用户对当前商品明确授权；本切片不执行 Ozon 写入。
+- 定向测试、全量测试、lint、runtime smoke 与 offline acceptance 通过。
 
 ## 6. 阶段级验收清单
 

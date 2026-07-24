@@ -4229,6 +4229,38 @@ pm run lint：33 files 通过。
 - 说明文档：`docs/ozon-required-attributes-analysis.zh-CN.md`。
 - 测试：`test/ozon-required-attribute-analysis.test.js`。
 
+## 2026-07-24 G4-S1 一键自动处理安全闭环（第一批）
+
+### 已完成
+
+- 普通商品页的“自动完成其余资料”会先取得一次明确的付费 AI 授权；授权内容明确说明可能产生 AI 调用费用、不会提交 Ozon。
+- 浏览器请求与服务端共同绑定当前真实商品的 `workflowRunId + autoListingJobId + captureId + storeId + sourceSnapshotHash`。
+- 服务端在 AI 调用前和受控链路每个阶段重新校验绑定；缺少授权、字段不完整或商品/店铺/来源快照变化时，在 AI 调用前停止。
+- 实际 auto-listing job 在模型调用前再次校验相同五字段；工作流暂停或等待人工时不会启动，也不会被串跑自动解锁。
+- 模型返回后再次复核真实 job，关键写回使用绑定 CAS；匹配候选自身必须以 crawler 持久化外层 `captureId + storeId` 和当前来源 `sourceSnapshotHash` 与授权全量一致，同 ID 新快照、缺失外层范围或 parsed 范围冲突均停止并要求重新授权，不能把新字段挂到旧来源证据。
+- AI 内容未形成当前 Payload 草稿时立即停止，不会拿旧草稿继续预检；付费节点也不再显示旧的无授权“从此继续”动作。
+- 受控链路不再以“到达 preflight 节点”冒充完成。只有当前草稿 `payloadDraftHash` 与成功预检的验证哈希完全一致时才返回 `completed=true`。
+- 所有返回和审计事件继续明确 `submittedToOzon=false`；本轮没有调用付费 AI，也没有执行 Ozon 写入。
+
+### 当前真实页面
+
+- 当前 capture：`c1784812672342zraqu`，店铺 `3815760-4 / xymallc`。
+- 页面自动展示胸针类目、9 个 SKU 的 2.2 CNY 采集价、50g / 10×10×10mm 包装尺重与 25.37 CNY 试算售价。
+- 页面只有一个主动作“自动完成其余资料”；点击后首先出现付费 AI 安全确认，取消不会运行链路。
+
+### 验证
+
+- 定向：`node --test test/workflow-node-executor.test.js test/auto-listing-payload-draft.test.js test/auto-listing-match-rerun.test.js test/frontend-static.test.js`，377/377。
+- 全量：`npm test`，1319/1319。
+- 独立只读复核：Ready，未发现仍存在的 Critical/Important。
+- `npm run lint`：76 files。
+- `npm run offline-acceptance`：通过，`networkAccessed=false`、`writesExecuted=false`。
+- 5178 服务已重启并在真实商品草稿页完成浏览器检查。
+
+### 唯一下一入口
+
+- G4-S1 仍为 `CURRENT`。下一步只能是在用户明确确认当前真实商品的一次付费 AI 调用后，记录“AI 文案 → 当前草稿刷新 → 自动定价/属性 → 强预检”的真实结果；仍不提交 Ozon。
+
 ## 2026-07-23 G2-S1 真实胸针商品类目回填复核
 
 - 当前真实采集：`c1784812672342zraqu`，1688 Offer `993570366569`，店铺 `3815760-4`。

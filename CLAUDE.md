@@ -63,6 +63,8 @@ Never bypass these gates:
 - Workflow locks, waiting_human states, and paused states must be respected.
 - Human verification in browser automation must pause the workflow, not refresh or continue polling.
 - GPT/Image generation must be user-confirmed before spending money.
+- Any golden-path backend route that can call paid AI must fail closed unless the request carries an explicit confirmation bound to the exact current workflow, auto-listing job, capture, store, and source snapshot. Client-side selection checks alone are not authorization. Recheck that binding between chained stages, and never report the chain complete unless the current payload draft hash exactly matches a successful strong-preflight validation hash.
+- A paid-AI match result may reuse the authorized source evidence only when the selected candidate itself still matches the authorized `captureId + storeId + sourceSnapshotHash`; candidate ID equality alone is insufficient. Missing or changed candidate binding must require fresh authorization before any matched fields are persisted.
 - Pricing risk marked blocked cannot be accepted as safe; it must be corrected or moved to a new source.
 
 ## Pricing Rules

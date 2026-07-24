@@ -1,6 +1,148 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { selectBestMatchForOzon } from "../src/autoListing.js";
+import { readFile } from "node:fs/promises";
+import {
+  selectBestMatchForOzon,
+  validatePaidAiCandidateSourceBinding,
+} from "../src/autoListing.js";
+
+test("paid AI reruns recheck actual job after model return and preserve source binding", async () => {
+  const source = await readFile(new URL("../src/autoListing.js", import.meta.url), "utf8");
+  const matchStart = source.indexOf("export async function rerunAutoListingMatch");
+  const contentStart = source.indexOf("export async function rerunAutoListingContent");
+  const match = source.slice(matchStart, contentStart);
+  const content = source.slice(contentStart, source.indexOf("export function deriveNewSourceKeywords", contentStart));
+
+  assert.match(match, /postMatchJob = await getAutoListingJob/);
+  assert.match(match, /validatePaidAiJobBinding\(postMatchJob/);
+  assert.match(match, /validatePaidAiCandidateSourceBinding/);
+  assert.match(match, /updateJobIfPaidAiBindingMatches/);
+  assert.match(match, /sourceEvidence: postMatchJob\.candidateData\?\.sourceEvidence/);
+  assert.match(content, /postModelJob = await getAutoListingJob/);
+  assert.match(content, /validatePaidAiJobBinding\(postModelJob/);
+  assert.match(content, /updateJobIfPaidAiBindingMatches/);
+  assert.match(content, /payloadJob = await getAutoListingJob/);
+  assert.match(content, /paidAiCalled: true/);
+});
+
+test("paid AI candidate binding rejects the same candidate id when its snapshot changed", () => {
+  const expected = {
+    captureId: "capture_1",
+    storeId: "store_1",
+    sourceSnapshotHash: "sha256:old",
+  };
+  const candidate = {
+    id: "cc_1",
+    captureId: "capture_1",
+    storeId: "store_1",
+    parsed: {
+      sourceEvidence: {
+        snapshotHash: "sha256:new",
+      },
+    },
+  };
+
+  const result = validatePaidAiCandidateSourceBinding(candidate, expected);
+
+  assert.equal(result.ok, false);
+  assert.equal(result.reasonCode, "PAID_AI_MATCH_CHANGED_SOURCE");
+  assert.equal(result.actualBinding.captureId, "capture_1");
+  assert.equal(result.actualBinding.storeId, "store_1");
+  assert.equal(result.actualBinding.sourceSnapshotHash, "sha256:new");
+});
+
+test("paid AI candidate binding requires capture, store, and snapshot to match", () => {
+  const expected = {
+    captureId: "capture_1",
+    storeId: "store_1",
+    sourceSnapshotHash: "sha256:bound",
+  };
+  const candidate = {
+    id: "cc_1",
+    captureId: "capture_1",
+    storeId: "store_1",
+    parsed: {
+      sourceEvidence: {
+        snapshotHash: "sha256:bound",
+      },
+    },
+  };
+
+  assert.deepEqual(
+    validatePaidAiCandidateSourceBinding(candidate, expected),
+    {
+      ok: true,
+      binding: expected,
+    },
+  );
+  assert.equal(
+    validatePaidAiCandidateSourceBinding({
+      id: "cc_1",
+      captureId: "capture_1",
+      storeId: "store_1",
+    }, expected).ok,
+    false,
+  );
+});
+
+test("paid AI candidate binding ignores crawler record id and rejects missing or conflicting captureId", () => {
+  const expected = {
+    captureId: "capture_1",
+    storeId: "store_1",
+    sourceSnapshotHash: "sha256:bound",
+  };
+  const base = {
+    id: "cc_internal",
+    storeId: "store_1",
+    parsed: {
+      sourceEvidence: {
+        snapshotHash: "sha256:bound",
+      },
+    },
+  };
+
+  assert.equal(validatePaidAiCandidateSourceBinding(base, expected).ok, false);
+  assert.equal(validatePaidAiCandidateSourceBinding({
+    ...base,
+    captureId: "capture_2",
+  }, expected).ok, false);
+  assert.equal(validatePaidAiCandidateSourceBinding({
+    ...base,
+    captureId: "capture_1",
+  }, expected).ok, true);
+});
+
+test("paid AI candidate binding requires the persisted outer store scope", () => {
+  const expected = {
+    captureId: "capture_1",
+    storeId: "store_1",
+    sourceSnapshotHash: "sha256:bound",
+  };
+  const base = {
+    id: "cc_internal",
+    captureId: "capture_1",
+    parsed: {
+      storeId: "store_1",
+      sourceEvidence: {
+        snapshotHash: "sha256:bound",
+      },
+    },
+  };
+
+  assert.equal(validatePaidAiCandidateSourceBinding(base, expected).ok, false);
+  assert.equal(validatePaidAiCandidateSourceBinding({
+    ...base,
+    storeId: "store_1",
+  }, expected).ok, true);
+  assert.equal(validatePaidAiCandidateSourceBinding({
+    ...base,
+    storeId: "store_1",
+    parsed: {
+      ...base.parsed,
+      storeId: "store_2",
+    },
+  }, expected).ok, false);
+});
 
 test("selectBestMatchForOzon picks profitable same-family candidate without submitting", async () => {
   const ozonItem = {

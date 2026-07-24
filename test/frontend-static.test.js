@@ -4504,9 +4504,39 @@ test("listing seller summary exposes automatic category recommendation and syncs
   assert.match(completion, /const environment = currentSellerReadEnvironment\(\)/);
   assert.match(completion, /currentSellerReadEnvironment\(\).*=== environment/s);
   assert.match(completion, /assertBinding\(\)/);
+  assert.match(completion, /I_CONFIRM_PAID_AI_FOR_CURRENT_PRODUCT/);
+  assert.match(completion, /confirmPaidAi: true/);
+  assert.match(completion, /workflowRunId: runId/);
+  assert.match(completion, /autoListingJobId: jobId/);
+  assert.match(completion, /sourceSnapshotHash/);
+  assert.match(completion, /window\.confirm/);
+  assert.match(completion, /不会提交 Ozon/);
   assert.ok(completion.indexOf("assertBinding();", completion.indexOf("autoSyncListingCategoryEvidence"))
     < completion.indexOf("/controlled-chain"));
   assert.ok(completion.lastIndexOf("assertBinding();") > completion.indexOf("/controlled-chain"));
+});
+
+test("workflow console does not expose a misleading unconfirmed continue action for paid AI nodes", async () => {
+  const js = await readFile(new URL("../public/app.js", import.meta.url), "utf8");
+  const detailStart = js.indexOf("function renderWorkflowDetail");
+  const detailEnd = js.indexOf("function renderWorkflowConsole", detailStart);
+  const detail = js.slice(detailStart, detailEnd);
+  const actionStart = js.indexOf('if (action === "continue-node"');
+  const actionEnd = js.indexOf('if (action === "controlled-chain"', actionStart);
+  const action = js.slice(actionStart, actionEnd);
+
+  assert.match(detail, /\["match_profit", "content_generate"\]\.includes\(node\.key\)/);
+  assert.match(action, /\["match_profit", "content_generate"\]\.includes\(node\.key\)/);
+  assert.match(action, /受控跑到总闸/);
+  assert.match(action, /result\?\.ok !== true/);
+  assert.match(action, /throw new Error/);
+
+  const controlledStart = js.indexOf('if (action === "controlled-chain"');
+  const controlledEnd = js.indexOf('if (action === "confirm-continue"', controlledStart);
+  const controlled = js.slice(controlledStart, controlledEnd);
+  assert.match(controlled, /result\?\.ok !== true/);
+  assert.match(controlled, /result\?\.error/);
+  assert.match(controlled, /result\?\.reasonCode/);
 });
 
 test("listing seller form reuses captured SKU prices and package values instead of asking for duplicate input", async () => {

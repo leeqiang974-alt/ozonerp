@@ -2638,6 +2638,18 @@ async function runListingAutoCompletion({ run = null, job = null, productSource 
     toast("当前商品或店铺已经切换，自动处理未启动。", "error");
     return;
   }
+  const sourceSnapshotHash = String(
+    job?.candidateData?.sourceEvidence?.snapshotHash
+    || run?.entity?.sourceEvidence?.snapshotHash
+    || "",
+  ).trim();
+  if (!sourceSnapshotHash) {
+    toast("当前商品缺少来源快照绑定，系统未调用付费 AI。", "error");
+    return;
+  }
+  if (!window.confirm("确认让 AI 自动补齐当前商品文案并继续完成定价和提交前预检吗？这可能产生 AI 调用费用，但不会提交 Ozon。")) {
+    return;
+  }
   state.listingAutoCompletionInFlight.add(completionKey);
   const originalButtonText = button?.textContent || "";
   setBusy(button, true);
@@ -2662,6 +2674,15 @@ async function runListingAutoCompletion({ run = null, job = null, productSource 
       body: JSON.stringify({
         startNode: "content_generate",
         note: "卖家一次点击：自动完成类目、AI 文案、草稿刷新和提交前预检",
+        confirmPaidAi: true,
+        confirmation: "I_CONFIRM_PAID_AI_FOR_CURRENT_PRODUCT",
+        expectedBinding: {
+          workflowRunId: runId,
+          autoListingJobId: jobId,
+          captureId,
+          storeId,
+          sourceSnapshotHash,
+        },
       }),
     });
     assertBinding();
@@ -13645,7 +13666,9 @@ function renderWorkflowDetail(run, node) {
       <button class="ghost" data-workflow-action="pause">暂停</button>
       <button class="ghost" data-workflow-action="resume">恢复</button>
       <button class="primary" data-workflow-action="retry">重试节点</button>
-      <button class="primary" data-workflow-action="continue-node">从此继续</button>
+      ${["match_profit", "content_generate"].includes(node.key) ? "" : `
+        <button class="primary" data-workflow-action="continue-node">从此继续</button>
+      `}
       <button class="primary" data-workflow-action="controlled-chain">受控跑到总闸</button>
     </div>
     ${currentProductBindingReady && (run.status === "waiting_human" || run.locks?.waitingHuman) ? `
@@ -13875,17 +13898,48 @@ async function handleWorkflowAction(action, button) {
     toast("已解除人工等待锁，并请求重试当前节点");
   }
   if (action === "continue-node" && node) {
-    await api(`/api/workflows/${encodeURIComponent(run.id)}/nodes/${encodeURIComponent(node.key)}/continue`, {
+    if (["match_profit", "content_generate"].includes(node.key)) {
+      toast("该节点可能调用付费 AI，请使用“受控跑到总闸”并确认当前商品授权。", "warning");
+      return;
+    }
+    const result = await api(`/api/workflows/${encodeURIComponent(run.id)}/nodes/${encodeURIComponent(node.key)}/continue`, {
       method: "POST",
       body: JSON.stringify({ note: "页面人工选择：从此继续", input: node.input || {} }),
     });
+    if (result?.ok !== true) {
+      throw new Error(result?.error || "节点继续请求未执行。");
+    }
     toast("已执行从此继续动作");
   }
   if (action === "controlled-chain") {
+    const expectedBinding = {
+      workflowRunId: String(run.id || ""),
+      autoListingJobId: String(run.entity?.autoListingJobId || ""),
+      captureId: String(run.entity?.candidateId || ""),
+      storeId: String(run.entity?.storeId || ""),
+      sourceSnapshotHash: String(run.entity?.sourceEvidence?.snapshotHash || ""),
+    };
+    const chainIncludesPaidAi = ["match_profit", "content_generate"]
+      .includes(node?.key || run.currentNode || "match_profit");
+    if (chainIncludesPaidAi
+      && !window.confirm("确认调用付费 AI 处理当前精确绑定的商品吗？流程只运行到提交前预检，不会提交 Ozon。")) {
+      return;
+    }
     const result = await api(`/api/workflows/${encodeURIComponent(run.id)}/controlled-chain`, {
       method: "POST",
-      body: JSON.stringify({ startNode: node?.key || run.currentNode || "match_profit", note: "页面人工选择：受控跑到总闸" }),
+      body: JSON.stringify({
+        startNode: node?.key || run.currentNode || "match_profit",
+        note: "页面人工选择：受控跑到总闸",
+        ...(chainIncludesPaidAi ? {
+          confirmPaidAi: true,
+          confirmation: "I_CONFIRM_PAID_AI_FOR_CURRENT_PRODUCT",
+          expectedBinding,
+        } : {}),
+      }),
     });
+    if (result?.ok !== true) {
+      throw new Error(result?.error || `受控链路未执行（${result?.reasonCode || "UNKNOWN"}）。`);
+    }
     toast(`受控链路已跑 ${result.steps?.length || 0} 步，未触发 Ozon 提交`);
   }
   if (action === "confirm-continue" && node) {

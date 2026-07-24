@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { applyManualSellerInputsToJob, buildListingPayloadDraftFromJob, categoryCacheForListingEvidence, categoryReadPolicyForListing, sourceEvidenceBindingForListing, sourceVariantsForListing } from "../src/autoListing.js";
+import { applyManualSellerInputsToJob, buildListingPayloadDraftFromJob, categoryCacheForListingEvidence, categoryReadPolicyForListing, paidAiJobBinding, sourceEvidenceBindingForListing, sourceVariantsForListing, validatePaidAiJobBinding } from "../src/autoListing.js";
 import {
   buildRequiredAttributeManualBacklog,
   buildRequiredAttributeApprovalDraftPreview,
@@ -10,6 +10,30 @@ import {
   summarizeRequiredAttributeFillPlan,
 } from "../src/ozonRequiredAttributeAnalysis.js";
 import { validateSubmitPayload } from "../src/workflowRuns.js";
+
+test("paid AI job authorization binds the actual job to workflow capture store and source snapshot", () => {
+  const job = {
+    id: "al_paid",
+    workflowRunId: "wr_paid",
+    candidateId: "capture_paid",
+    storeId: "store_paid",
+    candidateData: {
+      sourceEvidence: { snapshotHash: "sha256:paid" },
+    },
+  };
+  const binding = paidAiJobBinding(job);
+
+  assert.deepEqual(binding, {
+    workflowRunId: "wr_paid",
+    autoListingJobId: "al_paid",
+    captureId: "capture_paid",
+    storeId: "store_paid",
+    sourceSnapshotHash: "sha256:paid",
+  });
+  assert.equal(validatePaidAiJobBinding(job, binding).ok, true);
+  assert.equal(validatePaidAiJobBinding(job, { ...binding, captureId: "capture_stale" }).ok, false);
+  assert.equal(validatePaidAiJobBinding(job, { ...binding, sourceSnapshotHash: "" }).ok, false);
+});
 
 test("1688 listing policy carries exact-store category read receipts into re-preflight", () => {
   const evidence = {

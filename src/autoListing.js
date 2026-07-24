@@ -3097,6 +3097,73 @@ function manualSellerInputBinding(job = {}) {
   };
 }
 
+export function paidAiJobBinding(job = {}) {
+  return {
+    workflowRunId: String(job.workflowRunId || "").trim(),
+    autoListingJobId: String(job.id || "").trim(),
+    captureId: String(job.candidateId || "").trim(),
+    storeId: String(job.storeId || "").trim(),
+    sourceSnapshotHash: String(job.candidateData?.sourceEvidence?.snapshotHash || "").trim(),
+  };
+}
+
+export function validatePaidAiJobBinding(job = {}, expected = {}) {
+  const actualBinding = paidAiJobBinding(job);
+  const bindingKeys = [
+    "workflowRunId",
+    "autoListingJobId",
+    "captureId",
+    "storeId",
+    "sourceSnapshotHash",
+  ];
+  const complete = bindingKeys.every((key) => (
+    String(actualBinding[key] || "").trim() && String(expected?.[key] || "").trim()
+  ));
+  const matches = complete && bindingKeys.every((key) => (
+    String(actualBinding[key]) === String(expected[key])
+  ));
+  return matches
+    ? { ok: true, binding: actualBinding }
+    : {
+      ok: false,
+      reasonCode: "PAID_AI_JOB_CONTEXT_STALE",
+      error: "自动上架任务与已授权商品不一致，系统未调用付费 AI。",
+      actualBinding,
+    };
+}
+
+export function validatePaidAiCandidateSourceBinding(candidate = {}, expected = {}) {
+  const candidateData = candidate?.parsed || candidate || {};
+  const actualBinding = {
+    captureId: String(candidate?.captureId || "").trim(),
+    storeId: String(candidate?.storeId || "").trim(),
+    sourceSnapshotHash: String(
+      candidateData?.sourceEvidence?.snapshotHash
+      || candidate?.sourceEvidence?.snapshotHash
+      || "",
+    ).trim(),
+  };
+  const bindingKeys = ["captureId", "storeId", "sourceSnapshotHash"];
+  const parsedStoreId = String(candidate?.parsed?.storeId || "").trim();
+  const hasConflictingParsedStore = Boolean(
+    parsedStoreId && parsedStoreId !== actualBinding.storeId,
+  );
+  const complete = bindingKeys.every((key) => (
+    String(actualBinding[key] || "").trim() && String(expected?.[key] || "").trim()
+  ));
+  const matches = complete && !hasConflictingParsedStore && bindingKeys.every((key) => (
+    String(actualBinding[key]) === String(expected[key])
+  ));
+  return matches
+    ? { ok: true, binding: actualBinding }
+    : {
+      ok: false,
+      reasonCode: "PAID_AI_MATCH_CHANGED_SOURCE",
+      error: "重新匹配候选的商品、店铺或 1688 快照与本次授权不一致，需要重新授权后再继续。",
+      actualBinding,
+    };
+}
+
 function manualSellerInputBindingMatches(job = {}, expected = {}) {
   const actual = manualSellerInputBinding(job);
   return ["captureId", "storeId", "sourceSnapshotHash", "workflowRunId"]
@@ -3366,6 +3433,8 @@ function workflowBestMatchOutput(bestMatch = null) {
 export async function rerunAutoListingMatch(jobId, options = {}) {
   const job = await getAutoListingJob(jobId);
   if (!job) return { ok: false, error: "自动上架任务不存在: " + jobId };
+  const initialAuthorization = validatePaidAiJobBinding(job, options.expectedBinding);
+  if (!initialAuthorization.ok) return initialAuthorization;
   const { listCrawlerCandidates } = await import("./crawler1688.js");
   const learningItems = await listOzonLearningItems();
   const ozonItem = ozonItemFromJob(job, learningItems);
@@ -3377,9 +3446,15 @@ export async function rerunAutoListingMatch(jobId, options = {}) {
   await addStep(jobId, "match_rerun_started", "人工从工作流触发重新匹配，候选 " + rankedCandidates.length + " 个");
   await emitAutoListingWorkflowNode(job, "matching", { candidateCount: rankedCandidates.length });
 
+  const currentJob = await getAutoListingJob(jobId);
+  const currentAuthorization = validatePaidAiJobBinding(currentJob, options.expectedBinding);
+  if (!currentAuthorization.ok) return currentAuthorization;
   const matchResult = await selectBestMatchForOzon(ozonItem, rankedCandidates, {
     aiLimit: Object.prototype.hasOwnProperty.call(options, "aiLimit") ? options.aiLimit : AI_MATCH_LIMIT,
   });
+  const postMatchJob = await getAutoListingJob(jobId);
+  const postMatchAuthorization = validatePaidAiJobBinding(postMatchJob, options.expectedBinding);
+  if (!postMatchAuthorization.ok) return { ...postMatchAuthorization, paidAiCalled: true };
 
   if (!matchResult.ok) {
     await emitAutoListingWorkflowNode(job, "matching", {
@@ -3407,11 +3482,24 @@ export async function rerunAutoListingMatch(jobId, options = {}) {
       candidateCount: rankedCandidates.length,
       evaluatedCount: matchResult.evaluatedCount,
       rejectedReasons: matchResult.rejectedReasons,
+      paidAiCalled: true,
     };
   }
 
   const bestMatch = matchResult.bestMatch;
-  await updateJob(jobId, {
+  const candidateAuthorization = validatePaidAiCandidateSourceBinding(
+    bestMatch.candidate,
+    options.expectedBinding,
+  );
+  if (!candidateAuthorization.ok) {
+    return {
+      ...candidateAuthorization,
+      jobId,
+      paidAiCalled: true,
+    };
+  }
+  const matchedCandidateData = bestMatch.candidate.parsed || bestMatch.candidate;
+  const matchedUpdate = await updateJobIfPaidAiBindingMatches(jobId, options.expectedBinding, {
     status: "matched",
     stage: "matching",
     error: "",
@@ -3435,12 +3523,16 @@ export async function rerunAutoListingMatch(jobId, options = {}) {
     },
     ozonContext: buildOzonContext(ozonItem),
     candidateData: {
-      images: (bestMatch.candidate.parsed || bestMatch.candidate).images || [],
-      sizeWeight: (bestMatch.candidate.parsed || bestMatch.candidate).sizeWeight || {},
-      skuVariants: (bestMatch.candidate.parsed || bestMatch.candidate).skuVariants || [],
-      attributes: (bestMatch.candidate.parsed || bestMatch.candidate).attributes || [],
+      ...(postMatchJob.candidateData || {}),
+      ...matchedCandidateData,
+      images: matchedCandidateData.images || [],
+      sizeWeight: matchedCandidateData.sizeWeight || {},
+      skuVariants: matchedCandidateData.skuVariants || [],
+      attributes: matchedCandidateData.attributes || [],
+      sourceEvidence: postMatchJob.candidateData?.sourceEvidence || null,
     },
   });
+  if (!matchedUpdate.ok) return { ...matchedUpdate, paidAiCalled: true };
   await addStep(jobId, "match_rerun_success", "重新匹配成功(" + bestMatch.tier + "): " + bestMatch.candidate.title);
   await emitAutoListingWorkflowNode({ ...job, bestMatch: { candidateId: bestMatch.candidate.id } }, "matching", {
     candidateCount: rankedCandidates.length,
@@ -3459,6 +3551,7 @@ export async function rerunAutoListingMatch(jobId, options = {}) {
     candidateCount: rankedCandidates.length,
     evaluatedCount: matchResult.evaluatedCount,
     bestMatch: workflowBestMatchOutput(bestMatch),
+    paidAiCalled: true,
   };
 }
 
@@ -3495,9 +3588,11 @@ function ozonItemFromMatchedJob(job = {}) {
   };
 }
 
-export async function rerunAutoListingContent(jobId) {
+export async function rerunAutoListingContent(jobId, options = {}) {
   const job = await getAutoListingJob(jobId);
   if (!job) return { ok: false, error: "自动上架任务不存在: " + jobId };
+  const initialAuthorization = validatePaidAiJobBinding(job, options.expectedBinding);
+  if (!initialAuthorization.ok) return initialAuthorization;
   if (!job.bestMatch || !job.candidateData) {
     return { ok: false, error: "缺少已匹配候选，需先续跑 match_profit" };
   }
@@ -3528,11 +3623,17 @@ export async function rerunAutoListingContent(jobId) {
     bestMatch: job.bestMatch?.id || job.bestMatch?.candidateTitle || "",
   });
 
+  const currentJob = await getAutoListingJob(jobId);
+  const currentAuthorization = validatePaidAiJobBinding(currentJob, options.expectedBinding);
+  if (!currentAuthorization.ok) return currentAuthorization;
   const listingResult = await generateListingContentWithLlm(candidate.parsed || candidate, {
     ozonContext,
     match,
     profit,
   });
+  const postModelJob = await getAutoListingJob(jobId);
+  const postModelAuthorization = validatePaidAiJobBinding(postModelJob, options.expectedBinding);
+  if (!postModelAuthorization.ok) return { ...postModelAuthorization, paidAiCalled: true };
   if (!listingResult.enabled) {
     await emitAutoListingWorkflowNode(job, "generating_content", {
       nodeStatus: "failed",
@@ -3547,7 +3648,7 @@ export async function rerunAutoListingContent(jobId) {
       reasonCode: "CONTENT_GENERATION_FAILED",
     });
     await addStep(jobId, "content_rerun_failed", "LLM 未配置，无法生成上架内容");
-    return { ok: false, jobId, error: "LLM 未配置，无法生成上架内容" };
+    return { ok: false, jobId, error: "LLM 未配置，无法生成上架内容", paidAiCalled: true };
   }
 
   let visualCard = null;
@@ -3564,11 +3665,11 @@ export async function rerunAutoListingContent(jobId) {
 
   const summary = contentGenerationWorkflowSummary(listingResult.content, candidate, visualCard);
   const nextJob = {
-    ...job,
+    ...postModelJob,
     listingContent: listingResult.content,
     visualCard,
   };
-  await updateJob(jobId, {
+  const contentUpdate = await updateJobIfPaidAiBindingMatches(jobId, options.expectedBinding, {
     status: "ready_for_listing",
     stage: "guided",
     error: "",
@@ -3576,14 +3677,31 @@ export async function rerunAutoListingContent(jobId) {
     listingContent: listingResult.content,
     visualCard,
   });
+  if (!contentUpdate.ok) return { ...contentUpdate, paidAiCalled: true };
   let payloadDraftResult = null;
   try {
-    payloadDraftResult = await saveWorkflowPayloadDraftForListingJob(nextJob);
+    const payloadJob = await getAutoListingJob(jobId);
+    const payloadAuthorization = validatePaidAiJobBinding(payloadJob, options.expectedBinding);
+    if (!payloadAuthorization.ok) return { ...payloadAuthorization, paidAiCalled: true };
+    payloadDraftResult = await saveWorkflowPayloadDraftForListingJob({
+      ...payloadJob,
+      listingContent: nextJob.listingContent,
+      visualCard: nextJob.visualCard,
+    });
     if (payloadDraftResult?.draft) {
       await addStep(jobId, "payload_draft_refreshed", "已刷新提交前 Payload 草稿，等待人工校验");
     }
   } catch (error) {
     await addStep(jobId, "payload_draft_refresh_failed", "Payload 草稿刷新失败: " + (error.message || String(error)));
+    return {
+      ok: false,
+      jobId,
+      reasonCode: "PAYLOAD_DRAFT_REFRESH_FAILED",
+      error: "AI 文案已生成，但当前商品 Payload 草稿刷新失败；系统未运行旧草稿预检。",
+      contentReady: summary.listingContentReady,
+      payloadDraftReady: false,
+      paidAiCalled: true,
+    };
   }
   await addStep(jobId, "content_rerun_success", "重新生成上架内容完成");
   await emitAutoListingWorkflowNode(job, "generating_content", {
@@ -3605,6 +3723,7 @@ export async function rerunAutoListingContent(jobId) {
     payloadDraftItemCount: payloadDraftResult?.draft?.items?.length || 0,
     titleRu: summary.titleRu,
     contentIssues: summary.contentIssues,
+    paidAiCalled: true,
   };
 }
 
@@ -4089,6 +4208,26 @@ async function updateJob(id, patch) {
     if (idx === -1) return;
     jobs[idx] = Object.assign({}, jobs[idx], patch, { updatedAt: nowIso() });
   });
+}
+
+async function updateJobIfPaidAiBindingMatches(id, expectedBinding, patch) {
+  let result = {
+    ok: false,
+    reasonCode: "PAID_AI_JOB_CONTEXT_STALE",
+    error: "自动上架任务已变化，系统未写入旧 AI 结果。",
+  };
+  await mutateJobs(async function(jobs) {
+    const idx = jobs.findIndex(function(job) { return job.id === id; });
+    if (idx === -1) return;
+    const validation = validatePaidAiJobBinding(jobs[idx], expectedBinding);
+    if (!validation.ok) {
+      result = validation;
+      return;
+    }
+    jobs[idx] = Object.assign({}, jobs[idx], patch, { updatedAt: nowIso() });
+    result = { ok: true, job: jobs[idx] };
+  });
+  return result;
 }
 
 async function addStep(id, action, detail) {

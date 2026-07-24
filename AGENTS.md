@@ -87,6 +87,8 @@ Do not turn ordinary seller screens into developer logs, long unscannable forms,
 - Workflow locks, paused states, and `waiting_human` must be respected.
 - Browser human verification must pause automation.
 - GPT/image generation requires user-confirmed action before cost.
+- Any golden-path backend route that can call paid AI must fail closed unless the request carries an explicit confirmation bound to the exact current workflow, auto-listing job, capture, store, and source snapshot. Client-side selection checks alone are not authorization. Recheck that binding between chained stages, and never report the chain complete unless the current payload draft hash exactly matches a successful strong-preflight validation hash.
+- A paid-AI match result may reuse the authorized source evidence only when the selected candidate itself still matches the authorized `captureId + storeId + sourceSnapshotHash`; candidate ID equality alone is insufficient. Missing or changed candidate binding must require fresh authorization before any matched fields are persisted.
 - Blocked pricing risk cannot be accepted as safe; fix it or replace the source.
 - Missing current stock for an `(offer_id, warehouse_id)` tuple is unknown evidence, never zero. Stock dry-run must block until the exact tuple is observed.
 - An Ozon write with an unknown outcome must remain `needs_review`. A different idempotency key must not bypass an unresolved command with the same store, scope, and payload hash.

@@ -1,5 +1,17 @@
 # Ozon ERP 会话接管与恢复记录
 
+## 2026-07-24 G3-S1 当前店铺类目证据自动续读
+
+- 当前唯一切片已从通过退出门的 G2-S1 切到 G3-S1；目标是让店铺 `3815760-4` 的胸针草稿使用当前环境真实类目树、`17027899:87458886` 属性和必填字典回执。
+- 修复两个主链断点：首次受控类目计划不再要求预先提供 attribute IDs；完整字典返回的 `completed` 状态不再被当成失败。
+- 商品页的一次主动作现在执行两阶段只读链：metadata 读取 tree + attributes；服务端仅从该次 attributes 响应推导必填字典 IDs，并返回精确 hash 绑定的 complete 续读计划；前端自动执行续读后才刷新同一 capture/workflow。页面普通渲染不再后台发起读取。
+- metadata 阶段不写缓存；complete 阶段会再次核对当前 attributes 推导出的必填字典范围，只有 tree、attributes、全部字典和范围同时成功才原子提交整组证据。与续读计划不一致时返回 `CATEGORY_READ_ATTRIBUTE_SCOPE_CHANGED`；字典 `has_next=true`、格式异常或任一端点失败仍为 partial，不得污染完整缓存或升级预检。
+- payload 草稿只消费 store/environment/cacheKey/paginationComplete 全匹配的字典证据；前端自动处理从类目同步到 AI/预检全程绑定同一 capture、workflow、job、store 和 environment，切换上下文立即停止。
+- 5178 服务已重启到新代码。metadata 计划对当前真实 scope 生成 tree/attributes 两个请求；执行因当前会话未签名而在 Ozon transport 前返回 HTTP 403 `READ_OPERATOR_SESSION_REQUIRED`，side effect 明确为未调用 Seller API。
+- 独立复审依次发现并关闭旧字典残留、异常 200、并发写覆盖、上下文竞态、原子阶段逆序和分页完整标记漏存，最终结论 `Ready: Yes`。
+- 验证：定向 519/519、全量 `npm test` 1294/1294、lint 76 files、frontend runtime smoke、offline acceptance 全部通过；未调用 Seller API、未执行 Ozon 写入。
+- 下一唯一入口：建立覆盖当前 environment 与 `3815760-4` 的 signed ERP session，然后在当前商品点一次“自动完成商品资料”，记录真实 server-observed tree + attributes + 必填字典回执；完成前 G3-S1 仍为 `CURRENT`。
+
 ## 2026-07-24 G2-S1 采集价格、包装尺重与自动定价联动
 
 - 用户纠正：1688 插件已采集每个 SKU 的价格并录入包装尺重，ERP 仍要求重复填写供应商、采购价和包装数据，而且定价没有自动启动。

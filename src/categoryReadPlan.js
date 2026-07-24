@@ -20,6 +20,14 @@ export function classifyCategoryValuesResponse(response = {}) {
   };
 }
 
+export function classifyCategoryMetadataResponse(response = {}) {
+  const recognized = Array.isArray(response?.result);
+  return {
+    recognized,
+    status: recognized ? "success" : "unknown",
+  };
+}
+
 function text(value = "") {
   return String(value || "").trim();
 }
@@ -29,8 +37,61 @@ function positiveInt(value) {
   return Number.isSafeInteger(number) && number > 0 ? number : 0;
 }
 
+function categoryReadPhase(value = "") {
+  return text(value).toLowerCase() === "metadata" ? "metadata" : "complete";
+}
+
+export function requiredDictionaryAttributeIds(attributes = []) {
+  if (!Array.isArray(attributes)) return [];
+  return [...new Set(attributes
+    .filter((attribute) => attribute?.is_required === true && positiveInt(attribute?.dictionary_id))
+    .map((attribute) => positiveInt(attribute?.id))
+    .filter(Boolean))].slice(0, 100);
+}
+
+export function buildCategoryReadContinuationPlan(plan = {}, attributes = []) {
+  const validation = validateCategoryReadPlan({ ...plan, phase: "metadata" });
+  const attributeIds = requiredDictionaryAttributeIds(attributes);
+  if (!validation.ok || !attributeIds.length) return null;
+  return {
+    store: { id: validation.storeId },
+    environment: validation.environment,
+    descriptionCategoryId: validation.descriptionCategoryId,
+    typeId: validation.typeId,
+    language: validation.language,
+    phase: "complete",
+    attributeIds,
+  };
+}
+
+export function validateCategoryReadAttributeScope(plan = {}, attributes = []) {
+  const validation = validateCategoryReadPlan(plan);
+  if (!validation.ok || validation.phase !== "complete") {
+    return { ok: validation.ok, expected: validation.attributeIds, observed: [] };
+  }
+  const observed = requiredDictionaryAttributeIds(attributes);
+  const expected = [...validation.attributeIds].sort((a, b) => a - b);
+  const actual = [...observed].sort((a, b) => a - b);
+  return {
+    ok: expected.length === actual.length && expected.every((id, index) => id === actual[index]),
+    expected,
+    observed: actual,
+  };
+}
+
+export function summarizeCategoryReadObservations(observations = []) {
+  const failures = (Array.isArray(observations) ? observations : [])
+    .filter((item) => !["success", "completed"].includes(text(item?.status).toLowerCase()));
+  return {
+    complete: failures.length === 0,
+    status: failures.length ? "partial" : "completed",
+    failures,
+  };
+}
+
 export function validateCategoryReadPlan(plan = {}) {
   const errors = [];
+  const phase = categoryReadPhase(plan.phase);
   const storeId = text(plan.store?.id || plan.store?.clientId);
   const environment = text(plan.environment);
   const descriptionCategoryId = positiveInt(plan.descriptionCategoryId || plan.description_category_id);
@@ -46,7 +107,7 @@ export function validateCategoryReadPlan(plan = {}) {
   if (!descriptionCategoryId) errors.push({ code: "CATEGORY_READ_CATEGORY_REQUIRED", message: "必须提供 description_category_id。" });
   if (!typeId) errors.push({ code: "CATEGORY_READ_TYPE_REQUIRED", message: "必须提供 type_id。" });
   if (!/^[A-Z_]{2,24}$/.test(language)) errors.push({ code: "CATEGORY_READ_LANGUAGE_INVALID", message: "language 格式无效。" });
-  if (!attributeIds.length) errors.push({ code: "CATEGORY_READ_ATTRIBUTE_REQUIRED", message: "至少提供一个属性 ID 才能读取字典值。" });
+  if (phase === "complete" && !attributeIds.length) errors.push({ code: "CATEGORY_READ_ATTRIBUTE_REQUIRED", message: "完整类目读取至少需要一个字典属性 ID。" });
   return {
     ok: errors.length === 0,
     errors,
@@ -55,8 +116,11 @@ export function validateCategoryReadPlan(plan = {}) {
     descriptionCategoryId,
     typeId,
     language,
+    phase,
     attributeIds,
-    endpoints: Object.values(CATEGORY_READ_ENDPOINTS),
+    endpoints: phase === "metadata"
+      ? [CATEGORY_READ_ENDPOINTS.tree, CATEGORY_READ_ENDPOINTS.attributes]
+      : Object.values(CATEGORY_READ_ENDPOINTS),
   };
 }
 
@@ -68,6 +132,7 @@ export function buildCategoryReadPlanBinding(plan = {}) {
     environmentRef: scopeHash(validation.environment),
     descriptionCategoryId: validation.descriptionCategoryId,
     typeId: validation.typeId,
+    phase: validation.phase,
     attributeIds: validation.attributeIds,
     language: validation.language,
     endpoints: validation.endpoints,
@@ -89,6 +154,7 @@ export function buildCategoryReadPlanSummary(plan = {}) {
     environmentRefHash: validation.environment ? scopeHash(validation.environment) : "",
     descriptionCategoryId: validation.descriptionCategoryId || null,
     typeId: validation.typeId || null,
+    phase: validation.phase,
     attributeIds: validation.attributeIds,
     language: validation.language,
     endpoints: validation.endpoints,

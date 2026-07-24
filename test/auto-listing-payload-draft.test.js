@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { applyManualSellerInputsToJob, buildListingPayloadDraftFromJob, categoryReadPolicyForListing, sourceEvidenceBindingForListing, sourceVariantsForListing } from "../src/autoListing.js";
+import { applyManualSellerInputsToJob, buildListingPayloadDraftFromJob, categoryCacheForListingEvidence, categoryReadPolicyForListing, sourceEvidenceBindingForListing, sourceVariantsForListing } from "../src/autoListing.js";
 import {
   buildRequiredAttributeManualBacklog,
   buildRequiredAttributeApprovalDraftPreview,
@@ -35,6 +35,35 @@ test("1688 listing policy carries exact-store category read receipts into re-pre
   assert.equal(missing.categoryEvidenceRequired, true);
   assert.equal(missing.categoryEvidenceStoreId, "");
   assert.equal(missing.categoryEvidence.tree, null);
+});
+
+test("listing category cache excludes dictionaries from another store or read environment", () => {
+  const environmentRefHash = `sha256:${"b".repeat(64)}`;
+  const categoryMatch = { description_category_id: 10, type_id: 20 };
+  const scoped = categoryCacheForListingEvidence({
+    storeId: "store-1",
+    attributes: { "10:20": [{ id: 85, dictionary_id: 1, is_required: true }] },
+    attributeStores: { "10:20": "store-1" },
+    attributeUpdatedAt: { "10:20": new Date().toISOString() },
+    attributeValues: {
+      "10:20:85:ZH_HANS": { storeId: "store-2", values: [{ id: 1, value: "wrong store" }] },
+      "10:20:86:ZH_HANS": { storeId: "store-1", values: [{ id: 2, value: "current" }] },
+    },
+    categoryReadEvidence: {
+      tree: { storeId: "store-1", environmentRefHash },
+      attributes: { "10:20": { storeId: "store-1", environmentRefHash, cacheKey: "10:20" } },
+      attributeValues: {
+        "10:20:85:ZH_HANS": { storeId: "store-2", environmentRefHash, cacheKey: "10:20:85:ZH_HANS", paginationComplete: true },
+        "10:20:86:ZH_HANS": { storeId: "store-1", environmentRefHash, cacheKey: "10:20:86:ZH_HANS", paginationComplete: true },
+      },
+    },
+  }, categoryMatch, "store-1", environmentRefHash);
+  assert.equal(scoped.attributeValues["10:20:85:ZH_HANS"], undefined);
+  assert.deepEqual(scoped.attributeValues["10:20:86:ZH_HANS"].values, [{ id: 2, value: "current" }]);
+
+  const wrongEnvironment = categoryCacheForListingEvidence(scoped, categoryMatch, "store-1", `sha256:${"c".repeat(64)}`);
+  assert.equal(wrongEnvironment.attributes["10:20"], undefined);
+  assert.deepEqual(wrongEnvironment.attributeValues, {});
 });
 
 test("sourceVariantsForListing preserves stable 1688 SKU ids for downstream binding", () => {

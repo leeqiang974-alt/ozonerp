@@ -8,6 +8,7 @@ import {
   attributeValueCacheKey,
   inspectCategoryCacheFreshness,
   loadCategoryCache,
+  mutateCategoryCache,
   upsertAttributeValuesCache,
 } from "../src/ozonCategoryCache.js";
 
@@ -98,4 +99,27 @@ test("normalized category cache keeps per-attribute store ownership metadata", a
   const key = "1:2:3:RU";
   assert.equal(cache.attributeValues[key].storeId, "store-b");
   assert.equal(cache.storeId, "store-b");
+});
+
+test("category cache mutations serialize concurrent scoped updates", async () => {
+  const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "ozon-category-cache-lock-"));
+  process.env.OZON_CATEGORY_CACHE_FILE = path.join(tmpDir, "cache.json");
+
+  await Promise.all([
+    mutateCategoryCache(async (cache) => {
+      await new Promise((resolve) => setTimeout(resolve, 35));
+      return { ...cache, attributes: { ...cache.attributes, "1:2": [{ id: 85 }] } };
+    }),
+    mutateCategoryCache(async (cache) => ({
+      ...cache,
+      attributeValues: {
+        ...cache.attributeValues,
+        "1:2:85:ZH_HANS": { storeId: "store-a", values: [{ id: 1, value: "A" }] },
+      },
+    })),
+  ]);
+
+  const cache = await loadCategoryCache();
+  assert.deepEqual(cache.attributes["1:2"], [{ id: 85 }]);
+  assert.deepEqual(cache.attributeValues["1:2:85:ZH_HANS"].values, [{ id: 1, value: "A" }]);
 });

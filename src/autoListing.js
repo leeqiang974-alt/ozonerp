@@ -800,6 +800,63 @@ export function categoryReadPolicyForListing(job = {}, cache = {}, categoryMatch
   };
 }
 
+export function categoryCacheForListingEvidence(cache = {}, categoryMatch = {}, storeId = "", environmentRefHash = "") {
+  const categoryKey = categoryAttributeCacheKey(categoryMatch);
+  const expectedStoreId = String(storeId || "").trim();
+  const expectedEnvironmentRefHash = String(environmentRefHash || "").trim();
+  const treeEvidence = cache?.categoryReadEvidence?.tree || null;
+  const attributeEvidence = cache?.categoryReadEvidence?.attributes?.[categoryKey] || null;
+  const metadataReady = Boolean(
+    categoryKey
+    && expectedStoreId
+    && expectedEnvironmentRefHash
+    && String(cache?.storeId || "").trim() === expectedStoreId
+    && String(treeEvidence?.storeId || "").trim() === expectedStoreId
+    && String(treeEvidence?.environmentRefHash || "").trim() === expectedEnvironmentRefHash
+    && String(attributeEvidence?.storeId || "").trim() === expectedStoreId
+    && String(attributeEvidence?.environmentRefHash || "").trim() === expectedEnvironmentRefHash
+    && String(attributeEvidence?.cacheKey || "").trim() === categoryKey,
+  );
+  const attributes = { ...(cache?.attributes || {}) };
+  const attributeStores = { ...(cache?.attributeStores || {}) };
+  const attributeUpdatedAt = { ...(cache?.attributeUpdatedAt || {}) };
+  const attributeEvidenceByKey = { ...(cache?.categoryReadEvidence?.attributes || {}) };
+  if (!metadataReady) {
+    delete attributes[categoryKey];
+    delete attributeStores[categoryKey];
+    delete attributeUpdatedAt[categoryKey];
+    delete attributeEvidenceByKey[categoryKey];
+  }
+  const prefix = `${categoryKey}:`;
+  const attributeValues = {};
+  const attributeValueEvidence = {};
+  if (metadataReady) {
+    for (const [cacheKey, entry] of Object.entries(cache?.attributeValues || {})) {
+      if (!cacheKey.startsWith(prefix)) continue;
+      const evidence = cache?.categoryReadEvidence?.attributeValues?.[cacheKey] || null;
+      if (String(entry?.storeId || "").trim() !== expectedStoreId
+        || String(evidence?.storeId || "").trim() !== expectedStoreId
+        || String(evidence?.environmentRefHash || "").trim() !== expectedEnvironmentRefHash
+        || String(evidence?.cacheKey || "").trim() !== cacheKey
+        || evidence?.paginationComplete !== true) continue;
+      attributeValues[cacheKey] = entry;
+      attributeValueEvidence[cacheKey] = evidence;
+    }
+  }
+  return {
+    ...cache,
+    attributes,
+    attributeStores,
+    attributeUpdatedAt,
+    attributeValues,
+    categoryReadEvidence: {
+      ...(cache?.categoryReadEvidence || {}),
+      attributes: attributeEvidenceByKey,
+      attributeValues: attributeValueEvidence,
+    },
+  };
+}
+
 export function modelAttributesForMeta(modelName, attrsMeta = []) {
   var modelMetas = (attrsMeta || []).filter(function(meta) {
     return Number(meta?.id || 0)
@@ -2409,9 +2466,15 @@ async function saveWorkflowPayloadDraftForListingJob(job = {}) {
   if (!categoryMatch) throw new Error("未匹配到 Ozon 类目，无法刷新 payload 草稿");
   const attrsMeta = attrsMetaForCategory({ categoryCache: cache }, categoryMatch);
   const categoryReadPolicy = categoryReadPolicyForListing(job, cache, categoryMatch);
+  const listingCategoryCache = categoryCacheForListingEvidence(
+    cache,
+    categoryMatch,
+    categoryReadPolicy.categoryEvidenceStoreId,
+    categoryReadPolicy.categoryEvidenceEnvironmentRefHash,
+  );
   const draft = buildListingPayloadDraftFromJob({ ...job, pendingParentSku: parentSku }, {
     categoryMatch,
-    categoryCache: cache,
+    categoryCache: listingCategoryCache,
     parentSku,
   });
   draft.sourceEvidenceReview = job.candidateData?.sourceEvidence || null;

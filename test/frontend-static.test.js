@@ -94,9 +94,9 @@ test("listing presents one responsive product form with automatic fields and inl
   assert.match(js, /listingSellerInputSections\.join/);
   assert.doesNotMatch(js, /autoCompletionAttempted && repairSections\.length/);
   assert.doesNotMatch(js, /类目证据同步后自动检查/);
-  assert.match(js, /listingAutoCompletionInFlight\.has\(jobId\)/);
-  assert.match(js, /listingAutoCompletionInFlight\.add\(jobId\)/);
-  assert.match(js, /listingAutoCompletionInFlight\.delete\(jobId\)/);
+  assert.match(js, /listingAutoCompletionInFlight\.has\(completionKey\)/);
+  assert.match(js, /listingAutoCompletionInFlight\.add\(completionKey\)/);
+  assert.match(js, /listingAutoCompletionInFlight\.delete\(completionKey\)/);
   assert.match(js, /if \(categorySyncRequired && !categorySynced\)/);
   assert.match(js, /已在调用 AI 前停止/);
   assert.match(js, /if \(!bindingMatches\(\)\)/);
@@ -4481,13 +4481,32 @@ test("listing seller summary exposes automatic category recommendation and syncs
   assert.match(js, /summary\.categoryStatusText/);
   assert.ok(syncStart >= 0 && syncEnd > syncStart);
   assert.match(sync, /auto_matched_evidence_pending/);
-  assert.match(sync, /\/api\/ozon\/category-cache\/refresh/);
-  assert.match(sync, /\/api\/ozon\/description-attributes/);
-  assert.match(sync, /description_category_id: decision\.selected\.description_category_id/);
+  assert.match(sync, /\/api\/ozon\/read-operator\/category-plan/);
+  assert.match(sync, /\/api\/ozon\/read-operator\/category-execute/);
+  assert.match(sync, /phase: "metadata"/);
+  assert.match(sync, /currentSellerReadEnvironment\(\).*=== environment/s);
+  assert.match(sync, /currentCaptureSellerTask/);
+  assert.match(sync, /currentListingWorkflowRun/);
+  assert.match(sync, /CATEGORY_READ_CONTEXT_CHANGED/);
+  assert.match(sync, /sellerReadAccessRecovery/);
+  assert.match(sync, /continuationPlan/);
+  assert.match(sync, /continuationPlanBinding/);
+  assert.match(sync, /recordEvidence: true/);
+  assert.match(sync, /confirm: "I_CONFIRM_READ_ONLY"/);
   assert.match(sync, /\/api\/1688\/captures\/\$\{encodeURIComponent\(captureId\)\}\/workflow/);
   assert.match(sync, /categoryAutoSyncKeys/);
-  assert.match(sync, /categoryAutoSyncRetryAt/);
-  assert.match(sync, /5 \* 60 \* 1000/);
+  assert.doesNotMatch(sync, /categoryAutoSyncRetryAt|5 \* 60 \* 1000/);
+  assert.doesNotMatch(js, /void autoSyncListingCategoryEvidence\(run, autoListJob\)/);
+
+  const completionStart = js.indexOf("async function runListingAutoCompletion");
+  const completionEnd = js.indexOf("function renderListingSellerContentEvidence", completionStart);
+  const completion = js.slice(completionStart, completionEnd);
+  assert.match(completion, /const environment = currentSellerReadEnvironment\(\)/);
+  assert.match(completion, /currentSellerReadEnvironment\(\).*=== environment/s);
+  assert.match(completion, /assertBinding\(\)/);
+  assert.ok(completion.indexOf("assertBinding();", completion.indexOf("autoSyncListingCategoryEvidence"))
+    < completion.indexOf("/controlled-chain"));
+  assert.ok(completion.lastIndexOf("assertBinding();") > completion.indexOf("/controlled-chain"));
 });
 
 test("listing seller form reuses captured SKU prices and package values instead of asking for duplicate input", async () => {

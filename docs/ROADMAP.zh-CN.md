@@ -1,6 +1,8 @@
 # Ozon ERP 产品与交付路线图
 
-> 当前派工以 `docs/TOP-LEVEL-DEVELOPMENT-PLAN.zh-CN.md` 为准。本文件记录已交付内容和验证等级，不再从历史条目反向领取开发任务。G1 已完成；当前唯一切片：G2-S1 真实采集商品生成唯一草稿骨架；G4 MVP 通过前冻结 FBS、活动、财务和售后扩建。
+> 当前派工以 `docs/TOP-LEVEL-DEVELOPMENT-PLAN.zh-CN.md` 为准。本文件记录已交付内容和验证等级，不再从历史条目反向领取开发任务。G1、G2 已完成；当前唯一切片：G3-S1 当前店铺胸针类目只读证据闭环；G4 MVP 通过前冻结 FBS、活动、财务和售后扩建。
+
+> 2026-07-24 G3-S1 当前店铺类目两阶段自动读取：修复旧流程必须先从跨店铺缓存知道 attribute IDs，以及字典响应 `status=completed` 被聚合成失败的断点。商品页一次“自动完成商品资料”现在先提交绑定当前 store/environment/category/type 的 metadata 只读计划，服务端从本次 attributes 回执推导必填且有字典的属性 ID，再返回 hash 绑定的 complete 续读计划并自动读取字典；页面渲染不再自行发起 Seller API 请求。metadata 只负责发现且不落缓存；complete 仅在 tree、attributes、全部必填字典和属性范围同时通过时原子提交整组证据。payload 只消费 store/environment/cacheKey/paginationComplete 全匹配的字典，两次读取间范围变化以 `CATEGORY_READ_ATTRIBUTE_SCOPE_CHANGED` fail-closed，`has_next=true` 仍保持 partial；商品、店铺或环境在链路中切换会停止后续 AI/预检。独立复审关闭缓存拼接、并发覆盖、跨环境继续和分页证据漏存后给出 `Ready: Yes`。5178 已重启；本地真实 scope `3815760-4 / 17027899:87458886` 的计划生成 2 个 metadata 请求，执行因缺 signed session 在调用 Seller API 前返回 403 `READ_OPERATOR_SESSION_REQUIRED`。定向 519/519、全量 `npm test` 1294/1294、lint 76 files、runtime smoke、offline acceptance 通过；验证等级仍为 locally tested，未调用 Seller API、未执行 Ozon 写入。G3-S1 仍需 signed session 下真实 server-observed 回执才能退出。
 
 > 2026-07-24 G2-S1 采集证据直接驱动自动定价：纠正真实商品已在 1688 插件采集 SKU 价格并填写包装尺重，ERP 却再次要求供应商、采购价和包装输入且不启动定价的问题。当前快照精确绑定、带稳定 source SKU ID 的详情 SKU 正价格会按来源 SKU 去重并直接作为本地采购价证据；精确绑定且四项数值一致的 `capture_hint/page_content/1688_package` 包装证据会自动复用，未绑定搜索价格或陈旧尺重仍阻塞。capture 交接立即生成本地定价预览，默认佣金下利润保持未知，不触发 Ozon 写入；预览同时落入 workflow handoff，前端即使 job 列表暂未加载也不会回退成“尚未定价”。独立复核后封死新 capture 缺 package field 走旧 URL 回退、snapshot 更新残留旧采购价、定价诊断未进入可重放强预检策略三处风险。真实 Offer `993570366569` 浏览器显示 9 个 SKU 价格 2.2–2.2 CNY、包装 50g / 10×10×10mm、售价本地试算 25.37 CNY、利润未知，且没有供应商/采购/包装二次输入和控制台错误。安全边界定向 322/322、全量 `npm test` 1288/1288、lint 76 files、offline acceptance 通过；未点击付费 AI，未执行 Seller API/Ozon 写入。
 

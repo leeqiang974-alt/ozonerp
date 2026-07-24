@@ -5,7 +5,6 @@ const state = {
   categoryEvidence: { tree: null, attributes: null },
   categoryAutoSyncKeys: new Set(),
   categoryAutoSyncPromises: new Map(),
-  categoryAutoSyncRetryAt: new Map(),
   categoryAttributeRequestToken: 0,
   productStatus: "all",
   productRows: [],
@@ -2251,7 +2250,6 @@ function renderListingSellerTaskSummary() {
   }
   if (panel) panel.hidden = false;
   const autoListJob = currentListingAutoListJob(run);
-  void autoSyncListingCategoryEvidence(run, autoListJob);
   const handoffNode = (run?.nodes || [])
     .find((node) => ["candidate_handoff", "capture_handoff"].includes(node.key)) || null;
   const handoffDraft = handoffNode?.output?.draftSkeleton || null;
@@ -2424,30 +2422,82 @@ async function autoSyncListingCategoryEvidence(run = null, job = null) {
   if (decision?.status !== "auto_matched_evidence_pending" || !decision?.selected) return false;
   const captureId = String(job?.candidateId || handoff?.captureId || "").trim();
   const storeId = String(job?.storeId || handoff?.storeId || selectedStoreId() || "").trim();
+  const runId = String(run?.id || "").trim();
+  const jobId = String(job?.id || "").trim();
+  const environment = currentSellerReadEnvironment();
   if (!captureId || !storeId) return false;
-  const syncKey = `${captureId}:${storeId}:${decision.selected.description_category_id}:${decision.selected.type_id}`;
+  const syncKey = `${captureId}:${storeId}:${runId}:${jobId}:${environment}:${decision.selected.description_category_id}:${decision.selected.type_id}`;
   if (state.categoryAutoSyncPromises.has(syncKey)) return state.categoryAutoSyncPromises.get(syncKey);
-  if (Number(state.categoryAutoSyncRetryAt.get(syncKey) || 0) > Date.now()) return false;
   state.categoryAutoSyncKeys.add(syncKey);
+  const bindingMatches = () => {
+    const currentCapture = currentCaptureSellerTask();
+    const currentRun = currentListingWorkflowRun();
+    const currentJob = currentListingAutoListJob(currentRun);
+    return String(currentCapture?.item?.id || "") === captureId
+      && String(currentCapture?.item?.storeId || "") === storeId
+      && String(selectedStoreId() || "") === storeId
+      && String(currentSellerReadEnvironment() || "") === environment
+      && String(currentRun?.id || "") === runId
+      && String(currentJob?.id || "") === jobId;
+  };
+  const assertBinding = () => {
+    if (bindingMatches()) return;
+    const error = new Error("类目读取期间当前商品、店铺或环境已切换，系统已停止后续处理。");
+    error.code = "CATEGORY_READ_CONTEXT_CHANGED";
+    throw error;
+  };
   const syncPromise = (async () => {
-    const environment = currentSellerReadEnvironment();
-    await api("/api/ozon/category-cache/refresh", {
+    assertBinding();
+    const categoryPlan = {
+      store: { id: storeId },
+      environment,
+      descriptionCategoryId: decision.selected.description_category_id,
+      typeId: decision.selected.type_id,
+      attributeIds: [],
+      language: "ZH_HANS",
+      phase: "metadata",
+    };
+    const planGate = await api("/api/ozon/read-operator/category-plan", {
       method: "POST",
-      body: JSON.stringify({ storeId, environment }),
+      body: JSON.stringify({ categoryPlan }),
     });
-    await api("/api/ozon/description-attributes", {
+    assertBinding();
+    if (!planGate?.ok || !planGate.planBinding) throw new Error("CATEGORY_READ_PLAN_BINDING_REQUIRED");
+    const metadataResult = await api("/api/ozon/read-operator/category-execute", {
       method: "POST",
       body: JSON.stringify({
+        categoryPlan,
         storeId,
-        environment,
-        description_category_id: decision.selected.description_category_id,
-        type_id: decision.selected.type_id,
+        planBinding: planGate.planBinding,
+        recordEvidence: true,
+        confirm: "I_CONFIRM_READ_ONLY",
       }),
     });
+    assertBinding();
+    if (!metadataResult?.ok) throw new Error(metadataResult?.reasonCode || "CATEGORY_METADATA_READ_INCOMPLETE");
+    if (metadataResult.continuationRequired) {
+      if (!metadataResult.continuationPlan || !metadataResult.continuationPlanBinding) {
+        throw new Error("CATEGORY_READ_CONTINUATION_BINDING_REQUIRED");
+      }
+      const dictionaryResult = await api("/api/ozon/read-operator/category-execute", {
+        method: "POST",
+        body: JSON.stringify({
+          categoryPlan: metadataResult.continuationPlan,
+          storeId,
+          planBinding: metadataResult.continuationPlanBinding,
+          recordEvidence: true,
+          confirm: "I_CONFIRM_READ_ONLY",
+        }),
+      });
+      assertBinding();
+      if (!dictionaryResult?.ok) throw new Error(dictionaryResult?.reasonCode || "CATEGORY_DICTIONARY_READ_INCOMPLETE");
+    }
+    assertBinding();
     await api(`/api/1688/captures/${encodeURIComponent(captureId)}/workflow`, {
       method: "POST",
       body: JSON.stringify({ storeId, environment }),
     });
+    assertBinding();
     await loadAutoListJobs();
     await loadWorkflowRuns();
     toast(`已自动匹配并同步类目：${decision.selected.path || decision.selected.name}`, "ok");
@@ -2457,9 +2507,12 @@ async function autoSyncListingCategoryEvidence(run = null, job = null) {
   try {
     return await syncPromise;
   } catch (error) {
-    state.categoryAutoSyncRetryAt.set(syncKey, Date.now() + 5 * 60 * 1000);
     console.warn("自动同步当前店铺类目证据失败", error);
-    return false;
+    if (error?.code === "CATEGORY_READ_CONTEXT_CHANGED") throw error;
+    const recovery = sellerReadAccessRecovery(error, "当前店铺类目只读证据同步失败；请检查签名会话和店铺权限后重试。本次没有调用 Ozon 写接口。");
+    const sellerError = new Error(recovery);
+    sellerError.code = String(error?.reasonCode || error?.code || "CATEGORY_READ_FAILED");
+    throw sellerError;
   } finally {
     state.categoryAutoSyncPromises.delete(syncKey);
     state.categoryAutoSyncKeys.delete(syncKey);
@@ -2553,11 +2606,13 @@ async function runListingAutoCompletion({ run = null, job = null, productSource 
   const jobId = String(job?.id || "").trim();
   const captureId = String(job?.candidateId || run?.entity?.candidateId || "").trim();
   const storeId = String(job?.storeId || run?.entity?.storeId || "").trim();
+  const environment = currentSellerReadEnvironment();
   if (!runId || !jobId || !productSource?.title) {
     toast("当前商品尚未形成可自动处理的本地草稿。", "error");
     return;
   }
-  if (state.listingAutoCompletionInFlight.has(jobId)) {
+  const completionKey = `${jobId}:${environment}`;
+  if (state.listingAutoCompletionInFlight.has(completionKey)) {
     toast("当前商品正在自动处理，请等待本次结果。", "warning");
     return;
   }
@@ -2568,15 +2623,22 @@ async function runListingAutoCompletion({ run = null, job = null, productSource 
     return String(currentCapture?.item?.id || "") === captureId
       && String(currentCapture?.item?.storeId || "") === storeId
       && String(selectedStoreId() || "") === storeId
+      && String(currentSellerReadEnvironment() || "") === environment
       && String(currentRun?.id || "") === runId
       && String(currentRun?.entity?.autoListingJobId || "") === jobId
       && String(currentJob?.id || "") === jobId;
+  };
+  const assertBinding = () => {
+    if (bindingMatches()) return;
+    const error = new Error("自动处理期间当前商品、店铺或环境已切换，系统已停止后续处理。");
+    error.code = "LISTING_AUTO_COMPLETION_CONTEXT_CHANGED";
+    throw error;
   };
   if (!bindingMatches()) {
     toast("当前商品或店铺已经切换，自动处理未启动。", "error");
     return;
   }
-  state.listingAutoCompletionInFlight.add(jobId);
+  state.listingAutoCompletionInFlight.add(completionKey);
   const originalButtonText = button?.textContent || "";
   setBusy(button, true);
   if (button) button.textContent = "系统自动处理中…";
@@ -2584,9 +2646,7 @@ async function runListingAutoCompletion({ run = null, job = null, productSource 
   let preserveSellerInputs = false;
   try {
     await saveListingSellerInputsBeforeAutoCompletion(job);
-    if (!bindingMatches()) {
-      throw new Error("保存商品资料期间商品或店铺已切换，自动处理已停止。");
-    }
+    assertBinding();
     const handoffDecision = (run?.nodes || [])
       .find((node) => ["candidate_handoff", "capture_handoff"].includes(node.key))
       ?.output?.draftSkeleton?.categoryDecision || null;
@@ -2596,9 +2656,7 @@ async function runListingAutoCompletion({ run = null, job = null, productSource 
     if (categorySyncRequired && !categorySynced) {
       throw new Error("当前店铺类目证据尚未同步成功，已在调用 AI 前停止。");
     }
-    if (!bindingMatches()) {
-      throw new Error("等待类目证据期间商品或店铺已切换，已在调用 AI 前停止。");
-    }
+    assertBinding();
     const result = await api(`/api/workflows/${encodeURIComponent(runId)}/controlled-chain`, {
       method: "POST",
       body: JSON.stringify({
@@ -2606,9 +2664,12 @@ async function runListingAutoCompletion({ run = null, job = null, productSource 
         note: "卖家一次点击：自动完成类目、AI 文案、草稿刷新和提交前预检",
       }),
     });
+    assertBinding();
     showResponse(result);
     await loadAutoListJobs();
+    assertBinding();
     await loadWorkflowRuns();
+    assertBinding();
     const refreshedRun = currentListingWorkflowRun();
     const refreshedJob = currentListingAutoListJob(refreshedRun);
     const resultBoundToOriginal = bindingMatches()
@@ -2644,7 +2705,7 @@ async function runListingAutoCompletion({ run = null, job = null, productSource 
     if (error?.code === "SELLER_INPUT_REQUIRED" && error.selector) focusSelector = error.selector;
     toast(error.message || "自动处理未完成；已停在安全状态，可直接重试。", "error");
   } finally {
-    state.listingAutoCompletionInFlight.delete(jobId);
+    state.listingAutoCompletionInFlight.delete(completionKey);
     setBusy(button, false);
     if (preserveSellerInputs && button) button.textContent = originalButtonText;
     else renderListingSellerTaskSummary();

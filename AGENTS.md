@@ -32,6 +32,7 @@ Read these before substantial Ozon ERP changes:
 - 1688 采集行数不能直接当作唯一 SKU 数。进入草稿前必须按来源 `skuId/sourceSkuId` 归一化，重复行优先保留字段更完整的版本，同时记录 raw/unique/duplicate 计数；不得把同一来源 SKU 生成多个 Ozon Offer。
 - 媒体 `evidenceRef` 的 snapshot hash 必须严格等于当前 1688 `sourceEvidence.snapshotHash`；即使存在带 actor/时间戳的显式人工审批，跨快照媒体也必须保持 `needs_confirmation`。
 - `categoryEvidenceRequired` 时，tree/attributes 回执必须同时具备且严格匹配预期 `storeId` 与 `environmentRefHash`；attributes 还必须具备并匹配当前 category `cacheKey`，缺失字段不可按旧兼容路径放行。
+- 当前店铺类目字典必须两阶段读取：先用本次 server-observed attributes 推导必填且有字典的 attribute IDs，再执行 hash 绑定的字典计划；不得依赖跨店铺旧缓存预先提供 IDs。两阶段间属性范围变化、`has_next=true` 或任一端点失败都保持 partial；普通页面渲染不得静默发起该真实读取，只能由商品“一键自动完成”动作统一触发。
 - 库存写入成功响应必须保留 server-observed 写后回查时间与精确 `(offer_id, warehouse_id)` scope；前端不能只显示“已接受/已触发回查”，必须显示 exact tuple 已核对的结果。
 - FBS 回执摘要查询必须同时绑定当前 `environment` 与 `storeId`；缺少任一范围时 fail-closed，不得跨 local/staging 或跨店铺返回最近回执。
 - 活动商品前端的“当前价”只能来自 `current_price/currentPrice/price`；`old_price` 是划线原价，缺失当前价时必须显示未知，不得用于活动降幅或经营结论。

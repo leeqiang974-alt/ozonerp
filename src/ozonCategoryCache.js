@@ -7,6 +7,7 @@ const DATA_DIR = path.join(process.cwd(), "data");
 // Ozon evidence.  The default is deliberately conservative but configurable
 // for operators who have a documented refresh cadence.
 const DEFAULT_CACHE_MAX_AGE_MS = 30 * 24 * 60 * 60 * 1000;
+const categoryMutationChains = new Map();
 function categoryCacheFile() {
   return process.env.OZON_CATEGORY_CACHE_FILE || path.join(DATA_DIR, "ozon-category-cache.json");
 }
@@ -20,11 +21,60 @@ export async function loadCategoryCache() {
 }
 
 export async function saveCategoryCache(cache) {
+  return mutateCategoryCache(() => cache);
+}
+
+async function writeCategoryCacheUnlocked(cache) {
   const file = categoryCacheFile();
   await mkdir(path.dirname(file), { recursive: true });
   const tmp = `${file}.tmp.${Date.now()}.${Math.random().toString(36).slice(2)}`;
   await writeFile(tmp, JSON.stringify(normalizeCategoryCache(cache), null, 2), "utf8");
   await renameFile(tmp, file);
+}
+
+async function withCategoryCacheFileLock(file, operation, { timeoutMs = 30000, staleMs = 120000 } = {}) {
+  const { open, rm, stat } = await import("node:fs/promises");
+  const lockFile = `${file}.lock`;
+  const started = Date.now();
+  await mkdir(path.dirname(lockFile), { recursive: true });
+  let handle = null;
+  while (!handle) {
+    try {
+      handle = await open(lockFile, "wx");
+      await handle.writeFile(JSON.stringify({ pid: process.pid, acquiredAt: new Date().toISOString() }));
+    } catch (error) {
+      if (error?.code !== "EEXIST" || Date.now() - started >= timeoutMs) {
+        const lockError = new Error("category cache lock unavailable");
+        lockError.code = error?.code === "EEXIST" ? "CATEGORY_CACHE_LOCK_TIMEOUT" : error?.code;
+        throw lockError;
+      }
+      try {
+        const info = await stat(lockFile);
+        if (Date.now() - info.mtimeMs > staleMs) await rm(lockFile, { force: true });
+      } catch { /* another writer may release between stat and remove */ }
+      await new Promise((resolve) => setTimeout(resolve, 25));
+    }
+  }
+  try {
+    return await operation();
+  } finally {
+    await handle.close().catch(() => {});
+    await rm(lockFile, { force: true }).catch(() => {});
+  }
+}
+
+export function mutateCategoryCache(operation) {
+  const file = categoryCacheFile();
+  const previous = categoryMutationChains.get(file) || Promise.resolve();
+  const next = previous.catch(() => {}).then(() => withCategoryCacheFileLock(file, async () => {
+    const current = await loadCategoryCache();
+    const result = await operation(current);
+    const updated = normalizeCategoryCache(result && typeof result === "object" ? result : current);
+    await writeCategoryCacheUnlocked(updated);
+    return updated;
+  }));
+  categoryMutationChains.set(file, next.catch(() => {}));
+  return next;
 }
 
 /**
@@ -77,34 +127,32 @@ export async function upsertAttributeValuesCache({
   values = [],
   operationEvidence = null,
 } = {}) {
-  const cache = await loadCategoryCache();
   const key = attributeValueCacheKey({ descriptionCategoryId, typeId, attributeId, language });
   const updatedAt = new Date().toISOString();
-  const next = {
-    ...cache,
-    updatedAt: cache.updatedAt || updatedAt,
-    storeId: storeId || cache.storeId || "",
-    attributeValues: {
-      ...(cache.attributeValues || {}),
-      [key]: {
-        storeId: storeId || cache.storeId || "",
-        descriptionCategoryId: Number(descriptionCategoryId || 0),
-        typeId: Number(typeId || 0),
-        attributeId: Number(attributeId || 0),
-        language: String(language || "ZH_HANS"),
-        updatedAt,
-        values: Array.isArray(values) ? values : [],
-      },
-    },
-    categoryReadEvidence: {
-      ...(cache.categoryReadEvidence || {}),
+  const next = await mutateCategoryCache((cache) => ({
+      ...cache,
+      updatedAt: cache.updatedAt || updatedAt,
+      storeId: storeId || cache.storeId || "",
       attributeValues: {
-        ...(cache.categoryReadEvidence?.attributeValues || {}),
-        ...(operationEvidence ? { [key]: operationEvidence } : {}),
+        ...(cache.attributeValues || {}),
+        [key]: {
+          storeId: storeId || cache.storeId || "",
+          descriptionCategoryId: Number(descriptionCategoryId || 0),
+          typeId: Number(typeId || 0),
+          attributeId: Number(attributeId || 0),
+          language: String(language || "ZH_HANS"),
+          updatedAt,
+          values: Array.isArray(values) ? values : [],
+        },
       },
-    },
-  };
-  await saveCategoryCache(next);
+      categoryReadEvidence: {
+        ...(cache.categoryReadEvidence || {}),
+        attributeValues: {
+          ...(cache.categoryReadEvidence?.attributeValues || {}),
+          ...(operationEvidence ? { [key]: operationEvidence } : {}),
+        },
+      },
+    }));
   return next.attributeValues[key];
 }
 

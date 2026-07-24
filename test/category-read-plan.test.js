@@ -4,10 +4,15 @@ import fs from "node:fs/promises";
 import path from "node:path";
 import {
   CATEGORY_READ_ENDPOINTS,
+  buildCategoryReadContinuationPlan,
   buildCategoryReadPlanBinding,
   buildCategoryReadPlanSummary,
   buildCategoryReadRequests,
+  classifyCategoryMetadataResponse,
   classifyCategoryValuesResponse,
+  requiredDictionaryAttributeIds,
+  summarizeCategoryReadObservations,
+  validateCategoryReadAttributeScope,
   validateCategoryReadPlan,
   validateCategoryReadPlanBinding,
 } from "../src/categoryReadPlan.js";
@@ -50,6 +55,49 @@ test("category read plan requires real category/type/attribute parameters", () =
   assert.ok(result.errors.some((item) => item.code === "CATEGORY_READ_ATTRIBUTE_REQUIRED"));
 });
 
+test("metadata phase can read current-store tree and attributes before dictionary ids are known", () => {
+  const metadataPlan = { ...plan, phase: "metadata", attributeIds: [] };
+  const validation = validateCategoryReadPlan(metadataPlan);
+  const result = buildCategoryReadRequests(metadataPlan);
+
+  assert.equal(validation.ok, true);
+  assert.equal(validation.phase, "metadata");
+  assert.deepEqual(result.requests.map((item) => item.key), ["tree", "attributes"]);
+  assert.notEqual(buildCategoryReadPlanBinding(metadataPlan), buildCategoryReadPlanBinding(plan));
+});
+
+test("required dictionary ids are derived from current attribute evidence only", () => {
+  const attributes = [
+    { id: 85, is_required: true, dictionary_id: 28732849 },
+    { id: 9163, is_required: true, dictionary_id: 320 },
+    { id: 9048, is_required: true, dictionary_id: 0 },
+    { id: 8229, is_required: true, dictionary_id: 1960 },
+    { id: 9048, is_required: false, dictionary_id: 99 },
+    { id: 85, is_required: true, dictionary_id: 28732849 },
+  ];
+  assert.deepEqual(requiredDictionaryAttributeIds(attributes), [85, 9163, 8229]);
+  assert.deepEqual(buildCategoryReadContinuationPlan(
+    { ...plan, phase: "metadata", attributeIds: [], untrusted: "drop-me", store: { id: plan.store.id, apiKey: "drop-me" } },
+    attributes,
+  )?.attributeIds, [85, 9163, 8229]);
+  assert.deepEqual(Object.keys(buildCategoryReadContinuationPlan(
+    { ...plan, phase: "metadata", attributeIds: [], untrusted: "drop-me" },
+    attributes,
+  )).sort(), ["attributeIds", "descriptionCategoryId", "environment", "language", "phase", "store", "typeId"]);
+  assert.equal(buildCategoryReadContinuationPlan(
+    { ...plan, phase: "metadata", attributeIds: [] },
+    [{ id: 9048, is_required: true, dictionary_id: 0 }],
+  ), null);
+  assert.equal(validateCategoryReadAttributeScope(
+    { ...plan, phase: "complete", attributeIds: [85, 9163, 8229] },
+    attributes,
+  ).ok, true);
+  assert.equal(validateCategoryReadAttributeScope(
+    { ...plan, phase: "complete", attributeIds: [85, 8229] },
+    attributes,
+  ).ok, false);
+});
+
 test("category read plan binding is stable and excludes credentials", () => {
   const binding = buildCategoryReadPlanBinding(plan);
   assert.match(binding, /^sha256:[a-f0-9]{64}$/);
@@ -79,4 +127,36 @@ test("dictionary value pages with has_next remain partial evidence", () => {
   });
   assert.equal(classifyCategoryValuesResponse({ result: [], has_next: false }).status, "completed");
   assert.equal(classifyCategoryValuesResponse({ result: { items: [] } }).status, "unknown");
+});
+
+test("tree and attributes require a recognized array envelope", () => {
+  assert.deepEqual(classifyCategoryMetadataResponse({ result: [] }), {
+    recognized: true,
+    status: "success",
+  });
+  assert.deepEqual(classifyCategoryMetadataResponse({ result: { items: [] } }), {
+    recognized: false,
+    status: "unknown",
+  });
+  assert.equal(classifyCategoryMetadataResponse({}).status, "unknown");
+});
+
+test("completed dictionary observations count as successful category evidence", () => {
+  assert.deepEqual(summarizeCategoryReadObservations([
+    { key: "tree", status: "success" },
+    { key: "attributes", status: "success" },
+    { key: "values", status: "completed" },
+  ]), {
+    complete: true,
+    status: "completed",
+    failures: [],
+  });
+
+  const partial = summarizeCategoryReadObservations([
+    { key: "tree", status: "success" },
+    { key: "values", status: "partial" },
+  ]);
+  assert.equal(partial.complete, false);
+  assert.equal(partial.status, "partial");
+  assert.equal(partial.failures.length, 1);
 });

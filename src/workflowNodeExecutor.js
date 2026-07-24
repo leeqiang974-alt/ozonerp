@@ -138,6 +138,7 @@ export async function continueWorkflowNode(runId, nodeKey, body = {}, deps = {})
     const rerunAutoListingMatch = requireDep(deps, "rerunAutoListingMatch");
     result = await rerunAutoListingMatch(run.entity.autoListingJobId, {
       expectedBinding: body.expectedBinding,
+      expectedEnvironment: body.environment,
     });
     actions.push("match_profit_rerun");
   } else if (key === "content_generate" && run.entity?.autoListingJobId) {
@@ -146,6 +147,7 @@ export async function continueWorkflowNode(runId, nodeKey, body = {}, deps = {})
     const rerunAutoListingContent = requireDep(deps, "rerunAutoListingContent");
     result = await rerunAutoListingContent(run.entity.autoListingJobId, {
       expectedBinding: body.expectedBinding,
+      expectedEnvironment: body.environment,
     });
     actions.push("content_generate_rerun");
   } else {
@@ -251,6 +253,7 @@ export async function runControlledWorkflowChain(runId, body = {}, deps = {}) {
       confirmPaidAi: body.confirmPaidAi,
       confirmation: body.confirmation,
       expectedBinding: body.expectedBinding,
+      environment: body.environment,
     }, deps);
     steps.push({ node: key, ...step });
     if (step.ok === false || !step.supported || step.result?.ok === false) break;

@@ -59,7 +59,7 @@ npm.cmd run offline-acceptance
 | R05 | 套装 | 待填 | 待填 | 未开始 | 未开始 | 未开始 | `configuration_declared` |  |
 | R06 | 缺尺重后人工补录 | 待填 | 待填 | 未开始 | 未开始 | 未开始 | `configuration_declared` |  |
 | R07 | 人机验证暂停/恢复 | 待填 | 待填 | 不得提交 | 未开始 | 未开始 | `locally_tested_fixture` |  |
-| R08 | 佣金读取失败恢复 | 待填 | 待填 | 未开始 | 未开始 | 未开始 | `configuration_declared` |  |
+| R08 | 佣金读取失败恢复 | 本地实现精确类目同店学习、分页/冲突/会话/环境/并发变化 fail-closed | 待真实 signed-session 回放 | 不得提交 | 未开始 | 未开始 | `locally_tested` | 1346/1346；独立复审 Ready；真实读取因当前 ERP signed session 未建立而未执行 |
 | R09 | 审核失败字段修复 | 待填 | 待填 | 未开始 | 未开始 | 未开始 | `configuration_declared` |  |
 | R10 | 写后库存回查 | 待填 | 待填 | 未开始 | 未开始 | 未开始 | `configuration_declared` |  |
 

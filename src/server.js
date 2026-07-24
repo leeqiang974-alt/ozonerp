@@ -10,6 +10,8 @@ import { FbsEvidenceReceiptRepository, buildFbsReceiptSellerView } from "./fbsEv
 import { defaultFbsDateRange, ozonGetRequest, ozonRequest } from "./ozon.js";
 import { DEFAULT_API_FILE, getStore, loadStores, publicStore } from "./config.js";
 import { calculateOzonPrice, RMB_SHIPPING_LEVELS } from "./pricing.js";
+
+const sellerReadRequest = ozonRequest;
 import { buildActivityReadSellerResult, buildPromotionImpactPreview } from "./activityReadModel.js";
 import { buildFinanceDomainReadModel } from "./financeReadModel.js";
 import { fetch1688Html, normalizeManualCapturePayload, parse1688Product } from "./collector1688.js";
@@ -109,6 +111,7 @@ import {
   saveManualSellerInputs,
   saveManualProcurementEvidence,
   saveManualPackageEvidence,
+  saveLearnedCommissionEvidence,
   listAutoListingJobs,
   getAutoListingJob,
   getAutoListingJobSnapshot,
@@ -120,6 +123,7 @@ import {
   completeListing,
   rerunAutoListingMatch,
   rerunAutoListingContent,
+  validatePaidAiJobBinding,
   validatePaidAiPayloadDraftCurrent,
   claimPaidAiSubmissionFence,
   validatePaidAiSubmissionFence,
@@ -144,6 +148,7 @@ import { buildDiskSpaceCheck } from "./diskSpaceCheck.js";
 import { buildApiEvidenceSummary } from "./apiEvidence.js";
 import { buildOperationEvidenceRecord } from "./apiEvidence.js";
 import { buildProductReadEvidence } from "./productReadModel.js";
+import { evaluateProductListPageCoverage, summarizeLearnedCommissionEvidence, validateExactProductRows } from "./commissionEvidence.js";
 import { buildReadEndpointRequest, extractBoundedProductIdentifiers, orderReadEndpoints } from "./readEndpointRequest.js";
 import { reconcilePriceWriteReadback, validatePriceWritePreflight } from "./priceWriteGate.js";
 import {
@@ -2329,7 +2334,16 @@ app.post("/api/workflows/:id/nodes/:key/manual-fix-retry", asyncRoute(async (req
 }));
 
 app.post("/api/workflows/:id/nodes/:key/continue", asyncRoute(async (req, res) => {
-  res.json(await continueWorkflowNode(req.params.id, req.params.key, parseBody(req.body), {
+  const body = parseBody(req.body);
+  if (["match_profit", "content_generate"].includes(String(req.params.key || ""))) {
+    const session = controlledReadSessionBlock(req, body.environment);
+    if (!session.allowed) {
+      res.status(403).json({ ok: false, reasonCode: session.reasonCode, error: session.message, paidAiCalled: false });
+      return;
+    }
+    body.environment = session.sessionEnvironment;
+  }
+  res.json(await continueWorkflowNode(req.params.id, req.params.key, body, {
     getWorkflowRun,
     updateCrawlerTaskStatus,
     validatePayloadDraft,
@@ -2343,7 +2357,14 @@ app.post("/api/workflows/:id/nodes/:key/continue", asyncRoute(async (req, res) =
 }));
 
 app.post("/api/workflows/:id/controlled-chain", asyncRoute(async (req, res) => {
-  res.json(await runControlledWorkflowChain(req.params.id, parseBody(req.body), {
+  const body = parseBody(req.body);
+  const session = controlledReadSessionBlock(req, body.environment);
+  if (!session.allowed) {
+    res.status(403).json({ ok: false, reasonCode: session.reasonCode, error: session.message, paidAiCalled: false });
+    return;
+  }
+  body.environment = session.sessionEnvironment;
+  res.json(await runControlledWorkflowChain(req.params.id, body, {
     getWorkflowRun,
     updateCrawlerTaskStatus,
     validatePayloadDraft,
@@ -2740,6 +2761,217 @@ app.post("/api/ozon-learning/auto-list-jobs/:id/manual-seller-inputs", asyncRout
   res.json({
     ...result,
     sideEffect: "原子保存当前商品表单中的商品内容（俄文兜底）、采购和包装资料；未调用 Ozon、未调用付费 AI、未提交商品。",
+  });
+}));
+
+async function readSameStoreCommissionEvidence({ job = {}, environment = "" } = {}) {
+  const store = getStore(String(job.storeId || ""));
+  if (!store) throw Object.assign(new Error("当前商品绑定的店铺不存在。"), { reasonCode: "COMMISSION_STORE_REQUIRED" });
+  const maxPages = 20;
+  const maxProducts = 5000;
+  const pageLimit = 1000;
+  const listResponses = [];
+  let productIds = [];
+  const seenCursors = new Set();
+  let lastId = "";
+  let coverageComplete = false;
+  let stopReason = "";
+  for (let page = 0; page < maxPages; page += 1) {
+    const contract = buildReadEndpointRequest("/v3/product/list", {
+      visibility: "ALL",
+      limit: pageLimit,
+      lastId,
+    });
+    if (!contract.ok) throw Object.assign(new Error(contract.message), { reasonCode: contract.reasonCode });
+    const response = await sellerReadRequest(store, contract.endpoint, contract.body);
+    const container = response?.result && typeof response.result === "object" ? response.result : response;
+    if (!container || !Array.isArray(container.items)) {
+      throw Object.assign(new Error("商品列表响应结构无法识别。"), { reasonCode: "COMMISSION_PRODUCT_LIST_RESPONSE_UNKNOWN" });
+    }
+    listResponses.push(response);
+    const nextCursor = String(container.last_id || response?.last_id || "").trim();
+    const pageCoverage = evaluateProductListPageCoverage({
+      seenIds: productIds,
+      rows: container.items,
+      nextCursor,
+      total: container.total ?? response?.total,
+    });
+    if (!pageCoverage.ok) {
+      stopReason = pageCoverage.reasonCode;
+      break;
+    }
+    productIds = pageCoverage.combinedIds;
+    if (productIds.length > maxProducts) {
+      stopReason = "COMMISSION_PRODUCT_SCOPE_TOO_LARGE";
+      break;
+    }
+    if (pageCoverage.complete) {
+      coverageComplete = true;
+      break;
+    }
+    if (seenCursors.has(pageCoverage.nextCursor)) {
+      stopReason = "COMMISSION_PRODUCT_LIST_CURSOR_REPEATED";
+      break;
+    }
+    seenCursors.add(pageCoverage.nextCursor);
+    lastId = pageCoverage.nextCursor;
+  }
+  if (!coverageComplete) {
+    return {
+      ok: false,
+      reasonCode: stopReason || "COMMISSION_READ_COVERAGE_INCOMPLETE",
+      coverage: {
+        complete: false,
+        pageCount: listResponses.length,
+        productCount: productIds.length,
+        detailCount: 0,
+      },
+    };
+  }
+  const detailResponses = [];
+  const productDetails = [];
+  const priceResponses = [];
+  const priceDetails = [];
+  for (let index = 0; index < productIds.length; index += 100) {
+    const batch = productIds.slice(index, index + 100);
+    const contract = buildReadEndpointRequest("/v3/product/info/list", { productIds: batch });
+    if (!contract.ok) throw Object.assign(new Error(contract.message), { reasonCode: contract.reasonCode });
+    const response = await sellerReadRequest(store, contract.endpoint, contract.body);
+    const container = response?.result && typeof response.result === "object" ? response.result : response;
+    if (!container || !Array.isArray(container.items)) {
+      throw Object.assign(new Error("商品详情响应结构无法识别。"), { reasonCode: "COMMISSION_PRODUCT_DETAIL_RESPONSE_UNKNOWN" });
+    }
+    const detailCoverage = validateExactProductRows({ requestedIds: batch, rows: container.items });
+    if (!detailCoverage.ok) {
+      throw Object.assign(new Error("商品详情与请求 product_id 范围不一致。"), { reasonCode: detailCoverage.reasonCode });
+    }
+    detailResponses.push(response);
+    productDetails.push(...container.items);
+    const priceContract = buildReadEndpointRequest("/v5/product/info/prices", {
+      productIds: batch,
+      limit: batch.length,
+      cursor: "",
+    });
+    if (!priceContract.ok) throw Object.assign(new Error(priceContract.message), { reasonCode: priceContract.reasonCode });
+    const priceResponse = await sellerReadRequest(store, priceContract.endpoint, priceContract.body);
+    const priceContainer = priceResponse?.result && typeof priceResponse.result === "object"
+      ? priceResponse.result
+      : priceResponse;
+    if (!priceContainer || !Array.isArray(priceContainer.items)) {
+      throw Object.assign(new Error("商品价格响应结构无法识别。"), { reasonCode: "COMMISSION_PRODUCT_PRICE_RESPONSE_UNKNOWN" });
+    }
+    const priceCoverage = validateExactProductRows({
+      requestedIds: batch,
+      rows: priceContainer.items,
+      cursor: priceContainer.cursor ?? priceResponse?.cursor,
+      total: priceContainer.total ?? priceResponse?.total,
+    });
+    if (!priceCoverage.ok) {
+      throw Object.assign(new Error("商品价格/佣金与请求 product_id 范围不一致。"), { reasonCode: priceCoverage.reasonCode });
+    }
+    priceResponses.push(priceResponse);
+    priceDetails.push(...priceContainer.items);
+  }
+  const checkedAt = new Date().toISOString();
+  const operationEvidence = [
+    buildOperationEvidenceRecord({
+      operationPath: "/v3/product/list",
+      checkedAt,
+      statusCode: 200,
+      response: { pages: listResponses },
+      verificationLevel: "server_observed",
+      source: "same-store-category-commission",
+    }),
+    ...(productIds.length ? [buildOperationEvidenceRecord({
+      operationPath: "/v3/product/info/list",
+      checkedAt,
+      statusCode: 200,
+      response: { batches: detailResponses },
+      verificationLevel: "server_observed",
+      source: "same-store-category-commission",
+    })] : []),
+    ...(productIds.length ? [buildOperationEvidenceRecord({
+      operationPath: "/v5/product/info/prices",
+      checkedAt,
+      statusCode: 200,
+      response: { batches: priceResponses },
+      verificationLevel: "server_observed",
+      source: "same-store-category-commission",
+    })] : []),
+  ];
+  return summarizeLearnedCommissionEvidence({
+    job,
+    environment,
+    checkedAt,
+    coverage: {
+      complete: true,
+      pageCount: listResponses.length,
+      productCount: productIds.length,
+      detailCount: productDetails.length,
+      priceCount: priceDetails.length,
+    },
+    operationEvidence,
+    productDetails,
+    priceDetails,
+  });
+}
+
+app.post("/api/ozon-learning/auto-list-jobs/:id/commission-evidence/read", asyncRoute(async (req, res) => {
+  const body = parseBody(req.body);
+  if (!requireControlledSellerRead(req, res, body)) return;
+  const job = await getScopedAutoListingJob(req.params.id, req);
+  if (!job) {
+    res.status(404).json({ ok: false, reasonCode: "AUTO_LISTING_JOB_NOT_FOUND", error: "未找到当前商品任务。" });
+    return;
+  }
+  if (String(body.storeId || "") !== String(job.storeId || "")) {
+    res.status(409).json({ ok: false, reasonCode: "COMMISSION_STORE_SCOPE_STALE", error: "当前商品和读取店铺不一致，系统未读取佣金。" });
+    return;
+  }
+  const binding = validatePaidAiJobBinding(job, body.expectedBinding);
+  if (!binding.ok) {
+    res.status(409).json({
+      ...binding,
+      sideEffect: "仅校验当前商品绑定；未调用 Seller API、未调用 AI、未提交商品。",
+    });
+    return;
+  }
+  let learned;
+  try {
+    learned = await readSameStoreCommissionEvidence({
+      job,
+      environment: String(body.environment || ""),
+    });
+  } catch (error) {
+    res.status(502).json({
+      ok: false,
+      reasonCode: error.reasonCode || "COMMISSION_SELLER_READ_FAILED",
+      error: "当前店铺同类商品佣金读取失败；系统已在付费 AI 之前停止。",
+      sideEffect: "仅尝试 Seller API 只读商品列表和详情；未调用 AI、未调用 Ozon 写接口、未提交商品。",
+    });
+    return;
+  }
+  if (!learned.ok) {
+    res.status(409).json({
+      ...learned,
+      error: "当前店铺暂时没有一致、完整的同类商品佣金证据，系统已在付费 AI 之前停止。",
+      sideEffect: "仅完成 Seller API 只读核对；未调用 AI、未调用 Ozon 写接口、未提交商品。",
+    });
+    return;
+  }
+  const saved = await saveLearnedCommissionEvidence(req.params.id, {
+    ...learned,
+    expectedBinding: body.expectedBinding,
+  });
+  if (!saved.ok) {
+    res.status(409).json(saved);
+    return;
+  }
+  res.json({
+    ok: true,
+    pricingPreview: saved.pricingPreview,
+    commissionSource: saved.commissionSource,
+    sideEffect: "已用当前店铺同类商品佣金自动刷新本地定价；未调用 AI、未调用 Ozon 写接口、未提交商品。",
   });
 }));
 

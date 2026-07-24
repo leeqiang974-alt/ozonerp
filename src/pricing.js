@@ -254,6 +254,11 @@ function normalizeCommissionSource(source, commissionRate) {
       effectiveTo: String(source.effectiveTo || ""),
       evidenceRef: String(source.evidenceRef || ""),
       verificationLevel: String(source.verificationLevel || ""),
+      sampleCount: Number(source.sampleCount || 0) || "",
+      coverageComplete: source.coverageComplete === true ? true : "",
+      storeId: String(source.storeId || ""),
+      environment: String(source.environment || ""),
+      sourceSnapshotHash: String(source.sourceSnapshotHash || ""),
     });
   }
   return {

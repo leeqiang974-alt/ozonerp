@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { applyManualSellerInputsToJob, buildListingPayloadDraftFromJob, buildPaidAiContentReceipt, categoryCacheForListingEvidence, categoryReadPolicyForListing, contentGenerationContextForJob, paidAiJobBinding, reusablePaidAiContentReceipt, sourceEvidenceBindingForListing, sourcePriceCnyForListingJob, sourceVariantsForListing, validatePaidAiJobBinding } from "../src/autoListing.js";
+import { applyManualSellerInputsToJob, buildListingPayloadDraftFromJob, buildPaidAiContentReceipt, categoryCacheForListingEvidence, categoryReadPolicyForListing, contentGenerationContextForJob, paidAiJobBinding, reusablePaidAiContentReceipt, sourceEvidenceBindingForListing, sourcePriceCnyForListingJob, sourceVariantsForListing, validatePaidAiJobBinding, validateTrustedCommissionEvidenceForJob } from "../src/autoListing.js";
 import {
   buildRequiredAttributeManualBacklog,
   buildRequiredAttributeApprovalDraftPreview,
@@ -983,7 +983,7 @@ test("buildListingPayloadDraftFromJob rejects PDD package evidence without trust
   }), /可信尺重来源/);
 });
 
-test("buildListingPayloadDraftFromJob marks learned Ozon commission source", () => {
+test("unbound legacy product commission cannot pass as trusted learned evidence", () => {
   const draft = buildListingPayloadDraftFromJob({
     pendingParentSku: "SKUlq01000",
     ozonTitle: "Органайзер для кухни",
@@ -1013,8 +1013,111 @@ test("buildListingPayloadDraftFromJob marks learned Ozon commission source", () 
     },
   });
 
-  assert.equal(draft.summary.pricingDiagnosis.commissionRate, 0.18);
-  assert.equal(draft.summary.pricingDiagnosis.commissionSource.source, "learned_product");
+  assert.equal(draft.summary.pricingDiagnosis.commissionRate, 0.15);
+  assert.equal(draft.summary.pricingDiagnosis.commissionSource.source, "manual_default");
+  assert.equal(draft.summary.pricingDiagnosis.commissionSource.confidence, "low");
+});
+
+test("exact learned commission evidence remains attached to the payload pricing diagnosis", () => {
+  const snapshotHash = `sha256:${"d".repeat(64)}`;
+  const evidenceRef = `sha256:${"e".repeat(64)}`;
+  const draft = buildListingPayloadDraftFromJob({
+    pendingParentSku: "SKUlq01000e",
+    storeId: "store-1",
+    ozonTitle: "Органайзер для кухни",
+    commissions: [{ sale_schema: "FBS", percent: 18 }],
+    commissionEvidence: {
+      commissionSource: {
+        source: "learned_product",
+        label: "当前店铺同类已上架商品学习",
+        confidence: "medium",
+        categoryKey: "17028673:95183",
+        sampleCount: 2,
+        coverageComplete: true,
+        evidenceRef,
+        updatedAt: "2026-07-24T08:00:00.000Z",
+        storeId: "store-1",
+        environment: "local",
+        sourceSnapshotHash: snapshotHash,
+      },
+    },
+    listingContent: {
+      title_ru: "Органайзер для кухни",
+      description_ru: "Практичный органайзер для хранения.",
+    },
+    visualCard: { url: "https://example.com/cover.jpg" },
+    bestMatch: {
+      candidateTitle: "厨房收纳盒",
+      candidateUrl: "https://detail.1688.com/offer/2.html",
+      purchasePriceCny: 20,
+    },
+    candidateData: {
+      sourceEvidence: {
+        platform: "1688",
+        verificationState: "ok",
+        snapshotHash,
+        fields: {
+          package: {
+            source: "page_content",
+            evidenceRef: `snapshot:${"d".repeat(64)}`,
+            values: { weightG: 700, lengthMm: 220, widthMm: 160, heightMm: 80 },
+          },
+        },
+      },
+      images: ["https://example.com/a.jpg", "https://example.com/b.jpg", "https://example.com/c.jpg"],
+      sizeWeight: {
+        weightG: 700,
+        lengthMm: 220,
+        widthMm: 160,
+        heightMm: 80,
+      },
+      skuVariants: [],
+    },
+  }, {
+    categoryMatch: {
+      description_category_id: 17028673,
+      type_id: 95183,
+      path: "Дом / Кухня",
+    },
+  });
+
+  assert.equal(draft.summary.pricingDiagnosis.commissionSource.evidenceRef, evidenceRef);
+  assert.equal(draft.summary.pricingDiagnosis.commissionSource.coverageComplete, true);
+  assert.equal(draft.summary.pricingDiagnosis.commissionSource.sampleCount, 2);
+});
+
+test("trusted commission gate rejects stale category snapshot and environment", () => {
+  const snapshotHash = `sha256:${"d".repeat(64)}`;
+  const base = {
+    storeId: "store-1",
+    autoCategory: { description_category_id: 17028673, type_id: 95183 },
+    candidateData: { sourceEvidence: { snapshotHash } },
+    commissions: [{ sale_schema: "FBS", percent: 18 }],
+    commissionEvidence: {
+      commissionSource: {
+        source: "learned_product",
+        confidence: "medium",
+        categoryKey: "17028673:95183",
+        sampleCount: 2,
+        coverageComplete: true,
+        evidenceRef: `sha256:${"e".repeat(64)}`,
+        updatedAt: "2026-07-24T08:00:00.000Z",
+        storeId: "store-1",
+        environment: "local",
+        sourceSnapshotHash: snapshotHash,
+      },
+    },
+  };
+  assert.equal(validateTrustedCommissionEvidenceForJob(base, null, "local").ok, true);
+  assert.equal(validateTrustedCommissionEvidenceForJob({
+    ...base,
+    autoCategory: { description_category_id: 999, type_id: 95183 },
+  }, null, "local").ok, false);
+  assert.equal(validateTrustedCommissionEvidenceForJob({
+    ...base,
+    candidateData: { sourceEvidence: { snapshotHash: `sha256:${"f".repeat(64)}` } },
+  }, null, "local").ok, false);
+  assert.equal(validateTrustedCommissionEvidenceForJob(base, null, "staging").ok, false);
 });
 
 test("buildListingPayloadDraftFromJob autofills no-brand and China from current category dictionaries", () => {

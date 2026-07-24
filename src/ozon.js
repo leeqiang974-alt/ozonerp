@@ -23,6 +23,7 @@ export const RETRY_SAFE_POST_READ_ENDPOINTS = new Set([
   "/v3/product/list",
   "/v3/product/info/list",
   "/v4/product/info/prices",
+  "/v5/product/info/prices",
   "/v4/product/info/stocks",
   "/v1/actions/products",
   "/v1/actions/candidates",

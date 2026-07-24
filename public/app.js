@@ -2669,10 +2669,48 @@ async function runListingAutoCompletion({ run = null, job = null, productSource 
       throw new Error("当前店铺类目证据尚未同步成功，已在调用 AI 前停止。");
     }
     assertBinding();
+    if (categorySynced) {
+      await loadAutoListJobs();
+      assertBinding();
+      await loadWorkflowRuns();
+      assertBinding();
+    }
+    const commissionJob = currentListingAutoListJob(currentListingWorkflowRun()) || job;
+    const commissionSource = commissionJob?.pricingPreview?.commissionSource || {};
+    const commissionEvidenceReady = commissionSource.source === "learned_product"
+      && commissionSource.confidence === "medium"
+      && commissionSource.coverageComplete === true
+      && /^sha256:[a-f0-9]{64}$/i.test(String(commissionSource.evidenceRef || ""))
+      && Boolean(String(commissionSource.updatedAt || "").trim())
+      && String(commissionSource.storeId || "") === storeId
+      && String(commissionSource.environment || "") === environment
+      && String(commissionSource.sourceSnapshotHash || "") === sourceSnapshotHash;
+    if (!commissionEvidenceReady) {
+      await api(`/api/ozon-learning/auto-list-jobs/${encodeURIComponent(jobId)}/commission-evidence/read`, {
+        method: "POST",
+        body: JSON.stringify({
+          storeId,
+          environment,
+          expectedBinding: {
+            workflowRunId: runId,
+            autoListingJobId: jobId,
+            captureId,
+            storeId,
+            sourceSnapshotHash,
+          },
+        }),
+      });
+      assertBinding();
+      await loadAutoListJobs();
+      assertBinding();
+      await loadWorkflowRuns();
+      assertBinding();
+    }
     const result = await api(`/api/workflows/${encodeURIComponent(runId)}/controlled-chain`, {
       method: "POST",
       body: JSON.stringify({
         startNode: "content_generate",
+        environment,
         note: "卖家一次点击：自动完成类目、AI 文案、草稿刷新和提交前预检",
         confirmPaidAi: true,
         confirmation: "I_CONFIRM_PAID_AI_FOR_CURRENT_PRODUCT",
@@ -13929,6 +13967,7 @@ async function handleWorkflowAction(action, button) {
       method: "POST",
       body: JSON.stringify({
         startNode: node?.key || run.currentNode || "match_profit",
+        environment: currentSellerReadEnvironment(),
         note: "页面人工选择：受控跑到总闸",
         ...(chainIncludesPaidAi ? {
           confirmPaidAi: true,

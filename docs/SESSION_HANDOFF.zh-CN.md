@@ -1,5 +1,15 @@
 # Ozon ERP 会话接管与恢复记录
 
+## 2026-07-24 G4-S1 可信佣金在付费 AI 前自动读取
+
+- 根因：当前商品已经按 1688 SKU 价和包装证据生成本地售价，但强预检正确拒绝 `manual_default` 佣金；旧一键顺序会先进入付费 AI，随后才发现佣金阻塞。
+- 修复：一键链在 AI 前自动读取当前店铺完整 `/v3/product/list`，再按 100 个 product ID 分批用 `/v3/product/info/list` 核对精确类目，并从 `/v5/product/info/prices` 明确读取 `commissions.sales_percent_fbs`；v3 `sale_schema=standard` 不作 FBS 推断。
+- 安全门：列表最多 20 页/5000 商品；total/cursor 矛盾、缺页、重复游标、任一批次 product ID 缺失/重复/额外、无明确 FBS、无同类样本、比例冲突、店铺/环境/来源快照变化全部停止。持久化证据绑定三个端点响应 hash、完整范围、样本数、读取时间和当前商品五字段 binding，保存时再次原子重验类目/store/snapshot。
+- 服务端总闸：`rerunAutoListingMatch` 与 `rerunAutoListingContent` 在真实模型函数之前强制校验可信佣金和当前读取环境；环境只接受 signed ERP session 的权威声明。匹配在每次付费模型调用前重验，内容生成在原子 claim、lease 输入哈希和模型调用前重验；前端一键、旧高级入口、旧客户端、跨环境请求或直接 controlled-chain 请求都不能绕过。
+- 定价：证据保存后自动重算 `pricingPreview`；Payload 继续携带 `learned_product` 的 `evidenceRef/updatedAt/coverageComplete`。该来源只表示同店同类经验估算，不声称是 Ozon 官方实时类目费率；结算规则仍缺失时利润仍是 estimate。
+- 验证：扩大定向 343/343、全量 1346/1346、lint 77 files、offline acceptance 通过；独立复审结论 Ready（无 Critical/Important）。当前 ERP signed session 未建立，真实同店佣金回放尚未执行；没有调用付费 AI、Seller API 或 Ozon 写接口。
+- 下一唯一入口：先恢复与当前读取环境一致的 signed ERP session，再对 capture `c1784812672342zraqu` 运行佣金只读回放；成功后才由用户明确授权首次付费 AI，并继续到强预检。
+
 ## 2026-07-24 G4-S1 卖家直选商品不再依赖 bestMatch
 
 - 根因：当前真实商品由卖家在 1688 明确选中并采集，job 没有选品候选池产生的 `bestMatch`；旧的一键内容节点因此会在付费 AI 前停止，旧 Payload 草稿还会把采购价回退为 0。

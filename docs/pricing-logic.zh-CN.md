@@ -155,6 +155,8 @@ variant.min_price = minPriceFromPrice(variantPrice) 或 pricingPolicy 利润底�
 
 类目佣金的最低证据要求：当 `commissionSource.source = ozon_category` 时，诊断必须同时携带 `evidenceRef`（对应 Seller API 只读回执或官方资料快照）和 `updatedAt`。只有比例没有这两个字段时，使用 `PRICING_COMMISSION_EVIDENCE_UNTRACEABLE` 阻断；`learned_product` 仍只能标记为估算，不能解释为 Ozon 当前类目事实。
 
+G4-S1 的 `learned_product` 自动读取必须同时满足：signed ERP session 与当前环境/店铺一致；`/v3/product/list` 有界分页完整且游标不重复；`/v3/product/info/list` 的精确 product ID 集合用于核对 `description_category_id + type_id`；`/v5/product/info/prices` 的精确同批 product ID 集合提供明确 `commissions.sales_percent_fbs`；三个端点均完整、同类样本非空且比例无冲突。`/v3/product/info/list` 的 `sale_schema=standard` 不得解释成 FBS。落库证据绑定 `storeId + environment + categoryKey + sourceSnapshotHash + checkedAt` 和三个端点的服务端响应 hash。任一条件失败都在服务端付费 AI 总闸前停止，不使用默认 `15%` 或旧商品佣金冒充可信利润。
+
 实现边界：该演进只改变价格资料来源和诊断解释，不改变“预检 + 人工确认 + workflow lock”总闸；价格代码改动应另建测试文件，例如 `test/pricing-source.test.js`，先覆盖来源优先级、过期资料、冲突资料和 blocked 风险。
 
 ## 8. 工作流定价诊断接入
@@ -190,13 +192,15 @@ variant.min_price = minPriceFromPrice(variantPrice) 或 pricingPolicy 利润底�
 
 当前已把佣金来源接入定价诊断：
 
-1. 如果 `ozonContext.commissions` 或任务自身携带可解析的 Ozon 商品佣金字段，会使用该比例，并标记为 `learned_product` / `同类已上架商品学习`。
+1. 如果任务已经绑定当前店铺、精确类目、完整分页和当前来源快照的同类商品佣金证据，会使用该比例，并标记为 `learned_product` / `当前店铺同类已上架商品学习`；旧任务中只有商品佣金字段但没有完整证据时仍只作兼容估算，不升级为当前类目事实。
 2. 如果没有可学习佣金，继续使用 `15%`，并标记为 `manual_default` / `手填/默认佣金率`。
 3. 预留 `ozon_category` 来源，用于后续接入 Ozon 当前开放的类目真实佣金或费率接口。
 
 无论公式返回了数值，当前尚未接入 Ozon 结算/费用明细时都只能称为“估算”；没有可信佣金时 `profitStatus` 为 `unknown`，工作流保持阻塞，不能把数字当成确定利润。
 
 注意：`learned_product` 是同类商品经验学习，不能等同于 Ozon 官方类目实时佣金；工作流会显示来源和可信度，避免把兜底值误当成真实值。
+
+普通商品页的一键顺序固定为：同步当前店铺类目证据 → 自动读取并核对同类商品佣金 → 刷新本地定价 → 付费 AI 文案 → Payload 刷新 → 强预检。佣金读取发生在付费 AI 之前；佣金失败不得先产生 AI 费用再返回定价阻塞。
 
 安全边界：
 

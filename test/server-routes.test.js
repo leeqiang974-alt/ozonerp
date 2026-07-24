@@ -2161,3 +2161,33 @@ test("legacy auto-list trigger requires explicit confirmation and store binding"
   assert.match(autoListing, /createCrawlerTask\(\{[\s\S]*storeId: job\.storeId/);
   assert.match(autoListing, /listCrawlerCandidates\(\{ storeId: job\.storeId \}\)/);
 });
+
+test("same-category commission read is signed-session gated and happens before paid AI", async () => {
+  const source = await readFile(new URL("../src/server.js", import.meta.url), "utf8");
+  const start = source.indexOf('app.post("/api/ozon-learning/auto-list-jobs/:id/commission-evidence/read"');
+  const end = source.indexOf("\nasync function readAutoListingProductStatus", start);
+  const route = source.slice(start, end);
+  assert.ok(start >= 0 && end > start);
+  assert.match(route, /requireControlledSellerRead/);
+  assert.match(route, /validatePaidAiJobBinding/);
+  assert.match(route, /readSameStoreCommissionEvidence/);
+  assert.ok(route.indexOf("validatePaidAiJobBinding") < route.indexOf("readSameStoreCommissionEvidence"));
+  assert.match(route, /saveLearnedCommissionEvidence/);
+  assert.match(source, /buildReadEndpointRequest\("\/v5\/product\/info\/prices"/);
+  assert.match(source, /validateExactProductRows/);
+  assert.match(route, /未调用 AI、未调用 Ozon 写接口、未提交商品/);
+});
+
+test("paid AI workflow execution binds environment to the signed ERP session", async () => {
+  const source = await readFile(new URL("../src/server.js", import.meta.url), "utf8");
+  const continueStart = source.indexOf('app.post("/api/workflows/:id/nodes/:key/continue"');
+  const chainStart = source.indexOf('app.post("/api/workflows/:id/controlled-chain"');
+  const confirmStart = source.indexOf('app.post("/api/workflows/:id/nodes/:key/confirm-continue"', chainStart);
+  const continueRoute = source.slice(continueStart, chainStart);
+  const chainRoute = source.slice(chainStart, confirmStart);
+  assert.match(continueRoute, /controlledReadSessionBlock\(req, body\.environment\)/);
+  assert.match(continueRoute, /body\.environment = session\.sessionEnvironment/);
+  assert.match(chainRoute, /controlledReadSessionBlock\(req, body\.environment\)/);
+  assert.match(chainRoute, /body\.environment = session\.sessionEnvironment/);
+  assert.match(chainRoute, /READ_OPERATOR_SESSION_REQUIRED|session\.reasonCode/);
+});

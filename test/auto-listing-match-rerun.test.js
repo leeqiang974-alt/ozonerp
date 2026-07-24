@@ -43,6 +43,47 @@ test("paid AI reruns recheck actual job after model return and preserve source b
   assert.match(listingLlmSource, /MAX_LISTING_LLM_TIMEOUT_MS = 5 \* 60 \* 1000/);
 });
 
+test("canonical paid AI reruns require exact commission evidence and environment before model calls", async () => {
+  const content = await readFile(new URL("../src/autoListing.js", import.meta.url), "utf8");
+  const matchStart = content.indexOf("export async function rerunAutoListingMatch");
+  const matchAi = content.indexOf("selectBestMatchForOzon", matchStart);
+  const matchGate = content.indexOf("validateTrustedCommissionEvidenceForJob", matchStart);
+  assert.ok(matchGate > matchStart && matchGate < matchAi);
+  const contentStart = content.indexOf("export async function rerunAutoListingContent");
+  const contentAi = content.indexOf("generateListingContentWithLlm", contentStart);
+  const contentGate = content.indexOf("validateTrustedCommissionEvidenceForJob", contentStart);
+  assert.ok(contentGate > contentStart && contentGate < contentAi);
+  assert.match(content.slice(contentStart, contentAi), /COMMISSION_ENVIRONMENT_REQUIRED/);
+  assert.match(content.slice(matchStart, contentStart), /beforePaidAiCall/);
+  assert.match(content.slice(matchStart, contentStart), /getAutoListingJob\(jobId\)/);
+  assert.match(content.slice(contentStart, contentAi), /currentCommissionAuthorization/);
+  assert.match(content, /commissionEvidence: job\.commissionEvidence \|\| null/);
+  assert.match(content, /claimPaidAiContentWork[\s\S]*validateTrustedCommissionEvidenceForJob/);
+});
+
+test("match selector checks the current authorization immediately before each paid AI call", async () => {
+  let guardCalls = 0;
+  const result = await selectBestMatchForOzon(
+    { title: "portable fan", category: "fan", price: 1000 },
+    [{ id: "candidate_1", title: "portable fan", priceMin: 10 }],
+    {
+      aiLimit: 1,
+      beforePaidAiCall: async () => {
+        guardCalls += 1;
+        return {
+          ok: false,
+          reasonCode: "TRUSTED_COMMISSION_EVIDENCE_REQUIRED",
+          error: "commission changed",
+        };
+      },
+    },
+  );
+  assert.equal(guardCalls, 1);
+  assert.equal(result.ok, false);
+  assert.equal(result.reasonCode, "TRUSTED_COMMISSION_EVIDENCE_REQUIRED");
+  assert.equal(result.paidAiCalled, false);
+});
+
 test("paid AI candidate binding rejects the same candidate id when its snapshot changed", () => {
   const expected = {
     captureId: "capture_1",

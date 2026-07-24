@@ -29,6 +29,7 @@ import {
 import { enqueueStockJob, recordFailedStockJob, resolveWarehouseIdForStore } from "./stockQueue.js";
 import { buildVisualCardPrompt } from "./visualCardTemplate.js";
 import { prepareOzonImages } from "./imageOss.js";
+import { categoryScopeForCommission } from "./commissionEvidence.js";
 import { JobRepository } from "./jobRepository.js";
 import { mapReasonCode } from "./reasonCodes.js";
 import { trackEvent } from "./observability.js";
@@ -169,19 +170,53 @@ function defaultCommissionSource() {
   };
 }
 
+export function validateTrustedCommissionEvidenceForJob(job = {}, categoryMatch = null, expectedEnvironment = "") {
+  const category = categoryMatch ? {
+    descriptionCategoryId: Number(categoryMatch.description_category_id || categoryMatch.descriptionCategoryId || 0),
+    typeId: Number(categoryMatch.type_id || categoryMatch.typeId || 0),
+  } : categoryScopeForCommission(job);
+  const categoryKey = category?.descriptionCategoryId && category?.typeId
+    ? `${category.descriptionCategoryId}:${category.typeId}`
+    : "";
+  const source = job.commissionEvidence?.commissionSource || {};
+  const learnedRate = extractCommissionRate(job.commissions || []);
+  const exact = learnedRate > 0
+    && source.source === "learned_product"
+    && source.confidence === "medium"
+    && source.categoryKey === categoryKey
+    && source.storeId === String(job.storeId || "")
+    && source.sourceSnapshotHash === String(job.candidateData?.sourceEvidence?.snapshotHash || "")
+    && source.coverageComplete === true
+    && Number(source.sampleCount || 0) > 0
+    && Boolean(String(source.environment || "").trim())
+    && (!expectedEnvironment || String(source.environment) === String(expectedEnvironment))
+    && /^sha256:[a-f0-9]{64}$/i.test(String(source.evidenceRef || ""))
+    && Boolean(String(source.updatedAt || "").trim());
+  if (!exact) {
+    return {
+      ok: false,
+      reasonCode: "TRUSTED_COMMISSION_EVIDENCE_REQUIRED",
+      error: "当前商品缺少与店铺、类目、环境和来源快照精确绑定的 FBS 佣金证据；系统未调用付费 AI。",
+      paidAiCalled: false,
+    };
+  }
+  return { ok: true, commissionRate: learnedRate, commissionSource: source };
+}
+
 function resolveCommissionInput(job = {}, categoryMatch = null) {
-  const learnedRate = extractCommissionRate(job.ozonContext?.commissions || job.commissions || []);
   const categoryKey = categoryMatch
     ? [categoryMatch.description_category_id, categoryMatch.type_id].map((item) => String(item || "")).filter(Boolean).join(":")
     : "";
-  if (learnedRate > 0) {
+  const trusted = validateTrustedCommissionEvidenceForJob(job, categoryMatch);
+  if (trusted.ok) {
     return {
-      commissionRate: learnedRate,
+      commissionRate: trusted.commissionRate,
       commissionSource: {
         source: "learned_product",
         label: "同类已上架商品学习",
         confidence: "medium",
         categoryKey,
+        ...trusted.commissionSource,
       },
     };
   }
@@ -330,9 +365,18 @@ export async function selectBestMatchForOzon(ozonItem, candidates = [], options 
   var bestMatch = null;
   var volumeFallback = null;
   var rejected = [];
+  var paidAiCalled = false;
   for (var i = 0; i < candidates.length; i++) {
     var candidate = candidates[i];
-    var matchResult = shouldUseAiMatch(i, aiLimit) ? await judgeMatch(ozonItem, candidate) : localJudgeMatch(ozonItem, candidate);
+    var usePaidAi = shouldUseAiMatch(i, aiLimit);
+    if (usePaidAi && typeof options.beforePaidAiCall === "function") {
+      var callAuthorization = await options.beforePaidAiCall({ index: i, candidate, paidAiCalled });
+      if (!callAuthorization?.ok) {
+        return { ...callAuthorization, paidAiCalled, rejected, evaluatedCount: i };
+      }
+    }
+    var matchResult = usePaidAi ? await judgeMatch(ozonItem, candidate) : localJudgeMatch(ozonItem, candidate);
+    if (usePaidAi) paidAiCalled = true;
     var profit = calcProfit(ozonItem, candidate);
     if (ENABLE_VOLUME_FALLBACK && profit && profit.ok && isSameFamilyForFallback(ozonItem, candidate)) {
       var marginOk = toNumber(profit.margin) >= VOLUME_MIN_MARGIN;
@@ -3210,6 +3254,7 @@ function paidAiContentInputHash(job = {}) {
     ozonPrice: job.ozonPrice || 0,
     ozonUrl: job.ozonUrl || "",
     category: job.manualCategory || job.autoCategory || job.categoryDecision?.selected || null,
+    commissionEvidence: job.commissionEvidence || null,
   };
   return `sha256:${createHash("sha256").update(canonicalReceiptJson(generationInput), "utf8").digest("hex")}`;
 }
@@ -3255,7 +3300,10 @@ export function reusablePaidAiContentReceipt(job = {}, expectedBinding = {}) {
   };
 }
 
-async function claimPaidAiContentWork(jobId, expectedBinding, { forcePaidAiRegeneration = false } = {}) {
+async function claimPaidAiContentWork(jobId, expectedBinding, {
+  forcePaidAiRegeneration = false,
+  expectedEnvironment = "",
+} = {}) {
   const token = randomUUID();
   let result = {
     ok: false,
@@ -3272,6 +3320,11 @@ async function claimPaidAiContentWork(jobId, expectedBinding, { forcePaidAiRegen
     const authorization = validatePaidAiJobBinding(current, expectedBinding);
     if (!authorization.ok) {
       result = authorization;
+      return;
+    }
+    const commissionAuthorization = validateTrustedCommissionEvidenceForJob(current, null, expectedEnvironment);
+    if (!commissionAuthorization.ok) {
+      result = commissionAuthorization;
       return;
     }
     const activeLease = current.paidAiContentLease || {};
@@ -3834,6 +3887,16 @@ export async function rerunAutoListingMatch(jobId, options = {}) {
   if (!job) return { ok: false, error: "自动上架任务不存在: " + jobId };
   const initialAuthorization = validatePaidAiJobBinding(job, options.expectedBinding);
   if (!initialAuthorization.ok) return initialAuthorization;
+  if (!String(options.expectedEnvironment || "").trim()) {
+    return {
+      ok: false,
+      reasonCode: "COMMISSION_ENVIRONMENT_REQUIRED",
+      error: "付费 AI 前必须绑定当前 Seller 读取环境。",
+      paidAiCalled: false,
+    };
+  }
+  const commissionAuthorization = validateTrustedCommissionEvidenceForJob(job, null, options.expectedEnvironment);
+  if (!commissionAuthorization.ok) return commissionAuthorization;
   const { listCrawlerCandidates } = await import("./crawler1688.js");
   const learningItems = await listOzonLearningItems();
   const ozonItem = ozonItemFromJob(job, learningItems);
@@ -3850,7 +3913,14 @@ export async function rerunAutoListingMatch(jobId, options = {}) {
   if (!currentAuthorization.ok) return currentAuthorization;
   const matchResult = await selectBestMatchForOzon(ozonItem, rankedCandidates, {
     aiLimit: Object.prototype.hasOwnProperty.call(options, "aiLimit") ? options.aiLimit : AI_MATCH_LIMIT,
+    beforePaidAiCall: async function() {
+      const latestJob = await getAutoListingJob(jobId);
+      const bindingAuthorization = validatePaidAiJobBinding(latestJob, options.expectedBinding);
+      if (!bindingAuthorization.ok) return bindingAuthorization;
+      return validateTrustedCommissionEvidenceForJob(latestJob, null, options.expectedEnvironment);
+    },
   });
+  if (matchResult?.ok === false && matchResult?.reasonCode) return matchResult;
   const postMatchJob = await getAutoListingJob(jobId);
   const postMatchAuthorization = validatePaidAiJobBinding(postMatchJob, options.expectedBinding);
   if (!postMatchAuthorization.ok) return { ...postMatchAuthorization, paidAiCalled: true };
@@ -4070,11 +4140,22 @@ export async function rerunAutoListingContent(jobId, options = {}) {
   if (!initialJob) return { ok: false, error: "自动上架任务不存在: " + jobId };
   const initialAuthorization = validatePaidAiJobBinding(initialJob, options.expectedBinding);
   if (!initialAuthorization.ok) return initialAuthorization;
+  if (!String(options.expectedEnvironment || "").trim()) {
+    return {
+      ok: false,
+      reasonCode: "COMMISSION_ENVIRONMENT_REQUIRED",
+      error: "付费 AI 前必须绑定当前 Seller 读取环境。",
+      paidAiCalled: false,
+    };
+  }
+  const commissionAuthorization = validateTrustedCommissionEvidenceForJob(initialJob, null, options.expectedEnvironment);
+  if (!commissionAuthorization.ok) return commissionAuthorization;
   const initialContext = contentGenerationContextForJob(initialJob);
   if (!initialContext.ok) return initialContext;
 
   const claim = await claimPaidAiContentWork(jobId, options.expectedBinding, {
     forcePaidAiRegeneration: options.forcePaidAiRegeneration === true,
+    expectedEnvironment: options.expectedEnvironment,
   });
   if (!claim.ok) return claim;
   const job = claim.job;
@@ -4145,10 +4226,17 @@ export async function rerunAutoListingContent(jobId, options = {}) {
 
   const currentJob = await getAutoListingJob(jobId);
   const currentAuthorization = validatePaidAiJobBinding(currentJob, options.expectedBinding);
+  const currentCommissionAuthorization = validateTrustedCommissionEvidenceForJob(
+    currentJob,
+    null,
+    options.expectedEnvironment,
+  );
   const leaseStillOwned = String(currentJob?.paidAiContentLease?.token || "") === String(claim.token || "")
     && paidAiContentInputHash(currentJob || {}) === claim.inputHash;
-  if (!currentAuthorization.ok || !leaseStillOwned) {
+  if (!currentAuthorization.ok || !currentCommissionAuthorization.ok || !leaseStillOwned) {
     await releasePaidAiContentWork(jobId, claim.token);
+    if (!currentAuthorization.ok) return currentAuthorization;
+    if (!currentCommissionAuthorization.ok) return currentCommissionAuthorization;
     return currentAuthorization.ok
       ? {
         ok: false,
@@ -4757,7 +4845,7 @@ async function updateJob(id, patch) {
   });
 }
 
-async function updateJobIfPaidAiBindingMatches(id, expectedBinding, patch) {
+async function updateJobIfPaidAiBindingMatches(id, expectedBinding, patch, validateCurrent = null) {
   let result = {
     ok: false,
     reasonCode: "PAID_AI_JOB_CONTEXT_STALE",
@@ -4771,6 +4859,17 @@ async function updateJobIfPaidAiBindingMatches(id, expectedBinding, patch) {
     if (!validation.ok) {
       result = validation;
       return;
+    }
+    if (typeof validateCurrent === "function") {
+      const currentValidation = validateCurrent(jobs[idx]);
+      if (!currentValidation?.ok) {
+        result = currentValidation || {
+          ok: false,
+          reasonCode: "AUTO_LISTING_JOB_CONTEXT_STALE",
+          error: "自动上架任务上下文已变化。",
+        };
+        return;
+      }
     }
     const previousInputHash = paidAiContentInputHash(jobs[idx]);
     jobs[idx] = Object.assign({}, jobs[idx], patch, { updatedAt: nowIso() });
@@ -4871,6 +4970,82 @@ export async function getAutoListingJobSnapshot(id) {
   var jobs = await readJobs();
   var job = jobs.find(function(j) { return j.id === id; }) || null;
   return job ? normalizeAutoListingJobSnapshot(job) : null;
+}
+
+export async function saveLearnedCommissionEvidence(jobId, input = {}) {
+  const job = await getAutoListingJobSnapshot(jobId);
+  if (!job) {
+    return {
+      ok: false,
+      reasonCode: "AUTO_LISTING_JOB_NOT_FOUND",
+      error: "当前自动上架任务不存在。",
+    };
+  }
+  const authorization = validatePaidAiJobBinding(job, input.expectedBinding);
+  if (!authorization.ok) return authorization;
+  const category = categoryScopeForCommission(job);
+  const source = input.commissionSource || {};
+  const exactBinding = category
+    && source.source === "learned_product"
+    && source.confidence === "medium"
+    && source.categoryKey === category.categoryKey
+    && source.storeId === String(job.storeId || "")
+    && source.sourceSnapshotHash === String(job.candidateData?.sourceEvidence?.snapshotHash || "")
+    && /^sha256:[a-f0-9]{64}$/i.test(String(source.evidenceRef || ""))
+    && Boolean(String(source.updatedAt || "").trim())
+    && source.coverageComplete === true;
+  const commissions = Array.isArray(input.commissions) ? input.commissions : [];
+  const percent = Number(commissions[0]?.percent || 0);
+  if (!exactBinding || commissions.length !== 1 || !(percent > 0 && percent < 100)) {
+    return {
+      ok: false,
+      reasonCode: "COMMISSION_EVIDENCE_BINDING_STALE",
+      error: "佣金读取结果与当前商品、店铺、类目或来源快照不一致，系统未采用该比例。",
+    };
+  }
+  const nextJob = {
+    ...job,
+    commissions,
+    commissionEvidence: input.evidence || null,
+  };
+  const pricingPreview = buildAutomaticPricingPreviewFromCapture(nextJob, {
+    description_category_id: category.descriptionCategoryId,
+    type_id: category.typeId,
+    path: category.path,
+  });
+  if (!pricingPreview || pricingPreview.commissionSource?.source !== "learned_product") {
+    return {
+      ok: false,
+      reasonCode: "COMMISSION_PRICING_REFRESH_FAILED",
+      error: "可信佣金已读取，但当前商品定价未能安全刷新。",
+    };
+  }
+  pricingPreview.commissionSource = { ...pricingPreview.commissionSource, ...source };
+  pricingPreview.profitStatus = "estimate";
+  pricingPreview.profitConclusion = "estimated_from_same_store_exact_category_products";
+  const saved = await updateJobIfPaidAiBindingMatches(jobId, input.expectedBinding, {
+    commissions,
+    commissionEvidence: input.evidence || null,
+    pricingPreview,
+  }, (current) => {
+    const currentCategory = categoryScopeForCommission(current);
+    const stillExact = currentCategory?.categoryKey === source.categoryKey
+      && String(current.storeId || "") === source.storeId
+      && String(current.candidateData?.sourceEvidence?.snapshotHash || "") === source.sourceSnapshotHash;
+    return stillExact ? { ok: true } : {
+      ok: false,
+      reasonCode: "COMMISSION_EVIDENCE_CONTEXT_CHANGED",
+      error: "佣金读取期间当前商品类目或来源快照已变化，系统未保存旧读取结果。",
+    };
+  });
+  if (!saved.ok) return saved;
+  await addStep(jobId, "commission_evidence_learned", `已从当前店铺同类商品学习 FBS 佣金 ${percent}% 并自动刷新定价`);
+  return {
+    ok: true,
+    job: saved.job,
+    pricingPreview,
+    commissionSource: pricingPreview.commissionSource,
+  };
 }
 
 function normalizedMediaApprovalAssetIds(value) {

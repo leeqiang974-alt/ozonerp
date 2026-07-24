@@ -5133,3 +5133,16 @@ test("1688 sourcing is a plugin inbox instead of an expanded engineering console
   assert.match(css, /#sourcing > \.sourcing-advanced-disclosure ~ \*[\s\S]*display: none/);
   assert.doesNotMatch(css, /sourcing-advanced-disclosure\[open\]/);
 });
+
+test("one-click listing reads trusted commission before starting the paid AI chain", async () => {
+  const js = await readFile(new URL("../public/app.js", import.meta.url), "utf8");
+  const start = js.indexOf("async function runListingAutoCompletion");
+  const end = js.indexOf("\nfunction ", start + 20);
+  const body = js.slice(start, end);
+  const commissionRead = body.indexOf("/commission-evidence/read");
+  const paidAiChain = body.indexOf("/controlled-chain");
+  assert.ok(commissionRead >= 0);
+  assert.ok(paidAiChain > commissionRead);
+  assert.match(body, /commissionEvidenceReady/);
+  assert.match(body, /coverageComplete === true/);
+});

@@ -128,6 +128,30 @@ class OzonSellerClient:
     def get_category_attributes(self, *, category_id: int, type_id: int) -> dict[str, Any]:
         return self._post("/v1/description-category/attribute", {"description_category_id": category_id, "type_id": type_id, "language": "DEFAULT"})
 
+    def get_category_attribute_values(self, *, category_id: int, type_id: int, attribute_id: int, limit: int = 100, last_value_id: int = 0) -> dict[str, Any]:
+        self._validate_limit(limit)
+        return self._post("/v1/description-category/attribute/values", {
+            "attribute_id": attribute_id,
+            "description_category_id": category_id,
+            "language": "DEFAULT",
+            "last_value_id": last_value_id,
+            "limit": limit,
+            "type_id": type_id,
+        })
+
+    def search_category_attribute_values(self, *, category_id: int, type_id: int, attribute_id: int, value: str, limit: int = 50) -> dict[str, Any]:
+        self._validate_limit(limit)
+        if len(value.strip()) < 2:
+            raise ValueError("attribute dictionary search requires at least two characters")
+        return self._post("/v1/description-category/attribute/values/search", {
+            "attribute_id": attribute_id,
+            "description_category_id": category_id,
+            "language": "DEFAULT",
+            "limit": limit,
+            "type_id": type_id,
+            "value": value.strip(),
+        })
+
     @staticmethod
     def _validate_limit(limit: int) -> None:
         if not 1 <= limit <= 1000:

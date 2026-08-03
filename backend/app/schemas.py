@@ -139,6 +139,13 @@ class ListingVariantCreate(BaseModel):
     height_mm: Decimal | None = Field(default=None, gt=0)
 
 
+class ListingAttributeValueCreate(BaseModel):
+    attribute_id: str = Field(min_length=1, max_length=64)
+    name: str = Field(min_length=1, max_length=500)
+    value_id: str | None = Field(default=None, max_length=64)
+    value_text: str | None = Field(default=None, max_length=10000)
+
+
 class ListingDraftCreate(BaseModel):
     offer_id: str = Field(min_length=1, max_length=128)
     title: str = Field(min_length=1, max_length=500)
@@ -146,6 +153,7 @@ class ListingDraftCreate(BaseModel):
     category_id: str | None = Field(default=None, max_length=64)
     type_id: str | None = Field(default=None, max_length=64)
     primary_image_url: str | None = Field(default=None, max_length=2000)
+    attributes: list[ListingAttributeValueCreate] = Field(default_factory=list, max_length=200)
     variants: list[ListingVariantCreate] = Field(min_length=1, max_length=100)
 
 
@@ -156,6 +164,11 @@ class ListingVariantRead(ListingVariantCreate):
     calculated_price_cny: Decimal | None
     min_price_cny: str | None
     old_price_cny: Decimal | None
+
+
+class ListingAttributeValueRead(ListingAttributeValueCreate):
+    model_config = ConfigDict(from_attributes=True)
+    id: int
 
 
 class ListingDraftRead(BaseModel):
@@ -174,6 +187,7 @@ class ListingDraftRead(BaseModel):
     created_at: datetime
     updated_at: datetime
     variants: list[ListingVariantRead]
+    attribute_values: list[ListingAttributeValueRead]
 
 
 class ListingValidationIssue(BaseModel):

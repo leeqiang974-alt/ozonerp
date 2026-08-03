@@ -61,6 +61,32 @@ class OzonSellerClientTests(unittest.TestCase):
             ],
         )
 
+    def test_category_attribute_values_use_current_read_only_endpoint(self):
+        def handler(request: httpx.Request) -> httpx.Response:
+            self.assertEqual(request.url.path, "/v1/description-category/attribute/values")
+            self.assertEqual(json.loads(request.content), {
+                "attribute_id": 85,
+                "description_category_id": 17027449,
+                "language": "DEFAULT",
+                "last_value_id": 0,
+                "limit": 100,
+                "type_id": 91613,
+            })
+            return httpx.Response(200, json={"result": [{"id": 1, "value": "测试"}], "has_next": False})
+
+        with OzonSellerClient(client_id="id", api_key="key", transport=httpx.MockTransport(handler)) as client:
+            response = client.get_category_attribute_values(category_id=17027449, type_id=91613, attribute_id=85, limit=100)
+        self.assertEqual(response["result"][0]["value"], "测试")
+
+    def test_category_attribute_value_search_requires_a_query(self):
+        def handler(request: httpx.Request) -> httpx.Response:
+            self.assertEqual(request.url.path, "/v1/description-category/attribute/values/search")
+            self.assertEqual(json.loads(request.content)["value"], "ab")
+            return httpx.Response(200, json={"result": [{"id": 1, "value": "ABC"}]})
+        with OzonSellerClient(client_id="id", api_key="key", transport=httpx.MockTransport(handler)) as client:
+            response = client.search_category_attribute_values(category_id=1, type_id=2, attribute_id=3, value="ab", limit=20)
+        self.assertEqual(response["result"][0]["value"], "ABC")
+
     def test_error_statuses_are_classified(self):
         for status_code, error_type in ((401, OzonAuthenticationError), (429, OzonRateLimitError), (500, OzonServerError)):
             with self.subTest(status_code=status_code):

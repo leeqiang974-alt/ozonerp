@@ -4,7 +4,7 @@ from sqlalchemy import create_engine
 from sqlalchemy.orm import Session
 
 from app.database import Base
-from app.erp_models import ProductRecord, SyncRun, SyncState
+from app.erp_models import OzonAttributeCacheRecord, OzonAttributeDictionaryQueryCacheRecord, OzonAttributeDictionaryValueRecord, ProductRecord, SyncRun, SyncState
 from app.main import delete_shop
 from app.models import Shop
 
@@ -37,6 +37,19 @@ def test_shop_with_only_auto_sync_state_can_be_deleted() -> None:
         shop = Shop(name="自动同步未完成店铺", currency="CNY")
         db.add(shop); db.commit(); db.refresh(shop)
         db.add(SyncState(shop_id=shop.id, resource="products", last_error="授权未配置")); db.commit()
+        assert delete_shop(shop.id, db).status_code == 204
+
+
+def test_shop_with_only_listing_metadata_cache_can_be_deleted() -> None:
+    engine = create_engine("sqlite://")
+    Base.metadata.create_all(engine)
+    with Session(engine) as db:
+        shop = Shop(name="只有上架缓存的店铺", currency="CNY")
+        db.add(shop); db.commit(); db.refresh(shop)
+        db.add(OzonAttributeCacheRecord(shop_id=shop.id, category_id="123", type_id="456", attribute_id="85", name="品牌", required=True, dictionary_id="1", value_type="String"))
+        db.add(OzonAttributeDictionaryValueRecord(shop_id=shop.id, category_id="123", type_id="456", attribute_id="85", value_id="1", value="测试品牌"))
+        db.add(OzonAttributeDictionaryQueryCacheRecord(shop_id=shop.id, category_id="123", type_id="456", attribute_id="85", query_key="测试", result_limit=50, result_json="[]"))
+        db.commit()
         assert delete_shop(shop.id, db).status_code == 204
 
 

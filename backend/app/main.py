@@ -1,4 +1,4 @@
-from fastapi import BackgroundTasks, Depends, FastAPI, HTTPException, Response, status
+from fastapi import BackgroundTasks, Depends, FastAPI, HTTPException, Query, Response, status
 from fastapi.middleware.cors import CORSMiddleware
 from sqlalchemy import select
 from sqlalchemy.exc import IntegrityError
@@ -6,17 +6,16 @@ from sqlalchemy.orm import Session
 
 from .database import Base, engine, ensure_sqlite_operational_columns, get_db, settings
 from . import erp_models  # noqa: F401 - registers persistent operational tables.
-from .erp_models import AuditEventRecord, FbsPostingRecord, ListingDraftRecord, ListingVariantRecord, OzonCategoryCacheRecord, ProductRecord, SyncRun, SyncState
+from .erp_models import AuditEventRecord, FbsPostingRecord, ListingAttributeValueRecord, ListingDraftRecord, ListingVariantRecord, OzonAttributeCacheRecord, OzonAttributeDictionaryQueryCacheRecord, OzonAttributeDictionaryValueRecord, OzonCategoryCacheRecord, ProductRecord, SyncRun, SyncState
 from .models import ApiCredential, Shop
 from .schemas import OzonCredentialStatus, OzonCredentialUpsert, ShopCreate, ShopRead, ShopUpdate
 from .security import CredentialEncryptionUnavailable, encrypt_secret
 from .sync_service import sync_category_cache, sync_fbs_postings, sync_fbs_product_images, sync_products
 from .schemas import FbsPostingDetailRead, FbsPostingRead, FbsPostingSyncRequest, ListingDraftCreate, ListingDraftRead, ListingValidationRead, ProductRead, ProductSyncRequest, SyncRunRead
 from .listing_service import validate_listing_draft
-from .sync_service import _credentials
-from .integrations.ozon_seller import OzonSellerClient
 from .auto_sync import AutoSyncShopNotFound, request_auto_sync, run_auto_sync_resource
 from .schemas import AutoSyncDecisionRead, AutoSyncRequest
+from .listing_metadata_service import get_category_attributes, search_category_attribute_values
 
 if settings.database_url.startswith("sqlite"):
     Base.metadata.create_all(bind=engine)
@@ -91,6 +90,9 @@ def delete_shop(shop_id: int, db: Session = Depends(get_db)) -> Response:
         raise HTTPException(status_code=409, detail="店铺已有业务数据，请先停用，不可删除")
     db.query(SyncState).filter(SyncState.shop_id == shop_id).delete()
     db.query(SyncRun).filter(SyncRun.shop_id == shop_id).delete()
+    db.query(OzonAttributeDictionaryQueryCacheRecord).filter(OzonAttributeDictionaryQueryCacheRecord.shop_id == shop_id).delete()
+    db.query(OzonAttributeDictionaryValueRecord).filter(OzonAttributeDictionaryValueRecord.shop_id == shop_id).delete()
+    db.query(OzonAttributeCacheRecord).filter(OzonAttributeCacheRecord.shop_id == shop_id).delete()
     db.query(OzonCategoryCacheRecord).filter(OzonCategoryCacheRecord.shop_id == shop_id).delete()
     db.delete(shop)
     db.commit()
@@ -200,10 +202,26 @@ def list_listing_drafts(shop_id: int, db: Session = Depends(get_db)) -> list[Lis
 def create_listing_draft(shop_id: int, payload: ListingDraftCreate, db: Session = Depends(get_db)) -> ListingDraftRecord:
     if db.get(Shop, shop_id) is None:
         raise HTTPException(status_code=404, detail="店铺不存在")
+    if payload.category_id and payload.type_id and db.scalar(select(OzonCategoryCacheRecord.id).where(OzonCategoryCacheRecord.shop_id == shop_id, OzonCategoryCacheRecord.category_id == payload.category_id, OzonCategoryCacheRecord.type_id == payload.type_id)) is None:
+        raise HTTPException(status_code=422, detail="所选 Ozon 类目不属于当前店铺，请重新选择")
+    templates = {row.attribute_id: row for row in db.scalars(select(OzonAttributeCacheRecord).where(OzonAttributeCacheRecord.shop_id == shop_id, OzonAttributeCacheRecord.category_id == payload.category_id, OzonAttributeCacheRecord.type_id == payload.type_id))} if payload.category_id and payload.type_id else {}
     draft = ListingDraftRecord(shop_id=shop_id, offer_id=payload.offer_id, title=payload.title, description=payload.description, category_id=payload.category_id, type_id=payload.type_id, primary_image_url=payload.primary_image_url)
-    db.add(draft)
+    attribute_records = []
+    for attribute in payload.attributes:
+        template = templates.get(attribute.attribute_id)
+        if template is None:
+            raise HTTPException(status_code=422, detail=f"属性 {attribute.attribute_id} 不属于当前店铺所选类目")
+        value_text = attribute.value_text
+        if template.dictionary_id:
+            cached_value = db.scalar(select(OzonAttributeDictionaryValueRecord).where(OzonAttributeDictionaryValueRecord.shop_id == shop_id, OzonAttributeDictionaryValueRecord.category_id == payload.category_id, OzonAttributeDictionaryValueRecord.type_id == payload.type_id, OzonAttributeDictionaryValueRecord.attribute_id == attribute.attribute_id, OzonAttributeDictionaryValueRecord.value_id == attribute.value_id))
+            if cached_value is None or (value_text and cached_value.value != value_text):
+                raise HTTPException(status_code=422, detail=f"属性“{template.name}”必须选择当前 Ozon 字典返回值")
+            value_text = cached_value.value
+        attribute_records.append(ListingAttributeValueRecord(attribute_id=attribute.attribute_id, name=template.name, value_id=attribute.value_id, value_text=value_text))
+    draft.attribute_values.extend(attribute_records)
     for variant in payload.variants:
         draft.variants.append(ListingVariantRecord(**variant.model_dump()))
+    db.add(draft)
     try:
         db.commit()
     except IntegrityError as exc:
@@ -241,10 +259,9 @@ def list_categories(shop_id: int, query: str | None = None, db: Session = Depend
 
 @app.get("/api/v1/shops/{shop_id}/metadata/categories/{category_id}/types/{type_id}/attributes")
 def list_category_attributes(shop_id: int, category_id: int, type_id: int, db: Session = Depends(get_db)) -> list[dict]:
-    client_id, api_key = _credentials(db, shop_id)
-    with OzonSellerClient(client_id=client_id, api_key=api_key) as client:
-        response = client.get_category_attributes(category_id=category_id, type_id=type_id)
-    attributes = response.get("result", [])
-    if not isinstance(attributes, list):
-        raise HTTPException(status_code=502, detail="Ozon 类目属性响应格式错误")
-    return [{"id": str(item.get("id")), "name": str(item.get("name") or "未命名属性"), "required": bool(item.get("is_required")), "dictionary_id": str(item.get("dictionary_id") or ""), "type": str(item.get("type") or "")} for item in attributes if isinstance(item, dict) and item.get("id") is not None]
+    return get_category_attributes(db, shop_id, str(category_id), str(type_id))
+
+
+@app.get("/api/v1/shops/{shop_id}/metadata/categories/{category_id}/types/{type_id}/attributes/{attribute_id}/values")
+def list_category_attribute_values(shop_id: int, category_id: int, type_id: int, attribute_id: int, query: str = Query(default="", max_length=100), limit: int = Query(default=50, ge=1, le=100), db: Session = Depends(get_db)) -> list[dict]:
+    return search_category_attribute_values(db, shop_id, str(category_id), str(type_id), str(attribute_id), query, limit)

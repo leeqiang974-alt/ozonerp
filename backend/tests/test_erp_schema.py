@@ -9,7 +9,7 @@ def test_operational_tables_are_created() -> None:
     engine = create_engine("sqlite://")
     Base.metadata.create_all(engine)
     tables = set(inspect(engine).get_table_names())
-    assert {"products", "skus", "inventory_balances", "fbs_postings", "fbs_posting_lines", "sync_runs", "sync_states", "audit_events", "listing_drafts", "listing_variants", "ozon_category_cache"} <= tables
+    assert {"products", "skus", "inventory_balances", "fbs_postings", "fbs_posting_lines", "sync_runs", "sync_states", "audit_events", "listing_drafts", "listing_variants", "listing_attribute_values", "ozon_category_cache", "ozon_attribute_cache", "ozon_attribute_dictionary_values", "ozon_attribute_dictionary_query_cache"} <= tables
 
 
 def test_sync_state_has_one_row_per_shop_resource() -> None:

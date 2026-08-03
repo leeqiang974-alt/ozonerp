@@ -5,9 +5,10 @@ from __future__ import annotations
 import json
 from decimal import Decimal
 
+from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from .erp_models import ListingDraftRecord
+from .erp_models import ListingDraftRecord, OzonAttributeCacheRecord, OzonAttributeDictionaryValueRecord
 from .pricing import PriceInput, PricePolicy, PricingService
 
 
@@ -17,6 +18,30 @@ def validate_listing_draft(db: Session, draft: ListingDraftRecord) -> list[dict[
         issues.append({"field": "category_id", "message": "请选择 Ozon 末级类目后再进入发布审批。"})
     if not draft.type_id:
         issues.append({"field": "type_id", "message": "请选择 Ozon 商品类型后再进入发布审批。"})
+    if draft.category_id and draft.type_id:
+        attribute_templates = list(db.scalars(select(OzonAttributeCacheRecord).where(
+            OzonAttributeCacheRecord.shop_id == draft.shop_id,
+            OzonAttributeCacheRecord.category_id == draft.category_id,
+            OzonAttributeCacheRecord.type_id == draft.type_id,
+        )))
+        if not attribute_templates:
+            issues.append({"field": "attributes", "message": "当前类目的 Ozon 属性模板尚未缓存，请重新选择类目后再预检。"})
+        required_attributes = [attribute for attribute in attribute_templates if attribute.required]
+        values_by_attribute = {value.attribute_id: value for value in draft.attribute_values}
+        for attribute in required_attributes:
+            value = values_by_attribute.get(attribute.attribute_id)
+            has_value = bool(value and ((value.value_id or "").strip() if attribute.dictionary_id else (value.value_text or "").strip()))
+            if has_value and attribute.dictionary_id:
+                cached_value = db.scalar(select(OzonAttributeDictionaryValueRecord).where(
+                    OzonAttributeDictionaryValueRecord.shop_id == draft.shop_id,
+                    OzonAttributeDictionaryValueRecord.category_id == draft.category_id,
+                    OzonAttributeDictionaryValueRecord.type_id == draft.type_id,
+                    OzonAttributeDictionaryValueRecord.attribute_id == attribute.attribute_id,
+                    OzonAttributeDictionaryValueRecord.value_id == value.value_id,
+                ))
+                has_value = bool(cached_value and (not value.value_text or cached_value.value == value.value_text))
+            if not has_value:
+                issues.append({"field": f"attributes.{attribute.attribute_id}", "message": f"请填写 Ozon 必填属性：{attribute.name}。"})
     if not _is_http_url(draft.primary_image_url):
         issues.append({"field": "primary_image_url", "message": "请提供可访问的主图 URL。"})
     if not draft.variants:

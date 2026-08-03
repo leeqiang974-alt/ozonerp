@@ -3,7 +3,7 @@
 from datetime import datetime
 from decimal import Decimal
 
-from sqlalchemy import DateTime, ForeignKey, Index, Integer, Numeric, String, Text, UniqueConstraint, func
+from sqlalchemy import Boolean, DateTime, ForeignKey, Index, Integer, Numeric, String, Text, UniqueConstraint, func
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from .database import Base
@@ -149,6 +149,7 @@ class ListingDraftRecord(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())
     variants: Mapped[list["ListingVariantRecord"]] = relationship(back_populates="draft", cascade="all, delete-orphan")
+    attribute_values: Mapped[list["ListingAttributeValueRecord"]] = relationship(back_populates="draft", cascade="all, delete-orphan")
 
 
 class ListingVariantRecord(Base):
@@ -169,6 +170,19 @@ class ListingVariantRecord(Base):
     draft: Mapped[ListingDraftRecord] = relationship(back_populates="variants")
 
 
+class ListingAttributeValueRecord(Base):
+    __tablename__ = "listing_attribute_values"
+    __table_args__ = (UniqueConstraint("draft_id", "attribute_id", name="uq_listing_attribute_draft_attribute"),)
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    draft_id: Mapped[int] = mapped_column(ForeignKey("listing_drafts.id", ondelete="CASCADE"), index=True)
+    attribute_id: Mapped[str] = mapped_column(String(64))
+    name: Mapped[str] = mapped_column(String(500))
+    value_id: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    value_text: Mapped[str | None] = mapped_column(Text, nullable=True)
+    draft: Mapped[ListingDraftRecord] = relationship(back_populates="attribute_values")
+
+
 class OzonCategoryCacheRecord(Base):
     __tablename__ = "ozon_category_cache"
     __table_args__ = (UniqueConstraint("shop_id", "category_id", "type_id", name="uq_category_cache"),)
@@ -178,3 +192,50 @@ class OzonCategoryCacheRecord(Base):
     type_id: Mapped[str] = mapped_column(String(64), default="")
     title: Mapped[str] = mapped_column(String(500))
     parent_id: Mapped[str | None] = mapped_column(String(64), nullable=True)
+
+
+class OzonAttributeCacheRecord(Base):
+    __tablename__ = "ozon_attribute_cache"
+    __table_args__ = (UniqueConstraint("shop_id", "category_id", "type_id", "attribute_id", name="uq_ozon_attribute_cache"),)
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    shop_id: Mapped[int] = mapped_column(ForeignKey("shops.id", ondelete="RESTRICT"), index=True)
+    category_id: Mapped[str] = mapped_column(String(64))
+    type_id: Mapped[str] = mapped_column(String(64))
+    attribute_id: Mapped[str] = mapped_column(String(64))
+    name: Mapped[str] = mapped_column(String(500))
+    required: Mapped[bool] = mapped_column(Boolean, default=False)
+    dictionary_id: Mapped[str] = mapped_column(String(64), default="")
+    value_type: Mapped[str] = mapped_column(String(80), default="")
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())
+
+
+class OzonAttributeDictionaryValueRecord(Base):
+    __tablename__ = "ozon_attribute_dictionary_values"
+    __table_args__ = (UniqueConstraint("shop_id", "category_id", "type_id", "attribute_id", "value_id", name="uq_ozon_attribute_dictionary_value"),)
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    shop_id: Mapped[int] = mapped_column(ForeignKey("shops.id", ondelete="RESTRICT"), index=True)
+    category_id: Mapped[str] = mapped_column(String(64))
+    type_id: Mapped[str] = mapped_column(String(64))
+    attribute_id: Mapped[str] = mapped_column(String(64))
+    value_id: Mapped[str] = mapped_column(String(64))
+    value: Mapped[str] = mapped_column(String(1000))
+    info: Mapped[str | None] = mapped_column(Text, nullable=True)
+    picture: Mapped[str | None] = mapped_column(String(2000), nullable=True)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())
+
+
+class OzonAttributeDictionaryQueryCacheRecord(Base):
+    __tablename__ = "ozon_attribute_dictionary_query_cache"
+    __table_args__ = (UniqueConstraint("shop_id", "category_id", "type_id", "attribute_id", "query_key", "result_limit", name="uq_ozon_attribute_dictionary_query_cache"),)
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    shop_id: Mapped[int] = mapped_column(ForeignKey("shops.id", ondelete="RESTRICT"), index=True)
+    category_id: Mapped[str] = mapped_column(String(64))
+    type_id: Mapped[str] = mapped_column(String(64))
+    attribute_id: Mapped[str] = mapped_column(String(64))
+    query_key: Mapped[str] = mapped_column(String(100))
+    result_limit: Mapped[int] = mapped_column(Integer)
+    result_json: Mapped[str] = mapped_column(Text)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())

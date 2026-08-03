@@ -64,6 +64,17 @@ def test_success_inside_five_minutes_is_fresh_and_expired_lease_restarts() -> No
         assert restarted[0]["lease_owner"] != "old"
 
 
+def test_category_cache_remains_fresh_for_twenty_four_hours() -> None:
+    now = datetime(2026, 8, 3, 12, 0, tzinfo=timezone.utc)
+    with make_db() as db:
+        shop = add_shop(db)
+        db.add(SyncState(shop_id=shop.id, resource="categories", last_success_at=now - timedelta(hours=23)))
+        db.commit()
+        assert request_auto_sync(db, shop.id, "listing", now=now) == [
+            {"resource": "categories", "status": "fresh", "lease_owner": None}
+        ]
+
+
 def test_unknown_view_is_rejected() -> None:
     with make_db() as db:
         shop = add_shop(db)

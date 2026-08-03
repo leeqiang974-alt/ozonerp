@@ -3,13 +3,13 @@
 from __future__ import annotations
 
 import json
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from typing import Any
 
-from sqlalchemy import delete, select
+from sqlalchemy import or_, select
 from sqlalchemy.orm import Session
 
-from .erp_models import FbsPostingLineRecord, FbsPostingRecord, ProductRecord, SkuRecord, SyncRun
+from .erp_models import FbsPostingLineRecord, FbsPostingRecord, OzonCategoryCacheRecord, ProductRecord, SkuRecord, SyncRun
 from .integrations.ozon_seller import OzonSellerClient, OzonSellerError
 from .models import ApiCredential, Shop
 from .security import CredentialEncryptionUnavailable, decrypt_secret
@@ -42,6 +42,10 @@ def sync_fbs_postings(
 
 def sync_fbs_product_images(db: Session, shop_id: int) -> SyncRun:
     return _run(db, shop_id, "fbs_product_images", lambda client: _sync_posting_images(db, shop_id, client))
+
+
+def sync_category_cache(db: Session, shop_id: int) -> SyncRun:
+    return _run(db, shop_id, "categories", lambda client: _replace_category_cache(db, shop_id, client.get_category_tree()))
 
 
 def _run(db: Session, shop_id: int, resource: str, operation) -> SyncRun:
@@ -134,7 +138,14 @@ def _upsert_postings(db: Session, shop_id: int, response: dict[str, Any]) -> tup
 
 
 def _sync_posting_images(db: Session, shop_id: int, client: OzonSellerClient) -> tuple[int, int, str | None]:
-    lines = list(db.scalars(select(FbsPostingLineRecord).join(FbsPostingRecord).where(FbsPostingRecord.shop_id == shop_id)))
+    current = datetime.now(timezone.utc)
+    stale_before = current - timedelta(hours=24)
+    lines = list(db.scalars(
+        select(FbsPostingLineRecord).join(FbsPostingRecord).where(
+            FbsPostingRecord.shop_id == shop_id,
+            or_(FbsPostingLineRecord.image_synced_at.is_(None), FbsPostingLineRecord.image_synced_at < stale_before),
+        )
+    ))
     product_ids = sorted({int(line.ozon_product_id) for line in lines if line.ozon_product_id and line.ozon_product_id.isdigit()})
     skus = sorted({int(line.ozon_sku) for line in lines if line.ozon_sku and line.ozon_sku.isdigit()})
     if not product_ids and not skus:
@@ -151,6 +162,7 @@ def _sync_posting_images(db: Session, shop_id: int, client: OzonSellerClient) ->
         if image_url and line.image_url != image_url:
             line.image_url = image_url
             changed += 1
+        line.image_synced_at = current
     return len(product_ids) + len(skus), changed, None
 
 
@@ -172,6 +184,36 @@ def _image_map(response: dict[str, Any], identifier_key: str) -> dict[str, str]:
     return output
 
 
+def _replace_category_cache(db: Session, shop_id: int, response: dict[str, Any]) -> tuple[int, int, str | None]:
+    nodes = response.get("result", [])
+    if not isinstance(nodes, list):
+        raise ValueError("Ozon 类目树响应格式错误")
+    db.query(OzonCategoryCacheRecord).filter(OzonCategoryCacheRecord.shop_id == shop_id).delete()
+
+    def walk(items: Any, parent_category: str | None = None, parent_title: str | None = None) -> int:
+        count = 0
+        for item in items if isinstance(items, list) else []:
+            if not isinstance(item, dict) or item.get("disabled") is True:
+                continue
+            category_id = item.get("description_category_id")
+            if category_id is not None:
+                count += walk(item.get("children"), str(category_id), str(item.get("category_name") or "未命名类目"))
+            elif item.get("type_id") is not None and parent_category:
+                type_title = str(item.get("type_name") or "未命名类型")
+                db.add(OzonCategoryCacheRecord(
+                    shop_id=shop_id,
+                    category_id=parent_category,
+                    type_id=str(item["type_id"]),
+                    title=f"{parent_title or ''} / {type_title}".strip(" /"),
+                    parent_id=None,
+                ))
+                count += 1
+        return count
+
+    count = walk(nodes)
+    return count, count, None
+
+
 def _normalize_status(raw: str) -> str:
     value = raw.lower()
     if "awaiting_pack" in value or "packaging" in value: return "awaiting_packaging"
@@ -183,24 +225,32 @@ def _normalize_status(raw: str) -> str:
 
 
 def _replace_posting_lines(db: Session, posting_id: int, products: Any) -> None:
-    db.execute(delete(FbsPostingLineRecord).where(FbsPostingLineRecord.posting_id == posting_id))
     if not isinstance(products, list):
         return
+    existing = {
+        line.offer_id: line
+        for line in db.scalars(select(FbsPostingLineRecord).where(FbsPostingLineRecord.posting_id == posting_id))
+    }
+    seen: set[str] = set()
     for product in products:
         if not isinstance(product, dict):
             continue
         offer_id = str(product.get("offer_id") or product.get("sku") or product.get("product_id") or "")
         if not offer_id:
             continue
+        seen.add(offer_id)
         quantity = product.get("quantity", 1)
-        db.add(FbsPostingLineRecord(
-            posting_id=posting_id,
-            offer_id=offer_id,
-            ozon_product_id=str(product["product_id"]) if product.get("product_id") is not None else None,
-            ozon_sku=str(product["sku"]) if product.get("sku") is not None else None,
-            name=str(product.get("name")) if product.get("name") else None,
-            quantity=max(int(quantity), 1),
-        ))
+        line = existing.get(offer_id)
+        if line is None:
+            line = FbsPostingLineRecord(posting_id=posting_id, offer_id=offer_id)
+            db.add(line)
+        line.ozon_product_id = str(product["product_id"]) if product.get("product_id") is not None else None
+        line.ozon_sku = str(product["sku"]) if product.get("sku") is not None else None
+        line.name = str(product.get("name")) if product.get("name") else None
+        line.quantity = max(int(quantity), 1)
+    for offer_id, line in existing.items():
+        if offer_id not in seen:
+            db.delete(line)
 
 
 def _parse_ozon_time(value: Any) -> datetime | None:

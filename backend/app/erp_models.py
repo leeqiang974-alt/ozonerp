@@ -78,6 +78,7 @@ class FbsPostingLineRecord(Base):
     ozon_sku: Mapped[str | None] = mapped_column(String(64), nullable=True)
     name: Mapped[str | None] = mapped_column(String(500), nullable=True)
     image_url: Mapped[str | None] = mapped_column(String(2000), nullable=True)
+    image_synced_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     quantity: Mapped[int] = mapped_column(Integer, default=1)
     posting: Mapped[FbsPostingRecord] = relationship(back_populates="lines")
 

@@ -11,10 +11,11 @@ from sqlalchemy.orm import Session
 from .database import SessionLocal
 from .erp_models import SyncState
 from .models import Shop
-from .sync_service import sync_fbs_postings, sync_fbs_product_images, sync_products
+from .sync_service import sync_category_cache, sync_fbs_postings, sync_fbs_product_images, sync_products
 
 FRESH_FOR = timedelta(minutes=5)
 LEASE_FOR = timedelta(minutes=5)
+RESOURCE_FRESH_FOR = {"categories": timedelta(hours=24)}
 
 AUTO_SYNC_VIEW_RESOURCES: dict[str, tuple[str, ...]] = {
     "dashboard": ("products", "fbs_postings"),
@@ -51,7 +52,8 @@ def request_auto_sync(db: Session, shop_id: int, view: str, *, now: datetime | N
             state = SyncState(shop_id=shop_id, resource=resource)
             db.add(state)
             db.flush()
-        if state.last_success_at and current - _as_utc(state.last_success_at) < FRESH_FOR:
+        freshness = RESOURCE_FRESH_FOR.get(resource, FRESH_FOR)
+        if state.last_success_at and current - _as_utc(state.last_success_at) < freshness:
             decisions.append(_decision(resource, "fresh"))
             continue
         if state.lease_owner and state.lease_expires_at and _as_utc(state.lease_expires_at) > current:
@@ -96,6 +98,8 @@ def run_auto_sync_resource(
                 )
             elif resource == "fbs_product_images":
                 run = sync_fbs_product_images(db, shop_id)
+            elif resource == "categories":
+                run = sync_category_cache(db, shop_id)
             else:
                 raise ValueError(f"不支持的自动同步资源：{resource}")
 

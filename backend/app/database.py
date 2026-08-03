@@ -31,6 +31,8 @@ def ensure_sqlite_operational_columns() -> None:
             connection.execute(text("ALTER TABLE fbs_posting_lines ADD COLUMN image_url VARCHAR(2000)"))
         if "ozon_sku" not in existing:
             connection.execute(text("ALTER TABLE fbs_posting_lines ADD COLUMN ozon_sku VARCHAR(64)"))
+        if "image_synced_at" not in existing:
+            connection.execute(text("ALTER TABLE fbs_posting_lines ADD COLUMN image_synced_at DATETIME"))
     listing_columns = {column["name"] for column in inspect(engine).get_columns("listing_drafts")}
     if "type_id" not in listing_columns:
         with engine.begin() as connection:

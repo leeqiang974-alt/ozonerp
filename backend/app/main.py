@@ -10,7 +10,7 @@ from .erp_models import AuditEventRecord, FbsPostingRecord, ListingDraftRecord, 
 from .models import ApiCredential, Shop
 from .schemas import OzonCredentialStatus, OzonCredentialUpsert, ShopCreate, ShopRead, ShopUpdate
 from .security import CredentialEncryptionUnavailable, encrypt_secret
-from .sync_service import sync_fbs_postings, sync_fbs_product_images, sync_products
+from .sync_service import sync_category_cache, sync_fbs_postings, sync_fbs_product_images, sync_products
 from .schemas import FbsPostingDetailRead, FbsPostingRead, FbsPostingSyncRequest, ListingDraftCreate, ListingDraftRead, ListingValidationRead, ProductRead, ProductSyncRequest, SyncRunRead
 from .listing_service import validate_listing_draft
 from .sync_service import _credentials
@@ -220,26 +220,10 @@ def validate_listing(shop_id: int, draft_id: int, db: Session = Depends(get_db))
 
 @app.post("/api/v1/shops/{shop_id}/metadata/categories")
 def sync_categories(shop_id: int, db: Session = Depends(get_db)) -> dict[str, int]:
-    client_id, api_key = _credentials(db, shop_id)
-    with OzonSellerClient(client_id=client_id, api_key=api_key) as client:
-        response = client.get_category_tree()
-    nodes = response.get("result", [])
-    db.query(OzonCategoryCacheRecord).filter(OzonCategoryCacheRecord.shop_id == shop_id).delete()
-    def walk(items, parent_category=None, parent_title=None):
-        count = 0
-        for item in items if isinstance(items, list) else []:
-            if not isinstance(item, dict) or item.get("disabled") is True:
-                continue
-            category_id = item.get("description_category_id")
-            if category_id is not None:
-                current_title = str(item.get("category_name") or "未命名类目")
-                count += walk(item.get("children"), str(category_id), current_title)
-            elif item.get("type_id") is not None and parent_category:
-                type_title = str(item.get("type_name") or "未命名类型")
-                db.add(OzonCategoryCacheRecord(shop_id=shop_id, category_id=parent_category, type_id=str(item["type_id"]), title=f"{parent_title or ''} / {type_title}".strip(" /"), parent_id=None))
-                count += 1
-        return count
-    count=walk(nodes); db.commit(); return {"records":count}
+    run = sync_category_cache(db, shop_id)
+    if run.status != "succeeded":
+        raise HTTPException(status_code=502, detail=run.error_summary or "Ozon 类目同步失败")
+    return {"records": run.records_changed}
 
 
 @app.get("/api/v1/shops/{shop_id}/metadata/categories")

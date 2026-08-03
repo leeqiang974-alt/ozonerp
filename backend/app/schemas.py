@@ -82,6 +82,15 @@ class SyncRunRead(BaseModel):
     finished_at: datetime | None
 
 
+class AutoSyncRequest(BaseModel):
+    view: Literal["dashboard", "orders", "products", "listing", "shops", "pricing", "sync"]
+
+
+class AutoSyncDecisionRead(BaseModel):
+    resource: str
+    status: Literal["fresh", "started", "already_running", "failed_to_start"]
+
+
 class ProductRead(BaseModel):
     model_config = ConfigDict(from_attributes=True)
 

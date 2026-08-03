@@ -3,6 +3,8 @@ from datetime import datetime, timedelta, timezone
 import pytest
 from sqlalchemy import create_engine, select
 from sqlalchemy.orm import Session
+from sqlalchemy.pool import StaticPool
+from fastapi.testclient import TestClient
 
 from app.auto_sync import AUTO_SYNC_VIEW_RESOURCES, UnknownAutoSyncView, request_auto_sync, run_auto_sync_resource
 from app.database import Base
@@ -147,3 +149,35 @@ def test_worker_failure_preserves_checkpoint_and_releases_lease(monkeypatch) -> 
         assert state.last_success_at == old_success.replace(tzinfo=None)
         assert state.last_error == "safe failure"
         assert state.lease_owner is None and state.lease_expires_at is None
+
+
+def test_auto_sync_endpoint_queues_started_resources_and_validates_view(monkeypatch) -> None:
+    from app.database import get_db
+    from app.main import app
+
+    engine = create_engine("sqlite://", connect_args={"check_same_thread": False}, poolclass=StaticPool)
+    Base.metadata.create_all(engine)
+    with Session(engine) as db:
+        shop = add_shop(db)
+        shop_id = shop.id
+
+    def override_db():
+        with Session(engine) as db:
+            yield db
+
+    queued = []
+    monkeypatch.setattr("app.main.run_auto_sync_resource", lambda shop_id, resource, owner: queued.append((shop_id, resource, owner)))
+    app.dependency_overrides[get_db] = override_db
+    try:
+        with TestClient(app) as client:
+            response = client.post(f"/api/v1/shops/{shop_id}/auto-sync", json={"view": "products"})
+            invalid = client.post(f"/api/v1/shops/{shop_id}/auto-sync", json={"view": "not-a-view"})
+            missing = client.post("/api/v1/shops/999/auto-sync", json={"view": "products"})
+    finally:
+        app.dependency_overrides.clear()
+
+    assert response.status_code == 202
+    assert response.json() == [{"resource": "products", "status": "started"}]
+    assert len(queued) == 1 and queued[0][:2] == (shop_id, "products") and queued[0][2]
+    assert invalid.status_code == 422
+    assert missing.status_code == 404

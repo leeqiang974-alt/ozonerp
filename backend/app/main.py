@@ -1,4 +1,4 @@
-from fastapi import Depends, FastAPI, HTTPException, Response, status
+from fastapi import BackgroundTasks, Depends, FastAPI, HTTPException, Response, status
 from fastapi.middleware.cors import CORSMiddleware
 from sqlalchemy import select
 from sqlalchemy.exc import IntegrityError
@@ -15,6 +15,8 @@ from .schemas import FbsPostingDetailRead, FbsPostingRead, FbsPostingSyncRequest
 from .listing_service import validate_listing_draft
 from .sync_service import _credentials
 from .integrations.ozon_seller import OzonSellerClient
+from .auto_sync import AutoSyncShopNotFound, request_auto_sync, run_auto_sync_resource
+from .schemas import AutoSyncDecisionRead, AutoSyncRequest
 
 Base.metadata.create_all(bind=engine)
 ensure_sqlite_operational_columns()
@@ -141,6 +143,27 @@ def run_fbs_product_image_sync(shop_id: int, db: Session = Depends(get_db)):
 @app.get("/api/v1/shops/{shop_id}/sync-runs", response_model=list[SyncRunRead])
 def list_sync_runs(shop_id: int, db: Session = Depends(get_db)) -> list[SyncRun]:
     return list(db.scalars(select(SyncRun).where(SyncRun.shop_id == shop_id).order_by(SyncRun.id.desc()).limit(100)))
+
+
+@app.post(
+    "/api/v1/shops/{shop_id}/auto-sync",
+    response_model=list[AutoSyncDecisionRead],
+    status_code=status.HTTP_202_ACCEPTED,
+)
+def auto_sync_shop_view(
+    shop_id: int,
+    payload: AutoSyncRequest,
+    background_tasks: BackgroundTasks,
+    db: Session = Depends(get_db),
+) -> list[dict[str, str | None]]:
+    try:
+        decisions = request_auto_sync(db, shop_id, payload.view)
+    except AutoSyncShopNotFound as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    for decision in decisions:
+        if decision["status"] == "started" and decision["lease_owner"]:
+            background_tasks.add_task(run_auto_sync_resource, shop_id, decision["resource"], decision["lease_owner"])
+    return decisions
 
 
 @app.get("/api/v1/shops/{shop_id}/products", response_model=list[ProductRead])

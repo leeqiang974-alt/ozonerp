@@ -4,9 +4,9 @@ from sqlalchemy import select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
-from .database import Base, engine, ensure_sqlite_operational_columns, get_db
+from .database import Base, engine, ensure_sqlite_operational_columns, get_db, settings
 from . import erp_models  # noqa: F401 - registers persistent operational tables.
-from .erp_models import AuditEventRecord, FbsPostingRecord, ListingDraftRecord, ListingVariantRecord, OzonCategoryCacheRecord, ProductRecord, SyncRun
+from .erp_models import AuditEventRecord, FbsPostingRecord, ListingDraftRecord, ListingVariantRecord, OzonCategoryCacheRecord, ProductRecord, SyncRun, SyncState
 from .models import ApiCredential, Shop
 from .schemas import OzonCredentialStatus, OzonCredentialUpsert, ShopCreate, ShopRead, ShopUpdate
 from .security import CredentialEncryptionUnavailable, encrypt_secret
@@ -18,8 +18,9 @@ from .integrations.ozon_seller import OzonSellerClient
 from .auto_sync import AutoSyncShopNotFound, request_auto_sync, run_auto_sync_resource
 from .schemas import AutoSyncDecisionRead, AutoSyncRequest
 
-Base.metadata.create_all(bind=engine)
-ensure_sqlite_operational_columns()
+if settings.database_url.startswith("sqlite"):
+    Base.metadata.create_all(bind=engine)
+    ensure_sqlite_operational_columns()
 
 app = FastAPI(title="Ozon ERP API", version="0.1.0")
 app.add_middleware(
@@ -88,6 +89,9 @@ def delete_shop(shop_id: int, db: Session = Depends(get_db)) -> Response:
     )
     if has_business_data:
         raise HTTPException(status_code=409, detail="店铺已有业务数据，请先停用，不可删除")
+    db.query(SyncState).filter(SyncState.shop_id == shop_id).delete()
+    db.query(SyncRun).filter(SyncRun.shop_id == shop_id).delete()
+    db.query(OzonCategoryCacheRecord).filter(OzonCategoryCacheRecord.shop_id == shop_id).delete()
     db.delete(shop)
     db.commit()
     return Response(status_code=status.HTTP_204_NO_CONTENT)

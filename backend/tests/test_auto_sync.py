@@ -6,7 +6,7 @@ from sqlalchemy.orm import Session
 from sqlalchemy.pool import StaticPool
 from fastapi.testclient import TestClient
 
-from app.auto_sync import AUTO_SYNC_VIEW_RESOURCES, UnknownAutoSyncView, request_auto_sync, run_auto_sync_resource
+from app.auto_sync import AUTO_SYNC_VIEW_RESOURCES, AutoSyncShopNotFound, UnknownAutoSyncView, request_auto_sync, run_auto_sync_resource
 from app.database import Base
 from app.erp_models import SyncState
 from app.models import Shop
@@ -82,6 +82,15 @@ def test_unknown_view_is_rejected() -> None:
             request_auto_sync(db, shop.id, "unknown", now=datetime.now(timezone.utc))
 
 
+def test_inactive_shop_cannot_start_ozon_correction() -> None:
+    with make_db() as db:
+        shop = add_shop(db)
+        shop.is_active = False
+        db.commit()
+        with pytest.raises(AutoSyncShopNotFound):
+            request_auto_sync(db, shop.id, "products", now=datetime.now(timezone.utc))
+
+
 def test_product_worker_uses_and_advances_persistent_cursor(monkeypatch) -> None:
     now = datetime(2026, 8, 3, 12, 0, tzinfo=timezone.utc)
     engine = create_engine("sqlite://")
@@ -94,17 +103,19 @@ def test_product_worker_uses_and_advances_persistent_cursor(monkeypatch) -> None
 
     calls = []
 
+    cursors = iter(["next-cursor", None])
+
     def fake_sync(db, shop_id, *, limit, last_id):
         calls.append((shop_id, limit, last_id))
-        return type("Run", (), {"status": "succeeded", "cursor": "next-cursor", "error_summary": None})()
+        return type("Run", (), {"status": "succeeded", "cursor": next(cursors), "records_seen": 100, "error_summary": None})()
 
     monkeypatch.setattr("app.auto_sync.sync_products", fake_sync)
     run_auto_sync_resource(shop_id, "products", "lease-1", now=now, session_factory=lambda: Session(engine))
 
     with Session(engine) as db:
         state = db.scalar(select(SyncState).where(SyncState.shop_id == shop_id, SyncState.resource == "products"))
-        assert calls == [(shop_id, 100, "stored-cursor")]
-        assert state.cursor == "next-cursor"
+        assert calls == [(shop_id, 100, "stored-cursor"), (shop_id, 100, "next-cursor")]
+        assert state.cursor is None
         assert state.last_success_at == now.replace(tzinfo=None)
         assert state.lease_owner is None and state.lease_expires_at is None
 
@@ -124,7 +135,8 @@ def test_fbs_worker_uses_overlap_window_and_advances_only_on_success(monkeypatch
 
     def fake_sync(db, shop_id, **kwargs):
         calls.append(kwargs)
-        return type("Run", (), {"status": "succeeded", "cursor": None, "error_summary": None})()
+        records_seen = 100 if kwargs["offset"] == 0 else 3
+        return type("Run", (), {"status": "succeeded", "cursor": None, "records_seen": records_seen, "error_summary": None})()
 
     monkeypatch.setattr("app.auto_sync.sync_fbs_postings", fake_sync)
     run_auto_sync_resource(shop_id, "fbs_postings", "lease-2", now=now, session_factory=lambda: Session(engine))
@@ -133,6 +145,7 @@ def test_fbs_worker_uses_overlap_window_and_advances_only_on_success(monkeypatch
         state = db.scalar(select(SyncState).where(SyncState.shop_id == shop_id, SyncState.resource == "fbs_postings"))
         assert calls[0]["since"] == previous_end - timedelta(minutes=10)
         assert calls[0]["to"] == now
+        assert [call["offset"] for call in calls] == [0, 100]
         assert state.window_end_at == now.replace(tzinfo=None)
         assert state.last_success_at == now.replace(tzinfo=None)
 

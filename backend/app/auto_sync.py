@@ -5,7 +5,7 @@ from __future__ import annotations
 from datetime import datetime, timedelta, timezone
 from uuid import uuid4
 
-from sqlalchemy import select
+from sqlalchemy import select, text
 from sqlalchemy.orm import Session
 
 from .database import SessionLocal
@@ -14,8 +14,9 @@ from .models import Shop
 from .sync_service import sync_category_cache, sync_fbs_postings, sync_fbs_product_images, sync_products
 
 FRESH_FOR = timedelta(minutes=5)
-LEASE_FOR = timedelta(minutes=5)
-RESOURCE_FRESH_FOR = {"categories": timedelta(hours=24)}
+LEASE_FOR = timedelta(minutes=30)
+RESOURCE_FRESH_FOR = {"categories": timedelta(hours=24), "fbs_product_images": timedelta(hours=24)}
+PRODUCT_PAGES_PER_RUN = 5
 
 AUTO_SYNC_VIEW_RESOURCES: dict[str, tuple[str, ...]] = {
     "dashboard": ("products", "fbs_postings"),
@@ -39,11 +40,17 @@ class AutoSyncShopNotFound(ValueError):
 def request_auto_sync(db: Session, shop_id: int, view: str, *, now: datetime | None = None) -> list[dict[str, str | None]]:
     if view not in AUTO_SYNC_VIEW_RESOURCES:
         raise UnknownAutoSyncView("未知功能页面")
-    if db.get(Shop, shop_id) is None:
-        raise AutoSyncShopNotFound("店铺不存在")
+    shop = db.get(Shop, shop_id)
+    if shop is None or not shop.is_active:
+        raise AutoSyncShopNotFound("店铺不存在或已停用")
     current = _as_utc(now or datetime.now(timezone.utc))
     decisions: list[dict[str, str | None]] = []
     for resource in AUTO_SYNC_VIEW_RESOURCES[view]:
+        if db.bind is not None and db.bind.dialect.name == "postgresql":
+            db.execute(
+                text("SELECT pg_advisory_xact_lock(:shop_id, hashtext(:resource))"),
+                {"shop_id": shop_id, "resource": resource},
+            )
         statement = select(SyncState).where(SyncState.shop_id == shop_id, SyncState.resource == resource)
         if db.bind is not None and db.bind.dialect.name == "postgresql":
             statement = statement.with_for_update()
@@ -84,18 +91,25 @@ def run_auto_sync_resource(
             return
         try:
             if resource == "products":
-                run = sync_products(db, shop_id, limit=100, last_id=state.cursor or "")
+                cursor = state.cursor or ""
+                for _ in range(PRODUCT_PAGES_PER_RUN):
+                    _renew_lease(db, state, lease_owner)
+                    run = sync_products(db, shop_id, limit=100, last_id=cursor)
+                    if run.status != "succeeded":
+                        break
+                    cursor = run.cursor or ""
+                    if not cursor:
+                        break
             elif resource == "fbs_postings":
                 previous_end = _as_utc(state.window_end_at) if state.window_end_at else current - timedelta(days=7)
-                run = sync_fbs_postings(
-                    db,
-                    shop_id,
-                    since=previous_end - timedelta(minutes=10) if state.window_end_at else previous_end,
-                    to=current,
-                    limit=100,
-                    offset=0,
-                    status="",
-                )
+                since = previous_end - timedelta(minutes=10) if state.window_end_at else previous_end
+                offset = 0
+                while True:
+                    _renew_lease(db, state, lease_owner)
+                    run = sync_fbs_postings(db, shop_id, since=since, to=current, limit=100, offset=offset, status="")
+                    if run.status != "succeeded" or run.records_seen < 100:
+                        break
+                    offset += 100
             elif resource == "fbs_product_images":
                 run = sync_fbs_product_images(db, shop_id)
             elif resource == "categories":
@@ -110,7 +124,7 @@ def run_auto_sync_resource(
                 state.last_success_at = current
                 state.last_error = None
                 if resource == "products":
-                    state.cursor = run.cursor
+                    state.cursor = cursor or None
                 elif resource == "fbs_postings":
                     state.window_end_at = current
             else:
@@ -130,6 +144,14 @@ def run_auto_sync_resource(
 
 def _decision(resource: str, status: str, lease_owner: str | None = None) -> dict[str, str | None]:
     return {"resource": resource, "status": status, "lease_owner": lease_owner}
+
+
+def _renew_lease(db: Session, state: SyncState, lease_owner: str) -> None:
+    if state.lease_owner != lease_owner:
+        raise RuntimeError("同步租约已被其他任务接管")
+    state.lease_expires_at = datetime.now(timezone.utc) + LEASE_FOR
+    db.commit()
+    db.refresh(state)
 
 
 def _as_utc(value: datetime) -> datetime:

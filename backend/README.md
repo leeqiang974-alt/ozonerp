@@ -70,7 +70,9 @@ Open `http://127.0.0.1:8000/docs` for Swagger UI.
 - `POST /api/v1/shops/{shop_id}/auto-sync` (local-first, five-minute incremental correction trigger)
 - `GET /api/v1/shops/{shop_id}/sync-runs` (safe sync history)
 
-业务页面始终读取本地数据库。选择店铺或切换左侧页面时，前端自动请求 `auto-sync`；后端根据 `sync_states` 判断资源是否仍在 5 分钟有效期内，并用租约避免重复任务。商品使用持久化滚动分页游标，FBS 订单使用最近成功窗口减 10 分钟的重叠校正。普通使用无需点击同步；“强制校正”仅用于人工完整检查。
+业务页面始终读取本地数据库。选择店铺或切换左侧页面时，前端自动请求 `auto-sync`；后端根据 `sync_states` 判断资源是否仍在 5 分钟有效期内，并用数据库锁和可续期租约避免重复任务。商品每轮最多滚动 5 页并保存游标；FBS 订单使用最近成功窗口减 10 分钟的重叠范围并完整遍历分页，全部成功后才推进窗口。类目和图片资源使用 24 小时有效期。普通使用无需点击同步；“强制校正”仅用于人工完整检查。
+
+PostgreSQL 正式环境只允许 Alembic 建表，API 启动不会调用 `create_all`。若已有早期 PostgreSQL 数据库，先备份并核对其结构与初始迁移完全一致，再由管理员执行 `alembic stamp 534503dc59e6`；不得在未经结构核对时直接 stamp。
 
 Before the first store connection, set a real `ERP_CREDENTIAL_ENCRYPTION_KEY`
 in the backend process environment for production. In local development the

@@ -4,7 +4,7 @@ from sqlalchemy import create_engine
 from sqlalchemy.orm import Session
 
 from app.database import Base
-from app.erp_models import ProductRecord, SyncRun
+from app.erp_models import ProductRecord, SyncRun, SyncState
 from app.main import delete_shop
 from app.models import Shop
 
@@ -27,6 +27,16 @@ def test_shop_with_only_failed_sync_history_can_be_deleted() -> None:
         shop = Shop(name="已有数据店铺", currency="CNY")
         db.add(shop); db.commit(); db.refresh(shop)
         db.add(SyncRun(shop_id=shop.id, resource="products", status="succeeded")); db.commit()
+        assert delete_shop(shop.id, db).status_code == 204
+
+
+def test_shop_with_only_auto_sync_state_can_be_deleted() -> None:
+    engine = create_engine("sqlite://")
+    Base.metadata.create_all(engine)
+    with Session(engine) as db:
+        shop = Shop(name="自动同步未完成店铺", currency="CNY")
+        db.add(shop); db.commit(); db.refresh(shop)
+        db.add(SyncState(shop_id=shop.id, resource="products", last_error="授权未配置")); db.commit()
         assert delete_shop(shop.id, db).status_code == 204
 
 

@@ -98,6 +98,26 @@ class SyncRun(Base):
     finished_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
 
 
+class SyncState(Base):
+    __tablename__ = "sync_states"
+    __table_args__ = (
+        UniqueConstraint("shop_id", "resource", name="uq_sync_state_shop_resource"),
+        Index("ix_sync_state_freshness", "shop_id", "resource", "last_success_at"),
+        Index("ix_sync_state_lease", "lease_expires_at"),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    shop_id: Mapped[int] = mapped_column(ForeignKey("shops.id", ondelete="RESTRICT"), index=True)
+    resource: Mapped[str] = mapped_column(String(40))
+    last_success_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    cursor: Mapped[str | None] = mapped_column(String(512), nullable=True)
+    window_end_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    lease_owner: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    lease_expires_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    last_error: Mapped[str | None] = mapped_column(String(1000), nullable=True)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())
+
+
 class AuditEventRecord(Base):
     __tablename__ = "audit_events"
 

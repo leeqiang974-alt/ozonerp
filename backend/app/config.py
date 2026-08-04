@@ -1,7 +1,12 @@
-"""Application configuration sourced only from environment variables."""
+"""Application configuration sourced from environment variables and .env file."""
 
+from dotenv import load_dotenv
 from functools import lru_cache
 from os import getenv
+
+# Load .env from project root (parent of backend/) or current directory
+load_dotenv()
+load_dotenv("../.env")
 
 
 class Settings:

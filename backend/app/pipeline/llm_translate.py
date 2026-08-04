@@ -12,6 +12,12 @@ import os
 import re
 from typing import Any
 
+from dotenv import load_dotenv
+
+# Load .env from project root or current directory
+load_dotenv()
+load_dotenv("../.env")
+
 # --------------------------------------------------------------------------- #
 # Dictionary fallback (used when no LLM API key is configured)                #
 # --------------------------------------------------------------------------- #
@@ -90,8 +96,8 @@ def _has_cyrillic(text: str) -> bool:
 def _get_api_config() -> tuple[str | None, str, str]:
     """Return (api_key, base_url, model) from environment."""
     api_key = os.getenv("LLM_API_KEY") or os.getenv("OPENAI_API_KEY")
-    base_url = os.getenv("LLM_BASE_URL", "https://api.openai.com/v1")
-    model = os.getenv("LLM_MODEL", "gpt-4o-mini")
+    base_url = os.getenv("LLM_BASE_URL", "https://api.deepseek.com")
+    model = os.getenv("LLM_MODEL", "deepseek-chat")
     return api_key, base_url, model
 
 

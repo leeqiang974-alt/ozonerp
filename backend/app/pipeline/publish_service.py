@@ -22,6 +22,7 @@ from ..erp_models import (
     SourceProductRecord,
 )
 from ..integrations.ozon_seller import OzonSellerClient, OzonSellerError
+from .rich_content import get_rich_content_attribute
 from ..sync_service import SyncConfigurationError, _credentials
 
 
@@ -69,6 +70,14 @@ def build_import_payload(db: Session, shop_id: int, source_product_id: int) -> d
     valid_images = [u for u in all_images if isinstance(u, str) and u.startswith(("https://", "http://"))]
     if not valid_images and source.main_image_url and source.main_image_url.startswith(("https://", "http://")):
         valid_images = [source.main_image_url]
+
+    # Add Rich Content attribute (id=11254) from images + description
+    rich_attr = get_rich_content_attribute(
+        image_urls=valid_images,
+        description_ru=pipeline.generated_description_ru or "",
+        title_ru=pipeline.generated_title_ru or "",
+    )
+    attributes_list.append(rich_attr)
 
     # Build one item per variant (each variant is a separate Ozon product)
     items: list[dict[str, Any]] = []

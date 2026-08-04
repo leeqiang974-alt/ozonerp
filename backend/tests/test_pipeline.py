@@ -505,6 +505,75 @@ class TestP7Publish:
 
 
 # ---------------------------------------------------------------------------
+# Rich Content
+# ---------------------------------------------------------------------------
+
+class TestRichContent:
+    def test_build_rich_content_with_images_and_text(self):
+        from app.pipeline.rich_content import build_rich_content, get_rich_content_attribute
+        import json
+
+        json_str = build_rich_content(
+            image_urls=["https://example.com/1.jpg", "https://example.com/2.jpg"],
+            description_ru="Отличные наушники с шумоподавлением",
+            title_ru="Беспроводные наушники",
+        )
+        parsed = json.loads(json_str)
+        assert "content" in parsed
+        widgets = parsed["content"]
+        # Should have 2 widgets: showcase (images) + list (text)
+        assert len(widgets) == 2
+        assert widgets[0]["widgetName"] == "raShowcase"
+        assert widgets[1]["widgetName"] == "list"
+        # Showcase should have 2 image blocks
+        assert len(widgets[0]["blocks"]) == 2
+        assert widgets[0]["blocks"][0]["img"]["src"] == "https://example.com/1.jpg"
+        # Text widget should have title and text
+        assert "title" in widgets[1]["blocks"][0]
+        assert "text" in widgets[1]["blocks"][0]
+
+    def test_build_rich_content_images_only(self):
+        from app.pipeline.rich_content import build_rich_content
+        import json
+
+        json_str = build_rich_content(
+            image_urls=["https://example.com/1.jpg"],
+            description_ru="",
+            title_ru="",
+        )
+        parsed = json.loads(json_str)
+        assert len(parsed["content"]) == 1
+        assert parsed["content"][0]["widgetName"] == "raShowcase"
+
+    def test_get_rich_content_attribute_format(self):
+        from app.pipeline.rich_content import get_rich_content_attribute
+        import json
+
+        attr = get_rich_content_attribute(
+            image_urls=["https://example.com/1.jpg"],
+            description_ru="Test description",
+            title_ru="Test title",
+        )
+        assert attr["id"] == "11254"
+        assert attr["complex_id"] == 0
+        value = attr["values"][0]["value"]
+        parsed = json.loads(value)
+        assert "content" in parsed
+
+    def test_invalid_urls_filtered(self):
+        from app.pipeline.rich_content import build_rich_content
+        import json
+
+        json_str = build_rich_content(
+            image_urls=["https://valid.com/1.jpg", "invalid-url", "", None],
+            description_ru="desc",
+        )
+        parsed = json.loads(json_str)
+        showcase = parsed["content"][0]
+        assert len(showcase["blocks"]) == 1  # only valid URL
+
+
+# ---------------------------------------------------------------------------
 # Progress tracking
 # ---------------------------------------------------------------------------
 

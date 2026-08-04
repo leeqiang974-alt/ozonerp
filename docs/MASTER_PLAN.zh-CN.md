@@ -33,17 +33,29 @@
 
 ## 1688 -> Ozon 自动上架流水线
 
-在现有手动上架草稿基础上，新增 1688 源商品自动采集 -> 智能映射 -> 自动上架的 P0-P7 流水线。当前 P3-P7 代码已完成并通过测试；P0-P2 代码已完成，数据相关任务待真实 1688 商品导入后自动完成。
+在现有手动上架草稿基础上，新增 1688 源商品自动采集 -> 智能映射 -> 自动上架的 P0-P7 流水线。P0-P7 代码全部完成，74 项测试通过。已用真实 1688 商品和真实 Ozon 店铺完成端到端验证（含 1 次真实发布）。
 
 | 阶段 | 目标 | 当前状态 | 代码 |
 |---|---|---|---|
-| P0 | 采集契约冻结 | 代码完成，待真实快照验证 | `pipeline/contract.py` |
-| P1 | 采集入库与规范化 | 代码完成，待真实导入 | `pipeline/ingestion_service.py` |
-| P2 | 商品识别与类目匹配 | 代码完成，待真实类目匹配 | `pipeline/fact_extraction.py` + `category_matching.py` |
+| P0 | 采集契约冻结 | 已完成 | `pipeline/contract.py` |
+| P1 | 采集入库与规范化 | 已完成，已验证真实导入 | `pipeline/ingestion_service.py` |
+| P2 | 商品识别与类目匹配 | 已完成，已加入域兼容性检查 | `pipeline/fact_extraction.py` + `category_matching.py` |
 | P3 | 属性自动补全 | 已完成 | `pipeline/attribute_mapping.py` |
 | P4 | 多变体、SKU 与图片 | 已完成 | `pipeline/variant_mapping.py` |
-| P5 | 内容生成与定价模型 | 已完成 | `pipeline/content_generation.py` |
-| P6 | 质量工作台与预检 | 已完成 | `pipeline/quality_check.py` |
-| P7 | 审批与小批写回 | 代码完成，Ozon 写回为模拟 | `pipeline/publish_service.py` |
+| P5 | 内容生成与定价模型 | 已完成，LLM 翻译 + 词典回退 | `pipeline/content_generation.py` + `llm_translate.py` |
+| P6 | 质量工作台与预检 | 已完成，含俄语语言验证 | `pipeline/quality_check.py` |
+| P7 | 审批与小批写回 | 已完成，真实 Ozon 写回（用户批准） | `pipeline/publish_service.py` |
 
-进度看板 `frontend/progress.html` 从后端 API 实时拉取，10 秒自动刷新。所有 Ozon 写操作仍受阶段 7 受控写回约束。
+进度看板 `frontend/progress.html` 从后端 API 实时拉取，10 秒自动刷新。
+
+### 已修复的关键问题
+
+- 内容语言：标题/描述现在通过 LLM 翻译为俄语（需配置 `LLM_API_KEY`），无 key 时词典回退并标记未验证。
+- 类目匹配：加入产品类型-类目域映射和负向关键词排除，防止跨域误匹配。
+- 质量评分：加入西里尔字母验证和中文字符惩罚，未通过 AI 验证的内容标记需人工审核。
+
+### 待改进项
+
+- 定价模型仍使用硬编码尺寸，需从 1688 采集数据提取真实重量和尺寸。
+- LLM 翻译需配置 API key 才能产出高质量俄语；词典回退质量有限。
+- 已发布的 1 个商品标题曾为中文，代码已修复，旧数据需重新生成后重新发布。

@@ -51,15 +51,27 @@
 - 新增 `backend/app/pipeline/` 包，覆盖 P0-P7 全链路：
   - P0 `contract.py`：1688 商品快照 JSON Schema、幂等键、校验与规范化。
   - P1 `ingestion_service.py`：幂等 upsert 导入，重复导入更新而非新建。
-  - P2 `fact_extraction.py` + `category_matching.py`：产品事实提取、Ozon 类目召回 Top 20 + 规则重排 Top 5 + 人工锁定。
+  - P2 `fact_extraction.py` + `category_matching.py`：产品事实提取、Ozon 类目召回 Top 20 + 规则重排 Top 5 + 人工锁定。**已加入产品类型-类目域映射和负向关键词排除**，防止跨域误匹配（如耳机匹配到消防设备）。
   - P3 `attribute_mapping.py`：确定性映射规则（材质 -> Material 等）+ 中俄同义词表 + 字典搜索与 value_id 验证。
   - P4 `variant_mapping.py`：1688 规格轴解析、稳定 SKU 编码（SHA-256）、图片编排（8-15 张）与合规检查。
-  - P5 `content_generation.py`：俄语标题/描述/规格块生成 + 每 SKU CNY 定价（复用 PricingService，规则版本 1.0.0）。
-  - P6 `quality_check.py`：类目置信度、属性覆盖率、内容完整度、图片/SKU 合规、定价健康度评分 + Ozon payload 预览（不写回）。
-  - P7 `publish_service.py`：草稿创建 -> 审批（审计记录）-> 提交 Ozon（task_id 模拟）-> 状态轮询。
-- 新增 5 个数据模型：`SourceProductRecord`、`SourceVariantRecord`、`SourceMediaRecord`、`PipelineProductRecord`、`PipelineProgressRecord`。
-- 新增 14 个 API 端点（`/api/v1/shops/{id}/pipeline/...` + `/api/v1/pipeline/progress`），全部注册到 `main.py`。
-- `frontend/progress.html` 改为从后端 `/api/v1/pipeline/progress` 拉取真实进度，10 秒自动刷新，支持手动刷新按钮。
-- 进度按实际代码文件存在性 + 数据库状态动态计算：导入商品后 P0/P1 数据任务自动翻转。
-- 新增 24 个测试覆盖 P0-P7 全链路（含幂等导入、全链路到提交、无审批拒绝提交、进度动态更新），后端测试增至 73 项通过。
-- P7 的 Ozon 写回 API（`/v3/product/import`）仍为模拟实现，返回 simulated task_id；真实接入待阶段 7 灰度验证。
+  - P5 `content_generation.py` + `llm_translate.py`：**LLM 驱动的中俄翻译**（OpenAI 兼容 API，通过 `LLM_API_KEY` 环境变量配置）；无 API key 时使用词典回退并标记 `content_verified=False`。俄语标题/描述/规格块生成 + 每 SKU CNY 定价（复用 PricingService，规则版本 1.0.0）。
+  - P6 `quality_check.py`：类目置信度、属性覆盖率、内容完整度（**含西里尔字母验证和中文字符惩罚**）、图片/SKU 合规、定价健康度评分 + Ozon payload 预览。未通过 AI 验证的内容会被标记为需人工审核。
+  - P7 `publish_service.py`：草稿创建 -> 审批（审计记录）-> **真实提交 Ozon `/v3/product/import`** -> 状态轮询。用户已批准使用真实写回以便发现问题。
+- 新增 5 个数据模型：`SourceProductRecord`、`SourceVariantRecord`、`SourceMediaRecord`、`PipelineProductRecord`（含 `content_verified` 字段）、`PipelineProgressRecord`。
+- 新增 14 个 API 端点 + Chrome 扩展桥接端点，全部注册到 `main.py`。
+- `frontend/progress.html` 从后端 API 实时拉取进度，10 秒自动刷新。
+- 后端测试增至 74 项通过（含域兼容性测试、LLM 翻译回退测试）。
+
+### 已发现并修复的问题（2026-08-04）
+
+1. **内容语言错误**：P5 曾直接输出中文标题作为 `title_ru`，已修复为 LLM 翻译 + 词典回退。
+2. **类目跨域误匹配**：P2 曾将蓝牙耳机匹配到"防护和消防设备"类目，已加入域兼容性检查。
+3. **质量分虚高**：P6 曾只检查字段是否存在不检查语言，已加入西里尔字母验证和中文字符惩罚。
+4. **测试破损**：4 项测试失败已修复（FakeOzonClient 签名、缺失属性缓存、P7 API mock）。
+5. **代码卫生**：清理了 5 个根目录临时脚本。
+
+### 待改进项
+
+- 定价模型仍使用硬编码尺寸（500g/200x150x100mm），需从 1688 采集数据中提取真实重量和尺寸。
+- LLM 翻译需要配置 `LLM_API_KEY` 才能产出高质量俄语内容；无 key 时词典回退质量有限。
+- P7 真实写回已用于测试，已成功发布 1 个商品到 Ozon（task_id 5306797528），但该商品的标题曾为中文（已修复代码，旧数据需重新生成内容后重新发布）。

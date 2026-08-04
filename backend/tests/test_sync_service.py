@@ -23,7 +23,7 @@ class FakeOzonClient:
     def get_product_info(self, **_: object):
         type(self).product_info_calls += 1
         return {"items": [{"id": 101, "primary_image": ["https://example.test/product.jpg"]}]}
-    def get_category_tree(self):
+    def get_category_tree(self, language="DEFAULT"):
         return {"result": [{"category_name": "服饰", "description_category_id": 10, "children": [{"type_id": 20, "type_name": "上衣", "children": []}]}]}
 
 

@@ -44,3 +44,22 @@
 2. 使用当前 Seller API 的替代仓库接口完成只读适配，并以 mock contract test 固化。
 3. 将当前应用内后台任务迁移到独立 worker，并补限流退避与订单/商品多页完整周期契约测试。
 4. 商品上架下一步完成图片可访问性/数量/格式预检和多变体属性模型；随后建设审批界面与 payload 预览，不提前接入发布写回。
+
+
+## 1688 -> Ozon 自动上架流水线（P0-P7）
+
+- 新增 `backend/app/pipeline/` 包，覆盖 P0-P7 全链路：
+  - P0 `contract.py`：1688 商品快照 JSON Schema、幂等键、校验与规范化。
+  - P1 `ingestion_service.py`：幂等 upsert 导入，重复导入更新而非新建。
+  - P2 `fact_extraction.py` + `category_matching.py`：产品事实提取、Ozon 类目召回 Top 20 + 规则重排 Top 5 + 人工锁定。
+  - P3 `attribute_mapping.py`：确定性映射规则（材质 -> Material 等）+ 中俄同义词表 + 字典搜索与 value_id 验证。
+  - P4 `variant_mapping.py`：1688 规格轴解析、稳定 SKU 编码（SHA-256）、图片编排（8-15 张）与合规检查。
+  - P5 `content_generation.py`：俄语标题/描述/规格块生成 + 每 SKU CNY 定价（复用 PricingService，规则版本 1.0.0）。
+  - P6 `quality_check.py`：类目置信度、属性覆盖率、内容完整度、图片/SKU 合规、定价健康度评分 + Ozon payload 预览（不写回）。
+  - P7 `publish_service.py`：草稿创建 -> 审批（审计记录）-> 提交 Ozon（task_id 模拟）-> 状态轮询。
+- 新增 5 个数据模型：`SourceProductRecord`、`SourceVariantRecord`、`SourceMediaRecord`、`PipelineProductRecord`、`PipelineProgressRecord`。
+- 新增 14 个 API 端点（`/api/v1/shops/{id}/pipeline/...` + `/api/v1/pipeline/progress`），全部注册到 `main.py`。
+- `frontend/progress.html` 改为从后端 `/api/v1/pipeline/progress` 拉取真实进度，10 秒自动刷新，支持手动刷新按钮。
+- 进度按实际代码文件存在性 + 数据库状态动态计算：导入商品后 P0/P1 数据任务自动翻转。
+- 新增 24 个测试覆盖 P0-P7 全链路（含幂等导入、全链路到提交、无审批拒绝提交、进度动态更新），后端测试增至 73 项通过。
+- P7 的 Ozon 写回 API（`/v3/product/import`）仍为模拟实现，返回 simulated task_id；真实接入待阶段 7 灰度验证。

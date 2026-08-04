@@ -26,7 +26,7 @@ def get_category_attributes(db: Session, shop_id: int, category_id: str, type_id
 
     client_id, api_key = _credentials(db, shop_id)
     with OzonSellerClient(client_id=client_id, api_key=api_key) as client:
-        response = client.get_category_attributes(category_id=int(category_id), type_id=int(type_id))
+        response = client.get_category_attributes(category_id=int(category_id), type_id=int(type_id), language="ZH_HANS")
     items = response.get("result", [])
     if not isinstance(items, list):
         raise ValueError("Ozon 类目属性响应格式错误")

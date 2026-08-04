@@ -1,0 +1,154 @@
+﻿<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Ozon ERP 1688->Ozon 上架流水线进度</title>
+    <style>
+        * { margin: 0; padding: 0; box-sizing: border-box; }
+        body { font-family: 'Microsoft YaHei', sans-serif; background: #f5f7fb; padding: 20px; }
+        .container { max-width: 1200px; margin: 0 auto; }
+        header { background: linear-gradient(135deg, #1264db 0%, #071c3d 100%); color: white; padding: 30px; border-radius: 12px; margin-bottom: 20px; display: flex; justify-content: space-between; align-items: center; }
+        header h1 { font-size: 24px; margin-bottom: 8px; }
+        header p { opacity: 0.9; font-size: 13px; }
+        .refresh-btn { background: rgba(255,255,255,0.15); border: 1px solid rgba(255,255,255,0.3); color: white; padding: 8px 16px; border-radius: 6px; cursor: pointer; font-size: 13px; white-space: nowrap; }
+        .refresh-btn:hover { background: rgba(255,255,255,0.25); }
+        .refresh-btn:disabled { opacity: 0.5; cursor: wait; }
+        .progress-summary { display: grid; grid-template-columns: repeat(4, 1fr); gap: 16px; margin-bottom: 20px; }
+        .summary-card { background: white; padding: 20px; border-radius: 8px; box-shadow: 0 2px 8px rgba(0,0,0,0.08); text-align: center; }
+        .summary-card h3 { color: #718097; font-size: 12px; margin-bottom: 10px; }
+        .summary-card .number { font-size: 32px; font-weight: bold; color: #1264db; }
+        .summary-card .label { font-size: 11px; color: #718097; margin-top: 5px; }
+        .stages { display: grid; gap: 16px; }
+        .stage { background: white; border-radius: 8px; padding: 20px; box-shadow: 0 2px 8px rgba(0,0,0,0.08); border-left: 4px solid #e4eaf2; }
+        .stage.active { border-left-color: #1264db; }
+        .stage.completed { border-left-color: #23834d; }
+        .stage-header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 12px; }
+        .stage-header h3 { font-size: 16px; color: #18263a; }
+        .stage-badge { padding: 3px 10px; border-radius: 10px; font-size: 11px; font-weight: 600; }
+        .badge-pending { background: #f1f6ff; color: #2765b7; }
+        .badge-active { background: #fff8de; color: #8a6d1b; }
+        .badge-completed { background: #eaf8ef; color: #23834d; }
+        .task-list { list-style: none; }
+        .task-list li { padding: 8px 0; border-bottom: 1px solid #edf0f5; display: flex; align-items: center; gap: 10px; }
+        .task-list li:last-child { border-bottom: none; }
+        .task-check { width: 18px; height: 18px; border-radius: 50%; border: 2px solid #d8e0eb; display: flex; align-items: center; justify-content: center; flex-shrink: 0; font-size: 11px; }
+        .task-check.done { background: #23834d; border-color: #23834d; color: white; }
+        .task-text { flex: 1; color: #34445a; font-size: 13px; }
+        .task-text.done { color: #718097; }
+        .progress-bar { height: 5px; background: #edf0f5; border-radius: 3px; margin-top: 12px; overflow: hidden; }
+        .progress-fill { height: 100%; background: #1264db; border-radius: 3px; transition: width 0.4s ease; }
+        .stage.completed .progress-fill { background: #23834d; }
+        .stage-meta { display: flex; gap: 12px; margin-top: 10px; font-size: 11px; color: #718097; }
+        .data-row { display: flex; gap: 16px; margin-bottom: 16px; }
+        .data-pill { background: white; padding: 10px 16px; border-radius: 6px; box-shadow: 0 1px 4px rgba(0,0,0,0.06); font-size: 13px; color: #52709d; }
+        .data-pill strong { color: #1264db; }
+        footer { text-align: center; padding: 20px; color: #718097; font-size: 11px; }
+        .loading { text-align: center; padding: 40px; color: #718097; }
+        .error-banner { background: #fff3f3; border: 1px solid #f5c6c6; color: #a94442; padding: 12px; border-radius: 6px; margin-bottom: 16px; font-size: 13px; display: none; }
+        @media (max-width: 768px) { .progress-summary { grid-template-columns: repeat(2, 1fr); } }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <header>
+            <div>
+                <h1>Ozon ERP 1688 -> Ozon 上架流水线</h1>
+                <p>P0-P7 全链路进度 | 中文界面 | 俄语内容 | CNY 定价 | 多店铺 FBS 运营</p>
+            </div>
+            <button class="refresh-btn" id="refresh-btn" onclick="refresh()">刷新进度</button>
+        </header>
+        <div class="error-banner" id="error-banner"></div>
+        <div class="data-row" id="data-row" style="display:none;">
+            <div class="data-pill">采集源商品: <strong id="source-count">0</strong></div>
+            <div class="data-pill">流水线处理: <strong id="pipeline-count">0</strong></div>
+        </div>
+        <div class="progress-summary">
+            <div class="summary-card">
+                <h3>总进度</h3>
+                <div class="number" id="overall-progress">--</div>
+                <div class="label">P0-P7 全部完成</div>
+            </div>
+            <div class="summary-card">
+                <h3>已完成</h3>
+                <div class="number" id="completed-count">0</div>
+                <div class="label">/ 8 个阶段</div>
+            </div>
+            <div class="summary-card">
+                <h3>进行中</h3>
+                <div class="number" id="active-count">0</div>
+                <div class="label">当前开发中</div>
+            </div>
+            <div class="summary-card">
+                <h3>待开始</h3>
+                <div class="number" id="pending-count">0</div>
+                <div class="label">排队等待</div>
+            </div>
+        </div>
+        <div class="stages" id="stages-container">
+            <div class="loading">正在从后端加载进度…</div>
+        </div>
+        <footer>
+            <p>最后更新: <span id="last-update">--</span> | 自动刷新间隔 10 秒</p>
+        </footer>
+    </div>
+    <script>
+        const apiBase = window.ERP_API_BASE || "http://127.0.0.1:8000";
+        let refreshTimer = null;
+
+        async function refresh() {
+            const btn = document.getElementById("refresh-btn");
+            btn.disabled = true;
+            btn.textContent = "刷新中…";
+            try {
+                const response = await fetch(apiBase + "/api/v1/pipeline/progress");
+                if (!response.ok) throw new Error("HTTP " + response.status);
+                const data = await response.json();
+                render(data);
+                document.getElementById("error-banner").style.display = "none";
+            } catch (err) {
+                document.getElementById("error-banner").textContent = "无法连接后端 (" + err.message + ")。请确认 FastAPI 服务已启动。";
+                document.getElementById("error-banner").style.display = "block";
+            } finally {
+                btn.disabled = false;
+                btn.textContent = "刷新进度";
+                document.getElementById("last-update").textContent = new Date().toLocaleString("zh-CN");
+            }
+        }
+
+        function render(data) {
+            document.getElementById("overall-progress").textContent = data.overall_percent + "%";
+            document.getElementById("completed-count").textContent = data.completed_count;
+            document.getElementById("active-count").textContent = data.active_count;
+            document.getElementById("pending-count").textContent = data.pending_count;
+            document.getElementById("source-count").textContent = data.source_product_count;
+            document.getElementById("pipeline-count").textContent = data.pipeline_product_count;
+            document.getElementById("data-row").style.display = "flex";
+            const container = document.getElementById("stages-container");
+            container.innerHTML = data.stages.map(function(stage) {
+                const stageClass = stage.status;
+                const badgeClass = "badge-" + stage.status;
+                const badgeText = stage.status === "completed" ? "已完成" : stage.status === "active" ? "进行中" : "待开始";
+                const tasks = stage.tasks.map(function(task) {
+                    return '<li><div class="task-check ' + (task.done ? "done" : "") + '">' + (task.done ? "&#10003;" : "") + '</div><span class="task-text ' + (task.done ? "done" : "") + '">' + escapeHtml(task.text) + '</span></li>';
+                }).join("");
+                return '<div class="stage ' + stageClass + '">' +
+                    '<div class="stage-header"><h3>' + escapeHtml(stage.title) + '</h3><span class="stage-badge ' + badgeClass + '">' + badgeText + '</span></div>' +
+                    '<ul class="task-list">' + tasks + '</ul>' +
+                    '<div class="progress-bar"><div class="progress-fill" style="width:' + stage.progress_percent + '%"></div></div>' +
+                    '<div class="stage-meta"><span>' + stage.done_count + '/' + stage.total_tasks + ' 项完成</span><span>' + stage.progress_percent + '%</span></div>' +
+                    '</div>';
+            }).join("");
+        }
+
+        function escapeHtml(text) {
+            const div = document.createElement("div");
+            div.textContent = text;
+            return div.innerHTML;
+        }
+
+        refresh();
+        refreshTimer = setInterval(refresh, 10000);
+    </script>
+</body>
+</html>

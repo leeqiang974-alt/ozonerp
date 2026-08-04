@@ -192,6 +192,7 @@ class OzonCategoryCacheRecord(Base):
     type_id: Mapped[str] = mapped_column(String(64), default="")
     title: Mapped[str] = mapped_column(String(500))
     parent_id: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    title_zh: Mapped[str | None] = mapped_column(String(500), nullable=True)
 
 
 class OzonAttributeCacheRecord(Base):
@@ -238,4 +239,110 @@ class OzonAttributeDictionaryQueryCacheRecord(Base):
     query_key: Mapped[str] = mapped_column(String(100))
     result_limit: Mapped[int] = mapped_column(Integer)
     result_json: Mapped[str] = mapped_column(Text)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())
+# ---------------------------------------------------------------------------
+# 1688 -> Ozon automated listing pipeline (P0-P7)
+# ---------------------------------------------------------------------------
+
+
+class SourceProductRecord(Base):
+    """Raw 1688 product snapshot ingested from the Chrome extension (P0/P1)."""
+
+    __tablename__ = "source_products"
+    __table_args__ = (UniqueConstraint("source_platform", "source_product_id", name="uq_source_product"),)
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    shop_id: Mapped[int] = mapped_column(ForeignKey("shops.id", ondelete="RESTRICT"), index=True)
+    source_platform: Mapped[str] = mapped_column(String(32), default="1688")
+    source_product_id: Mapped[str] = mapped_column(String(64))
+    source_url: Mapped[str | None] = mapped_column(String(2000), nullable=True)
+    title: Mapped[str] = mapped_column(String(500))
+    raw_json: Mapped[str | None] = mapped_column(Text, nullable=True)
+    main_image_url: Mapped[str | None] = mapped_column(String(2000), nullable=True)
+    category_hint: Mapped[str | None] = mapped_column(String(500), nullable=True)
+    brand: Mapped[str | None] = mapped_column(String(200), nullable=True)
+    material: Mapped[str | None] = mapped_column(String(200), nullable=True)
+    ingestion_status: Mapped[str] = mapped_column(String(32), default="ingested", index=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())
+    variants: Mapped[list["SourceVariantRecord"]] = relationship(back_populates="source_product", cascade="all, delete-orphan")
+    media: Mapped[list["SourceMediaRecord"]] = relationship(back_populates="source_product", cascade="all, delete-orphan")
+
+
+class SourceVariantRecord(Base):
+    __tablename__ = "source_variants"
+    __table_args__ = (UniqueConstraint("source_product_id", "source_sku", name="uq_source_variant"),)
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    source_product_id: Mapped[int] = mapped_column(ForeignKey("source_products.id", ondelete="CASCADE"), index=True)
+    source_sku: Mapped[str] = mapped_column(String(128))
+    spec_name: Mapped[str] = mapped_column(String(500))
+    price_cny: Mapped[Decimal | None] = mapped_column(Numeric(14, 2), nullable=True)
+    stock: Mapped[int] = mapped_column(Integer, default=0)
+    image_url: Mapped[str | None] = mapped_column(String(2000), nullable=True)
+    raw_json: Mapped[str | None] = mapped_column(Text, nullable=True)
+    source_product: Mapped[SourceProductRecord] = relationship(back_populates="variants")
+
+
+class SourceMediaRecord(Base):
+    __tablename__ = "source_media"
+    __table_args__ = (UniqueConstraint("source_product_id", "url", name="uq_source_media"),)
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    source_product_id: Mapped[int] = mapped_column(ForeignKey("source_products.id", ondelete="CASCADE"), index=True)
+    media_type: Mapped[str] = mapped_column(String(16), default="image")
+    url: Mapped[str] = mapped_column(String(2000))
+    sort_order: Mapped[int] = mapped_column(Integer, default=0)
+    is_primary: Mapped[bool] = mapped_column(Boolean, default=False)
+    source_product: Mapped[SourceProductRecord] = relationship(back_populates="media")
+
+
+class PipelineProductRecord(Base):
+    """Processing state linking a source product through P2-P7 stages."""
+
+    __tablename__ = "pipeline_products"
+    __table_args__ = (UniqueConstraint("shop_id", "source_product_id", name="uq_pipeline_product"),)
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    shop_id: Mapped[int] = mapped_column(ForeignKey("shops.id", ondelete="RESTRICT"), index=True)
+    source_product_id: Mapped[int] = mapped_column(ForeignKey("source_products.id", ondelete="CASCADE"), index=True)
+    pipeline_stage: Mapped[str] = mapped_column(String(32), default="ingested", index=True)
+    # P2: category matching
+    matched_category_id: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    matched_type_id: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    category_confidence: Mapped[Decimal | None] = mapped_column(Numeric(5, 2), nullable=True)
+    category_candidates_json: Mapped[str | None] = mapped_column(Text, nullable=True)
+    # P3: attribute mapping
+    attribute_mapping_json: Mapped[str | None] = mapped_column(Text, nullable=True)
+    attribute_coverage: Mapped[Decimal | None] = mapped_column(Numeric(5, 2), nullable=True)
+    # P4: variant mapping
+    variant_mapping_json: Mapped[str | None] = mapped_column(Text, nullable=True)
+    # P5: content + pricing
+    generated_title_ru: Mapped[str | None] = mapped_column(String(500), nullable=True)
+    generated_description_ru: Mapped[str | None] = mapped_column(Text, nullable=True)
+    generated_specs_json: Mapped[str | None] = mapped_column(Text, nullable=True)
+    content_verified: Mapped[bool | None] = mapped_column(Boolean, nullable=True)
+    pricing_json: Mapped[str | None] = mapped_column(Text, nullable=True)
+    # P6: quality
+    quality_score: Mapped[Decimal | None] = mapped_column(Numeric(5, 2), nullable=True)
+    quality_issues_json: Mapped[str | None] = mapped_column(Text, nullable=True)
+    # P7: publish
+    listing_draft_id: Mapped[int | None] = mapped_column(ForeignKey("listing_drafts.id", ondelete="SET NULL"), nullable=True)
+    publish_status: Mapped[str] = mapped_column(String(32), default="not_submitted", index=True)
+    task_id: Mapped[str | None] = mapped_column(String(128), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())
+
+
+class PipelineProgressRecord(Base):
+    """Tracks P0-P7 stage completion for the dashboard."""
+
+    __tablename__ = "pipeline_progress"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    stage: Mapped[str] = mapped_column(String(8), unique=True, index=True)
+    title: Mapped[str] = mapped_column(String(200))
+    status: Mapped[str] = mapped_column(String(16), default="pending")
+    tasks_json: Mapped[str] = mapped_column(Text, default="[]")
+    progress_percent: Mapped[int] = mapped_column(Integer, default=0)
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())

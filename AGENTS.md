@@ -22,6 +22,16 @@
 
 每个阶段结束必须更新 `docs/MASTER_PLAN.zh-CN.md`、`docs/SESSION_HANDOFF.zh-CN.md`，并运行相关测试。若用户临时需求与本指示冲突，应说明影响、给出不偏离主线的实现方式，再继续执行。
 
+## Ozon API 开发指导规则
+
+- docs/MASTER_PLAN.zh-CN.md 是最高开发方向，所有开发按阶段顺序推进，不因单个需求跳过。
+- Ozon Seller API 官方文档 https://docs.ozon.ru/api/seller/zh/ 是唯一 API 对接依据。
+- 离线快照位于 d:\\Desktop\\ozonseller api\\Ozon Seller API 文件20260804_files\\saved_resource.html（Redoc 格式，5.8MB）。
+- 端点参考已整理为 docs/OZON_API_REFERENCE.zh-CN.md，按 ERP 阶段分组，共 264 个端点。
+- 新增或变更 API 对接前，必须先查阅官方文档确认接口路径、请求体和响应结构，不得凭记忆或旧文档猜测。
+- language 参数值以官方文档枚举为准：DEFAULT、RU、EN、TR、ZH_HANS（中文简体）。
+- 旧接口 /v1/warehouse/list 已被 Ozon 废弃，禁止接入；仓库列表使用 /v2/warehouse/list。
+
 ## 本地界面展示规则
 
 - 在告知用户“页面已打开/已显示”之前，必须先验证前端 `http://127.0.0.1:5500/` 返回 HTTP 200，并确认后端 `/health` 正常；若静态服务停止，应以隐藏后台进程恢复后再打开或强制刷新浏览器标签页。

@@ -121,12 +121,13 @@ class OzonSellerClient:
             raise ValueError("at most 1000 product identifiers can be requested")
         return self._post("/v3/product/info/list", {"product_id": product_ids or [], "sku": skus or [], "offer_id": []})
 
-    def get_category_tree(self) -> dict[str, Any]:
-        """Read Ozon's current category tree; no seller data is changed."""
-        return self._post("/v1/description-category/tree", {"language": "DEFAULT"})
+    def get_category_tree(self, language: str = "DEFAULT") -> dict[str, Any]:
+        """Read Ozon's current category tree; no seller data is changed.
+        Pass language="ZH" for Chinese category names."""
+        return self._post("/v1/description-category/tree", {"language": language})
 
-    def get_category_attributes(self, *, category_id: int, type_id: int) -> dict[str, Any]:
-        return self._post("/v1/description-category/attribute", {"description_category_id": category_id, "type_id": type_id, "language": "DEFAULT"})
+    def get_category_attributes(self, *, category_id: int, type_id: int, language: str = "DEFAULT") -> dict[str, Any]:
+        return self._post("/v1/description-category/attribute", {"description_category_id": category_id, "type_id": type_id, "language": language})
 
     def get_category_attribute_values(self, *, category_id: int, type_id: int, attribute_id: int, limit: int = 100, last_value_id: int = 0) -> dict[str, Any]:
         self._validate_limit(limit)
@@ -152,6 +153,27 @@ class OzonSellerClient:
             "value": value.strip(),
         })
 
+
+    def create_products(self, *, items: list[dict[str, Any]]) -> dict[str, Any]:
+        """Create or update products via /v3/product/import (write operation).
+
+        Each item must follow the Ozon product import schema:
+        name, offer_id, category_id, price, vat, weight, dimensions,
+        images, description, attributes.
+        Returns the task_id for async processing.
+        """
+        if not items:
+            raise ValueError("at least one item is required")
+        if len(items) > 1000:
+            raise ValueError("at most 1000 items per import request")
+        return self._post("/v3/product/import", {"items": items})
+
+    def get_import_info(self, *, task_id: str) -> dict[str, Any]:
+        """Check the status of a product import task via /v1/product/import/info."""
+        if not task_id.strip():
+            raise ValueError("task_id is required")
+        return self._post("/v1/product/import/info", {"task_id": task_id.strip()})
+
     @staticmethod
     def _validate_limit(limit: int) -> None:
         if not 1 <= limit <= 1000:
@@ -165,14 +187,17 @@ class OzonSellerClient:
         except httpx.HTTPError as exc:
             raise OzonTransportError("Ozon transport request failed") from exc
 
+        # Capture response body for error diagnostics before raising
+        if response.status_code >= 400:
+            body_text = response.text[:2000]
         if response.status_code in (401, 403):
-            raise OzonAuthenticationError("Ozon authentication failed")
+            raise OzonAuthenticationError(f"Ozon authentication failed: {body_text}")
         if response.status_code == 429:
-            raise OzonRateLimitError("Ozon rate limit reached")
+            raise OzonRateLimitError(f"Ozon rate limit reached: {body_text}")
         if 400 <= response.status_code < 500:
-            raise OzonClientResponseError(f"Ozon request failed with status {response.status_code}")
+            raise OzonClientResponseError(f"Ozon request failed (HTTP {response.status_code}): {body_text}")
         if response.status_code >= 500:
-            raise OzonServerError(f"Ozon service failed with status {response.status_code}")
+            raise OzonServerError(f"Ozon service failed (HTTP {response.status_code}): {body_text}")
         try:
             body = response.json()
         except ValueError as exc:

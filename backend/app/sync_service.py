@@ -45,7 +45,11 @@ def sync_fbs_product_images(db: Session, shop_id: int) -> SyncRun:
 
 
 def sync_category_cache(db: Session, shop_id: int) -> SyncRun:
-    return _run(db, shop_id, "categories", lambda client: _replace_category_cache(db, shop_id, client.get_category_tree()))
+    def _sync_categories(client):
+        ru_response = client.get_category_tree("DEFAULT")
+        zh_response = client.get_category_tree("ZH_HANS")
+        return _replace_category_cache(db, shop_id, ru_response, zh_response)
+    return _run(db, shop_id, "categories", _sync_categories)
 
 
 def _run(db: Session, shop_id: int, resource: str, operation) -> SyncRun:
@@ -184,11 +188,28 @@ def _image_map(response: dict[str, Any], identifier_key: str) -> dict[str, str]:
     return output
 
 
-def _replace_category_cache(db: Session, shop_id: int, response: dict[str, Any]) -> tuple[int, int, str | None]:
+def _replace_category_cache(db: Session, shop_id: int, response: dict[str, Any], zh_response: dict[str, Any] | None = None) -> tuple[int, int, str | None]:
     nodes = response.get("result", [])
     if not isinstance(nodes, list):
         raise ValueError("Ozon 类目树响应格式错误")
     db.query(OzonCategoryCacheRecord).filter(OzonCategoryCacheRecord.shop_id == shop_id).delete()
+
+    # Build (category_id, type_id) -> Chinese title map from the ZH tree
+    zh_map: dict[tuple[str, str], str] = {}
+    if zh_response and isinstance(zh_response.get("result"), list):
+        def walk_zh(items, parent_cat=None, parent_zh=None):
+            for item in (items if isinstance(items, list) else []):
+                if not isinstance(item, dict) or item.get("disabled") is True:
+                    continue
+                cat_id = item.get("description_category_id")
+                if cat_id is not None:
+                    walk_zh(item.get("children"), str(cat_id), str(item.get("category_name") or ""))
+                elif item.get("type_id") is not None and parent_cat:
+                    zh_t = str(item.get("type_name") or "")
+                    full_zh = (parent_zh + " / " + zh_t).strip(" /") if parent_zh else zh_t
+                    if full_zh:
+                        zh_map[(parent_cat, str(item["type_id"]))] = full_zh
+        walk_zh(zh_response["result"])
 
     def walk(items: Any, parent_category: str | None = None, parent_title: str | None = None) -> int:
         count = 0
@@ -200,11 +221,13 @@ def _replace_category_cache(db: Session, shop_id: int, response: dict[str, Any])
                 count += walk(item.get("children"), str(category_id), str(item.get("category_name") or "未命名类目"))
             elif item.get("type_id") is not None and parent_category:
                 type_title = str(item.get("type_name") or "未命名类型")
+                zh_title = zh_map.get((parent_category, str(item["type_id"])))
                 db.add(OzonCategoryCacheRecord(
                     shop_id=shop_id,
                     category_id=parent_category,
                     type_id=str(item["type_id"]),
                     title=f"{parent_title or ''} / {type_title}".strip(" /"),
+                    title_zh=zh_title,
                     parent_id=None,
                 ))
                 count += 1
@@ -212,7 +235,6 @@ def _replace_category_cache(db: Session, shop_id: int, response: dict[str, Any])
 
     count = walk(nodes)
     return count, count, None
-
 
 def _normalize_status(raw: str) -> str:
     value = raw.lower()

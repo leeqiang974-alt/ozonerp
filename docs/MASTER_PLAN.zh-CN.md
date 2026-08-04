@@ -29,3 +29,21 @@
 商品上架采用“草稿—校验—核价—审批—小批发布—任务追踪”路径。详细设计、API 对应与验收标准见 `docs/PRODUCT_LISTING_PLAN.zh-CN.md`；在 FBS 当前工作台阶段仅可开发不含 Ozon 写回的草稿和预检能力。
 
 当前已完成本地单变体草稿、CNY 核价预检、Ozon 末级类目/商品类型缓存、中文类目选择器，以及必填属性动态表单。字典属性采用至少 2 个字的按需搜索、单次最多 50 条和 24 小时本地缓存，草稿会持久化 Ozon `value_id`，后端预检会拒绝缺失的必填属性。下一步补图片规则校验与多变体属性模型；完成审批和审计前不得调用商品导入写接口。
+
+
+## 1688 -> Ozon 自动上架流水线
+
+在现有手动上架草稿基础上，新增 1688 源商品自动采集 -> 智能映射 -> 自动上架的 P0-P7 流水线。当前 P3-P7 代码已完成并通过测试；P0-P2 代码已完成，数据相关任务待真实 1688 商品导入后自动完成。
+
+| 阶段 | 目标 | 当前状态 | 代码 |
+|---|---|---|---|
+| P0 | 采集契约冻结 | 代码完成，待真实快照验证 | `pipeline/contract.py` |
+| P1 | 采集入库与规范化 | 代码完成，待真实导入 | `pipeline/ingestion_service.py` |
+| P2 | 商品识别与类目匹配 | 代码完成，待真实类目匹配 | `pipeline/fact_extraction.py` + `category_matching.py` |
+| P3 | 属性自动补全 | 已完成 | `pipeline/attribute_mapping.py` |
+| P4 | 多变体、SKU 与图片 | 已完成 | `pipeline/variant_mapping.py` |
+| P5 | 内容生成与定价模型 | 已完成 | `pipeline/content_generation.py` |
+| P6 | 质量工作台与预检 | 已完成 | `pipeline/quality_check.py` |
+| P7 | 审批与小批写回 | 代码完成，Ozon 写回为模拟 | `pipeline/publish_service.py` |
+
+进度看板 `frontend/progress.html` 从后端 API 实时拉取，10 秒自动刷新。所有 Ozon 写操作仍受阶段 7 受控写回约束。

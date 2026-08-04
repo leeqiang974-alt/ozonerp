@@ -1,0 +1,1586 @@
+[
+  {
+    "id": "AccessAPI_RolesByToken",
+    "method": "post",
+    "path": "/v1/roles",
+    "title": "使用API密钥获取角色和方式列表"
+  },
+  {
+    "id": "SellerAPI_SellerInfo",
+    "method": "post",
+    "path": "/v1/seller/info",
+    "title": "卖家个人中心信息"
+  },
+  {
+    "id": "SellerAPI_SellerOzonLogisticsInfo",
+    "method": "post",
+    "path": "/v1/seller/ozon-logistics/info",
+    "title": "Ozon配送开通信息"
+  },
+  {
+    "id": "DescriptionCategoryAPI_GetTree",
+    "method": "post",
+    "path": "/v1/description-category/tree",
+    "title": "商品类别和类型的树形图"
+  },
+  {
+    "id": "DescriptionCategoryAPI_GetAttributes",
+    "method": "post",
+    "path": "/v1/description-category/attribute",
+    "title": "类别特征列表"
+  },
+  {
+    "id": "DescriptionCategoryAPI_GetAttributeValues",
+    "method": "post",
+    "path": "/v1/description-category/attribute/values",
+    "title": "特征值指南"
+  },
+  {
+    "id": "DescriptionCategoryAPI_SearchAttributeValues",
+    "method": "post",
+    "path": "/v1/description-category/attribute/values/search",
+    "title": "根据属性的参考值进行搜索"
+  },
+  {
+    "id": "ProductAPI_ImportProductsV3",
+    "method": "post",
+    "path": "/v3/product/import",
+    "title": "创建或更新商品"
+  },
+  {
+    "id": "ProductAPI_GetImportProductsInfo",
+    "method": "post",
+    "path": "/v1/product/import/info",
+    "title": "查询商品添加或更新状态"
+  },
+  {
+    "id": "ProductAPI_ImportProductsBySKU",
+    "method": "post",
+    "path": "/v1/product/import-by-sku",
+    "title": "通过SKU创建商品"
+  },
+  {
+    "id": "ProductAPI_ProductUpdateAttributes",
+    "method": "post",
+    "path": "/v1/product/attributes/update",
+    "title": "更新商品特征"
+  },
+  {
+    "id": "ProductAPI_ProductImportPictures",
+    "method": "post",
+    "path": "/v1/product/pictures/import",
+    "title": "上传或更新商品图片"
+  },
+  {
+    "id": "ProductAPI_GetProductList",
+    "method": "post",
+    "path": "/v3/product/list",
+    "title": "品列表的"
+  },
+  {
+    "id": "ProductAPI_GetProductRatingBySku",
+    "method": "post",
+    "path": "/v1/product/rating-by-sku",
+    "title": "按SKU获得商品的内容排名"
+  },
+  {
+    "id": "ProductAPI_GetProductInfoList",
+    "method": "post",
+    "path": "/v3/product/info/list",
+    "title": "根据标识符获取商品信息"
+  },
+  {
+    "id": "ProductAPI_GetProductAttributesV4",
+    "method": "post",
+    "path": "/v4/product/info/attributes",
+    "title": "获取商品特征描述"
+  },
+  {
+    "id": "ProductAPI_GetProductInfoDescription",
+    "method": "post",
+    "path": "/v1/product/info/description",
+    "title": "获取商品详细信息"
+  },
+  {
+    "id": "ProductAPI_GetUploadQuota",
+    "method": "post",
+    "path": "/v4/product/info/limit",
+    "title": "品类限制、商品的创建和更新"
+  },
+  {
+    "id": "ProductAPI_ProductUpdateOfferID",
+    "method": "post",
+    "path": "/v1/product/update/offer-id",
+    "title": "从卖家的系统中改变商品货号"
+  },
+  {
+    "id": "ProductAPI_ProductArchive",
+    "method": "post",
+    "path": "/v1/product/archive",
+    "title": "将商品归档"
+  },
+  {
+    "id": "ProductAPI_ProductUnarchive",
+    "method": "post",
+    "path": "/v1/product/unarchive",
+    "title": "从档案中还原商品"
+  },
+  {
+    "id": "ProductAPI_DeleteProducts",
+    "method": "post",
+    "path": "/v2/products/delete",
+    "title": "从存档删除没有SKU的商品"
+  },
+  {
+    "id": "ProductAPI_GetProductInfoSubscription",
+    "method": "post",
+    "path": "/v1/product/info/subscription",
+    "title": "订阅该商品的用户数"
+  },
+  {
+    "id": "ProductAPI_ProductGetRelatedSKU",
+    "method": "post",
+    "path": "/v1/product/related-sku/get",
+    "title": "获取相关SKU"
+  },
+  {
+    "id": "ProductAPI_ProductInfoPicturesV2",
+    "method": "post",
+    "path": "/v2/product/pictures/info",
+    "title": "获取商品图片"
+  },
+  {
+    "id": "ProductAPI_ProductInfoWrongVolume",
+    "method": "post",
+    "path": "/v1/product/info/wrong-volume",
+    "title": "体积重量特征不正确的商品列表"
+  },
+  {
+    "id": "add-barcode",
+    "method": "post",
+    "path": "/v1/barcode/add",
+    "title": "为商品绑定条形码"
+  },
+  {
+    "id": "generate-barcode",
+    "method": "post",
+    "path": "/v1/barcode/generate",
+    "title": "创建商品条形码"
+  },
+  {
+    "id": "ProductAPI_ProductsStocksV2",
+    "method": "post",
+    "path": "/v2/products/stocks",
+    "title": "更新库存商品的数量"
+  },
+  {
+    "id": "ProductAPI_GetProductInfoStocks",
+    "method": "post",
+    "path": "/v4/product/info/stocks",
+    "title": "关于商品数量的信息"
+  },
+  {
+    "id": "GetProductInfoStocksByWarehouseFbsV2",
+    "method": "post",
+    "path": "/v2/product/info/stocks-by-warehouse/fbs",
+    "title": "获取卖家仓库库存信息"
+  },
+  {
+    "id": "ProductAPI_ProductStocksByWarehouseFbs",
+    "method": "post",
+    "path": "/v1/product/info/stocks-by-warehouse/fbs",
+    "title": "关于卖家库存余额的信息"
+  },
+  {
+    "id": "ProductAPI_ImportProductsPrices",
+    "method": "post",
+    "path": "/v1/product/import/prices",
+    "title": "更新价格"
+  },
+  {
+    "id": "ProductAPI_ActionTimerUpdate",
+    "method": "post",
+    "path": "/v1/product/action/timer/update",
+    "title": "最低价格时效性计时器更新"
+  },
+  {
+    "id": "ProductAPI_ActionTimerStatus",
+    "method": "post",
+    "path": "/v1/product/action/timer/status",
+    "title": "获取已设置计时器状态"
+  },
+  {
+    "id": "ProductAPI_GetProductInfoPrices",
+    "method": "post",
+    "path": "/v5/product/info/prices",
+    "title": "获取商品价格信息"
+  },
+  {
+    "id": "ProductAPI_GetProductInfoDiscounted",
+    "method": "post",
+    "path": "/v1/product/info/discounted",
+    "title": "通过减价商品的SKU查找减价商品和主商品的信息"
+  },
+  {
+    "id": "ProductAPI_ProductUpdateDiscount",
+    "method": "post",
+    "path": "/v1/product/update/discount",
+    "title": "为打折商品设置折扣"
+  },
+  {
+    "id": "Promos",
+    "method": "get",
+    "path": "/v1/actions",
+    "title": "活动清单"
+  },
+  {
+    "id": "PromosCandidates",
+    "method": "post",
+    "path": "/v1/actions/candidates",
+    "title": "可用的促销商品清单"
+  },
+  {
+    "id": "PromosProducts",
+    "method": "post",
+    "path": "/v1/actions/products",
+    "title": "参与&nbsp;活动的商品列表"
+  },
+  {
+    "id": "PromosProductsActivate",
+    "method": "post",
+    "path": "/v1/actions/products/activate",
+    "title": "在促销活动中增加一个商品"
+  },
+  {
+    "id": "PromosProductsDeactivate",
+    "method": "post",
+    "path": "/v1/actions/products/deactivate",
+    "title": "从活动中删除商品"
+  },
+  {
+    "id": "promos_task_list",
+    "method": "post",
+    "path": "/v1/actions/discounts-task/list",
+    "title": "申请折扣列表"
+  },
+  {
+    "id": "promos_task_approve",
+    "method": "post",
+    "path": "/v1/actions/discounts-task/approve",
+    "title": "同意折扣申请"
+  },
+  {
+    "id": "promos_task_decline",
+    "method": "post",
+    "path": "/v1/actions/discounts-task/decline",
+    "title": "取消折扣申请"
+  },
+  {
+    "id": "pricing_competitors",
+    "method": "post",
+    "path": "/v1/pricing-strategy/competitors/list",
+    "title": "竞争对手名单"
+  },
+  {
+    "id": "pricing_list",
+    "method": "post",
+    "path": "/v1/pricing-strategy/list",
+    "title": "策略列表"
+  },
+  {
+    "id": "pricing_create",
+    "method": "post",
+    "path": "/v1/pricing-strategy/create",
+    "title": "创建策略"
+  },
+  {
+    "id": "pricing_info",
+    "method": "post",
+    "path": "/v1/pricing-strategy/info",
+    "title": "策略信息"
+  },
+  {
+    "id": "pricing_update",
+    "method": "post",
+    "path": "/v1/pricing-strategy/update",
+    "title": "更新策略"
+  },
+  {
+    "id": "pricing_items-add",
+    "method": "post",
+    "path": "/v1/pricing-strategy/products/add",
+    "title": "将商品添加到策略"
+  },
+  {
+    "id": "pricing_ids",
+    "method": "post",
+    "path": "/v1/pricing-strategy/strategy-ids-by-product-ids",
+    "title": "策略ID列表"
+  },
+  {
+    "id": "pricing_items-list",
+    "method": "post",
+    "path": "/v1/pricing-strategy/products/list",
+    "title": "策略中的商品列表"
+  },
+  {
+    "id": "pricing_items-info",
+    "method": "post",
+    "path": "/v1/pricing-strategy/product/info",
+    "title": "竞争对手&nbsp; 的商品价格"
+  },
+  {
+    "id": "pricing_items-delete",
+    "method": "post",
+    "path": "/v1/pricing-strategy/products/delete",
+    "title": "从策略中删除商品"
+  },
+  {
+    "id": "pricing_status",
+    "method": "post",
+    "path": "/v1/pricing-strategy/status",
+    "title": "更改策略状态"
+  },
+  {
+    "id": "pricing_delete",
+    "method": "post",
+    "path": "/v1/pricing-strategy/delete",
+    "title": "删除策略"
+  },
+  {
+    "id": "WarehouseListV2",
+    "method": "post",
+    "path": "/v2/warehouse/list",
+    "title": "仓库列表"
+  },
+  {
+    "id": "WarehouseAPI_WarehouseList",
+    "method": "post",
+    "path": "/v1/warehouse/list",
+    "title": "仓库清单"
+  },
+  {
+    "id": "WarehouseAPI_DeliveryMethodListV2",
+    "method": "post",
+    "path": "/v2/delivery-method/list",
+    "title": "realFBS仓库的配送方式列表"
+  },
+  {
+    "id": "WarehouseAPI_DeliveryMethodList",
+    "method": "post",
+    "path": "/v1/delivery-method/list",
+    "title": "仓库物流方式清单"
+  },
+  {
+    "id": "GetWarehouseFBSOperationStatus",
+    "method": "post",
+    "path": "/v1/warehouse/operation/status",
+    "title": "获取操作状态"
+  },
+  {
+    "id": "ArchiveWarehouseFBS",
+    "method": "post",
+    "path": "/v1/warehouse/archive",
+    "title": "将仓库归档"
+  },
+  {
+    "id": "UnarchiveWarehouseFBS",
+    "method": "post",
+    "path": "/v1/warehouse/unarchive",
+    "title": "将仓库解除归档"
+  },
+  {
+    "id": "WarehouseInvalidProductsGet",
+    "method": "post",
+    "path": "/v1/warehouse/invalid-products/get",
+    "title": "获取配送受限商品列表"
+  },
+  {
+    "id": "WarehouseWithInvalidProducts",
+    "method": "post",
+    "path": "/v1/warehouse/warehouses-with-invalid-products",
+    "title": "获取含有配送受限商品的仓库列表"
+  },
+  {
+    "id": "WarehouseAPI_ListDropOffPointsForCreateFBSWarehouse",
+    "method": "post",
+    "path": "/v1/warehouse/fbs/create/drop-off/list",
+    "title": "获取用于创建仓库的揽收点列表"
+  },
+  {
+    "id": "WarehouseAPI_ListDropOffPointsForUpdateFBSWarehouse",
+    "method": "post",
+    "path": "/v1/warehouse/fbs/update/drop-off/list",
+    "title": "获取用于修改仓库信息的揽收点列表"
+  },
+  {
+    "id": "WarehouseFbsCreateDropOffTimeslotList",
+    "method": "post",
+    "path": "/v1/warehouse/fbs/create/drop-off/timeslot/list",
+    "title": "获取用于创建drop-off发运仓库的时间段列表"
+  },
+  {
+    "id": "WarehouseFbsUpdateDropOffTimeslotList",
+    "method": "post",
+    "path": "/v1/warehouse/fbs/update/drop-off/timeslot/list",
+    "title": "获取用于更新drop-off发运仓库的时间段列表"
+  },
+  {
+    "id": "WarehouseFbsCreatePickUpTimeslotList",
+    "method": "post",
+    "path": "/v1/warehouse/fbs/create/pick-up/timeslot/list",
+    "title": "获取用于创建pick-up发运仓库的时间段列表"
+  },
+  {
+    "id": "WarehouseFbsUpdatePickUpTimeslotList",
+    "method": "post",
+    "path": "/v1/warehouse/fbs/update/pick-up/timeslot/list",
+    "title": "获取用于更新pick-up发运仓库的时间段列表"
+  },
+  {
+    "id": "WarehouseAPI_CreateWarehouseFBS",
+    "method": "post",
+    "path": "/v1/warehouse/fbs/create",
+    "title": "创建仓库"
+  },
+  {
+    "id": "UpdateWarehouseFBS",
+    "method": "post",
+    "path": "/v1/warehouse/fbs/update",
+    "title": "更新仓库"
+  },
+  {
+    "id": "UpdateWarehouseFBSFirstMile",
+    "method": "post",
+    "path": "/v1/warehouse/fbs/first-mile/update",
+    "title": "更新头程物流"
+  },
+  {
+    "id": "PostingFbsUnfulfilledList",
+    "method": "post",
+    "path": "/v4/posting/fbs/unfulfilled/list",
+    "title": "获取未处理货件列表"
+  },
+  {
+    "id": "PostingAPI_GetFbsPostingUnfulfilledList",
+    "method": "post",
+    "path": "/v3/posting/fbs/unfulfilled/list",
+    "title": "未处理货件列表 Deprecated"
+  },
+  {
+    "id": "PostingFbsList",
+    "method": "post",
+    "path": "/v4/posting/fbs/list",
+    "title": "获取货件列表"
+  },
+  {
+    "id": "PostingAPI_GetFbsPostingListV3",
+    "method": "post",
+    "path": "/v3/posting/fbs/list",
+    "title": "货件列表 Deprecated"
+  },
+  {
+    "id": "PostingAPI_GetFbsPostingV3",
+    "method": "post",
+    "path": "/v3/posting/fbs/get",
+    "title": "按照ID获取货件信息"
+  },
+  {
+    "id": "PostingAPI_GetFbsPostingByBarcode",
+    "method": "post",
+    "path": "/v2/posting/fbs/get-by-barcode",
+    "title": "按条形码获取有关货件的信息"
+  },
+  {
+    "id": "PostingAPI_ListCountryProductFbsPostingV2",
+    "method": "post",
+    "path": "/v2/posting/fbs/product/country/list",
+    "title": "可用产地名单"
+  },
+  {
+    "id": "PostingAPI_SetCountryProductFbsPostingV2",
+    "method": "post",
+    "path": "/v2/posting/fbs/product/country/set",
+    "title": "添加商品产地信息"
+  },
+  {
+    "id": "PostingAPI_PostingFBSPackageLabel",
+    "method": "post",
+    "path": "/v2/posting/fbs/package-label",
+    "title": "打印标签"
+  },
+  {
+    "id": "PostingAPI_MoveFbsPostingToAwaitingDelivery",
+    "method": "post",
+    "path": "/v2/posting/fbs/awaiting-delivery",
+    "title": "货件装运"
+  },
+  {
+    "id": "PostingAPI_GetPostingFbsCancelReasonList",
+    "method": "post",
+    "path": "/v2/posting/fbs/cancel-reason/list",
+    "title": "货件取消原因"
+  },
+  {
+    "id": "PostingAPI_GetPostingFbsCancelReasonV1",
+    "method": "post",
+    "path": "/v1/posting/fbs/cancel-reason",
+    "title": "货运取消原因"
+  },
+  {
+    "id": "PostingAPI_CancelFbsPosting",
+    "method": "post",
+    "path": "/v2/posting/fbs/cancel",
+    "title": "取消货运"
+  },
+  {
+    "id": "PostingAPI_CancelFbsPostingProduct",
+    "method": "post",
+    "path": "/v2/posting/fbs/product/cancel",
+    "title": "取消某些商品发货"
+  },
+  {
+    "id": "PolygonAPI_CreatePolygon",
+    "method": "post",
+    "path": "/v1/polygon/create",
+    "title": "创建一个快递的设施"
+  },
+  {
+    "id": "PolygonAPI_BindPolygon",
+    "method": "post",
+    "path": "/v1/polygon/bind",
+    "title": "将快递方式与快递设施联系起来"
+  },
+  {
+    "id": "SupplyOrderBundle",
+    "method": "post",
+    "path": "/v1/supply-order/bundle",
+    "title": "交货或交货申请的商品组成"
+  },
+  {
+    "id": "PostingAPI_ShipFbsPostingV4",
+    "method": "post",
+    "path": "/v4/posting/fbs/ship",
+    "title": "搜集订单 (第4方案)"
+  },
+  {
+    "id": "PostingAPI_ShipFbsPostingPackage",
+    "method": "post",
+    "path": "/v4/posting/fbs/ship/package",
+    "title": "货件的部分装配 (第4方案)"
+  },
+  {
+    "id": "CarriageAPI_CarriageCreate",
+    "method": "post",
+    "path": "/v1/carriage/create",
+    "title": "创建发运"
+  },
+  {
+    "id": "CarriageAPI_CarriageApprove",
+    "method": "post",
+    "path": "/v1/carriage/approve",
+    "title": "发运确认"
+  },
+  {
+    "id": "CarriageGet",
+    "method": "post",
+    "path": "/v1/carriage/get",
+    "title": "运输信息"
+  },
+  {
+    "id": "PostingAPI_GetCarriageAvailableList",
+    "method": "post",
+    "path": "/v1/posting/carriage-available/list",
+    "title": "可供运输的列表"
+  },
+  {
+    "id": "CarriageAPI_SetPostings",
+    "method": "post",
+    "path": "/v1/carriage/set-postings",
+    "title": "发运组成商品更改"
+  },
+  {
+    "id": "CarriageAPI_CarriageCancel",
+    "method": "post",
+    "path": "/v1/carriage/cancel",
+    "title": "发运删除"
+  },
+  {
+    "id": "PostingAPI_ActPostingList",
+    "method": "post",
+    "path": "/v2/posting/fbs/act/get-postings",
+    "title": "单据中的货件列表"
+  },
+  {
+    "id": "PostingAPI_PostingFBSActGetContainerLabels",
+    "method": "post",
+    "path": "/v2/posting/fbs/act/get-container-labels",
+    "title": "货位标签"
+  },
+  {
+    "id": "AssemblyCarriagePostingList",
+    "method": "post",
+    "path": "/v1/assembly/carriage/posting/list",
+    "title": "获取发运中的货件列表"
+  },
+  {
+    "id": "AssemblyCarriageProductList",
+    "method": "post",
+    "path": "/v1/assembly/carriage/product/list",
+    "title": "获取发运中的商品列表"
+  },
+  {
+    "id": "AssemblyFbsPostingList",
+    "method": "post",
+    "path": "/v1/assembly/fbs/posting/list",
+    "title": "获取货件列表"
+  },
+  {
+    "id": "AssemblyFbsProductList",
+    "method": "post",
+    "path": "/v1/assembly/fbs/product/list",
+    "title": "获取货件中的商品列表"
+  },
+  {
+    "id": "PostingAPI_FbsPostingDelivering",
+    "method": "post",
+    "path": "/v2/fbs/posting/delivering",
+    "title": "将状态改成“运输中”"
+  },
+  {
+    "id": "PostingAPI_FbsPostingTrackingNumberSet",
+    "method": "post",
+    "path": "/v2/fbs/posting/tracking-number/set",
+    "title": "添加跟踪号"
+  },
+  {
+    "id": "PostingAPI_FbsPostingLastMile",
+    "method": "post",
+    "path": "/v2/fbs/posting/last-mile",
+    "title": "状态改为“最后一英里”"
+  },
+  {
+    "id": "PostingAPI_FbsPostingDelivered",
+    "method": "post",
+    "path": "/v2/fbs/posting/delivered",
+    "title": "将状态改成“已送达”"
+  },
+  {
+    "id": "PostingAPI_SetPostingCutoff",
+    "method": "post",
+    "path": "/v1/posting/cutoff/set",
+    "title": "确认货件发运日期"
+  },
+  {
+    "id": "PassList",
+    "method": "post",
+    "path": "/v1/pass/list",
+    "title": "通行证列表"
+  },
+  {
+    "id": "carriagePassCreate",
+    "method": "post",
+    "path": "/v1/carriage/pass/create",
+    "title": "创建通行证"
+  },
+  {
+    "id": "carriagePassUpdate",
+    "method": "post",
+    "path": "/v1/carriage/pass/update",
+    "title": "更新通行证"
+  },
+  {
+    "id": "carriagePassDelete",
+    "method": "post",
+    "path": "/v1/carriage/pass/delete",
+    "title": "删除通行证"
+  },
+  {
+    "id": "returnPassCreate",
+    "method": "post",
+    "path": "/v1/return/pass/create",
+    "title": "创建退货通行证"
+  },
+  {
+    "id": "returnPassUpdate",
+    "method": "post",
+    "path": "/v1/return/pass/update",
+    "title": "更新退货通行证"
+  },
+  {
+    "id": "returnPassDelete",
+    "method": "post",
+    "path": "/v1/return/pass/delete",
+    "title": "删除退货通行证"
+  },
+  {
+    "id": "returnsCompanyFBSInfo",
+    "method": "post",
+    "path": "/v1/returns/company/fbs/info",
+    "title": "FBS退货数量"
+  },
+  {
+    "id": "returnsList",
+    "method": "post",
+    "path": "/v1/returns/list",
+    "title": "FBO和FBS退货信息"
+  },
+  {
+    "id": "RFBSReturnsAPI_ReturnsRfbsListV2",
+    "method": "post",
+    "path": "/v2/returns/rfbs/list",
+    "title": "退货申请列表"
+  },
+  {
+    "id": "RFBSReturnsAPI_ReturnsRfbsGetV2",
+    "method": "post",
+    "path": "/v2/returns/rfbs/get",
+    "title": "退货申请信息"
+  },
+  {
+    "id": "RFBSReturnsAPI_ReturnsRfbsRejectV2",
+    "method": "post",
+    "path": "/v2/returns/rfbs/reject",
+    "title": "拒绝退货申请"
+  },
+  {
+    "id": "RFBSReturnsAPI_ReturnsRfbsCompensateV2",
+    "method": "post",
+    "path": "/v2/returns/rfbs/compensate",
+    "title": "退还部分商品金额"
+  },
+  {
+    "id": "RFBSReturnsAPI_ReturnsRfbsVerifyV2",
+    "method": "post",
+    "path": "/v2/returns/rfbs/verify",
+    "title": "批准退货申请"
+  },
+  {
+    "id": "RFBSReturnsAPI_ReturnsRfbsReceiveReturnV2",
+    "method": "post",
+    "path": "/v2/returns/rfbs/receive-return",
+    "title": "确认收到待检查商品"
+  },
+  {
+    "id": "RFBSReturnsAPI_ReturnsRfbsReturnMoneyV2",
+    "method": "post",
+    "path": "/v2/returns/rfbs/return-money",
+    "title": "向买家退款"
+  },
+  {
+    "id": "ReturnsAPI_ReturnsRfbsActionSet",
+    "method": "post",
+    "path": "/v1/returns/rfbs/action/set",
+    "title": "传递 rFBS 退货的可用操作"
+  },
+  {
+    "id": "CancellationAPI_GetConditionalCancellationListV2",
+    "method": "post",
+    "path": "/v2/conditional-cancellation/list",
+    "title": "获取 rFBS 取消申请列表"
+  },
+  {
+    "id": "CancellationAPI_ConditionalCancellationApproveV2",
+    "method": "post",
+    "path": "/v2/conditional-cancellation/approve",
+    "title": "确认 rFBS 取消申请"
+  },
+  {
+    "id": "CancellationAPI_ConditionalCancellationRejectV2",
+    "method": "post",
+    "path": "/v2/conditional-cancellation/reject",
+    "title": "拒绝 rFBS 取消申请"
+  },
+  {
+    "id": "ChatAPI_ChatSendMessage",
+    "method": "post",
+    "path": "/v1/chat/send/message",
+    "title": "发送信息"
+  },
+  {
+    "id": "ChatAPI_ChatSendFile",
+    "method": "post",
+    "path": "/v1/chat/send/file",
+    "title": "发送文件"
+  },
+  {
+    "id": "ChatAPI_ChatStart",
+    "method": "post",
+    "path": "/v1/chat/start",
+    "title": "创建新聊天"
+  },
+  {
+    "id": "ChatAPI_ChatListV3",
+    "method": "post",
+    "path": "/v3/chat/list",
+    "title": "聊天清单"
+  },
+  {
+    "id": "ChatAPI_ChatHistoryV3",
+    "method": "post",
+    "path": "/v3/chat/history",
+    "title": "聊天历史记录"
+  },
+  {
+    "id": "ChatAPI_ChatReadV2",
+    "method": "post",
+    "path": "/v2/chat/read",
+    "title": "将信息标记为已读"
+  },
+  {
+    "id": "ReportAPI_ReportInfo",
+    "method": "post",
+    "path": "/v1/report/info",
+    "title": "报告信息"
+  },
+  {
+    "id": "ReportAPI_ReportList",
+    "method": "post",
+    "path": "/v1/report/list",
+    "title": "报告清单"
+  },
+  {
+    "id": "ReportAPI_CreateCompanyProductsReport",
+    "method": "post",
+    "path": "/v1/report/products/create",
+    "title": "商品报告"
+  },
+  {
+    "id": "ReportAPI_CreateCompanyPostingsReport",
+    "method": "post",
+    "path": "/v1/report/postings/create",
+    "title": "发货报告"
+  },
+  {
+    "id": "FinanceAPI_FinanceCashFlowStatementList",
+    "method": "post",
+    "path": "/v1/finance/cash-flow-statement/list",
+    "title": "财务报告"
+  },
+  {
+    "id": "ReportAPI_CreateDiscountedReport",
+    "method": "post",
+    "path": "/v1/report/discounted/create",
+    "title": "减价商品报告"
+  },
+  {
+    "id": "ReportAPI_CreateStockByWarehouseReport",
+    "method": "post",
+    "path": "/v1/report/warehouse/stock",
+    "title": "关于FBS仓库库存报告"
+  },
+  {
+    "id": "CreateCompanyMarkedProductsSalesReport",
+    "method": "post",
+    "path": "/v1/report/marked-products-sales/create",
+    "title": "生成带有标记商品的销售报告"
+  },
+  {
+    "id": "FinanceAPI_GetRealizationReportV2",
+    "method": "post",
+    "path": "/v2/finance/realization",
+    "title": "商品销售报告 （第2版）"
+  },
+  {
+    "id": "FinanceAPI_GetRealizationReportV1",
+    "method": "post",
+    "path": "/v1/finance/realization/posting",
+    "title": "按订单细分的商品销售报告"
+  },
+  {
+    "id": "FinanceAPI_FinanceTransactionListV3",
+    "method": "post",
+    "path": "/v3/finance/transaction/list",
+    "title": "交易清单"
+  },
+  {
+    "id": "FinanceAPI_FinanceTransactionTotalV3",
+    "method": "post",
+    "path": "/v3/finance/transaction/totals",
+    "title": "清单数目"
+  },
+  {
+    "id": "ReportAPI_GetCompensationReport",
+    "method": "post",
+    "path": "/v1/finance/compensation",
+    "title": "赔偿报告"
+  },
+  {
+    "id": "ReportAPI_GetDecompensationReport",
+    "method": "post",
+    "path": "/v1/finance/decompensation",
+    "title": "赔偿返还报告"
+  },
+  {
+    "id": "RatingAPI_GetFBSRatingIndexInfoV1",
+    "method": "post",
+    "path": "/v1/rating/index/fbs/info",
+    "title": "获取错误指数：FBS 和 rFBS"
+  },
+  {
+    "id": "RatingAPI_ListFBSRatingIndexPostingsV1",
+    "method": "post",
+    "path": "/v1/rating/index/fbs/posting/list",
+    "title": "影响错误指数的货件列表：FBS 和 rFBS"
+  },
+  {
+    "id": "ReviewAPI_CommentCreate",
+    "method": "post",
+    "path": "/v1/review/comment/create",
+    "title": "对评价留下评论"
+  },
+  {
+    "id": "ReviewAPI_CommentDelete",
+    "method": "post",
+    "path": "/v1/review/comment/delete",
+    "title": "删除对评价的评论"
+  },
+  {
+    "id": "ReviewAPI_CommentList",
+    "method": "post",
+    "path": "/v1/review/comment/list",
+    "title": "评价的评论列表"
+  },
+  {
+    "id": "ReviewAPI_ReviewChangeStatus",
+    "method": "post",
+    "path": "/v1/review/change-status",
+    "title": "更改评价状态"
+  },
+  {
+    "id": "ReviewAPI_ReviewCount",
+    "method": "post",
+    "path": "/v1/review/count",
+    "title": "根据状态统计的评价数量"
+  },
+  {
+    "id": "ReviewAPI_ReviewInfo",
+    "method": "post",
+    "path": "/v1/review/info",
+    "title": "获取评价信息"
+  },
+  {
+    "id": "ReviewListV2",
+    "method": "post",
+    "path": "/v2/review/list",
+    "title": "获取评价列表"
+  },
+  {
+    "id": "ReviewAPI_ReviewList",
+    "method": "post",
+    "path": "/v1/review/list",
+    "title": "获取评价列表 Deprecated"
+  },
+  {
+    "id": "QuestionAnswer_Create",
+    "method": "post",
+    "path": "/v1/question/answer/create",
+    "title": "创建对问题的回答"
+  },
+  {
+    "id": "QuestionAnswer_Delete",
+    "method": "post",
+    "path": "/v1/question/answer/delete",
+    "title": "删除问题回答"
+  },
+  {
+    "id": "QuestionAnswer_List",
+    "method": "post",
+    "path": "/v1/question/answer/list",
+    "title": "问题回答列表"
+  },
+  {
+    "id": "Question_ChangeStatus",
+    "method": "post",
+    "path": "/v1/question/change_status",
+    "title": "更改问题状态"
+  },
+  {
+    "id": "Question_Count",
+    "method": "post",
+    "path": "/v1/question/count",
+    "title": "按状态统计问题数量"
+  },
+  {
+    "id": "Question_Info",
+    "method": "post",
+    "path": "/v1/question/info",
+    "title": "问题详情"
+  },
+  {
+    "id": "Question_List",
+    "method": "post",
+    "path": "/v1/question/list",
+    "title": "问题列表"
+  },
+  {
+    "id": "Question_TopSku",
+    "method": "post",
+    "path": "/v1/question/top-sku",
+    "title": "提问数量最多的商品"
+  },
+  {
+    "id": "FbsSplit",
+    "method": "post",
+    "path": "/v1/posting/fbs/split",
+    "title": "将订单拆分为不带备货的货件"
+  },
+  {
+    "id": "ProductInfoWarehouseStocks",
+    "method": "post",
+    "path": "/v1/product/info/warehouse/stocks",
+    "title": "获取FBS和rFBS仓库库存信息"
+  },
+  {
+    "id": "ProductAPI_SetProductStairwayDiscountByQuantity",
+    "method": "post",
+    "path": "/v1/product/stairway-discount/by-quantity/set",
+    "title": "管理按数量折扣"
+  },
+  {
+    "id": "ProductAPI_GetProductStairwayDiscountByQuantity",
+    "method": "post",
+    "path": "/v1/product/stairway-discount/by-quantity/get",
+    "title": "获取按数量折扣信息"
+  },
+  {
+    "id": "GetFinanceBalanceV1",
+    "method": "post",
+    "path": "/v1/finance/balance",
+    "title": "获取余额报告"
+  },
+  {
+    "id": "DescriptionCategoryTips",
+    "method": "post",
+    "path": "/v1/description-category/tips",
+    "title": "获取用于确定商品类目的提示"
+  },
+  {
+    "id": "GetDiscountTaskListV2",
+    "method": "post",
+    "path": "/v2/actions/discounts-task/list",
+    "title": "获取折扣申请列表"
+  },
+  {
+    "id": "ProductVisibilitySet",
+    "method": "post",
+    "path": "/v1/product/visibility/set",
+    "title": "新增了用于设置商品在Ozon和Ozon Select橱窗可见性的Beta方法。"
+  },
+  {
+    "id": "GetFinanceAccrualPostings",
+    "method": "post",
+    "path": "/v1/finance/accrual/postings",
+    "title": "获取按货件统计的应计项目"
+  },
+  {
+    "id": "GetFinanceAccrualTypes",
+    "method": "post",
+    "path": "/v1/finance/accrual/types",
+    "title": "获取应计项目参考信息"
+  },
+  {
+    "id": "GetFinanceAccrualByDay",
+    "method": "post",
+    "path": "/v1/finance/accrual/by-day",
+    "title": "获取某日应计项目"
+  },
+  {
+    "id": "ProductVisibilityInfo",
+    "method": "post",
+    "path": "/v1/product/visibility/info",
+    "title": "获取商品可见性信息"
+  },
+  {
+    "id": "GetFbpPosting",
+    "method": "post",
+    "path": "/v1/posting/fbp/get",
+    "title": "按标识符获取货件信息"
+  },
+  {
+    "id": "CreateCompanyFinanceRealizationPostingReport",
+    "method": "post",
+    "path": "/v1/report/realization/posting/create",
+    "title": "获取每订单商品销售报告"
+  },
+  {
+    "id": "PostingAPI_FbsPostingProductExemplarSetV6",
+    "method": "post",
+    "path": "/v6/fbs/posting/product/exemplar/set",
+    "title": "检查并保存份数数据"
+  },
+  {
+    "id": "PostingAPI_FbsPostingProductExemplarCreateOrGetV6",
+    "method": "post",
+    "path": "/v6/fbs/posting/product/exemplar/create-or-get",
+    "title": "获取已创建样件数据"
+  },
+  {
+    "id": "PostingAPI_FbsPostingProductExemplarStatusV5",
+    "method": "post",
+    "path": "/v5/fbs/posting/product/exemplar/status",
+    "title": "获取样件添加状态"
+  },
+  {
+    "id": "PostingAPI_FbsPostingProductExemplarValidateV5",
+    "method": "post",
+    "path": "/v5/fbs/posting/product/exemplar/validate",
+    "title": "标志代码验证"
+  },
+  {
+    "id": "PostingAPI_FbsPostingProductExemplarUpdate",
+    "method": "post",
+    "path": "/v1/fbs/posting/product/exemplar/update",
+    "title": "Обновить данные экземпляров"
+  },
+  {
+    "id": "SellerActionsCreateDiscount",
+    "method": "post",
+    "path": "/v1/seller-actions/create/discount",
+    "title": "创建采用\"折扣\"机制的促销活动"
+  },
+  {
+    "id": "SellerActionsCreateDiscountWithCondition",
+    "method": "post",
+    "path": "/v1/seller-actions/create/discount-with-condition",
+    "title": "创建采用\"基于订单总额的折扣\"机制的促销活动"
+  },
+  {
+    "id": "SellerActionsCreateInstallment",
+    "method": "post",
+    "path": "/v1/seller-actions/create/installment",
+    "title": "创建采用\"免息分期付款\"机制的促销活动"
+  },
+  {
+    "id": "SellerActionsCreateMultiLevelDiscount",
+    "method": "post",
+    "path": "/v1/seller-actions/create/multi-level-discount",
+    "title": "创建采用\"多级满额折扣\"机制的促销活动"
+  },
+  {
+    "id": "SellerActionsCreateVoucher",
+    "method": "post",
+    "path": "/v1/seller-actions/create/voucher",
+    "title": "创建采用\"促销码折扣\"机制的促销活动"
+  },
+  {
+    "id": "SellerActionsUpdateDiscount",
+    "method": "post",
+    "path": "/v1/seller-actions/update/discount",
+    "title": "更新“折扣”机制的促销活动"
+  },
+  {
+    "id": "SellerActionsUpdateDiscountWithCondition",
+    "method": "post",
+    "path": "/v1/seller-actions/update/discount-with-condition",
+    "title": "更新“基于订单总额的折扣”机制的促销活动"
+  },
+  {
+    "id": "SellerActionsUpdateInstallment",
+    "method": "post",
+    "path": "/v1/seller-actions/update/installment",
+    "title": "更新“免息分期付款”机制的促销活动"
+  },
+  {
+    "id": "SellerActionsUpdateMultiLevelDiscount",
+    "method": "post",
+    "path": "/v1/seller-actions/update/multi-level-discount",
+    "title": "更新“多级满额折扣”机制的促销活动"
+  },
+  {
+    "id": "SellerActionsUpdateVoucher",
+    "method": "post",
+    "path": "/v1/seller-actions/update/voucher",
+    "title": "更新“促销码折扣”机制的促销活动"
+  },
+  {
+    "id": "SellerActionsProductsAdd",
+    "method": "post",
+    "path": "/v1/seller-actions/products/add",
+    "title": "将商品添加到促销活动中"
+  },
+  {
+    "id": "SellerActionsProductsCandidates",
+    "method": "post",
+    "path": "/v1/seller-actions/products/candidates",
+    "title": "获取促销活动可用商品列表"
+  },
+  {
+    "id": "SellerActionsProductsDelete",
+    "method": "post",
+    "path": "/v1/seller-actions/products/delete",
+    "title": "从促销活动中移除商品"
+  },
+  {
+    "id": "SellerActionsProductsList",
+    "method": "post",
+    "path": "/v1/seller-actions/products/list",
+    "title": "获取参与活动的商品列表"
+  },
+  {
+    "id": "SellerActionsArchive",
+    "method": "post",
+    "path": "/v1/seller-actions/archive",
+    "title": "将促销活动归档"
+  },
+  {
+    "id": "SellerActionsChangeActivity",
+    "method": "post",
+    "path": "/v1/seller-actions/change-activity",
+    "title": "启用或关闭活动"
+  },
+  {
+    "id": "SellerActionsList",
+    "method": "post",
+    "path": "/v1/seller-actions/list",
+    "title": "获取促销活动列表"
+  },
+  {
+    "id": "SellerActionsVoucherGet",
+    "method": "post",
+    "path": "/v1/seller-actions/voucher/get",
+    "title": "获取CSV格式的促销码文件"
+  },
+  {
+    "id": "ActionsAutoAddProductsList",
+    "method": "post",
+    "path": "/v1/actions/auto-add/products/list",
+    "title": "获取促销活动自动添加列表中的商品列表"
+  },
+  {
+    "id": "ActionsAutoAddProductsCandidates",
+    "method": "post",
+    "path": "/v1/actions/auto-add/products/candidates",
+    "title": "获取可自动添加到促销活动中的商品列表"
+  },
+  {
+    "id": "ActionsAutoAddProductsDelete",
+    "method": "post",
+    "path": "/v1/actions/auto-add/products/delete",
+    "title": "从促销活动自动添加列表中删除商品"
+  },
+  {
+    "id": "ActionsAutoAddProductsUpdate",
+    "method": "post",
+    "path": "/v1/actions/auto-add/products/update",
+    "title": "在促销活动自动添加列表中添加或更新商品"
+  },
+  {
+    "id": "FbpWarehouseList",
+    "method": "post",
+    "path": "/v1/fbp/warehouse/list",
+    "title": "获取合作伙伴仓库列表"
+  },
+  {
+    "id": "FbpAPI_FbpDraftGet",
+    "method": "post",
+    "path": "/v1/fbp/draft/get",
+    "title": "获取交货草稿信息"
+  },
+  {
+    "id": "FbpAPI_FbpDraftList",
+    "method": "post",
+    "path": "/v1/fbp/draft/list",
+    "title": "交货草稿列表"
+  },
+  {
+    "id": "FbpDraftDirectSellerDlvCreate",
+    "method": "post",
+    "path": "/v1/fbp/draft/direct/seller-dlv/create",
+    "title": "创建由卖家配送的草稿"
+  },
+  {
+    "id": "FbpDraftDirectSellerDlvEdit",
+    "method": "post",
+    "path": "/v1/fbp/draft/direct/seller-dlv/edit",
+    "title": "更新草稿中由卖家配送的信息"
+  },
+  {
+    "id": "FbpDraftDirectTimeslotEdit",
+    "method": "post",
+    "path": "/v1/fbp/draft/direct/timeslot/edit",
+    "title": "编辑草稿中的时间段"
+  },
+  {
+    "id": "FbpDraftDirectGetTimeslot",
+    "method": "post",
+    "path": "/v1/fbp/draft/direct/timeslot/get",
+    "title": "获取直供的时间段列表"
+  },
+  {
+    "id": "FbpDraftDirectCreate",
+    "method": "post",
+    "path": "/v1/fbp/draft/direct/create",
+    "title": "创建不指定配送方法的交货申请草稿"
+  },
+  {
+    "id": "FbpDraftDirectDelete",
+    "method": "post",
+    "path": "/v1/fbp/draft/direct/delete",
+    "title": "删除交货申请草稿"
+  },
+  {
+    "id": "FbpDraftDirectProductValidate",
+    "method": "post",
+    "path": "/v1/fbp/draft/direct/product/validate",
+    "title": "检查合作伙伴仓库商品列表"
+  },
+  {
+    "id": "FbpDraftDirectRegistrate",
+    "method": "post",
+    "path": "/v1/fbp/draft/direct/registrate",
+    "title": "将草稿单转为正式交货"
+  },
+  {
+    "id": "FbpAPI_FbpDraftDirectTplDlvCreate",
+    "method": "post",
+    "path": "/v1/fbp/draft/direct/tpl-dlv/create",
+    "title": "创建第三方物流公司配送的申请草稿"
+  },
+  {
+    "id": "FbpAPI_FbpDraftDirectTplDlvEdit",
+    "method": "post",
+    "path": "/v1/fbp/draft/direct/tpl-dlv/edit",
+    "title": "编辑采用第三方承运商配送方法的交货草稿"
+  },
+  {
+    "id": "FbpDraftDropOffProvinceList",
+    "method": "post",
+    "path": "/v1/fbp/draft/drop-off/province/list",
+    "title": "获取省份列表"
+  },
+  {
+    "id": "FbpDraftDropOffPointList",
+    "method": "post",
+    "path": "/v1/fbp/draft/drop-off/point/list",
+    "title": "获取省份内接收点列表"
+  },
+  {
+    "id": "FbpDraftDropOffPointTimetable",
+    "method": "post",
+    "path": "/v1/fbp/draft/drop-off/point/timetable",
+    "title": "获取接收点的营业时间表"
+  },
+  {
+    "id": "FbpDraftDropOffProductValidate",
+    "method": "post",
+    "path": "/v1/fbp/draft/drop-off/product/validate",
+    "title": "检查合作伙伴仓库可接收的商品列表"
+  },
+  {
+    "id": "FbpDraftDropOffCreate",
+    "method": "post",
+    "path": "/v1/fbp/draft/drop-off/create",
+    "title": "创建接收点配送草稿"
+  },
+  {
+    "id": "FbpDraftDropOffDelete",
+    "method": "post",
+    "path": "/v1/fbp/draft/drop-off/delete",
+    "title": "删除接收点配送草稿"
+  },
+  {
+    "id": "FbpDraftDropOffDlvEdit",
+    "method": "post",
+    "path": "/v1/fbp/draft/drop-off/dlv/edit",
+    "title": "编辑接收点配送草稿的配送详情"
+  },
+  {
+    "id": "FbpDraftDropOffRegistrate",
+    "method": "post",
+    "path": "/v1/fbp/draft/drop-off/registrate",
+    "title": "将草稿转为正式交货"
+  },
+  {
+    "id": "FbpAPI_FbpDraftPickupCreate",
+    "method": "post",
+    "path": "/v1/fbp/draft/pick-up/create",
+    "title": "创建 pick-up 交货申请草稿"
+  },
+  {
+    "id": "FbpAPI_FbpDraftPickUpDelete",
+    "method": "post",
+    "path": "/v1/fbp/draft/pick-up/delete",
+    "title": "取消 pick-up 交货申请草稿"
+  },
+  {
+    "id": "FbpAPI_FbpDraftPickupDlvEdit",
+    "method": "post",
+    "path": "/v1/fbp/draft/pick-up/dlv/edit",
+    "title": "修改 pick-up 交货申请"
+  },
+  {
+    "id": "FbpAPI_FbpDraftPickUpProductValidate",
+    "method": "post",
+    "path": "/v1/fbp/draft/pick-up/product/validate",
+    "title": "验证用于 pick-up 交货的商品列表"
+  },
+  {
+    "id": "FbpDraftPickUpRegistrate",
+    "method": "post",
+    "path": "/v1/fbp/draft/pick-up/registrate",
+    "title": "将草稿单转为正式交货"
+  },
+  {
+    "id": "FbpAPI_FbpOrderDirectCancel",
+    "method": "post",
+    "path": "/v1/fbp/order/direct/cancel",
+    "title": "取消交货"
+  },
+  {
+    "id": "FbpAPI_FbpOrderDirectSellerDlvEdit",
+    "method": "post",
+    "path": "/v1/fbp/order/direct/seller-dlv/edit",
+    "title": "更新卖家自配送信息"
+  },
+  {
+    "id": "FbpAPI_FbpEditTimeslot",
+    "method": "post",
+    "path": "/v1/fbp/order/direct/timeslot/edit",
+    "title": "编辑交货申请中的时间段"
+  },
+  {
+    "id": "FbpAPI_FbpAvailableTimeslotList",
+    "method": "post",
+    "path": "/v1/fbp/order/direct/timeslot/list",
+    "title": "获取交货时间段列表"
+  },
+  {
+    "id": "FbpAPI_FbpOrderDropOffCancel",
+    "method": "post",
+    "path": "/v1/fbp/order/drop-off/cancel",
+    "title": "取消 drop-off 交货"
+  },
+  {
+    "id": "FbpAPI_FbpOrderDropOffDlvEdit",
+    "method": "post",
+    "path": "/v1/fbp/order/drop-off/dlv/edit",
+    "title": "编辑收货点的送货信息"
+  },
+  {
+    "id": "FbpAPI_FbpOrderDropOffTimetable",
+    "method": "post",
+    "path": "/v1/fbp/order/drop-off/timetable",
+    "title": "获取接收点的营业时间表"
+  },
+  {
+    "id": "FbpAPI_FbpOrderPickUpCancel",
+    "method": "post",
+    "path": "/v1/fbp/order/pick-up/cancel",
+    "title": "取消上门揽收交货"
+  },
+  {
+    "id": "FbpAPI_FbpOrderPickUpDlvEdit",
+    "method": "post",
+    "path": "/v1/fbp/order/pick-up/dlv/edit",
+    "title": "更改取货地点信息"
+  },
+  {
+    "id": "FbpAPI_FbpCreateAct",
+    "method": "post",
+    "path": "/v1/fbp/act-from/create",
+    "title": "生成验收证明书"
+  },
+  {
+    "id": "FbpAPI_FbpCheckActState",
+    "method": "post",
+    "path": "/v1/fbp/act-from/get",
+    "title": "获取验收证明书生成状态"
+  },
+  {
+    "id": "FbpAPI_FbpCreateConsignmentNote",
+    "method": "post",
+    "path": "/v1/fbp/act-to/create",
+    "title": "生成货物运单"
+  },
+  {
+    "id": "FbpAPI_FbpCheckConsignmentNoteState",
+    "method": "post",
+    "path": "/v1/fbp/act-to/get",
+    "title": "获取货物运单生成状态"
+  },
+  {
+    "id": "FbpAPI_FbpArchiveGet",
+    "method": "post",
+    "path": "/v1/fbp/archive/get",
+    "title": "获取已完成交货信息"
+  },
+  {
+    "id": "FbpAPI_FbpArchiveList",
+    "method": "post",
+    "path": "/v1/fbp/archive/list",
+    "title": "获取已完成交货列表"
+  },
+  {
+    "id": "FbpAPI_FbpCreateLabel",
+    "method": "post",
+    "path": "/v1/fbp/label/create",
+    "title": "创建标签生成任务"
+  },
+  {
+    "id": "FbpAPI_FbpGetLabel",
+    "method": "post",
+    "path": "/v1/fbp/label/get",
+    "title": "获取标签生成任务状态"
+  },
+  {
+    "id": "FbpAPI_FbpOrderGet",
+    "method": "post",
+    "path": "/v1/fbp/order/get",
+    "title": "获取关于特定交货的信息"
+  },
+  {
+    "id": "FbpAPI_FbpOrderList",
+    "method": "post",
+    "path": "/v1/fbp/order/list",
+    "title": "获取交货列表"
+  },
+  {
+    "id": "PostingFbpList",
+    "method": "post",
+    "path": "/v1/posting/fbp/list",
+    "title": "获取货件列表"
+  },
+  {
+    "id": "AnalyticsAPI_AnalyticsGetData",
+    "method": "post",
+    "path": "/v1/analytics/data",
+    "title": "分析数据"
+  },
+  {
+    "id": "AnalyticsAPI_AnalyticsProductQueries",
+    "method": "post",
+    "path": "/v1/analytics/product-queries",
+    "title": "获取商品搜索查询信息"
+  },
+  {
+    "id": "AnalyticsAPI_AnalyticsProductQueriesDetails",
+    "method": "post",
+    "path": "/v1/analytics/product-queries/details",
+    "title": "有关特定商品查询的信息"
+  },
+  {
+    "id": "FinanceAPI_GetRealizationByDayReportV1",
+    "method": "post",
+    "path": "/v1/finance/realization/by-day",
+    "title": "每日商品销售报告"
+  },
+  {
+    "id": "SearchQueriesAPI_SearchQueriesText",
+    "method": "post",
+    "path": "/v1/search-queries/text",
+    "title": "获取按文本筛选的搜索查询列表"
+  },
+  {
+    "id": "SearchQueriesAPI_SearchQueriesTop",
+    "method": "post",
+    "path": "/v1/search-queries/top",
+    "title": "获取热门搜索查询列表"
+  },
+  {
+    "id": "ProductPricesDetails",
+    "method": "post",
+    "path": "/v1/product/prices/details",
+    "title": "获取商品价格的详细信息"
+  }
+]

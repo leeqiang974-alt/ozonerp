@@ -16,6 +16,7 @@ from .listing_service import validate_listing_draft
 from .auto_sync import AutoSyncShopNotFound, request_auto_sync, run_auto_sync_resource
 from .schemas import AutoSyncDecisionRead, AutoSyncRequest
 from .listing_metadata_service import get_category_attributes, search_category_attribute_values
+from .pipeline.routes import router as pipeline_router, ext_router as pipeline_ext_router
 
 if settings.database_url.startswith("sqlite"):
     Base.metadata.create_all(bind=engine)
@@ -28,6 +29,9 @@ app.add_middleware(
     allow_methods=["GET", "POST", "PUT", "PATCH", "DELETE"],
     allow_headers=["*"],
 )
+
+app.include_router(pipeline_router)
+app.include_router(pipeline_ext_router)
 
 
 @app.get("/health")

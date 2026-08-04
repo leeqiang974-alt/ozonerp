@@ -37,3 +37,16 @@ def ensure_sqlite_operational_columns() -> None:
     if "type_id" not in listing_columns:
         with engine.begin() as connection:
             connection.execute(text("ALTER TABLE listing_drafts ADD COLUMN type_id VARCHAR(64)"))
+    cat_columns = {column["name"] for column in inspect(engine).get_columns("ozon_category_cache")}
+    if "title_zh" not in cat_columns:
+        with engine.begin() as connection:
+            connection.execute(text("ALTER TABLE ozon_category_cache ADD COLUMN title_zh VARCHAR(500)"))
+    # Pipeline products: content_verified flag
+    try:
+        pipeline_columns = {column["name"] for column in inspect(engine).get_columns("pipeline_products")}
+        if "content_verified" not in pipeline_columns:
+            with engine.begin() as connection:
+                connection.execute(text("ALTER TABLE pipeline_products ADD COLUMN content_verified BOOLEAN"))
+    except Exception:
+        pass  # table may not exist yet in fresh test databases
+

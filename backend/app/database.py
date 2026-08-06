@@ -1,4 +1,4 @@
-from sqlalchemy import create_engine, inspect, text
+﻿from sqlalchemy import create_engine, inspect, text
 from sqlalchemy.orm import DeclarativeBase, sessionmaker
 
 from .config import get_settings
@@ -41,6 +41,23 @@ def ensure_sqlite_operational_columns() -> None:
     if "title_zh" not in cat_columns:
         with engine.begin() as connection:
             connection.execute(text("ALTER TABLE ozon_category_cache ADD COLUMN title_zh VARCHAR(500)"))
+    # Add complex_id to ozon_attribute_cache for variant attribute identification
+    try:
+        attr_columns = {column["name"] for column in inspect(engine).get_columns("ozon_attribute_cache")}
+        if "complex_id" not in attr_columns:
+            with engine.begin() as connection:
+                connection.execute(text("ALTER TABLE ozon_attribute_cache ADD COLUMN complex_id VARCHAR(64) DEFAULT '0'"))
+        if "description" not in attr_columns:
+            with engine.begin() as connection:
+                connection.execute(text("ALTER TABLE ozon_attribute_cache ADD COLUMN description VARCHAR(2000) DEFAULT ''"))
+        if "is_collection" not in attr_columns:
+            with engine.begin() as connection:
+                connection.execute(text("ALTER TABLE ozon_attribute_cache ADD COLUMN is_collection BOOLEAN DEFAULT 0"))
+        if "is_aspect" not in attr_columns:
+            with engine.begin() as connection:
+                connection.execute(text("ALTER TABLE ozon_attribute_cache ADD COLUMN is_aspect BOOLEAN DEFAULT 0"))
+    except Exception:
+        pass
     # Pipeline products: content_verified flag
     try:
         pipeline_columns = {column["name"] for column in inspect(engine).get_columns("pipeline_products")}
@@ -49,4 +66,6 @@ def ensure_sqlite_operational_columns() -> None:
                 connection.execute(text("ALTER TABLE pipeline_products ADD COLUMN content_verified BOOLEAN"))
     except Exception:
         pass  # table may not exist yet in fresh test databases
+
+
 

@@ -1,0 +1,47 @@
+{
+  "manifest_version": 3,
+  "name": "Ozon ERP 统一采集助手",
+  "version": "0.5.0",
+  "description": "统一采集 1688 货源与 Ozon 前台竞品数据，并发送到本地 Ozon ERP。",
+  "action": {
+    "default_title": "Ozon ERP 统一采集助手",
+    "default_popup": "erp-collector-extension/popup.html",
+    "default_icon": {
+      "16": "erp-collector-extension/icons/icon16.png",
+      "32": "erp-collector-extension/icons/icon32.png",
+      "48": "erp-collector-extension/icons/icon48.png",
+      "128": "erp-collector-extension/icons/icon128.png"
+    }
+  },
+  "icons": {
+    "16": "erp-collector-extension/icons/icon16.png",
+    "32": "erp-collector-extension/icons/icon32.png",
+    "48": "erp-collector-extension/icons/icon48.png",
+    "128": "erp-collector-extension/icons/icon128.png"
+  },
+  "permissions": ["activeTab", "alarms", "scripting", "storage", "tabs"],
+  "background": {
+    "service_worker": "erp-collector-extension/background.js"
+  },
+  "host_permissions": [
+    "https://*.1688.com/*",
+    "https://login.taobao.com/*",
+    "https://*.ozon.ru/*",
+    "https://seller.ozon.ru/*",
+    "http://localhost:8000/*",
+    "http://127.0.0.1:5000/*"
+  ],
+  "web_accessible_resources": [
+    {
+      "resources": ["erp-collector-extension/injected.js"],
+      "matches": ["https://*.1688.com/*", "https://login.taobao.com/*", "https://*.ozon.ru/*", "https://seller.ozon.ru/*"]
+    }
+  ],
+  "content_scripts": [
+    {
+      "matches": ["https://*.1688.com/*", "https://login.taobao.com/*", "https://*.ozon.ru/*", "https://seller.ozon.ru/*"],
+      "js": ["erp-collector-extension/content.js"],
+      "run_at": "document_idle"
+    }
+  ]
+}

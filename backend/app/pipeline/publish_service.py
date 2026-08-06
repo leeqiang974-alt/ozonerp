@@ -1,4 +1,4 @@
-"""P7: Approval and small-batch write-back.
+﻿"""P7: Approval and small-batch write-back.
 
 Manages the approval flow, audit trail, and staged submission to the Ozon
 /v3/product/import endpoint.  All write operations require explicit approval
@@ -46,6 +46,7 @@ def build_import_payload(db: Session, shop_id: int, source_product_id: int) -> d
     variant_data = json.loads(pipeline.variant_mapping_json) if pipeline.variant_mapping_json else {}
     attr_mapping = json.loads(pipeline.attribute_mapping_json) if pipeline.attribute_mapping_json else []
     pricing = json.loads(pipeline.pricing_json) if pipeline.pricing_json else {}
+    weight_g, depth_mm, width_mm, height_mm = _extract_dimensions(pricing)
 
     # Build attribute list from P3 mapping
     attributes_list: list[dict[str, Any]] = []
@@ -106,10 +107,10 @@ def build_import_payload(db: Session, shop_id: int, source_product_id: int) -> d
             "premium_price": "",
             "vat": "0",
             "description": pipeline.generated_description_ru or "",
-            "depth": 200,
-            "width": 150,
-            "height": 100,
-            "weight": 500,
+            "depth": depth_mm,
+            "width": width_mm,
+            "height": height_mm,
+            "weight": weight_g,
             "dimension_unit": "mm",
             "weight_unit": "g",
             "images": valid_images,
@@ -132,6 +133,13 @@ def _format_price(value: Any) -> str:
         return "0"
 
 
+
+def _extract_dimensions(pricing: dict) -> tuple[int, int, int, int]:
+    """Extract dimensions from pricing_json, falling back to defaults."""
+    weight = int(pricing.get("_extracted_weight_g") or 500)
+    dims = pricing.get("_extracted_dimensions_mm") or [200, 150, 100]
+    return weight, int(dims[0]), int(dims[1]), int(dims[2])
+
 def create_listing_draft_from_pipeline(db: Session, shop_id: int, source_product_id: int) -> ListingDraftRecord:
     """Create a ListingDraftRecord from the pipeline output for approval."""
     pipeline = db.scalar(select(PipelineProductRecord).where(
@@ -149,6 +157,7 @@ def create_listing_draft_from_pipeline(db: Session, shop_id: int, source_product
         raise ValueError("source product not found")
     variant_data = json.loads(pipeline.variant_mapping_json) if pipeline.variant_mapping_json else {}
     pricing = json.loads(pipeline.pricing_json) if pipeline.pricing_json else {}
+    weight_g, depth_mm, width_mm, height_mm = _extract_dimensions(pricing)
     offer_id = variant_data.get("variants", [{}])[0].get("seller_sku", f"SRC{source_product_id}")
     # Check for existing draft
     existing = db.scalar(select(ListingDraftRecord).where(
@@ -178,10 +187,10 @@ def create_listing_draft_from_pipeline(db: Session, shop_id: int, source_product
             draft_id=draft.id,
             seller_sku=var["seller_sku"],
             purchase_cost_cny=var.get("price_cny"),
-            weight_g=500,
-            length_mm=200,
-            width_mm=150,
-            height_mm=100,
+            weight_g=weight_g,
+            length_mm=depth_mm,
+            width_mm=width_mm,
+            height_mm=height_mm,
             calculated_price_cny=var_pricing.get("price_cny"),
             min_price_cny=str(var_pricing.get("min_price_cny", "")),
             old_price_cny=var_pricing.get("old_price_cny"),

@@ -1,0 +1,48 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <link rel="stylesheet" href="popup.css" />
+    <title>Ozon ERP 统一采集助手</title>
+  </head>
+  <body>
+    <main>
+      <h1>Ozon ERP 统一采集助手</h1>
+      <p>一个插件同时处理 1688 货源采集和 Ozon 前台竞品任务，数据会发送到本地 Ozon ERP。</p>
+      <label class="field">
+        <span>归属店铺</span>
+        <select id="storeSelect"></select>
+      </label>
+      <label class="option"><input id="includeVideo" type="checkbox" checked /> 采集视频链接</label>
+      <section class="sku-box">
+        <div class="sku-head">
+          <strong>SKU 采集</strong>
+          <button id="skuToggleButton" type="button">不全选</button>
+        </div>
+        <div id="skuList" class="sku-list">打开 1688 商品详情页后自动读取</div>
+      </section>
+      <section id="sizeWeightBox" class="size-weight-box">
+        <strong>手动尺重（选填）</strong>
+        <div class="size-grid">
+          <label><span>重量(g)</span><input id="manualWeight" type="number" min="1" /></label>
+          <label><span>长(mm)</span><input id="manualLength" type="number" min="1" /></label>
+          <label><span>宽(mm)</span><input id="manualWidth" type="number" min="1" /></label>
+          <label><span>高(mm)</span><input id="manualHeight" type="number" min="1" /></label>
+        </div>
+        <label class="option compact"><input id="applyAllSku" type="checkbox" checked /> 同步填入所有缺尺重 SKU</label>
+      </section>
+      <button id="collectButton">采集当前商品</button>
+      <section class="worker-box">
+        <div>
+          <strong>1688 / Ozon 自动采集后台</strong>
+          <span id="workerStatus">检测中...</span>
+        </div>
+        <button id="pollWorkerButton" type="button">立即检查任务</button>
+      </section>
+      <div id="status" class="status">等待采集</div>
+      <a href="http://localhost:8000/" target="_blank">打开 Ozon ERP</a>
+    </main>
+    <script src="popup.js"></script>
+  </body>
+</html>

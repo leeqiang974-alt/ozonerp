@@ -1,4 +1,4 @@
-# 阶段交接：MVP 领域骨架
+﻿# 阶段交接：MVP 领域骨架
 
 ## 已完成（2026-08-03）
 
@@ -48,6 +48,17 @@
 
 ## 1688 -> Ozon 自动上架流水线（P0-P7）
 
+### 主线调整（2026-08-05）
+
+- 取消“同一主体下店铺 A -> 店铺 B 直接复制商品”方案；该方案不作为 ERP 商品来源主线。
+- 新主线改为 Ozon 公开详情页采集 -> 本地二开草稿 -> 内容/图片/价格重做 -> 预检 -> 审批 -> 发布。
+- 扩展已支持 Ozon 详情页快照发送到 `/api/ozon/capture`；后端以 `source_platform=ozon_public` 入库，公开页面价格只保留在 `raw_json`，不得当作 CNY 采购成本。
+- 公开采集仍需人工处理品牌、版权、水印和重复内容风险，当前不自动发布。
+- 已将可用扩展复制到 `browser_extension/erp-collector-extension`，保留 1688/Ozon 详情采集、SKU 筛选、店铺选择和 crawler worker；新增 Ozon 搜索列表卡片浮层。浮层通过 MutationObserver 处理无限滚动卡片，展示评分、评价、页面可见尺重和销量提示，并避免重复挂载。
+- Ozon 详情快照新增 `packageInfo`（`weightG`、`lengthMm`、`widthMm`、`heightMm`）与 `salesHint`；页面推测数据仅标记 `capture_hint`，缺失时不填默认值。扩展语法检查通过，后端测试 78 项通过。
+- 新增浏览器端 `composer-api.bx/page/json/v2` 尝试：列表商品链接会用当前 Ozon 页面会话读取同源页面 JSON，解析可用尺重/销量字段并回填浮层；失败时静默回退到 DOM，未向浏览器暴露店铺 API Key。
+- 已增加主世界 Fetch/XHR 观察器：仅转发当前 Ozon 页面已加载的 JSON 响应摘要到内容脚本，按商品 ID 匹配浮层并回填字段；不读取或转发 Cookie/API Key，响应过大时丢弃。
+
 - 新增 `backend/app/pipeline/` 包，覆盖 P0-P7 全链路：
   - P0 `contract.py`：1688 商品快照 JSON Schema、幂等键、校验与规范化。
   - P1 `ingestion_service.py`：幂等 upsert 导入，重复导入更新而非新建。
@@ -75,3 +86,54 @@
 - 定价模型仍使用硬编码尺寸（500g/200x150x100mm），需从 1688 采集数据中提取真实重量和尺寸。
 - LLM 翻译需要配置 `LLM_API_KEY` 才能产出高质量俄语内容；无 key 时词典回退质量有限。
 - P7 真实写回已用于测试，已成功发布 1 个商品到 Ozon（task_id 5306797528），但该商品的标题曾为中文（已修复代码，旧数据需重新生成内容后重新发布）。
+
+
+## 2026-08-06 商品发布编辑器开发
+
+### 完成内容
+
+**后端新增**
+- `ai_service.py` — DeepSeek AI 服务模块（翻译、属性推荐、描述生成、富内容生成）
+- `POST /api/v1/ai/translate` — 文本翻译（中文→俄文）
+- `POST /api/v1/ai/suggest-attribute` — 属性值 AI 推荐
+- `POST /api/v1/ai/generate-description` — 商品描述 AI 生成
+- `POST /api/v1/ai/generate-rich-content` — 富内容 JSON 生成
+- `GET /api/v1/shops/{shop_id}/pipeline/source-products/{sp_id}` — 采集商品详情（含变体和图片）
+- `GET /api/v1/shops/{shop_id}/listing-drafts/{draft_id}` — 获取单个草稿
+- `PUT /api/v1/shops/{shop_id}/listing-drafts/{draft_id}` — 更新草稿
+- `OzonAttributeCacheRecord` 新增 `complex_id`、`is_aspect`、`description`、`is_collection` 字段
+- 正确从 Ozon API 捕获 `attribute_complex_id` 和 `is_aspect`（变体属性标识）
+
+**前端新增**
+- `listing-editor.html` — 完整商品发布编辑器（9 个分区，对齐无忧易售）
+  1. 店铺与类目（搜索+选择+Offer ID+标题+智能标题）
+  2. 产品属性（动态渲染，必填/选填分组，字典搜索，AI填充）
+  3. 本地信息（来源URL+备注）
+  4. 文字描述（AI生成+AI翻译）
+  5. JSON富内容（AI生成：欢迎语+描述+5张图）
+  6. 产品图片（URL添加+采集导入+主图标记）
+  7. 视频（链接+封面）
+  8. 变体设置（is_aspect驱动变体识别+笛卡尔积生成SKU行）
+  9. 产品信息（增值税+积分评价）
+- `listing-editor.js` — 编辑器逻辑（类目联动、AI填充、变体生成、草稿保存）
+- `listing-editor.css` — 编辑器样式
+- `index.html` 商品上架 tab 新增"进入发布编辑器"链接
+
+### 关键设计决策
+- **表单驱动**：不是流水线/Agent，而是每个字段独立填写+AI辅助
+- **is_aspect**：Ozon API 通过 `is_aspect=true` 标记变体属性，非 `complex_id`
+- **属性值收集**：保存时直接从 DOM 读取，不依赖事件回调
+- **DeepSeek**：翻译走 `deepseek-chat` 模型，API Key 在 `.env` 中配置
+
+### 文件路径
+- 编辑器页面：`E:\new ozon erp\frontend\listing-editor.html`
+- 编辑器JS：`E:\new ozon erp\frontend\listing-editor.js`
+- 编辑器CSS：`E:\new ozon erp\frontend\listing-editor.css`
+- AI服务：`E:\new ozon erp\backend\app\ai_service.py`
+- 访问地址：`http://127.0.0.1:5500/listing-editor.html`
+
+### 待后续完善
+- 富内容可视化编辑器（当前为文本编辑）
+- 图片处理（裁剪、去水印、白底）
+- 定价模型集成到变体表格
+- 草稿列表管理（在主页面展示已保存草稿）

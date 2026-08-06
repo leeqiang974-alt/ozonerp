@@ -1,0 +1,211 @@
+﻿<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Ozon 商品发布编辑器</title>
+  <link rel="stylesheet" href="./listing-editor.css?v=2" />
+<style>
+  #le-layout { display: block !important; padding-top: 52px; padding-right: 340px; min-height: 100vh; }
+  #le-form-area { max-width: 860px; margin: 0 auto !important; padding: 20px 24px; width: auto !important; }
+</style>
+</head>
+<body>
+  <div id="le-topbar">
+    <div class="le-topbar-left">
+      <a href="./index.html" class="le-back">← 返回</a>
+      <span class="le-topbar-title">商品发布编辑器</span>
+    </div>
+    <div class="le-topbar-right">
+      <select id="le-shop-select"><option value="">选择店铺</option></select>
+      <button class="le-btn le-btn-save" id="le-save-btn">保存草稿</button>
+      <button class="le-btn le-btn-validate" id="le-validate-btn">预检</button>
+    </div>
+  </div>
+
+  <div id="le-layout">
+    <div id="le-form-area">
+
+      <!-- 1. 店铺与类目 -->
+      <section class="le-section" id="le-section-category">
+        <h3 class="le-section-title">① 店铺与类目</h3>
+
+        <div class="le-field-row">
+          <label>平台分类 <span class="le-required">*</span></label>
+          <input type="text" id="le-category-search" placeholder="搜索类目名称（至少2个字）" autocomplete="off" />
+          <select id="le-category-select" size="6"></select>
+          <small class="le-hint" id="le-category-path">未选择类目</small>
+        </div>
+
+        <div class="le-field-row">
+          <label>ParentSKU / Offer ID <span class="le-required">*</span></label>
+          <input type="text" id="le-offer-id" placeholder="例如：LQ000001" maxlength="128" />
+          <small class="le-hint">商品主编码，店铺内唯一</small>
+        </div>
+
+        <div class="le-field-row">
+          <label>商品标题（俄文）<span class="le-required">*</span></label>
+          <div class="le-input-with-ai">
+            <input type="text" id="le-title" placeholder="使用俄文，推荐格式：类目+品牌+名称+变体属性" maxlength="500" />
+            <button class="le-ai-btn" data-ai-action="translate-title" title="AI翻译标题">AI</button>
+          </div>
+          <small class="le-hint">推荐格式: 类目+品牌(如有)+名称+变体属性</small>
+        </div>
+
+        <div class="le-field-row">
+          <label class="le-checkbox-line">
+            <input type="checkbox" id="le-smart-title" /> 智能标题（多变体自动加入变体属性信息）
+          </label>
+        </div>
+      </section>
+
+      <!-- 2. 产品属性 -->
+      <section class="le-section" id="le-section-attributes">
+        <h3 class="le-section-title">② 产品属性 <span class="le-section-count" id="le-attr-count"></span></h3>
+        <div class="le-attr-toolbar">
+          <button class="le-btn le-btn-sm" id="le-ai-fill-all-attrs">AI 填充全部</button>
+          <label class="le-checkbox-line"><input type="checkbox" id="le-show-optional" checked /> 显示选填属性</label>
+        </div>
+        <div id="le-attributes-container">
+          <p class="le-placeholder">请先在上方选择类目，属性将自动加载。</p>
+        </div>
+      </section>
+
+      <!-- 3. 本地信息 -->
+      <section class="le-section" id="le-section-local">
+        <h3 class="le-section-title">③ 本地信息 <small>（不会同步到 Ozon）</small></h3>
+        <div class="le-field-row">
+          <label>来源 URL</label>
+          <input type="url" id="le-source-url" placeholder="https://detail.1688.com/offer/..." />
+        </div>
+        <div class="le-field-row">
+          <label>备注</label>
+          <input type="text" id="le-remark" placeholder="运营备注（可选）" />
+        </div>
+      </section>
+
+      <!-- 4. 描述 -->
+      <section class="le-section" id="le-section-description">
+        <h3 class="le-section-title">④ 文字描述</h3>
+        <div class="le-field-row">
+          <div class="le-field-label-row">
+            <label>俄文描述</label>
+            <button class="le-ai-btn" data-ai-action="generate-description" title="AI生成描述">AI 生成</button>
+            <button class="le-ai-btn le-ai-btn-secondary" data-ai-action="translate-description" title="AI翻译描述">AI 翻译</button>
+          </div>
+          <textarea id="le-description" rows="6" placeholder="产品描述（俄文）" maxlength="10000"></textarea>
+          <small class="le-hint">✅ 当有 JSON 丰富描述时，普通文字描述在 Ozon 前台不会显示。</small>
+        </div>
+      </section>
+
+      <!-- 5. JSON 丰富描述 -->
+      <section class="le-section" id="le-section-rich">
+        <h3 class="le-section-title">⑤ JSON 丰富描述（富内容）</h3>
+        <div class="le-field-row">
+          <div class="le-field-label-row">
+            <label>富内容 JSON</label>
+            <button class="le-ai-btn" data-ai-action="generate-rich-content" title="生成富内容（描述+图片）">AI 生成</button>
+          </div>
+          <textarea id="le-rich-content" rows="8" placeholder='点击"AI 生成"自动创建：欢迎语 + 描述 + 5张详情图' maxlength="50000"></textarea>
+          <small class="le-hint">格式：俄文欢迎语 + 产品描述 + 5张产品详情图</small>
+        </div>
+      </section>
+
+      <!-- 6. 产品图片 -->
+      <section class="le-section" id="le-section-images">
+        <h3 class="le-section-title">⑥ 产品图片 <span class="le-section-count" id="le-image-count"></span></h3>
+        <div class="le-image-toolbar">
+          <input type="url" id="le-image-url-input" placeholder="粘贴图片 URL" />
+          <button class="le-btn le-btn-sm" id="le-add-image">添加</button>
+          <button class="le-btn le-btn-sm" id="le-import-source-images">从采集导入</button>
+        </div>
+        <small class="le-hint" style="margin-bottom:10px">推荐纵横比 3:4，最低 200×200，最多 50 张</small>
+        <div id="le-image-grid" class="le-image-grid"></div>
+      </section>
+
+      <!-- 7. 视频 -->
+      <section class="le-section le-section-collapsed" id="le-section-video">
+        <h3 class="le-section-title">⑦ 视频 <small>（可选）</small></h3>
+        <div class="le-field-row">
+          <label>视频链接</label>
+          <input type="url" id="le-video-url" placeholder="https://..." />
+        </div>
+        <div class="le-field-row">
+          <label>视频封面</label>
+          <input type="url" id="le-video-cover" placeholder="https://..." />
+        </div>
+      </section>
+
+      <!-- 8. 变体设置 -->
+      <section class="le-section" id="le-section-variants">
+        <h3 class="le-section-title">⑧ 变体设置（SKU）</h3>
+        <div class="le-variant-toolbar">
+          <div class="le-variant-attrs" id="le-variant-attrs">
+            <small class="le-hint">选择类目后，变体属性将自动识别。</small>
+          </div>
+          <button class="le-btn le-btn-sm" id="le-add-variant-row">+ 添加一行</button>
+        </div>
+        <div class="le-table-wrap">
+          <table class="le-variant-table" id="le-variant-table">
+            <thead>
+              <tr>
+                <th>产品</th>
+                <th>SKU编号</th>
+                <th>条形码</th>
+                <th>售价(CNY)</th>
+                <th>原价(CNY)</th>
+                <th>成本价(CNY)</th>
+                <th>库存</th>
+                <th>包裹尺寸(mm)<br><small>长×宽×高</small></th>
+                <th>毛重(g)</th>
+                <th>俄文名称</th>
+                <th></th>
+              </tr>
+            </thead>
+            <tbody id="le-variant-rows"></tbody>
+          </table>
+        </div>
+        <small class="le-hint">变体属性由类目的 is_aspect 属性决定，非变体属性不能用于划分 SKU。</small>
+      </section>
+
+      <!-- 9. 产品信息 -->
+      <section class="le-section" id="le-section-product-info">
+        <h3 class="le-section-title">⑨ 产品信息</h3>
+        <div class="le-field-row">
+          <label>增值税 <span class="le-required">*</span></label>
+          <select id="le-vat">
+            <option value="">请选择</option>
+            <option value="0">0%</option>
+            <option value="0.1">10%</option>
+            <option value="0.2">20%</option>
+          </select>
+        </div>
+        <div class="le-field-row">
+          <label>积分评价</label>
+          <select id="le-points">
+            <option value="disabled">禁用</option>
+            <option value="enabled">启用</option>
+          </select>
+        </div>
+      </section>
+
+    </div>
+
+    <!-- 右侧：采集素材面板 -->
+    <div id="le-source-panel">
+      <div class="le-source-header">
+        <h3>采集素材</h3>
+        <select id="le-source-select"><option value="">选择采集商品...</option></select>
+      </div>
+      <div id="le-source-content" class="le-source-content">
+        <p class="le-placeholder">选择采集商品后，此处展示货源信息，供 AI 填充时参考。</p>
+      </div>
+    </div>
+  </div>
+
+  <div id="le-toast"></div>
+  <script src="./listing-editor.js?v=2"></script>
+</body>
+</html>
+
+

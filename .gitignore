@@ -1,4 +1,4 @@
-.env
+﻿.env
 .env.*
 !.env.example
 __pycache__/
@@ -11,3 +11,23 @@ __pycache__/
 node_modules/
 dist/
 coverage/
+
+# Temp profiles and caches
+.tmp-chrome-profile/
+.tmp-chrome-profile*/
+.cache/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# OS
+Thumbs.db
+.DS_Store
+
+# API keys and secrets (never commit)
+**/api/
+*.key
+*.pem

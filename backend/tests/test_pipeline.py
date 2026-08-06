@@ -151,6 +151,67 @@ class TestP1Ingestion:
 # P2: fact extraction + category matching
 # ---------------------------------------------------------------------------
 
+    def test_ozon_capture_with_shangpinbang_supplement(self):
+        """Ozon public-page capture with shangpinbang display supplement ingests cleanly."""
+        from app.pipeline.extension_bridge import ingest_ozon_capture
+        from app.erp_models import SourceProductRecord
+        import json
+
+        engine = create_engine("sqlite://")
+        Base.metadata.create_all(engine)
+        with Session(engine) as db:
+            shop = Shop(name="ozon-import-test", currency="CNY")
+            db.add(shop); db.commit(); db.refresh(shop)
+
+            payload = {
+                "url": "https://www.ozon.ru/product/testovyy-tovar-123456789/",
+                "title": "Тестовый товар для проверки импорта",
+                "image": "https://cdn1.ozone.ru/s3/test/1.jpg",
+                "price": 1234,
+                "oldPrice": 2468,
+                "rating": 4.9,
+                "reviewCount": 29468,
+                "sku": "123456789",
+                "shangpinbang": {
+                    "category": "Автоинструменты / Съемники клипс",
+                    "brand": "NoName",
+                    "monthlySales": "7552 件",
+                    "monthlyGmv": "563.29万 ₽",
+                    "packageWeight": "9000 g",
+                    "packageDimensions": "450 * 280 * 160 mm",
+                    "volume": "20.16 升",
+                    "shippingMode": "FBO",
+                    "sellerCount": "等1个卖家",
+                },
+                "sources": {
+                    "ozon_dom": {"capturedAt": "2026-08-05T12:00:00.000Z", "fields": ["title", "price"]},
+                    "shangpinbang_display": {"source": "shangpinbang_display", "confidence": "reference"},
+                },
+            }
+
+            result = ingest_ozon_capture(db, shop.id, payload)
+            assert result["ok"] is True
+            assert result["source_platform"] == "ozon_public"
+            record = db.get(SourceProductRecord, int(result["id"]))
+            assert record is not None
+            assert record.source_product_id == "123456789"
+            assert record.title == payload["title"]
+            assert record.source_url == payload["url"]
+            assert record.category_hint == "Автоинструменты / Съемники клипс"
+            assert record.brand == "NoName"
+            assert record.main_image_url == payload["image"]
+            raw = json.loads(record.raw_json or "{}")
+            assert raw.get("shangpinbang") is not None
+            assert raw["shangpinbang"]["packageWeight"] == "9000 g"
+            assert raw["shangpinbang"]["monthlySales"] == "7552 件"
+            assert raw.get("sources") is not None
+            assert "shangpinbang_display" in raw["sources"]
+            # duplicate ingest returns duplicate flag
+            result2 = ingest_ozon_capture(db, shop.id, payload)
+            assert result2["ok"] is True
+            assert result2["duplicate"] is True
+            assert result2["id"] == result["id"]
+
 class TestP2FactExtraction:
     def test_extracts_material_and_form(self):
         source = SourceProductRecord(
@@ -354,7 +415,7 @@ class TestP5ContentGeneration:
             map_variants(db, shop.id, record.id)
             result = generate_content(db, shop.id, record.id)
             assert result["title_ru"] != ""
-            assert result["pricing"]["rule_version"] == "1.0.0"
+            assert result["pricing"]["rule_version"] == "2.0.0"
             assert len(result["pricing"]["variants"]) == 1
             var_pricing = result["pricing"]["variants"][0]
             assert var_pricing["price_cny"] > 0
@@ -612,3 +673,5 @@ class TestProgress:
             p1_stage = next(s for s in report["stages"] if s["stage"] == "P1")
             ingest_task = next(t for t in p1_stage["tasks"] if "ingest at least" in t["text"])
             assert ingest_task["done"] is True
+
+

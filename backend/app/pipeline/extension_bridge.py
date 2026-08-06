@@ -18,14 +18,21 @@ from ..models import ApiCredential, Shop
 from .ingestion_service import ingest_source_product
 
 
-def translate_capture(payload: dict[str, Any], shop_id: int) -> dict[str, Any]:
+def translate_capture(payload: dict[str, Any], shop_id: int, *, source_platform: str = "1688") -> dict[str, Any]:
     """Convert an extension capture payload to the pipeline ingest format."""
-    offer_id = str(payload.get("offerId") or payload.get("source_product_id") or "").strip()
+    offer_id = str(payload.get("offerId") or payload.get("source_product_id") or payload.get("productId") or payload.get("sku") or "").strip()
     if not offer_id:
         # Fall back to URL path extraction
         url = str(payload.get("url") or "")
         import re
-        match = re.search(r"/offer/(\d+)", url)
+        # 1688: /offer/xxx.html or /offer/xxx/yyy.html
+        # Ozon: /product/name-123456789/ or /product/123456789/
+        match = (
+            re.search(r"/offer/(\d+)", url)
+            or re.search(r"/product/[^/]*?-(\d+)/?", url)
+            or re.search(r"/product/(\d+)/", url)
+            or re.search(r"/product/[^/]+/(\d+)", url)
+        )
         offer_id = match.group(1) if match else ""
     title = str(payload.get("title") or "").strip()[:500]
     if not title:
@@ -48,6 +55,13 @@ def translate_capture(payload: dict[str, Any], shop_id: int) -> dict[str, Any]:
             brand = value
         elif "category" in name or "类目" in name or "分类" in name:
             category_hint = value
+    # Shangpinbang supplement: extract category/brand from its panel
+    spb = payload.get("shangpinbang") or {}
+    if isinstance(spb, dict):
+        if not brand and spb.get("brand"):
+            brand = str(spb["brand"]).strip() or None
+        if not category_hint and spb.get("category"):
+            category_hint = str(spb["category"]).strip()[:500]
     # Use supplier as brand fallback
     if not brand:
         brand = str(payload.get("supplier") or "").strip() or None
@@ -57,6 +71,10 @@ def translate_capture(payload: dict[str, Any], shop_id: int) -> dict[str, Any]:
         image_urls = [str(url).strip() for url in raw_images if str(url).strip()]
     else:
         image_urls = []
+    # Ozon capture sends a single primary image as "image"
+    single_image = str(payload.get("image") or "").strip()
+    if single_image and single_image not in image_urls:
+        image_urls.insert(0, single_image)
     main_image = image_urls[0] if image_urls else None
     # Media
     media_list = []
@@ -114,8 +132,24 @@ def translate_capture(payload: dict[str, Any], shop_id: int) -> dict[str, Any]:
             "stock": 0,
             "image_url": None,
         })
+    # Preserve source tracking and supplement data in raw_json for audit
+    extra = {}
+    if payload.get("sources"):
+        extra["sources"] = payload["sources"]
+    if payload.get("shangpinbang"):
+        extra["shangpinbang"] = payload["shangpinbang"]
+    if payload.get("price") is not None:
+        extra["list_price_rub"] = payload["price"]
+    if payload.get("oldPrice") is not None:
+        extra["list_old_price_rub"] = payload["oldPrice"]
+    if payload.get("rating") is not None:
+        extra["rating"] = payload["rating"]
+    if payload.get("reviewCount") is not None:
+        extra["review_count"] = payload["reviewCount"]
+    if payload.get("image"):
+        extra["primary_image_url"] = payload["image"]
     return {
-        "source_platform": "1688",
+        "source_platform": source_platform,
         "source_product_id": offer_id,
         "title": title,
         "source_url": str(payload.get("url") or "").strip() or None,
@@ -125,6 +159,7 @@ def translate_capture(payload: dict[str, Any], shop_id: int) -> dict[str, Any]:
         "material": material or None,
         "variants": variants_list,
         "media": media_list,
+        **extra,
     }
 
 
@@ -144,6 +179,30 @@ def ingest_capture(db: Session, shop_id: int, payload: dict[str, Any]) -> dict[s
         "duplicate": existing is not None,
         "duplicateMessage": "该 1688 商品已采集过，已更新为最新数据" if existing is not None else "",
         "title": record.title,
+        "receivedAt": record.updated_at.isoformat() if record.updated_at else "",
+    }
+
+
+def ingest_ozon_capture(db: Session, shop_id: int, payload: dict[str, Any]) -> dict[str, Any]:
+    """Ingest a public Ozon detail-page snapshot as a rework source.
+
+    Public-page price is intentionally kept only in raw_json: it is normally
+    RUB and must never be treated as the ERP's CNY procurement cost.
+    """
+    translated = translate_capture(payload, shop_id, source_platform="ozon_public")
+    existing = db.scalar(select(SourceProductRecord).where(
+        SourceProductRecord.source_platform == "ozon_public",
+        SourceProductRecord.source_product_id == translated["source_product_id"],
+        SourceProductRecord.shop_id == shop_id,
+    ))
+    record = ingest_source_product(db, shop_id, translated)
+    return {
+        "ok": True,
+        "id": str(record.id),
+        "duplicate": existing is not None,
+        "duplicateMessage": "该 Ozon 商品已采集过，已更新最新快照" if existing is not None else "",
+        "title": record.title,
+        "source_platform": record.source_platform,
         "receivedAt": record.updated_at.isoformat() if record.updated_at else "",
     }
 

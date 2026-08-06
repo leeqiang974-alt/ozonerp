@@ -1,6 +1,7 @@
-from fastapi import BackgroundTasks, Depends, FastAPI, HTTPException, Query, Response, status
+﻿from fastapi import BackgroundTasks, Depends, FastAPI, HTTPException, Query, Response, status
+from pydantic import BaseModel, Field
 from fastapi.middleware.cors import CORSMiddleware
-from sqlalchemy import select
+from sqlalchemy import select, or_
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
@@ -17,6 +18,11 @@ from .auto_sync import AutoSyncShopNotFound, request_auto_sync, run_auto_sync_re
 from .schemas import AutoSyncDecisionRead, AutoSyncRequest
 from .listing_metadata_service import get_category_attributes, search_category_attribute_values
 from .pipeline.routes import router as pipeline_router, ext_router as pipeline_ext_router
+from .ai_service import translate_text, suggest_attribute_value, generate_description, generate_rich_content, match_category_with_ai
+from .pipeline.fact_extraction import ProductFacts, extract_facts
+from .pipeline.category_matching import recall_categories, rerank_categories
+from .erp_models import SourceProductRecord, SourceVariantRecord, SourceMediaRecord
+from .erp_models import SourceProductRecord, SourceVariantRecord, SourceMediaRecord
 
 if settings.database_url.startswith("sqlite"):
     Base.metadata.create_all(bind=engine)
@@ -26,6 +32,7 @@ app = FastAPI(title="Ozon ERP API", version="0.1.0")
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["http://127.0.0.1:5500", "http://localhost:5500"],
+    allow_origin_regex=r"^chrome-extension://[a-f0-9]{32}$",
     allow_methods=["GET", "POST", "PUT", "PATCH", "DELETE"],
     allow_headers=["*"],
 )
@@ -269,3 +276,301 @@ def list_category_attributes(shop_id: int, category_id: int, type_id: int, db: S
 @app.get("/api/v1/shops/{shop_id}/metadata/categories/{category_id}/types/{type_id}/attributes/{attribute_id}/values")
 def list_category_attribute_values(shop_id: int, category_id: int, type_id: int, attribute_id: int, query: str = Query(default="", max_length=100), limit: int = Query(default=50, ge=1, le=100), db: Session = Depends(get_db)) -> list[dict]:
     return search_category_attribute_values(db, shop_id, str(category_id), str(type_id), str(attribute_id), query, limit)
+
+
+
+# ---------------------------------------------------------------------------
+# AI assistance endpoints (DeepSeek)
+# ---------------------------------------------------------------------------
+
+class TranslateRequest(BaseModel):
+    text: str = Field(min_length=1, max_length=5000)
+    target_lang: str = Field(default="ru", max_length=4)
+    context: str = Field(default="", max_length=2000)
+
+
+@app.post("/api/v1/ai/translate")
+def ai_translate(payload: TranslateRequest) -> dict:
+    try:
+        return translate_text(payload.text, target_lang=payload.target_lang, context=payload.context)
+    except RuntimeError as exc:
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
+
+
+class SuggestAttributeRequest(BaseModel):
+    attribute_name: str = Field(min_length=1, max_length=500)
+    attribute_description: str = Field(default="", max_length=2000)
+    product_title: str = Field(min_length=1, max_length=500)
+    product_description: str = Field(default="", max_length=10000)
+    dictionary_options: list[dict] | None = Field(default=None)
+
+
+@app.post("/api/v1/ai/suggest-attribute")
+def ai_suggest_attribute(payload: SuggestAttributeRequest) -> dict:
+    try:
+        return suggest_attribute_value(
+            payload.attribute_name,
+            payload.attribute_description,
+            payload.product_title,
+            payload.product_description,
+            dictionary_options=payload.dictionary_options,
+        )
+    except RuntimeError as exc:
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
+
+
+class GenerateDescriptionRequest(BaseModel):
+    product_title: str = Field(min_length=1, max_length=500)
+    source_description: str = Field(default="", max_length=10000)
+    specs: list[dict] | None = Field(default=None)
+    target_lang: str = Field(default="ru", max_length=4)
+
+
+@app.post("/api/v1/ai/generate-description")
+def ai_generate_description(payload: GenerateDescriptionRequest) -> dict:
+    try:
+        return generate_description(
+            payload.product_title,
+            payload.source_description,
+            payload.specs,
+            target_lang=payload.target_lang,
+        )
+    except RuntimeError as exc:
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
+
+
+class GenerateRichContentRequest(BaseModel):
+    description: str = Field(default="", max_length=10000)
+    image_urls: list[str] = Field(default_factory=list)
+    shop_name: str = Field(default="", max_length=200)
+
+
+@app.post("/api/v1/ai/generate-rich-content")
+def ai_generate_rich_content(payload: GenerateRichContentRequest) -> dict:
+    try:
+        return generate_rich_content(payload.description, payload.image_urls, shop_name=payload.shop_name)
+    except RuntimeError as exc:
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
+
+
+
+class MatchCategoryRequest(BaseModel):
+    title: str = Field(min_length=1, max_length=500)
+    material: str = Field(default="", max_length=200)
+    brand: str = Field(default="", max_length=200)
+
+
+@app.post("/api/v1/shops/{shop_id}/ai/match-category")
+def ai_match_category(shop_id: int, payload: MatchCategoryRequest, db: Session = Depends(get_db)) -> dict:
+    """Chinese-to-Chinese fuzzy category matching. No AI, no translation.
+
+    Extracts product type keywords from the Chinese title and searches
+    the title_zh field in the local Ozon category cache.
+    """
+    if db.get(Shop, shop_id) is None:
+        raise HTTPException(status_code=404, detail="店铺不存在")
+
+    title = payload.title.strip()
+
+    # Common product suffixes in Chinese e-commerce
+    suffixes = ["包", "鞋", "衣", "裤", "裙", "帽", "表", "灯", "杯", "壳", "架", "盒",
+                "箱", "袋", "垫", "毯", "枕", "碗", "盘", "壶", "锅", "刀", "剪",
+                "链", "绳", "带", "扣", "环", "钩", "管", "棒", "板", "贴", "膜",
+                "器", "机", "线", "充", "耳", "玩具", "收纳", "整理", "装饰",
+                "配件", "套装", "工具", "仪器"]
+
+    keywords = set()
+    import re as _re
+
+    # Extract compound words ending with product suffixes
+    for suffix in suffixes:
+        idx = title.rfind(suffix)
+        if idx >= 0:
+            start = max(0, idx - 4)
+            keywords.add(title[start:idx + len(suffix)])
+            keywords.add(suffix)
+            start2 = max(0, idx - 2)
+            keywords.add(title[start2:idx + len(suffix)])
+
+    # Split by separators and take meaningful words
+    parts = _re.split(r"[\s,，、/\\\[\]\(\)（）【】]+", title)
+    for part in parts:
+        part = part.strip()
+        if 2 <= len(part) <= 8:
+            keywords.add(part)
+
+    keywords = {k for k in keywords if 1 <= len(k) <= 8}
+    if not keywords:
+        return {"candidates": [], "keywords": []}
+
+    # Search title_zh in category cache with smart scoring
+    seen = {}
+    for kw in sorted(keywords, key=len, reverse=True):
+        rows = db.scalars(select(OzonCategoryCacheRecord).where(
+            OzonCategoryCacheRecord.shop_id == shop_id,
+            OzonCategoryCacheRecord.type_id != "",
+            OzonCategoryCacheRecord.title_zh.like(f"%{kw}%"),
+        ).limit(200)).all()
+        for row in rows:
+            key = (row.category_id, row.type_id)
+            title_zh = row.title_zh or ""
+            # Split by " / " (space-slash-space) to separate parent / leaf
+            # This handles cases like "配饰 / 包/袋" where "包/袋" is the leaf
+            parts = title_zh.split(" / ")
+            leaf = parts[-1].strip() if parts else title_zh
+            parent = " / ".join(parts[:-1]).strip() if len(parts) > 1 else ""
+
+            # Scoring: leaf match > parent match
+            kw_len = len(kw)
+            if kw in leaf:
+                base = kw_len * 20
+                # Shorter leaf = more general category
+                leaf_bonus = max(0, 10 - len(leaf)) * 3
+                # Keyword at start of leaf = strong signal
+                start_bonus = 50 if leaf.startswith(kw) else 0
+                # Very short leaf (1-3 chars) = very general category
+                short_bonus = 30 if len(leaf) <= 3 else (15 if len(leaf) <= 5 else 0)
+                # Exact match (leaf IS the keyword) - only for 2+ char keywords
+                exact_bonus = (100 if len(kw) >= 2 else 30) if leaf == kw else 0
+                # Leaf is "keyword/something" (e.g. "包/袋") = category IS this product type
+                type_bonus = 200 if leaf.startswith(kw + "/") else 0
+                # Penalty for compound words where keyword is just a prefix
+                # e.g. "包架" (bag rack) is not "包" (bag) itself
+                compound_penalty = -30 if (leaf.startswith(kw) and len(leaf) > len(kw) + 1
+                                           and not leaf.startswith(kw + "/")) else 0
+                score = base + leaf_bonus + start_bonus + short_bonus + exact_bonus + type_bonus + compound_penalty
+            elif kw in parent:
+                score = kw_len * 5
+            else:
+                score = kw_len * 3
+
+            if key not in seen:
+                seen[key] = {
+                    "category_id": row.category_id, "type_id": row.type_id,
+                    "title": row.title, "title_zh": title_zh,
+                    "score": score, "matched": [kw],
+                }
+            else:
+                seen[key]["score"] += score
+                seen[key]["matched"].append(kw)
+
+    candidates = sorted(seen.values(), key=lambda c: c["score"], reverse=True)[:10]
+    return {"candidates": candidates, "keywords": sorted(keywords, key=len, reverse=True)}
+
+# Source product detail (for listing editor
+# ---------------------------------------------------------------------------
+
+@app.get("/api/v1/shops/{shop_id}/pipeline/source-products/{sp_id}")
+def get_source_product_detail(shop_id: int, sp_id: int, db: Session = Depends(get_db)) -> dict:
+    product = db.scalar(select(SourceProductRecord).where(
+        SourceProductRecord.id == sp_id,
+        SourceProductRecord.shop_id == shop_id,
+    ))
+    if product is None:
+        raise HTTPException(status_code=404, detail="采集商品不存在")
+    variants = list(db.scalars(select(SourceVariantRecord).where(
+        SourceVariantRecord.source_product_id == sp_id,
+    ).order_by(SourceVariantRecord.id)))
+    media = list(db.scalars(select(SourceMediaRecord).where(
+        SourceMediaRecord.source_product_id == sp_id,
+    ).order_by(SourceMediaRecord.sort_order, SourceMediaRecord.id)))
+    return {
+        "id": product.id,
+        "source_platform": product.source_platform,
+        "source_product_id": product.source_product_id,
+        "source_url": product.source_url,
+        "title": product.title,
+        "main_image_url": product.main_image_url,
+        "category_hint": product.category_hint,
+        "brand": product.brand,
+        "material": product.material,
+        "raw_json": product.raw_json,
+        "variants": [
+            {
+                "id": v.id,
+                "source_sku": v.source_sku,
+                "spec_name": v.spec_name,
+                "price_cny": float(v.price_cny) if v.price_cny else None,
+                "stock": v.stock,
+                "image_url": v.image_url,
+            }
+            for v in variants
+        ],
+        "media": [
+            {
+                "id": m.id,
+                "media_type": m.media_type,
+                "url": m.url,
+                "sort_order": m.sort_order,
+                "is_primary": m.is_primary,
+            }
+            for m in media
+        ],
+    }
+
+
+# ---------------------------------------------------------------------------
+# Listing draft single get + update
+# ---------------------------------------------------------------------------
+
+@app.get("/api/v1/shops/{shop_id}/listing-drafts/{draft_id}", response_model=ListingDraftRead)
+def get_listing_draft(shop_id: int, draft_id: int, db: Session = Depends(get_db)):
+    draft = db.scalar(select(ListingDraftRecord).where(
+        ListingDraftRecord.id == draft_id,
+        ListingDraftRecord.shop_id == shop_id,
+    ))
+    if draft is None:
+        raise HTTPException(status_code=404, detail="上架草稿不存在")
+    return draft
+
+
+class ListingDraftUpdate(BaseModel):
+    title: str | None = Field(default=None, min_length=1, max_length=500)
+    description: str | None = Field(default=None, max_length=10000)
+    category_id: str | None = Field(default=None, max_length=64)
+    type_id: str | None = Field(default=None, max_length=64)
+    primary_image_url: str | None = Field(default=None, max_length=2000)
+    attributes: list[ListingAttributeValueCreate] | None = Field(default=None)
+    variants: list[ListingVariantCreate] | None = Field(default=None)
+
+
+@app.put("/api/v1/shops/{shop_id}/listing-drafts/{draft_id}", response_model=ListingDraftRead)
+def update_listing_draft(shop_id: int, draft_id: int, payload: ListingDraftUpdate, db: Session = Depends(get_db)):
+    draft = db.scalar(select(ListingDraftRecord).where(
+        ListingDraftRecord.id == draft_id,
+        ListingDraftRecord.shop_id == shop_id,
+    ))
+    if draft is None:
+        raise HTTPException(status_code=404, detail="上架草稿不存在")
+    if payload.title is not None:
+        draft.title = payload.title
+    if payload.description is not None:
+        draft.description = payload.description
+    if payload.category_id is not None:
+        draft.category_id = payload.category_id
+    if payload.type_id is not None:
+        draft.type_id = payload.type_id
+    if payload.primary_image_url is not None:
+        draft.primary_image_url = payload.primary_image_url
+    if payload.attributes is not None:
+        db.query(ListingAttributeValueRecord).where(ListingAttributeValueRecord.draft_id == draft_id).delete()
+        for attr in payload.attributes:
+            draft.attribute_values.append(ListingAttributeValueRecord(
+                attribute_id=attr.attribute_id,
+                name=attr.name,
+                value_id=attr.value_id,
+                value_text=attr.value_text,
+            ))
+    if payload.variants is not None:
+        db.query(ListingVariantRecord).where(ListingVariantRecord.draft_id == draft_id).delete()
+        for var in payload.variants:
+            draft.variants.append(ListingVariantRecord(**var.model_dump()))
+    db.commit()
+    db.refresh(draft)
+    return draft
+
+
+
+
+
+

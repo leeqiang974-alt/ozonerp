@@ -1,4 +1,4 @@
-"""Read-through cache for Ozon listing attributes and dictionary values."""
+﻿"""Read-through cache for Ozon listing attributes and dictionary values."""
 
 from __future__ import annotations
 
@@ -46,6 +46,10 @@ def get_category_attributes(db: Session, shop_id: int, category_id: str, type_id
                 required=bool(item.get("is_required")),
                 dictionary_id=str(item.get("dictionary_id") or ""),
                 value_type=str(item.get("type") or ""),
+                complex_id=str(item.get("attribute_complex_id") or item.get("complex_id") or "0"),
+                description=str(item.get("description") or "")[:2000],
+                is_collection=bool(item.get("is_collection")),
+                is_aspect=bool(item.get("is_aspect")),
             ))
     db.commit()
     rows = list(db.scalars(select(OzonAttributeCacheRecord).where(
@@ -113,8 +117,10 @@ def _is_fresh(value: datetime) -> bool:
 
 
 def _attribute_dict(row: OzonAttributeCacheRecord) -> dict:
-    return {"id": row.attribute_id, "name": row.name, "required": row.required, "dictionary_id": row.dictionary_id, "type": row.value_type}
+    return {"id": row.attribute_id, "name": row.name, "required": row.required, "dictionary_id": row.dictionary_id, "type": row.value_type, "complex_id": row.complex_id, "description": row.description, "is_collection": row.is_collection, "is_aspect": row.is_aspect}
 
 
 def _raw_dictionary_value_dict(item: dict) -> dict:
     return {"id": str(item["id"]), "value": str(item.get("value") or ""), "info": str(item.get("info") or ""), "picture": str(item.get("picture") or "")}
+
+

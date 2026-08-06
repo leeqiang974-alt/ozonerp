@@ -325,7 +325,40 @@ def ext_ozon_search_result(payload: dict, db: Session = Depends(get_db)):
 
 @ext_router.post("/ozon-learning/extension/detail-result")
 def ext_ozon_detail_result(payload: dict, db: Session = Depends(get_db)):
-    return {"ok": True, "received": True}
+    inner = payload.get("payload") or {}
+    store_id = str(inner.get("storeId") or payload.get("storeId") or "").strip()
+    if not store_id or not store_id.isdigit():
+        return {"ok": False, "received": True, "ingested": False, "error": "storeId is required"}
+    shop_id = int(store_id)
+    if db.get(Shop, shop_id) is None:
+        return {"ok": False, "received": True, "ingested": False, "error": "shop not found"}
+    if payload.get("needsHuman"):
+        return {"ok": True, "received": True, "ingested": False, "needsHuman": True}
+    if not inner.get("title"):
+        return {"ok": False, "received": True, "ingested": False, "error": "title is required"}
+    try:
+        result = extension_bridge.ingest_ozon_capture(db, shop_id, inner)
+        return {"ok": True, "received": True, "ingested": True, **result}
+    except ValueError as exc:
+        return {"ok": False, "received": True, "ingested": False, "error": str(exc)}
+
+
+@ext_router.post("/ozon/capture")
+def ext_ozon_capture(payload: dict, db: Session = Depends(get_db)):
+    """Direct foreground capture endpoint for a public Ozon detail page."""
+    store_id = str(payload.get("storeId") or "").strip()
+    snapshot = payload.get("payload") or {}
+    if not store_id.isdigit():
+        raise HTTPException(status_code=422, detail="storeId is required")
+    shop_id = int(store_id)
+    if db.get(Shop, shop_id) is None:
+        raise HTTPException(status_code=404, detail="shop not found")
+    if not snapshot.get("title"):
+        raise HTTPException(status_code=422, detail="Ozon 商品标题为空")
+    try:
+        return extension_bridge.ingest_ozon_capture(db, shop_id, snapshot)
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
 
 
 @ext_router.post("/listing-edit-journal/events")

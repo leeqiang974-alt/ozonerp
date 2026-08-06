@@ -1,18 +1,25 @@
-"""Pricing calculation and promotion eligibility services."""
+﻿"""Pricing calculation with evidence tiers, risk codes, and promotion eligibility.
+
+Follows the ozon-product-pricing-rules skill for all core formulas.
+"""
 
 from __future__ import annotations
 
-from decimal import Decimal, ROUND_CEILING, ROUND_FLOOR, ROUND_HALF_UP
+from decimal import Decimal, DivisionByZero, ROUND_CEILING, ROUND_FLOOR, ROUND_HALF_UP
 
 from .models import (
     AuditEvent,
     CalculationStep,
+    CommissionSource,
+    DimensionSource,
     PriceCalculation,
     PriceInput,
     PricePolicy,
+    ProfitStatus,
     PromotionDecision,
     PromotionRequest,
     PromotionStatus,
+    RiskCode,
 )
 
 CENT = Decimal("0.01")
@@ -33,64 +40,99 @@ def min_price_from_price(price: Decimal) -> str:
 
 
 class PricingService:
-    """Calculates a listing price using the shared RMB shipping-level rules."""
+    """Calculates listing price with evidence-graded risk reporting.
+
+    Formulas follow ozon-product-pricing-rules skill §2 (strict iteration),
+    §3 (old_price), §4 (min_price), §7 (risk codes).
+    """
+
+    RULE_VERSION = "2.0.0"
 
     def calculate(self, data: PriceInput) -> PriceCalculation:
-        self._validate(data)
+        risk_codes: list[RiskCode] = []
+        self._validate(data, risk_codes)
+
         policy = data.policy
+
+        # --- §2.2 Step 1: initial estimate ---
         estimate = data.purchase_cost * (Decimal("1") + policy.target_profit_rate) + policy.fixed_misc_fee
         steps: list[CalculationStep] = []
 
+        # --- §2.2 Steps 2-4: iterate until convergence ---
         for iteration in range(1, policy.max_iterations + 1):
-            level, logistics = self._shipping_fee(data, estimate)
+            level, logistics = self._shipping_fee(data, estimate, risk_codes)
             commission = estimate * policy.commission_rate
             misc = estimate * policy.misc_fee_rate + policy.fixed_misc_fee
             base_cost = data.purchase_cost + commission + logistics + misc
-            next_price = base_cost * (Decimal("1") + policy.target_profit_rate)
-            steps.append(CalculationStep(iteration, _money(estimate), _money(logistics), _money(commission), _money(misc), _money(next_price), level))
+            # §2.2 Step 3: strict formula  baseCost / (1 - profitRate)
+            next_price = base_cost / (Decimal("1") - policy.target_profit_rate)
+            steps.append(CalculationStep(
+                iteration, _money(estimate), _money(logistics),
+                _money(commission), _money(misc), _money(next_price), level,
+            ))
             if abs(next_price - estimate) < CENT:
                 estimate = next_price
                 break
             estimate = next_price
         else:
-            raise ValueError("Price calculation did not converge")
+            # §7.1 blocked
+            risk_codes.append(RiskCode.PRICING_NOT_CONVERGED)
+            estimate = next_price
 
-        level, logistics = self._shipping_fee(data, estimate)
+        # Final calculation
+        level, logistics = self._shipping_fee(data, estimate, risk_codes)
         commission = estimate * policy.commission_rate
         misc = estimate * policy.misc_fee_rate + policy.fixed_misc_fee
         base_cost = data.purchase_cost + commission + logistics + misc
-        # Never round a protected selling price down: a one-cent shortfall can
-        # make the configured target profit unreachable.
         price = estimate.quantize(CENT, rounding=ROUND_CEILING)
         profit = _money(price - base_cost)
+        profit_rate = profit / base_cost if base_cost else Decimal("0")
+
+        # --- §3: old_price ---
+        old_price = _money(price * policy.old_price_multiplier)
+
+        # --- §4: min_price (profit-bottom-line formula) ---
+        min_price = self._compute_min_price(base_cost, policy, price, risk_codes)
+
+        # --- §7.2: manual_review checks ---
+        self._check_manual_review(price, logistics, profit_rate, policy, risk_codes)
+
+        # --- §5: profit status from commission evidence ---
+        profit_status = self._profit_status(data.commission_source)
+
         return PriceCalculation(
             shop_id=policy.shop_id,
             price=price,
-            min_price=min_price_from_price(price),
-            old_price=_money(price * Decimal("2")),
+            min_price=min_price,
+            old_price=old_price,
             base_cost=_money(base_cost),
             profit=profit,
-            # The shared listing formula defines target profit as a markup on
-            # total cost (price = base_cost * (1 + target_profit_rate)).
-            profit_rate=(profit / base_cost if base_cost else Decimal("0")),
+            profit_rate=profit_rate,
             logistics_fee=_money(logistics),
             commission=_money(commission),
             misc_fee=_money(misc),
             shipping_level=level,
             steps=tuple(steps),
+            risk_codes=tuple(risk_codes),
+            profit_status=profit_status,
+            commission_source=data.commission_source,
+            dimension_source=data.dimension_source,
+            pricing_rule_version=self.RULE_VERSION,
         )
 
-    @staticmethod
-    def _validate(data: PriceInput) -> None:
-        if data.purchase_cost < 0 or data.weight_g <= 0:
-            raise ValueError("purchase_cost must be non-negative and weight_g must be positive")
-        if min(data.length_mm, data.width_mm, data.height_mm) <= 0:
-            raise ValueError("package dimensions must be positive")
-        if not Decimal("0") <= data.policy.target_profit_rate < Decimal("1"):
-            raise ValueError("target_profit_rate must be between 0 and 1")
+    # ---- helpers -----------------------------------------------------------
 
     @staticmethod
-    def _shipping_fee(data: PriceInput, price: Decimal) -> tuple[str, Decimal]:
+    def _validate(data: PriceInput, risk_codes: list[RiskCode]) -> None:
+        if data.purchase_cost < 0:
+            risk_codes.append(RiskCode.PRICING_PROCUREMENT_EVIDENCE_MISSING)
+        if data.weight_g <= 0 or min(data.length_mm, data.width_mm, data.height_mm) <= 0:
+            risk_codes.append(RiskCode.PRICING_PACKAGE_MISSING)
+        if data.dimension_source == DimensionSource.DEFAULT_GUESS:
+            risk_codes.append(RiskCode.PRICING_PACKAGE_MISSING)
+
+    @staticmethod
+    def _shipping_fee(data: PriceInput, price: Decimal, risk_codes: list[RiskCode]) -> tuple[str, Decimal]:
         weight = data.weight_g
         sides_cm = [data.length_mm / 10, data.width_mm / 10, data.height_mm / 10]
         perimeter = sum(sides_cm)
@@ -103,7 +145,44 @@ class PricingService:
             return "small", Decimal("25") * (weight / 1000) + Decimal("16")
         if weight <= 30000 and price > 135 and price <= 635 and perimeter <= 250 and max_side <= 150:
             return "big", Decimal("17") * (weight / 1000) + Decimal("36")
-        raise ValueError("No shipping level matches package dimensions, weight and price")
+        risk_codes.append(RiskCode.PRICING_SHIPPING_LEVEL_MISSING)
+        return "unknown", Decimal("0")
+
+    @staticmethod
+    def _compute_min_price(
+        base_cost: Decimal, policy: PricePolicy, price: Decimal, risk_codes: list[RiskCode],
+    ) -> str:
+        """§4.2 profit-bottom-line formula; fallback to §4.1 default if blocked."""
+        try:
+            rate_floor = base_cost / (Decimal("1") - policy.minimum_profit_rate)
+        except DivisionByZero:
+            rate_floor = base_cost * Decimal("1.1")
+        fixed_floor = base_cost + policy.minimum_profit_cny
+        min_p = max(rate_floor, fixed_floor, Decimal("1"))
+        min_p = min_p.to_integral_value(rounding=ROUND_CEILING)
+        result = str(min_p)
+        if Decimal(result) >= price:
+            risk_codes.append(RiskCode.PRICING_MIN_PRICE_INVALID)
+            # Fallback to §4.1 default rule
+            return min_price_from_price(price)
+        return result
+
+    @staticmethod
+    def _check_manual_review(
+        price: Decimal, logistics: Decimal, profit_rate: Decimal, policy: PricePolicy, risk_codes: list[RiskCode],
+    ) -> None:
+        if price > 0 and logistics / price > policy.logistics_ratio_warn:
+            risk_codes.append(RiskCode.PRICING_LOGISTICS_RATIO_HIGH)
+        if profit_rate < policy.minimum_profit_rate:
+            risk_codes.append(RiskCode.PRICING_PROFIT_LOW)
+
+    @staticmethod
+    def _profit_status(source: CommissionSource) -> ProfitStatus:
+        if source == CommissionSource.OZON_SETTLEMENT:
+            return ProfitStatus.VERIFIED
+        if source in (CommissionSource.OZON_CATEGORY, CommissionSource.LEARNED_PRODUCT):
+            return ProfitStatus.ESTIMATE
+        return ProfitStatus.UNKNOWN
 
 
 class PromotionService:
@@ -116,12 +195,11 @@ class PromotionService:
         if request.shop_id != self.policy.shop_id or request.calculation.shop_id != self.policy.shop_id:
             raise ValueError("Promotion request must belong to the policy shop")
         price = request.proposed_price
-        calculation = request.calculation
-        min_allowed = Decimal(calculation.min_price) if calculation.min_price else Decimal("0")
-        variable_cost = calculation.commission + calculation.misc_fee
-        # Recalculate percentage fees at the proposed sale price; shipping stays per matched level.
+        calc = request.calculation
+        min_allowed = Decimal(calc.min_price) if calc.min_price else Decimal("0")
+        variable_cost = calc.commission + calc.misc_fee
         projected_cost = (
-            calculation.base_cost
+            calc.base_cost
             - variable_cost
             + price * (self.policy.commission_rate + self.policy.misc_fee_rate)
             + self.policy.fixed_misc_fee
@@ -150,6 +228,13 @@ class PromotionService:
         if decision.status == PromotionStatus.REJECTED and not override:
             raise ValueError("Rejected promotion requires an explicit override")
         status = PromotionStatus.OVERRIDDEN if override else PromotionStatus.APPROVED
-        approved = PromotionDecision(decision.request, status, decision.reason, decision.projected_profit, decision.projected_profit_rate, approver_id)
-        audit = AuditEvent(approved.request.shop_id, "promotion_approved", approver_id, "promotion_request", approved.request.promotion_id, {"status": status.value, "override": str(override).lower()})
+        approved = PromotionDecision(
+            decision.request, status, decision.reason,
+            decision.projected_profit, decision.projected_profit_rate, approver_id,
+        )
+        audit = AuditEvent(
+            approved.request.shop_id, "promotion_approved", approver_id,
+            "promotion_request", approved.request.promotion_id,
+            {"status": status.value, "override": str(override).lower()},
+        )
         return approved, audit

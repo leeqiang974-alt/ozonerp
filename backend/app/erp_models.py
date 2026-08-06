@@ -1,4 +1,4 @@
-"""Persistent operational records for the Chinese CNY-only FBS ERP."""
+﻿"""Persistent operational records for the Chinese CNY-only FBS ERP."""
 
 from datetime import datetime
 from decimal import Decimal
@@ -208,6 +208,10 @@ class OzonAttributeCacheRecord(Base):
     required: Mapped[bool] = mapped_column(Boolean, default=False)
     dictionary_id: Mapped[str] = mapped_column(String(64), default="")
     value_type: Mapped[str] = mapped_column(String(80), default="")
+    complex_id: Mapped[str] = mapped_column(String(64), default="0")
+    description: Mapped[str] = mapped_column(String(2000), default="")
+    is_collection: Mapped[bool] = mapped_column(Boolean, default=False)
+    is_aspect: Mapped[bool] = mapped_column(Boolean, default=False)
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())
 
 
@@ -346,3 +350,6 @@ class PipelineProgressRecord(Base):
     tasks_json: Mapped[str] = mapped_column(Text, default="[]")
     progress_percent: Mapped[int] = mapped_column(Integer, default=0)
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())
+
+
+

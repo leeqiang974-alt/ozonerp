@@ -1,4 +1,4 @@
-"""Local-only listing draft validation; it never invokes an Ozon write API."""
+﻿"""Local-only listing draft validation; it never invokes an Ozon write API."""
 
 from __future__ import annotations
 
@@ -46,6 +46,7 @@ def validate_listing_draft(db: Session, draft: ListingDraftRecord) -> list[dict[
         issues.append({"field": "primary_image_url", "message": "请提供可访问的主图 URL。"})
     if not draft.variants:
         issues.append({"field": "variants", "message": "至少需要一个商品变体。"})
+    all_risk_codes: list[str] = []
     for variant in draft.variants:
         prefix = f"variants.{variant.seller_sku}"
         values = (variant.purchase_cost_cny, variant.weight_g, variant.length_mm, variant.width_mm, variant.height_mm)
@@ -61,10 +62,14 @@ def validate_listing_draft(db: Session, draft: ListingDraftRecord) -> list[dict[
             variant.calculated_price_cny = calculation.price
             variant.min_price_cny = calculation.min_price
             variant.old_price_cny = calculation.old_price
+            all_risk_codes = [r.value for r in calculation.risk_codes]
         except ValueError as exc:
             issues.append({"field": prefix, "message": f"CNY 核价未通过：{exc}"})
     draft.status = "ready_for_approval" if not issues else "validation_failed"
-    draft.validation_json = json.dumps({"issues": issues}, ensure_ascii=False, separators=(",", ":"))
+    risk_data = {"issues": issues}
+    if all_risk_codes:
+        risk_data["risk_codes"] = all_risk_codes
+    draft.validation_json = json.dumps(risk_data, ensure_ascii=False, separators=(",", ":"))
     db.commit()
     return issues
 

@@ -217,43 +217,28 @@ def auto_fill_attributes(
         # Layer 2: Hard match - find 1688 value and search Ozon dictionary
         value_1688 = _find_1688_value(attr, source_attrs)
 
-        # Special case: 类型 (required) - reverse match: get all dict values, check against product text
+        # Special case: 类型 (required) - use AI to match product against dictionary values
         if is_required and dict_id and not value_1688:
             if "类型" in attr_name or "Тип" in attr_name:
-                combined_text = source_title + " " + source_desc
-                if source_product and isinstance(source_product.get("raw_json"), dict):
-                    for v in source_product["raw_json"].get("variants", []):
-                        combined_text += " " + str(v.get("spec_name", ""))
-                matched = False
                 try:
-                    all_type_vals = search_category_attribute_values(db, shop_id, category_id, type_id, attr_id, "", limit=50)
-                    for v in all_type_vals:
-                        vtext = v.get("value", "")
-                        if not vtext:
-                            continue
-                        if vtext in combined_text:
-                            results.append({"attribute_id": attr_id, "name": attr_name, "value_id": v["id"], "value_text": vtext, "method": "hard_match", "required": is_required})
-                            matched = True
-                            break
-                        import re as _re2
-                        zh_seqs = _re2.findall(r"[\u4e00-\u9fff]+", vtext)
-                        for seq in zh_seqs:
-                            cands = [seq]
-                            if len(seq) > 3: cands.append(seq[:3])
-                            if len(seq) > 2: cands.append(seq[:2])
-                            if len(seq) > 3: cands.append(seq[-2:])
-                            for cand in cands:
-                                if len(cand) >= 2 and cand in combined_text:
-                                    results.append({"attribute_id": attr_id, "name": attr_name, "value_id": v["id"], "value_text": vtext, "method": "hard_match", "required": is_required})
-                                    matched = True
-                                    break
-                            if matched:
-                                break
-                        if matched:
-                            break
-                except Exception:
-                    pass
-                if not matched:
+                    all_vals = search_category_attribute_values(db, shop_id, category_id, type_id, attr_id, "", limit=50)
+                    if all_vals:
+                        ai_result = suggest_attribute_value(
+                            attr_name, attr.get("description", ""),
+                            source_title, source_desc,
+                            dictionary_options=all_vals[:30],
+                        )
+                        vid = ai_result.get("value_id")
+                        vtext = ai_result.get("value", "")
+                        if vid and str(vid) != "None":
+                            results.append({"attribute_id": attr_id, "name": attr_name, "value_id": str(vid), "value_text": vtext, "method": "ai_match", "required": is_required})
+                        else:
+                            results.append({"attribute_id": attr_id, "name": attr_name, "value_id": None, "value_text": None, "method": "manual", "required": is_required})
+                    else:
+                        results.append({"attribute_id": attr_id, "name": attr_name, "value_id": None, "value_text": None, "method": "manual", "required": is_required})
+                except Exception as e:
+                    import sys
+                    print(f"AI type match failed: {e}", file=sys.stderr)
                     results.append({"attribute_id": attr_id, "name": attr_name, "value_id": None, "value_text": None, "method": "manual", "required": is_required})
                 continue
 

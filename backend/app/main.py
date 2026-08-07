@@ -351,7 +351,6 @@ def auto_fill_attrs(shop_id: int, payload: AutoFillRequest, db: Session = Depend
     if payload.source_product_id:
         row = db.scalar(select(SourceProductRecord).where(
             SourceProductRecord.id == payload.source_product_id,
-            SourceProductRecord.shop_id == shop_id,
         ))
         if row:
             import json as _json

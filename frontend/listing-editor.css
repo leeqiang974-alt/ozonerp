@@ -368,3 +368,21 @@ body { margin: 0; background: var(--le-bg); font-family: -apple-system, "Microso
 .le-attr-dropdown { top: 100%; margin-top: 2px; }
 .le-attr-input-row { display: flex; align-items: center; gap: 4px; }
 .le-attr-input-row .le-ai-btn { flex-shrink: 0; }
+
+
+/* Manual-fill attribute marking - light background, not blocking */
+.le-attr-row.le-attr-manual {
+  background: #fff5f5;
+  border-radius: 6px;
+  padding: 4px 8px;
+  margin: 2px -8px;
+}
+.le-attr-row.le-attr-manual .le-attr-input,
+.le-attr-row.le-attr-manual .le-attr-combobox input {
+  background: #fef2f2;
+}
+.le-attr-row.le-attr-manual .le-attr-label::after {
+  content: " ✎";
+  color: #f59e0b;
+  font-size: 11px;
+}

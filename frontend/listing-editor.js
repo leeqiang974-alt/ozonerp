@@ -156,7 +156,7 @@ async function loadAttributes() {
   try {
     state.attributes = await api("GET", `/api/v1/shops/${state.shopId}/metadata/categories/${state.categoryId}/types/${state.typeId}/attributes`);
     $("#le-attr-count").textContent = `(${state.attributes.filter(a=>a.required).length} 必填)`;
-    renderAttributes(); identifyVariantAttributes(); autoFillDefaults();
+    renderAttributes(); identifyVariantAttributes(); autoFillFromAPI();
   }
   catch (e) { c.innerHTML = `<p class="le-placeholder" style="color:var(--le-danger)">属性加载失败: ${esc(e.message)}</p>`; }
 }
@@ -165,7 +165,10 @@ function renderAttributes() {
   const c = $("#le-attributes-container");
   if (!state.attributes.length) { c.innerHTML = '<p class="le-placeholder">请先在上方选择类目，属性将自动加载。</p>'; $("#le-attr-count").textContent = ""; return; }
   const showOpt = $("#le-show-optional").checked;
-  const req = state.attributes.filter(a => a.required); const opt = state.attributes.filter(a => !a.required);
+  const skipIds = ["100001", "100002"];
+  const skipKw = ["视频", "видео", "Видео", "PDF", "pdf", "组合成类似", "объединить в похожие"];
+  const isSkip = a => skipIds.includes(String(a.complex_id)) || skipKw.some(k => (a.name || "").includes(k));
+  const req = state.attributes.filter(a => a.required && !isSkip(a)); const opt = state.attributes.filter(a => !a.required && !isSkip(a));
   $("#le-attr-count").textContent = `(${req.length} 必填 / ${opt.length} 选填)`;
   let h = "";
   if (req.length) { h += '<div class="le-attr-group-title">必填属性</div>'; h += req.map(a => attrRowHtml(a)).join(""); }
@@ -183,7 +186,8 @@ function attrRowHtml(attr) {
   let inp;
   if (dict) { inp = `<div class="le-combobox le-attr-combobox"><input class="le-attr-input" data-dictionary="${esc(attr.dictionary_id)}" data-attr-id="${esc(attr.id)}" data-attr-name="${esc(attr.name)}" placeholder="输入至少2字搜索" value="${esc(val.value_text || "")}" autocomplete="off" /><button type="button" class="le-combobox-arrow le-attr-arrow" data-attr-id="${esc(attr.id)}">&#9660;</button><div class="le-combobox-dropdown le-attr-dropdown" data-attr-id="${esc(attr.id)}" style="display:none"></div></div>`; }
   else { inp = `<input class="le-attr-input" data-attr-id="${esc(attr.id)}" data-attr-name="${esc(attr.name)}" type="text" value="${esc(val.value_text || "")}" placeholder="输入文本" />`; }
-  return `<div class="le-attr-row"><div class="le-attr-label">${esc(attr.name)} ${rm}${vb}</div><div class="le-attr-input-row">${inp}<button class="le-ai-btn" data-attr-id="${esc(attr.id)}" title="AI推荐">AI</button></div></div>`;
+  const manualCls = (state.attrValues[attr.id]?.method === "manual") ? " le-attr-manual" : "";
+  return `<div class="le-attr-row${manualCls}"><div class="le-attr-label">${esc(attr.name)} ${rm}${vb}</div><div class="le-attr-input-row">${inp}<button class="le-ai-btn" data-attr-id="${esc(attr.id)}" title="AI推荐">AI</button></div></div>`;
 }
 
 function setupDictionarySearch(input) {
@@ -228,6 +232,44 @@ function setupDictionarySearch(input) {
     if (!state.attrValues[attrId]) state.attrValues[attrId] = {};
     state.attrValues[attrId].value_text = input.value;
   });
+}
+
+
+async function autoFillFromAPI() {
+  if (!state.shopId || !state.categoryId || !state.typeId) return;
+  const offerId = $("#le-offer-id").value || "";
+  const spId = state.sourceProduct?.id || null;
+  const btn = $("#le-ai-fill-all-attrs");
+  if (btn) { btn.classList.add("loading"); btn.disabled = true; btn.textContent = "自动填写中..."; }
+  try {
+    const r = await api("POST", `/api/v1/shops/${state.shopId}/auto-fill`, {
+      category_id: state.categoryId, type_id: state.typeId,
+      source_product_id: spId, offer_id: offerId,
+    });
+    let filled = 0;
+    for (const item of r.results) {
+      if (item.method === "skip" || item.method === "skip_rich_content") continue;
+      const aid = String(item.attribute_id);
+      if (item.value_text) {
+        state.attrValues[aid] = { value_id: item.value_id, value_text: item.value_text, method: item.method };
+        const inp = $(`.le-attr-input[data-attr-id="${aid}"]`);
+        if (inp) inp.value = item.value_text;
+        filled++;
+      } else if (item.method === "manual") {
+        state.attrValues[aid] = { value_id: null, value_text: "", method: "manual" };
+        const row = $(`.le-attr-input[data-attr-id="${aid}"]`)?.closest(".le-attr-row");
+        if (row) row.classList.add("le-attr-manual");
+      } else {
+        state.attrValues[aid] = { value_id: item.value_id, value_text: item.value_text || "", method: item.method };
+      }
+    }
+    const s = r.stats;
+    toast(`自动填写 ${filled} 项 (写死${s.hardcoded||0} 硬匹配${s.hard_match||0} AI匹配${s.ai_match||0})`, "success");
+  } catch (e) {
+    toast("自动填写失败: " + e.message, "error");
+  } finally {
+    if (btn) { btn.classList.remove("loading"); btn.disabled = false; btn.textContent = "AI 填充全部"; }
+  }
 }
 
 function autoFillDefaults() {
@@ -423,7 +465,7 @@ document.addEventListener("DOMContentLoaded", () => {
   $$("[data-ai-action]").forEach(btn => btn.addEventListener("click", () => { const a = btn.dataset.aiAction; if (a === "translate-title") aiTranslateTitle(btn); else if (a === "generate-description") aiGenerateDescription(btn); else if (a === "translate-description") aiTranslateDescription(btn); else if (a === "generate-rich-content") aiGenerateRichContent(btn);
       else if (a === "generate-hashtags") aiGenerateHashtags(btn);
       else if (a === "match-materials") aiMatchMaterials(btn); }));
-  $("#le-ai-fill-all-attrs").addEventListener("click", () => aiFillAllAttrs($("#le-ai-fill-all-attrs")));
+  $("#le-ai-fill-all-attrs").addEventListener("click", () => autoFillFromAPI());
   $("#le-add-image").addEventListener("click", addImage);
   $("#le-image-url-input").addEventListener("keydown", (e) => { if (e.key === "Enter") { e.preventDefault(); addImage(); } });
   $("#le-import-source-images").addEventListener("click", importSourceImages);

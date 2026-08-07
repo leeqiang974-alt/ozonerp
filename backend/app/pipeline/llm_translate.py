@@ -191,6 +191,7 @@ Respond with ONLY valid JSON, no markdown."""
         ],
         temperature=0.3,
         max_tokens=4096,
+        extra_body={"thinking": {"type": "disabled"}},
     )
 
     _msg = response.choices[0].message

@@ -32,17 +32,21 @@ def _chat(messages: list[dict[str, str]], *, temperature: float = 0.3, max_token
     if not api_key:
         raise RuntimeError("LLM_API_KEY 未配置，无法使用 AI 功能")
     url = f"{base_url.rstrip('/')}/chat/completions"
-    resp = httpx.post(
-        url,
-        headers={
-            "Authorization": f"Bearer {api_key}",
-            "Content-Type": "application/json",
-        },
-        json={"model": model, "messages": messages, "temperature": temperature, "max_tokens": max_tokens},
-        timeout=60.0,
-    )
+    headers = {
+        "Authorization": f"Bearer {api_key}",
+        "Content-Type": "application/json",
+    }
+    payload = {"model": model, "messages": messages, "temperature": temperature, "max_tokens": max_tokens}
+    # Disable reasoning/thinking mode for faster response (Volcano Engine coding plan)
+    payload["thinking"] = {"type": "disabled"}
+    resp = httpx.post(url, headers=headers, json=payload, timeout=60.0)
     if resp.status_code >= 400:
-        raise RuntimeError(f"DeepSeek API 返回 {resp.status_code}: {resp.text[:500]}")
+        # If thinking param is rejected, retry without it
+        if resp.status_code == 400 and "thinking" in resp.text.lower():
+            payload.pop("thinking", None)
+            resp = httpx.post(url, headers=headers, json=payload, timeout=60.0)
+        if resp.status_code >= 400:
+            raise RuntimeError(f"LLM API 返回 {resp.status_code}: {resp.text[:500]}")
     body = resp.json()
     msg = body["choices"][0]["message"]
     text = msg.get("content") or ""

@@ -1,7 +1,7 @@
 ﻿/* v4 - combobox + tree browser with search + match history */
 "use strict";
 const API_BASE = window.ERP_API_BASE || "http://127.0.0.1:8000";
-const state = { shopId: null, categoryId: null, typeId: null, attributes: [], attrValues: {}, images: [], variants: [], sourceProduct: null, draftId: null, categorySearchTimer: null, dictSearchTimers: {} };
+const state = { shopId: null, categoryId: null, typeId: null, attributes: [], attrValues: {}, images: [], variants: [], sourceProduct: null, draftId: null, categorySearchTimer: null, dictSearchTimers: {}, richContentCompact: null };
 const $ = (s) => document.querySelector(s);
 const $$ = (s) => document.querySelectorAll(s);
 const esc = (v) => String(v ?? "").replace(/[&<>"']/g, (c) => ({ "&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;" }[c]));
@@ -375,7 +375,7 @@ async function aiCall(btn, fn) { if (!btn) return; const orig = btn.textContent;
 async function aiTranslateTitle(btn) { const t = state.sourceProduct?.title || $("#le-title").value; if (!t) { toast("请先输入或加载标题", "error"); return; } aiCall(btn, async () => { const r = await api("POST", "/api/v1/ai/translate", { text: t, target_lang: "ru", context: state.sourceProduct?.category_hint || "" }); $("#le-title").value = r.translated; autoMatchCategories(); toast("标题已翻译", "success"); }); }
 async function aiGenerateDescription(btn) { const t = state.sourceProduct?.title || $("#le-title").value; if (!t) { toast("缺少商品标题", "error"); return; } aiCall(btn, async () => { const specs = Object.entries(state.attrValues).filter(([,v]) => v.value_text).map(([k,v]) => { const a = state.attributes.find(a => String(a.id) === k); return { name: a?.name || k, value: v.value_text }; }); const r = await api("POST", "/api/v1/ai/generate-description", { product_title: t, source_description: state.sourceProduct?.raw_json || "", specs, target_lang: "ru" }); $("#le-description").value = r.description; toast("描述已生成", "success"); }); }
 async function aiTranslateDescription(btn) { const d = $("#le-description").value || state.sourceProduct?.title; if (!d) { toast("缺少描述内容", "error"); return; } aiCall(btn, async () => { const r = await api("POST", "/api/v1/ai/translate", { text: d, target_lang: "ru" }); $("#le-description").value = r.translated; toast("描述已翻译", "success"); }); }
-async function aiGenerateRichContent(btn) { const d = $("#le-description").value; const imgs = state.images.slice(0, 5); if (!d && !imgs.length) { toast("请先生成描述或添加图片", "error"); return; } aiCall(btn, async () => { const sn = $("#le-shop-select").selectedOptions[0]?.textContent || ""; const r = await api("POST", "/api/v1/ai/generate-rich-content", { description: d, image_urls: imgs, shop_name: sn }); $("#le-rich-content").value = r.raw_json; toast("富内容已生成", "success"); }); }
+async function aiGenerateRichContent(btn) { const d = $("#le-description").value; const imgs = state.images.slice(0, 5); if (!d && !imgs.length) { toast("请先生成描述或添加图片", "error"); return; } aiCall(btn, async () => { const sn = $("#le-shop-select").selectedOptions[0]?.textContent || ""; const r = await api("POST", "/api/v1/ai/generate-rich-content", { description: d, image_urls: imgs, shop_name: sn }); $("#le-rich-content").value = r.raw_json; state.richContentCompact = r.rich_content; toast("富内容已生成", "success"); }); }
 async function aiSuggestAttribute(attrId) { if (!state.shopId) { toast("请先选择店铺", "error"); return; } const attr = state.attributes.find(a => String(a.id) === String(attrId)); if (!attr) return; const t = state.sourceProduct?.title || $("#le-title").value || ""; if (!t) { toast("缺少商品标题", "error"); return; } aiCall($(`.le-ai-btn[data-attr-id="${attrId}"]`), async () => { let dictOpts = null; if (attr.dictionary_id) { try { dictOpts = await api("GET", `/api/v1/shops/${state.shopId}/metadata/categories/${state.categoryId}/types/${state.typeId}/attributes/${attrId}/values?query=${encodeURIComponent(t.slice(0,5))}&limit=30`); } catch (_) {} } const r = await api("POST", "/api/v1/ai/suggest-attribute", { attribute_name: attr.name, attribute_description: "", product_title: t, product_description: $("#le-description").value || "", dictionary_options: dictOpts }); const inp = $(`.le-attr-input[data-attr-id="${attrId}"]`); if (inp) { inp.value = r.value || ""; state.attrValues[attrId] = { value_id: r.value_id, value_text: r.value }; } toast(`已推荐: ${r.value || "(空)"}`, "success"); }); }
 async function aiFillAllAttrs(btn) { if (!state.attributes.length) { toast("请先选择类目", "error"); return; } aiCall(btn, async () => { const t = state.sourceProduct?.title || $("#le-title").value || ""; if (!t) { toast("缺少商品标题", "error"); return; } let filled = 0; for (const attr of state.attributes.filter(a => a.required)) { if (state.attrValues[attr.id]?.value_text) continue; try { let dictOpts = null; if (attr.dictionary_id) { try { dictOpts = await api("GET", `/api/v1/shops/${state.shopId}/metadata/categories/${state.categoryId}/types/${state.typeId}/attributes/${attr.id}/values?query=${encodeURIComponent(t.slice(0,5))}&limit=30`); } catch (_) {} } const r = await api("POST", "/api/v1/ai/suggest-attribute", { attribute_name: attr.name, product_title: t, product_description: $("#le-description").value || "", dictionary_options: dictOpts }); if (r.value) { const inp = $(`.le-attr-input[data-attr-id="${attr.id}"]`); if (inp) inp.value = r.value; state.attrValues[attr.id] = { value_id: r.value_id, value_text: r.value }; filled++; } } catch (_) {} } toast(`已填充 ${filled} 个必填属性`, "success"); }); }
 
@@ -432,16 +432,20 @@ async function saveDraft() {
       const r = await api("POST", "/api/v1/ai/generate-rich-content", {
         description: $("#le-description").value || "", image_urls: state.images.slice(0, 5), shop_name: sn
       });
-      richEl.value = r.raw_json;
+      richEl.value = r.raw_json; state.richContentCompact = r.rich_content;
     } catch (_) { /* proceed without rich content */ }
   }
   // Include rich content in attributes payload
   const attrs = collectAttributePayload();
   const richAttr = state.attributes.find(a => (a.name || "").includes("JSON") || (a.name || "").includes("富内容"));
-  if (richAttr && richEl && richEl.value.trim()) {
-    const existing = attrs.find(a => a.attribute_id === String(richAttr.id));
-    if (existing) { existing.value_text = richEl.value.trim(); }
-    else { attrs.push({ attribute_id: String(richAttr.id), name: richAttr.name, value_id: null, value_text: richEl.value.trim() }); }
+  if (richAttr) {
+    const richVal = state.richContentCompact || richEl?.value?.trim() || "";
+    if (richVal) {
+      const existing = attrs.find(a => a.attribute_id === String(richAttr.id));
+      if (existing) { existing.value_text = richVal; }
+      else { attrs.push({ attribute_id: String(richAttr.id), name: richAttr.name, value_id: null, value_text: richVal }); }
+    }
+  }
   }
   const payload = { offer_id: oid, title: t, description: $("#le-description").value || null, category_id: state.categoryId || null, type_id: state.typeId || null, primary_image_url: state.images[0] || null, attributes: attrs, variants: collectVariantPayload().length ? collectVariantPayload() : [{ seller_sku: oid, purchase_cost_cny: null, weight_g: null, length_mm: null, width_mm: null, height_mm: null }] };
   try { if (state.draftId) await api("PUT", `/api/v1/shops/${state.shopId}/listing-drafts/${state.draftId}`, payload); else { const d = await api("POST", `/api/v1/shops/${state.shopId}/listing-drafts`, payload); state.draftId = d.id; } toast("草稿已保存", "success"); } catch (e) { toast("保存失败: " + e.message, "error"); }

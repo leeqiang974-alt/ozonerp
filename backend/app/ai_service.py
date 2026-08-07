@@ -191,47 +191,51 @@ def generate_rich_content(
 ) -> dict[str, Any]:
     """Generate Ozon rich-content JSON from description + images.
 
-    Per user preference: 俄文欢迎语 + 产品描述 + 5张详情图.
+    Per user preference: Russian welcome + product description + 5 detail images.
+    Format: Ozon raShowcase widget structure, wrapped in {"content": [...]}.
     """
-    welcome = f"Добро пожаловать в магазин {shop_name}!" if shop_name else "Добро пожаловать в наш магазин!"
-    welcome += " Мы стремимся предоставить вам изысканный образ жизни!"
+    welcome = f"Welcome to store {shop_name}!" if shop_name else "Welcome to our store!"
+    welcome_ru = f"Добро пожаловать в магазин {shop_name}!" if shop_name else "Добро пожаловать в наш магазин!"
+    welcome_ru += " Мы стремимся предоставить вам изысканный образ жизни!"
 
-    # Build a simple rich-content structure with text + image blocks
-    blocks: list[dict[str, Any]] = [
-        {"type": "text", "content": welcome},
-        {"type": "text", "content": description},
-    ]
-    for i, url in enumerate(image_urls[:5]):
-        blocks.append({"type": "image", "url": url, "sort_order": i})
+    widgets: list[dict[str, Any]] = []
 
-    # Build the Ozon rich content JSON structure (attribute id=11254)
-    # This is the "raShowcase" widget format used by Ozon
-    widgets = []
-    for block in blocks:
-        if block["type"] == "text":
-            widgets.append({
-                "widgetName": "raTextBlock",
-                "title": "",
-                "content": block["content"],
-                "padding": {"top": "medium", "bottom": "medium"},
-            })
-        elif block["type"] == "image":
+    # Text block 1: Welcome message
+    widgets.append({
+        "widgetName": "raTextBlock",
+        "title": {"content": "", "color": "default", "fontSize": "medium"},
+        "content": {"content": welcome_ru, "color": "default", "fontSize": "medium"},
+        "padding": {"top": "medium", "bottom": "medium"},
+    })
+
+    # Text block 2: Product description
+    if description and description.strip():
+        widgets.append({
+            "widgetName": "raTextBlock",
+            "title": {"content": "", "color": "default", "fontSize": "medium"},
+            "content": {"content": description.strip(), "color": "default", "fontSize": "medium"},
+            "padding": {"top": "medium", "bottom": "medium"},
+        })
+
+    # Image blocks: up to 5 product detail images
+    for url in image_urls[:5]:
+        if url and url.strip():
             widgets.append({
                 "widgetName": "raShowcase",
                 "content": {
-                    "images": [{
-                        "image": block["url"],
-                        "width": 750,
-                        "height": 0,
-                    }],
+                    "images": [{"image": url.strip(), "width": 750}],
                 },
                 "padding": {"top": "small", "bottom": "small"},
             })
 
-    rich_content = {"content": json.dumps(widgets, ensure_ascii=False, separators=(",", ":"))}
+    # Wrap in {"content": [...]} as Ozon requires
+    rich_obj = {"content": widgets}
+    compact_json = json.dumps(rich_obj, ensure_ascii=False, separators=(",", ":"))
+    pretty_json = json.dumps(rich_obj, ensure_ascii=False, indent=2)
+
     return {
-        "rich_content": rich_content,
-        "raw_json": json.dumps(widgets, ensure_ascii=False, indent=2),
+        "rich_content": compact_json,
+        "raw_json": pretty_json,
         "method": "template",
     }
 

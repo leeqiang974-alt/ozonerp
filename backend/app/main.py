@@ -19,6 +19,7 @@ from .schemas import AutoSyncDecisionRead, AutoSyncRequest
 from .listing_metadata_service import get_category_attributes, search_category_attribute_values
 from .pipeline.routes import router as pipeline_router, ext_router as pipeline_ext_router
 from .ai_service import translate_text, suggest_attribute_value, generate_description, generate_rich_content, match_category_with_ai, _chat
+from .auto_fill_service import auto_fill_attributes
 from .pipeline.fact_extraction import ProductFacts, extract_facts
 from .pipeline.category_matching import recall_categories, rerank_categories
 from .erp_models import SourceProductRecord, SourceVariantRecord, SourceMediaRecord
@@ -332,6 +333,48 @@ class GenerateDescriptionRequest(BaseModel):
     source_description: str = Field(default="", max_length=10000)
     specs: list[dict] | None = Field(default=None)
     target_lang: str = Field(default="ru", max_length=4)
+
+
+class AutoFillRequest(BaseModel):
+    category_id: str = Field(min_length=1)
+    type_id: str = Field(min_length=1)
+    source_product_id: int | None = Field(default=None)
+    offer_id: str = Field(default="")
+
+
+@app.post("/api/v1/shops/{shop_id}/auto-fill")
+def auto_fill_attrs(shop_id: int, payload: AutoFillRequest, db: Session = Depends(get_db)) -> dict:
+    """Three-layer funnel auto-fill: hardcoded -> hard match -> AI fallback.
+    Returns fillable attribute values with method labels.
+    """
+    source_product = None
+    if payload.source_product_id:
+        row = db.scalar(select(SourceProductRecord).where(
+            SourceProductRecord.id == payload.source_product_id,
+            SourceProductRecord.shop_id == shop_id,
+        ))
+        if row:
+            import json as _json
+            raw = row.raw_json
+            if isinstance(raw, str):
+                try:
+                    raw = _json.loads(raw)
+                except (ValueError, TypeError):
+                    raw = {}
+            source_product = {
+                "title": row.title,
+                "raw_json": raw,
+                "variants": raw.get("variants", []) if isinstance(raw, dict) else [],
+            }
+    results = auto_fill_attributes(
+        db, shop_id, payload.category_id, payload.type_id,
+        source_product=source_product, offer_id=payload.offer_id,
+    )
+    # Summary stats
+    stats = {"hardcoded": 0, "hard_match": 0, "ai_match": 0, "manual": 0, "skip": 0, "inferred": 0}
+    for r in results:
+        stats[r["method"]] = stats.get(r["method"], 0) + 1
+    return {"results": results, "stats": stats}
 
 
 @app.post("/api/v1/ai/generate-description")

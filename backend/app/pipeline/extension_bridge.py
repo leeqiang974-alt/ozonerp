@@ -134,6 +134,11 @@ def translate_capture(payload: dict[str, Any], shop_id: int, *, source_platform:
         })
     # Preserve source tracking and supplement data in raw_json for audit
     extra = {}
+    # Preserve full attributes list and description for AI description generation
+    if attributes:
+        extra["attributes"] = attributes
+    if payload.get("description"):
+        extra["source_description"] = str(payload["description"]).strip()[:10000]
     if payload.get("sources"):
         extra["sources"] = payload["sources"]
     if payload.get("shangpinbang"):

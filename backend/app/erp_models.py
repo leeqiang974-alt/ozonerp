@@ -351,5 +351,22 @@ class PipelineProgressRecord(Base):
     progress_percent: Mapped[int] = mapped_column(Integer, default=0)
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())
 
+class CategoryMatchHistoryRecord(Base):
+    """Remember which category was chosen for a given product title.
+    Used to improve future auto-matching accuracy by learning from manual selections."""
 
+    __tablename__ = "category_match_history"
+    __table_args__ = (UniqueConstraint("shop_id", "title_hash", name="uq_category_match_history"),)
 
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    shop_id: Mapped[int] = mapped_column(ForeignKey("shops.id", ondelete="RESTRICT"), index=True)
+    title: Mapped[str] = mapped_column(String(500))
+    title_keywords: Mapped[str] = mapped_column(String(500), default="")
+    title_hash: Mapped[str] = mapped_column(String(64), index=True)
+    category_id: Mapped[str] = mapped_column(String(64))
+    type_id: Mapped[str] = mapped_column(String(64))
+    category_title_zh: Mapped[str] = mapped_column(String(500), default="")
+    source: Mapped[str] = mapped_column(String(20), default="manual")
+    hit_count: Mapped[int] = mapped_column(Integer, default=1)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())

@@ -15,8 +15,7 @@ from typing import Any
 import httpx
 from dotenv import load_dotenv
 
-load_dotenv()
-load_dotenv("../.env")
+load_dotenv(os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(__file__))), ".env"), override=True)
 
 
 def _config() -> tuple[str, str, str]:
@@ -27,12 +26,12 @@ def _config() -> tuple[str, str, str]:
     return api_key, base_url, model
 
 
-def _chat(messages: list[dict[str, str]], *, temperature: float = 0.3, max_tokens: int = 2000) -> str:
+def _chat(messages: list[dict[str, str]], *, temperature: float = 0.3, max_tokens: int = 4096) -> str:
     """Call the DeepSeek chat-completions endpoint and return the text reply."""
     api_key, base_url, model = _config()
     if not api_key:
         raise RuntimeError("LLM_API_KEY 未配置，无法使用 AI 功能")
-    url = f"{base_url.rstrip('/')}/v1/chat/completions"
+    url = f"{base_url.rstrip('/')}/chat/completions"
     resp = httpx.post(
         url,
         headers={
@@ -40,12 +39,17 @@ def _chat(messages: list[dict[str, str]], *, temperature: float = 0.3, max_token
             "Content-Type": "application/json",
         },
         json={"model": model, "messages": messages, "temperature": temperature, "max_tokens": max_tokens},
-        timeout=30.0,
+        timeout=60.0,
     )
     if resp.status_code >= 400:
         raise RuntimeError(f"DeepSeek API 返回 {resp.status_code}: {resp.text[:500]}")
     body = resp.json()
-    return body["choices"][0]["message"]["content"].strip()
+    msg = body["choices"][0]["message"]
+    text = msg.get("content") or ""
+    if not text.strip():
+        # Reasoning models (deepseek-v4, glm-5.2) put output in reasoning_content
+        text = msg.get("reasoning_content") or ""
+    return text.strip()
 
 
 def _extract_json(text: str) -> dict[str, Any]:
@@ -76,7 +80,7 @@ def translate_text(
         {"role": "system", "content": f"你是专业电商翻译。将用户提供的文本翻译为{lang_name}，只返回翻译结果，不要加任何解释或引号。"},
         {"role": "user", "content": f"{text}{ctx}"},
     ]
-    result = _chat(messages, temperature=0.2, max_tokens=1000)
+    result = _chat(messages, temperature=0.2, max_tokens=2048)
     return {"translated": result, "lang": target_lang, "method": "deepseek", "model": model}
 
 
@@ -122,7 +126,7 @@ def suggest_attribute_value(
             ),
         },
     ]
-    raw = _chat(messages, temperature=0.3, max_tokens=500)
+    raw = _chat(messages, temperature=0.3, max_tokens=2048)
     try:
         result = _extract_json(raw)
     except (json.JSONDecodeError, ValueError):
@@ -171,7 +175,7 @@ def generate_description(
             ),
         },
     ]
-    result = _chat(messages, temperature=0.4, max_tokens=1500)
+    result = _chat(messages, temperature=0.4, max_tokens=4096)
     return {"description": result[:3000], "lang": target_lang, "method": "deepseek", "model": model}
 
 
@@ -277,7 +281,7 @@ def match_category_with_ai(
             ),
         },
     ]
-    raw = _chat(messages, temperature=0.1, max_tokens=300)
+    raw = _chat(messages, temperature=0.1, max_tokens=4096)
     try:
         result = _extract_json(raw)
         best_idx = int(result.get("best_index", 0)) - 1

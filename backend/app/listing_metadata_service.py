@@ -62,10 +62,10 @@ def get_category_attributes(db: Session, shop_id: int, category_id: str, type_id
 
 def search_category_attribute_values(db: Session, shop_id: int, category_id: str, type_id: str, attribute_id: str, query: str, limit: int = 50) -> list[dict]:
     query = query.strip()
-    if len(query) < 2:
-        return []
     limit = min(max(limit, 1), 100)
-    query_key = query[:100].casefold()
+    query_key = query[:100].casefold() if query else "__all__"
+
+    # Check cache first (both search and list results)
     cached_query = db.scalar(select(OzonAttributeDictionaryQueryCacheRecord).where(
         OzonAttributeDictionaryQueryCacheRecord.shop_id == shop_id,
         OzonAttributeDictionaryQueryCacheRecord.category_id == category_id,
@@ -81,7 +81,16 @@ def search_category_attribute_values(db: Session, shop_id: int, category_id: str
 
     client_id, api_key = _credentials(db, shop_id)
     with OzonSellerClient(client_id=client_id, api_key=api_key) as client:
-        response = client.search_category_attribute_values(category_id=int(category_id), type_id=int(type_id), attribute_id=int(attribute_id), value=query, limit=limit)
+        if len(query) < 2:
+            # Empty or short query: use the list endpoint (no search term required)
+            response = client.get_category_attribute_values(
+                category_id=int(category_id), type_id=int(type_id),
+                attribute_id=int(attribute_id), limit=limit)
+        else:
+            # Search query: use the search endpoint
+            response = client.search_category_attribute_values(
+                category_id=int(category_id), type_id=int(type_id),
+                attribute_id=int(attribute_id), value=query, limit=limit)
     output = response.get("result", [])
     if not isinstance(output, list):
         raise ValueError("Ozon 属性字典搜索响应格式错误")

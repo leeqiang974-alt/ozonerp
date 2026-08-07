@@ -134,7 +134,7 @@ class OzonSellerClient:
         return self._post("/v1/description-category/attribute/values", {
             "attribute_id": attribute_id,
             "description_category_id": category_id,
-            "language": "DEFAULT",
+            "language": "ZH_HANS",
             "last_value_id": last_value_id,
             "limit": limit,
             "type_id": type_id,
@@ -147,7 +147,7 @@ class OzonSellerClient:
         return self._post("/v1/description-category/attribute/values/search", {
             "attribute_id": attribute_id,
             "description_category_id": category_id,
-            "language": "DEFAULT",
+            "language": "ZH_HANS",
             "limit": limit,
             "type_id": type_id,
             "value": value.strip(),

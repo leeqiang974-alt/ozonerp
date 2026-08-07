@@ -4,7 +4,7 @@
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>Ozon 商品发布编辑器</title>
-  <link rel="stylesheet" href="./listing-editor.css?v=2" />
+  <link rel="stylesheet" href="./listing-editor.css?v=8" />
 <style>
   #le-layout { display: block !important; padding-top: 52px; padding-right: 340px; min-height: 100vh; }
   #le-form-area { max-width: 860px; margin: 0 auto !important; padding: 20px 24px; width: auto !important; }
@@ -32,14 +32,19 @@
 
         <div class="le-field-row">
           <label>平台分类 <span class="le-required">*</span></label>
-          <input type="text" id="le-category-search" placeholder="搜索类目名称（至少2个字）" autocomplete="off" />
-          <select id="le-category-select" size="6"></select>
+          <div class="le-combobox">
+            <input type="text" id="le-category-search" placeholder="搜索类目（至少2个字），或点击右侧箭头浏览" autocomplete="off" />
+            <button type="button" id="le-category-dropdown-btn" class="le-combobox-arrow">&#9660;</button>
+            <button type="button" id="le-tree-browser-btn" class="le-combobox-tree-btn" title="手动浏览类目树">🗂</button>
+            <div id="le-category-dropdown" class="le-combobox-dropdown" style="display:none"></div>
+          </div>
           <small class="le-hint" id="le-category-path">未选择类目</small>
+          <div id="le-category-suggestions" class="le-cat-suggestions"></div>
         </div>
 
         <div class="le-field-row">
           <label>ParentSKU / Offer ID <span class="le-required">*</span></label>
-          <input type="text" id="le-offer-id" placeholder="例如：LQ000001" maxlength="128" />
+          <input type="text" id="le-offer-id" placeholder="自动生成" maxlength="128" readonly style="background:#f9fafb;color:#6b7280" />
           <small class="le-hint">商品主编码，店铺内唯一</small>
         </div>
 
@@ -64,6 +69,8 @@
         <h3 class="le-section-title">② 产品属性 <span class="le-section-count" id="le-attr-count"></span></h3>
         <div class="le-attr-toolbar">
           <button class="le-btn le-btn-sm" id="le-ai-fill-all-attrs">AI 填充全部</button>
+          <button class="le-btn le-btn-sm" data-ai-action="match-materials">AI 材料匹配</button>
+          <button class="le-btn le-btn-sm" data-ai-action="generate-hashtags">AI 生成标签</button>
           <label class="le-checkbox-line"><input type="checkbox" id="le-show-optional" checked /> 显示选填属性</label>
         </div>
         <div id="le-attributes-container">
@@ -99,7 +106,7 @@
       </section>
 
       <!-- 5. JSON 丰富描述 -->
-      <section class="le-section" id="le-section-rich">
+      <section class="le-section" id="le-section-rich" style="display:none">
         <h3 class="le-section-title">⑤ JSON 丰富描述（富内容）</h3>
         <div class="le-field-row">
           <div class="le-field-label-row">
@@ -107,7 +114,7 @@
             <button class="le-ai-btn" data-ai-action="generate-rich-content" title="生成富内容（描述+图片）">AI 生成</button>
           </div>
           <textarea id="le-rich-content" rows="8" placeholder='点击"AI 生成"自动创建：欢迎语 + 描述 + 5张详情图' maxlength="50000"></textarea>
-          <small class="le-hint">格式：俄文欢迎语 + 产品描述 + 5张产品详情图</small>
+          <small class="le-hint">保存时自动生成（描述+图片），无需手动编辑。点击标题可展开查看。</small>
         </div>
       </section>
 
@@ -203,8 +210,19 @@
     </div>
   </div>
 
+  <!-- Category tree browser modal -->
+  <div id="le-tree-modal" class="le-tree-modal" style="display:none">
+    <div class="le-tree-modal-content">
+      <div class="le-tree-modal-header">
+        <h3>手动选择类目</h3>
+        <button id="le-tree-close" class="le-tree-close-btn">&times;</button>
+      </div>
+      <div id="le-tree-content" class="le-tree-content"></div>
+    </div>
+  </div>
+
   <div id="le-toast"></div>
-  <script src="./listing-editor.js?v=2"></script>
+  <script src="./listing-editor.js?v=8"></script>
 </body>
 </html>
 

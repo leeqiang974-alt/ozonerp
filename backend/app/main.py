@@ -1,7 +1,7 @@
 ﻿from fastapi import BackgroundTasks, Depends, FastAPI, HTTPException, Query, Response, status
 from pydantic import BaseModel, Field
 from fastapi.middleware.cors import CORSMiddleware
-from sqlalchemy import select, or_
+from sqlalchemy import select, or_, func
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
@@ -18,11 +18,14 @@ from .auto_sync import AutoSyncShopNotFound, request_auto_sync, run_auto_sync_re
 from .schemas import AutoSyncDecisionRead, AutoSyncRequest
 from .listing_metadata_service import get_category_attributes, search_category_attribute_values
 from .pipeline.routes import router as pipeline_router, ext_router as pipeline_ext_router
-from .ai_service import translate_text, suggest_attribute_value, generate_description, generate_rich_content, match_category_with_ai
+from .ai_service import translate_text, suggest_attribute_value, generate_description, generate_rich_content, match_category_with_ai, _chat
 from .pipeline.fact_extraction import ProductFacts, extract_facts
 from .pipeline.category_matching import recall_categories, rerank_categories
 from .erp_models import SourceProductRecord, SourceVariantRecord, SourceMediaRecord
-from .erp_models import SourceProductRecord, SourceVariantRecord, SourceMediaRecord
+from .erp_models import CategoryMatchHistoryRecord
+
+import hashlib
+import time as _time
 
 if settings.database_url.startswith("sqlite"):
     Base.metadata.create_all(bind=engine)
@@ -31,9 +34,8 @@ if settings.database_url.startswith("sqlite"):
 app = FastAPI(title="Ozon ERP API", version="0.1.0")
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["http://127.0.0.1:5500", "http://localhost:5500"],
-    allow_origin_regex=r"^chrome-extension://[a-f0-9]{32}$",
-    allow_methods=["GET", "POST", "PUT", "PATCH", "DELETE"],
+    allow_origins=["*"],
+    allow_methods=["*"],
     allow_headers=["*"],
 )
 
@@ -44,6 +46,8 @@ app.include_router(pipeline_ext_router)
 @app.get("/health")
 def health() -> dict[str, str]:
     return {"status": "ok"}
+
+
 
 
 @app.post("/api/v1/shops", response_model=ShopRead, status_code=status.HTTP_201_CREATED)
@@ -263,9 +267,13 @@ def sync_categories(shop_id: int, db: Session = Depends(get_db)) -> dict[str, in
 def list_categories(shop_id: int, query: str | None = None, db: Session = Depends(get_db)) -> list[dict[str, str]]:
     statement = select(OzonCategoryCacheRecord).where(OzonCategoryCacheRecord.shop_id == shop_id, OzonCategoryCacheRecord.type_id != "")
     if query:
-        statement = statement.where(OzonCategoryCacheRecord.title.ilike(f"%{query[:100]}%"))
-    rows = db.scalars(statement.order_by(OzonCategoryCacheRecord.title).limit(1000))
-    return [{"category_id": row.category_id, "type_id": row.type_id, "title": row.title} for row in rows]
+        q = query[:100]
+        statement = statement.where(or_(
+            OzonCategoryCacheRecord.title.like(f"%{q}%"),
+            OzonCategoryCacheRecord.title_zh.like(f"%{q}%"),
+        ))
+    rows = db.scalars(statement.order_by(OzonCategoryCacheRecord.title_zh).limit(1000))
+    return [{"category_id": row.category_id, "type_id": row.type_id, "title": row.title, "title_zh": row.title_zh or ""} for row in rows]
 
 
 @app.get("/api/v1/shops/{shop_id}/metadata/categories/{category_id}/types/{type_id}/attributes")
@@ -360,6 +368,190 @@ class MatchCategoryRequest(BaseModel):
     brand: str = Field(default="", max_length=200)
 
 
+# ── Offer ID auto-generation ─────────────────────────────────────────────
+@app.get("/api/v1/shops/{shop_id}/next-offer-id")
+def get_next_offer_id(shop_id: int, db: Session = Depends(get_db)) -> dict:
+    """Generate the next sequential offer ID for a shop."""
+    shop = db.get(Shop, shop_id)
+    if not shop:
+        raise HTTPException(status_code=404, detail="店铺不存在")
+    # Derive prefix from shop name: first 2 alphanumeric chars, uppercase
+    raw = shop.name.upper()
+    prefix = "".join(c for c in raw if c.isalnum())[:2] or "SK"
+    # Count existing drafts + products to get next sequence
+    draft_count = db.scalar(select(func.count(ListingDraftRecord.id)).where(ListingDraftRecord.shop_id == shop_id)) or 0
+    product_count = db.scalar(select(func.count(ProductRecord.id)).where(ProductRecord.shop_id == shop_id)) or 0
+    next_num = draft_count + product_count + 1
+    offer_id = f"{prefix}{next_num:06d}"
+    return {"offer_id": offer_id, "prefix": prefix, "sequence": next_num}
+
+
+# ── Category tree (for manual browsing) ──────────────────────────────────
+_category_tree_cache: dict[str, tuple[float, list]] = {}
+_CATEGORY_TREE_TTL = 86400  # 24 hours
+
+def _build_category_tree(items: list) -> list[dict]:
+    """Transform Ozon nested tree into a simplified structure for the frontend."""
+    result = []
+    for item in items:
+        if not isinstance(item, dict) or item.get("disabled") is True:
+            continue
+        cat_id = item.get("description_category_id")
+        type_id = item.get("type_id")
+        if cat_id is not None:
+            children = _build_category_tree(item.get("children", []))
+            result.append({
+                "id": str(cat_id),
+                "name": item.get("category_name", ""),
+                "type": "category",
+                "children": children,
+                "children_count": len(children),
+            })
+        elif type_id is not None:
+            result.append({
+                "id": str(type_id),
+                "category_id": str(item.get("description_category_id", "")),
+                "name": item.get("type_name", ""),
+                "type": "type",
+            })
+    return result
+
+
+@app.get("/api/v1/shops/{shop_id}/metadata/category-tree")
+def get_category_tree_endpoint(shop_id: int, db: Session = Depends(get_db)) -> list[dict]:
+    """Return the Ozon category tree (Chinese) for manual drill-down browsing.
+    Cached in memory for 24 hours."""
+    cache_key = str(shop_id)
+    cached = _category_tree_cache.get(cache_key)
+    if cached and (_time.time() - cached[0]) < _CATEGORY_TREE_TTL:
+        return cached[1]
+
+    from .sync_service import _credentials, SyncConfigurationError
+    try:
+        client_id, api_key = _credentials(db, shop_id)
+    except SyncConfigurationError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+    from .integrations.ozon_seller import OzonSellerClient
+    with OzonSellerClient(client_id=client_id, api_key=api_key) as client:
+        response = client.get_category_tree("ZH_HANS")
+    tree = _build_category_tree(response.get("result", []))
+    _category_tree_cache[cache_key] = (_time.time(), tree)
+    return tree
+
+
+# ── Category match history ──────────────────────────────────────────────
+class CategoryMatchHistoryRequest(BaseModel):
+    title: str = Field(min_length=1, max_length=500)
+    category_id: str = Field(min_length=1, max_length=64)
+    type_id: str = Field(min_length=1, max_length=64)
+    category_title_zh: str = Field(default="", max_length=500)
+    source: str = Field(default="manual", max_length=20)
+
+
+def _extract_title_keywords(title: str) -> str:
+    """Extract meaningful keywords from a Chinese product title for matching."""
+    import re as _re
+    suffixes = ["包", "鞋", "衣", "裤", "裙", "帽", "表", "灯", "杯", "壳", "架", "盒",
+                "箱", "袋", "垫", "毯", "枕", "碗", "盘", "壶", "锅", "刀", "剪",
+                "链", "绳", "带", "扣", "环", "钩", "管", "棒", "板", "贴", "膜",
+                "器", "机", "线", "充", "耳", "玩具", "收纳", "整理", "装饰",
+                "配件", "套装", "工具", "仪器", "模具"]
+    keywords = set()
+    for suffix in suffixes:
+        idx = title.rfind(suffix)
+        if idx >= 0:
+            start = max(0, idx - 4)
+            keywords.add(title[start:idx + len(suffix)])
+            keywords.add(suffix)
+    parts = _re.split(r"[\s,，、/\\[\]\(\)（）【】]+", title)
+    for part in parts:
+        part = part.strip()
+        if 2 <= len(part) <= 8:
+            keywords.add(part)
+    keywords = {k for k in keywords if 1 <= len(k) <= 8}
+    return " ".join(sorted(keywords, key=len, reverse=True))
+
+
+@app.post("/api/v1/shops/{shop_id}/category-match-history")
+def save_category_match_history(shop_id: int, payload: CategoryMatchHistoryRequest, db: Session = Depends(get_db)) -> dict:
+    """Save a category selection so future similar titles can auto-match."""
+    keywords = _extract_title_keywords(payload.title)
+    title_hash = hashlib.md5(keywords.encode("utf-8")).hexdigest()
+
+    existing = db.scalar(select(CategoryMatchHistoryRecord).where(
+        CategoryMatchHistoryRecord.shop_id == shop_id,
+        CategoryMatchHistoryRecord.title_hash == title_hash,
+    ))
+    if existing:
+        existing.hit_count += 1
+        existing.category_id = payload.category_id
+        existing.type_id = payload.type_id
+        existing.category_title_zh = payload.category_title_zh
+        existing.title = payload.title
+        existing.title_keywords = keywords
+        existing.source = payload.source
+    else:
+        db.add(CategoryMatchHistoryRecord(
+            shop_id=shop_id,
+            title=payload.title,
+            title_keywords=keywords,
+            title_hash=title_hash,
+            category_id=payload.category_id,
+            type_id=payload.type_id,
+            category_title_zh=payload.category_title_zh,
+            source=payload.source,
+        ))
+    db.commit()
+    return {"status": "ok", "keywords": keywords, "hit_count": (existing.hit_count if existing else 1)}
+
+
+@app.get("/api/v1/shops/{shop_id}/category-match-history")
+def list_category_match_history(shop_id: int, db: Session = Depends(get_db)) -> list[dict]:
+    """List recent category match history entries."""
+    rows = db.scalars(select(CategoryMatchHistoryRecord).where(
+        CategoryMatchHistoryRecord.shop_id == shop_id,
+    ).order_by(CategoryMatchHistoryRecord.updated_at.desc()).limit(100))
+    return [{"title": r.title, "keywords": r.title_keywords, "category_id": r.category_id,
+             "type_id": r.type_id, "category_title_zh": r.category_title_zh,
+             "source": r.source, "hit_count": r.hit_count} for r in rows]
+
+
+class HashtagRequest(BaseModel):
+    title: str = Field(min_length=1, max_length=500)
+    description: str = Field(default="", max_length=5000)
+    category_zh: str = Field(default="", max_length=200)
+
+
+@app.post("/api/v1/ai/generate-hashtags")
+def generate_hashtags(payload: HashtagRequest) -> dict:
+    """Generate 30 Russian search hashtags for a product.
+    Rules: 1-2 words each, prefixed with #, space-separated.
+    No marketing/promo/banned words, no brands, no numbers.
+    """
+    prompt = f"""Generate exactly 30 Russian search hashtags for an Ozon product.
+
+Product title: {payload.title}
+Description: {payload.description[:500]}
+Category: {payload.category_zh}
+
+Rules (STRICT - Ozon will reject non-compliant tags):
+- Each hashtag starts with # and contains ONLY letters and digits
+- Multi-word hashtags use UNDERSCORES: #ручная_работа NOT #ручнаяработа
+- Space-separated, all on one line, max 30 tags
+- These are SEARCH keywords buyers would type to find this product
+- NO brand names, NO digits as standalone, NO marketing words (sale, discount, promo)
+- Each tag max 30 characters
+- Return ONLY the hashtags line, nothing else
+
+Example output: #свечи #набор_для_свечей #ручная_работа #воск #своими_руками"""
+    try:
+        hashtags = _chat([{"role": "user", "content": prompt}], temperature=0.7, max_tokens=4096)
+        return {"hashtags": hashtags}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"AI生成失败: {e}")
+
+
 @app.post("/api/v1/shops/{shop_id}/ai/match-category")
 def ai_match_category(shop_id: int, payload: MatchCategoryRequest, db: Session = Depends(get_db)) -> dict:
     """Chinese-to-Chinese fuzzy category matching. No AI, no translation.
@@ -372,6 +564,38 @@ def ai_match_category(shop_id: int, payload: MatchCategoryRequest, db: Session =
 
     title = payload.title.strip()
 
+    # ── 1. Check match history first ──
+    keywords_for_hash = _extract_title_keywords(title)
+    kw_list = keywords_for_hash.split()
+    history_records = []
+    for kw in kw_list[:8]:
+        rows = db.scalars(select(CategoryMatchHistoryRecord).where(
+            CategoryMatchHistoryRecord.shop_id == shop_id,
+            CategoryMatchHistoryRecord.title_keywords.like(f"%{kw}%"),
+        ).order_by(CategoryMatchHistoryRecord.hit_count.desc()).limit(5)).all()
+        for row in rows:
+            history_records.append(row)
+
+    history_candidates = []
+    if history_records:
+        seen_hist = {}
+        for row in history_records:
+            key = (row.category_id, row.type_id)
+            if key not in seen_hist:
+                seen_hist[key] = {
+                    "category_id": row.category_id,
+                    "type_id": row.type_id,
+                    "title": row.category_title_zh or "",
+                    "title_zh": row.category_title_zh or "",
+                    "score": 200 + row.hit_count * 20,
+                    "matched": ["history"],
+                    "source": "history",
+                }
+            else:
+                seen_hist[key]["score"] += 30
+        history_candidates = sorted(seen_hist.values(), key=lambda c: c["score"], reverse=True)[:5]
+
+    # ── 2. Normal keyword matching ──
     # Common product suffixes in Chinese e-commerce
     suffixes = ["包", "鞋", "衣", "裤", "裙", "帽", "表", "灯", "杯", "壳", "架", "盒",
                 "箱", "袋", "垫", "毯", "枕", "碗", "盘", "壶", "锅", "刀", "剪",
@@ -455,7 +679,21 @@ def ai_match_category(shop_id: int, payload: MatchCategoryRequest, db: Session =
                 seen[key]["matched"].append(kw)
 
     candidates = sorted(seen.values(), key=lambda c: c["score"], reverse=True)[:10]
-    return {"candidates": candidates, "keywords": sorted(keywords, key=len, reverse=True)}
+
+    # Merge: history matches get top priority, then normal matches
+    if history_candidates:
+        existing_keys = {(c["category_id"], c["type_id"]) for c in candidates}
+        for hc in history_candidates:
+            if (hc["category_id"], hc["type_id"]) not in existing_keys:
+                candidates.insert(0, hc)
+        # Re-sort with history at top
+        candidates = sorted(candidates, key=lambda c: (
+            c.get("source") == "history",
+            c["score"]
+        ), reverse=True)[:10]
+
+    return {"candidates": candidates, "keywords": sorted(keywords, key=len, reverse=True),
+            "history_matched": len(history_candidates) > 0}
 
 # Source product detail (for listing editor
 # ---------------------------------------------------------------------------
@@ -568,6 +806,9 @@ def update_listing_draft(shop_id: int, draft_id: int, payload: ListingDraftUpdat
     db.commit()
     db.refresh(draft)
     return draft
+
+
+
 
 
 

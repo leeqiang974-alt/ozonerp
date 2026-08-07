@@ -212,3 +212,159 @@ body { margin: 0; background: var(--le-bg); font-family: -apple-system, "Microso
 .le-cat-suggestion.selected { border-color: var(--le-primary); background: #eff6ff; border-width: 2px; }
 .le-cat-suggestion .le-cat-score { font-size: 11px; color: var(--le-text-muted); }
 .le-cat-suggestion .le-cat-score .le-cat-badge { background: var(--le-ai-light); color: var(--le-ai); padding: 1px 6px; border-radius: 3px; margin-left: 4px; }
+
+/* ── Category combobox ── */
+.le-combobox { position: relative; width: 100%; display: flex; gap: 0; }
+.le-combobox input {
+  flex: 1;
+  padding: 8px 12px;
+  border: 1px solid var(--le-border, #d1d5db);
+  border-radius: 6px 0 0 6px;
+  border-right: none;
+  font-size: 14px;
+  outline: none;
+}
+.le-combobox input:focus { border-color: var(--le-primary, #3b82f6); box-shadow: 0 0 0 2px rgba(59,130,246,.15); }
+.le-combobox-arrow {
+  padding: 8px 14px;
+  border: 1px solid var(--le-border, #d1d5db);
+  border-left: none;
+  border-radius: 0 6px 6px 0;
+  background: #f9fafb;
+  cursor: pointer;
+  font-size: 10px;
+  color: #6b7280;
+  display: flex;
+  align-items: center;
+  transition: background .15s;
+}
+.le-combobox-arrow:hover { background: #eff6ff; color: var(--le-primary, #3b82f6); }
+.le-combobox-dropdown {
+  position: absolute;
+  top: 100%;
+  left: 0;
+  right: 0;
+  max-height: 320px;
+  overflow-y: auto;
+  background: #fff;
+  border: 1px solid var(--le-border, #d1d5db);
+  border-radius: 6px;
+  box-shadow: 0 4px 12px rgba(0,0,0,.1);
+  z-index: 100;
+  margin-top: 2px;
+}
+.le-combobox-option {
+  padding: 8px 12px;
+  cursor: pointer;
+  border-bottom: 1px solid #f3f4f6;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  transition: background .1s;
+}
+.le-combobox-option:hover { background: #eff6ff; }
+.le-combobox-option:last-child { border-bottom: none; }
+.le-combobox-option .le-cat-zh { font-size: 14px; color: #1f2937; }
+.le-combobox-option .le-cat-ru { font-size: 11px; color: #9ca3af; }
+.le-combobox-empty { padding: 16px; text-align: center; color: var(--le-text-muted, #6b7280); font-size: 13px; }
+
+/* ── Category tree browser ── */
+.le-combobox-tree-btn {
+  padding: 8px 12px;
+  border: 1px solid var(--le-border, #d1d5db);
+  border-left: none;
+  border-radius: 0 6px 6px 0;
+  background: #f9fafb;
+  cursor: pointer;
+  font-size: 14px;
+  display: flex;
+  align-items: center;
+  transition: background .15s;
+}
+.le-combobox-tree-btn:hover { background: #fef3c7; }
+.le-tree-modal {
+  position: fixed; top: 0; left: 0; right: 0; bottom: 0;
+  background: rgba(0,0,0,.4);
+  z-index: 1000;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+.le-tree-modal-content {
+  background: #fff;
+  border-radius: 10px;
+  width: 600px;
+  max-width: 90vw;
+  max-height: 80vh;
+  display: flex;
+  flex-direction: column;
+  box-shadow: 0 8px 32px rgba(0,0,0,.2);
+}
+.le-tree-modal-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 16px 20px;
+  border-bottom: 1px solid #e5e7eb;
+}
+.le-tree-modal-header h3 { margin: 0; font-size: 16px; }
+.le-tree-close-btn {
+  background: none; border: none; font-size: 24px;
+  cursor: pointer; color: #6b7280; line-height: 1;
+}
+.le-tree-close-btn:hover { color: #ef4444; }
+.le-tree-content {
+  padding: 12px 20px 20px;
+  overflow-y: auto;
+  flex: 1;
+}
+.le-tree-loading, .le-tree-error, .le-tree-empty {
+  padding: 24px; text-align: center; color: #6b7280; font-size: 14px;
+}
+.le-tree-error { color: #ef4444; }
+.le-tree-breadcrumb {
+  display: flex; flex-wrap: wrap; align-items: center;
+  gap: 4px; padding: 8px 0 12px;
+  border-bottom: 1px solid #f3f4f6; margin-bottom: 8px;
+}
+.le-tree-crumb {
+  cursor: pointer; color: var(--le-primary, #3b82f6);
+  font-size: 13px; padding: 2px 6px; border-radius: 4px;
+}
+.le-tree-crumb:hover { background: #eff6ff; }
+.le-tree-sep { color: #d1d5db; font-size: 12px; }
+.le-tree-section {
+  font-size: 11px; color: #9ca3af; text-transform: uppercase;
+  letter-spacing: .5px; padding: 8px 0 4px; margin-top: 4px;
+}
+.le-tree-item {
+  display: flex; align-items: center; gap: 8px;
+  padding: 8px 10px; border-radius: 6px; cursor: pointer;
+  transition: background .1s;
+}
+.le-tree-item:hover { background: #f9fafb; }
+.le-tree-icon { font-size: 14px; }
+.le-tree-name { flex: 1; font-size: 14px; color: #1f2937; }
+.le-tree-count {
+  font-size: 11px; color: #9ca3af;
+  background: #f3f4f6; padding: 1px 8px; border-radius: 10px;
+}
+.le-tree-select {
+  font-size: 12px; color: var(--le-primary, #3b82f6);
+  font-weight: 500; padding: 2px 8px;
+}
+.le-tree-type:hover .le-tree-select { background: var(--le-primary, #3b82f6); color: #fff; border-radius: 4px; }
+
+/* Tree search bar */
+.le-tree-search-wrap { position: relative; margin-bottom: 8px; }
+.le-tree-search { width: 100%; padding: 8px 12px; border: 1px solid #d1d5db; border-radius: 6px; font-size: 14px; outline: none; box-sizing: border-box; }
+.le-tree-search:focus { border-color: var(--le-primary, #3b82f6); box-shadow: 0 0 0 2px rgba(59,130,246,.15); }
+.le-tree-search-count { position: absolute; right: 10px; top: 50%; transform: translateY(-50%); font-size: 11px; color: #9ca3af; pointer-events: none; }
+
+/* Attribute combobox (dictionary fields) */
+.le-attr-combobox { position: relative; flex: 1; display: flex; gap: 0; }
+.le-attr-combobox input { flex: 1; border-radius: 6px 0 0 6px; border-right: none; }
+.le-attr-combobox .le-combobox-arrow { border-radius: 0 6px 6px 0; }
+.le-attr-dropdown { top: 100%; margin-top: 2px; }
+.le-attr-input-row { display: flex; align-items: center; gap: 4px; }
+.le-attr-input-row .le-ai-btn { flex-shrink: 0; }

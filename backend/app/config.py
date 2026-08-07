@@ -5,8 +5,9 @@ from functools import lru_cache
 from os import getenv
 
 # Load .env from project root (parent of backend/) or current directory
-load_dotenv()
-load_dotenv("../.env")
+import os
+_load_env_path = os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(__file__))), ".env")
+load_dotenv(_load_env_path, override=True)
 
 
 class Settings:

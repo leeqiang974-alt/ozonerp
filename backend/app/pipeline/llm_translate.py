@@ -15,8 +15,7 @@ from typing import Any
 from dotenv import load_dotenv
 
 # Load .env from project root or current directory
-load_dotenv()
-load_dotenv("../.env")
+load_dotenv(os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(os.path.dirname(__file__)))), ".env"), override=True)
 
 # --------------------------------------------------------------------------- #
 # Dictionary fallback (used when no LLM API key is configured)                #
@@ -191,10 +190,14 @@ Respond with ONLY valid JSON, no markdown."""
             {"role": "user", "content": prompt},
         ],
         temperature=0.3,
-        max_tokens=2000,
+        max_tokens=4096,
     )
 
-    raw = response.choices[0].message.content.strip()
+    _msg = response.choices[0].message
+    raw = (_msg.content or "").strip()
+    if not raw:
+        # Reasoning models (deepseek-v4, glm-5.2) put output in reasoning_content
+        raw = (_msg.reasoning_content or "").strip()
     # Strip markdown code fences if present
     raw = re.sub(r"^```(?:json)?\s*", "", raw)
     raw = re.sub(r"\s*```$", "", raw)

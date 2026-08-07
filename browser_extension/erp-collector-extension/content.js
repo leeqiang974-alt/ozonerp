@@ -515,7 +515,7 @@ async function reportOzonSellerEditDiff() {
   const signature = JSON.stringify(changes);
   if (signature === state.lastSignature) return;
   state.lastSignature = signature;
-  await fetch("http://localhost:8000/api/listing-edit-journal/events", {
+  await fetch("http://127.0.0.1:8000/api/listing-edit-journal/events", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({
@@ -583,7 +583,7 @@ function mountFloatingCollector() {
         </div>
       </div>
       <div class="ozon-erp-head-actions">
-        <a class="ozon-erp-link" href="http://localhost:8000/" target="_blank" title="打开 ERP">ERP</a>
+        <a class="ozon-erp-link" href="http://127.0.0.1:8000/" target="_blank" title="打开 ERP">ERP</a>
         <button type="button" id="ozon-erp-toggle" title="缩小">-</button>
       </div>
     </div>
@@ -707,9 +707,9 @@ function mountFloatingCollector() {
         button.textContent = "补齐后入箱";
         return;
       }
-      const response = await fetch("http://localhost:8000/api/1688/capture", {
+      const response = await fetch("http://127.0.0.1:8000/api/1688/capture", {
         method: "POST",
-        headers: { "Content-Type": "text/plain;charset=UTF-8" },
+        headers: { "Content-Type": "application/json" },
         body: JSON.stringify(payload),
       });
       if (!response.ok) throw new Error("发送失败");
@@ -954,7 +954,7 @@ function applyManualPackageInfo(payload, manual, applyAllSku = true) {
 
 async function loadStoreOptions(select, statusEl) {
   try {
-      const response = await fetch("http://localhost:8000/api/stores");
+      const response = await fetch("http://127.0.0.1:8000/api/stores");
     if (!response.ok) throw new Error("店铺读取失败");
     const data = await response.json();
     const saved = await getSavedStoreId();
@@ -1556,9 +1556,9 @@ function collectOzonDetail() {
 }
 
 async function sendToErp(payload) {
-  const response = await fetch("http://localhost:8000/api/1688/capture", {
+  const response = await fetch("http://127.0.0.1:8000/api/1688/capture", {
     method: "POST",
-    headers: { "Content-Type": "text/plain;charset=UTF-8" },
+    headers: { "Content-Type": "application/json" },
     body: JSON.stringify(payload),
   });
   const text = await response.text();
@@ -1733,3 +1733,5 @@ function dedupeBy(items, keyFn) {
 function sleep(ms) {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
+
+

@@ -645,11 +645,14 @@ function updateRichContentImages() {
     const currentImgs = state.images.slice(0, 5).filter(u => u && u.trim());
     const imgBlocks = currentImgs.length ? [{
       widgetName: "raShowcase",
-      type: "tileSecondary",
-      title: { content: "" },
-      content: { images: currentImgs.map(url => ({ image: url.trim(), width: 750 })) }
+      type: "roll",
+      blocks: currentImgs.map(url => ({
+        imgLink: "",
+        img: { src: url.trim(), srcMobile: url.trim(), alt: "", position: "width_full", positionMobile: "width_full" }
+      }))
     }] : [];
     richObj.content = [...textBlocks, ...imgBlocks];
+    richObj.version = 0.3;
     richEl.value = JSON.stringify(richObj, null, 2);
     state.richContentCompact = JSON.stringify(richObj);
   } catch (_) { /* malformed JSON – leave untouched */ }

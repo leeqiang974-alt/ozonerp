@@ -203,32 +203,79 @@ def generate_rich_content(
     # Text block 1: Welcome message
     widgets.append({
         "widgetName": "raTextBlock",
-        "title": {"content": "", "color": "default", "fontSize": "medium"},
-        "paragraphs": [{"content": welcome_ru, "color": "default", "fontSize": "medium"}],
+        "type": "text",
+        "blocks": [
+            {
+                "imgLink": "",
+                "img": {
+                    "src": "",
+                    "srcMobile": "",
+                    "alt": "",
+                    "position": "width_full",
+                    "positionMobile": "width_full"
+                },
+                "paragraphs": [
+                    {
+                        "content": welcome_ru,
+                        "size": "size3",
+                        "color": "color1",
+                        "align": "align1"
+                    }
+                ]
+            }
+        ]
     })
 
     # Text block 2: Product description
     if description and description.strip():
         widgets.append({
             "widgetName": "raTextBlock",
-            "title": {"content": "", "color": "default", "fontSize": "medium"},
-            "paragraphs": [{"content": description.strip(), "color": "default", "fontSize": "medium"}],
+            "type": "text",
+            "blocks": [
+                {
+                    "imgLink": "",
+                    "img": {
+                        "src": "",
+                        "srcMobile": "",
+                        "alt": "",
+                        "position": "width_full",
+                        "positionMobile": "width_full"
+                    },
+                    "paragraphs": [
+                        {
+                            "content": description.strip(),
+                            "size": "size3",
+                            "color": "color1",
+                            "align": "align1"
+                        }
+                    ]
+                }
+            ]
         })
 
-    # Image gallery: single raShowcase with up to 5 images
+    # Image gallery: raShowcase with up to 5 images
     valid_imgs = [u.strip() for u in image_urls[:5] if u and u.strip()]
     if valid_imgs:
+        blocks = []
+        for url in valid_imgs:
+            blocks.append({
+                "imgLink": "",
+                "img": {
+                    "src": url,
+                    "srcMobile": url,
+                    "alt": "",
+                    "position": "width_full",
+                    "positionMobile": "width_full"
+                }
+            })
         widgets.append({
             "widgetName": "raShowcase",
-            "type": "tileSecondary",
-            "title": {"content": ""},
-            "content": {
-                "images": [{"image": url, "width": 750} for url in valid_imgs],
-            },
+            "type": "roll",
+            "blocks": blocks
         })
 
     # Wrap in {"content": [...]} as Ozon requires
-    rich_obj = {"content": widgets}
+    rich_obj = {"content": widgets, "version": 0.3}
     compact_json = json.dumps(rich_obj, ensure_ascii=False, separators=(",", ":"))
     pretty_json = json.dumps(rich_obj, ensure_ascii=False, indent=2)
 

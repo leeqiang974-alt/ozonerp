@@ -74,6 +74,14 @@ def ensure_sqlite_operational_columns() -> None:
                 connection.execute(text("ALTER TABLE pipeline_products ADD COLUMN content_verified BOOLEAN"))
     except Exception:
         pass  # table may not exist yet in fresh test databases
+    # warehouses: warehouse_id for Ozon FBS warehouse ID
+    try:
+        wh_columns = {column["name"] for column in inspect(engine).get_columns("warehouses")}
+        if "warehouse_id" not in wh_columns:
+            with engine.begin() as connection:
+                connection.execute(text("ALTER TABLE warehouses ADD COLUMN warehouse_id VARCHAR(64)"))
+    except Exception:
+        pass
 
 
 

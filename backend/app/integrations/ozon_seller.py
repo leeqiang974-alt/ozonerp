@@ -178,6 +178,20 @@ class OzonSellerClient:
             raise ValueError("task_id is required")
         return self._post("/v1/product/import/info", {"task_id": task_id.strip()})
 
+    def generate_barcodes(self, *, product_ids: list[int]) -> dict[str, Any]:
+        """Generate barcodes for products via /v1/barcode/generate."""
+        if not product_ids:
+            raise ValueError("at least one product_id is required")
+        if len(product_ids) > 100:
+            raise ValueError("at most 100 product_ids per request")
+        return self._post("/v1/barcode/generate", {"product_ids": product_ids})
+
+    def update_stocks(self, *, stocks: list[dict[str, Any]]) -> dict[str, Any]:
+        """Update FBS stock levels via /v2/products/stocks."""
+        if not stocks:
+            raise ValueError("at least one stock entry is required")
+        return self._post("/v2/products/stocks", {"stocks": stocks})
+
     @staticmethod
     def _validate_limit(limit: int) -> None:
         if not 1 <= limit <= 1000:

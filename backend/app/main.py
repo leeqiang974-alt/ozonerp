@@ -460,21 +460,140 @@ def submit_listing_to_ozon(shop_id: int, draft_id: int, db: Session = Depends(ge
         items.append(item)
 
     client_id, api_key = _credentials(db, shop_id)
+
+    # Sync warehouses if none exist for this shop
+    wh_rows = db.scalars(select(Warehouse).where(Warehouse.shop_id == shop_id)).all()
+    if not wh_rows:
+        try:
+            with OzonSellerClient(client_id=client_id, api_key=api_key) as client:
+                wh_result = client.list_warehouses()
+                for wh in wh_result.get("warehouses", []):
+                    db_wh = Warehouse(
+                        shop_id=shop_id,
+                        name=wh.get("name", ""),
+                        pickup_point=wh.get("address_info", {}).get("address", "") if wh.get("address_info") else "",
+                    )
+                    db_wh.warehouse_id = str(wh.get("warehouse_id", ""))
+                    db.add(db_wh)
+                db.commit()
+                wh_rows = db.scalars(select(Warehouse).where(Warehouse.shop_id == shop_id)).all()
+        except Exception:
+            pass
+
+    # Match warehouse based on product weight and price
+    # Warehouse names contain weight/price ranges:
+    # extrasmall: 0-500g, 0-135 CNY
+    # budget: 0.501-30kg, 0-135 CNY
+    # small: 0-2kg, 135-625 CNY
+    # big: 2-30kg, 135-625 CNY
+    def _match_warehouse(weight_g, price_cny, warehouses):
+        if not weight_g or not price_cny:
+            return None
+        try:
+            w = float(weight_g)
+            p = float(price_cny)
+        except (ValueError, TypeError):
+            return None
+        level = None
+        if w <= 500 and p <= 135:
+            level = "extrasmall"
+        elif w <= 30000 and p <= 135:
+            level = "budget"
+        elif w <= 2000 and p <= 635:
+            level = "small"
+        elif w <= 30000 and p <= 635:
+            level = "big"
+        if not level:
+            return None
+        for wh in warehouses:
+            name_lower = (wh.name or "").lower()
+            if level in name_lower:
+                try:
+                    return int(wh.warehouse_id)
+                except (ValueError, TypeError):
+                    return None
+        return None
+
+    warehouse_id = None
+    if wh_rows:
+        # Use first variant's weight and price for matching
+        first_variant = draft.variants[0] if draft.variants else None
+        if first_variant:
+            _w = first_variant.weight_g or 0
+            _p = float(first_variant.price_cny or first_variant.calculated_price_cny or 0)
+            warehouse_id = _match_warehouse(_w, _p, wh_rows)
+
     try:
         with OzonSellerClient(client_id=client_id, api_key=api_key) as client:
             result = client.create_products(items=items)
     except Exception as exc:
         raise HTTPException(status_code=502, detail=f"Ozon API error: {exc}")
 
+    task_id = result.get("result", {}).get("task_id", "")
+
+    # After import: generate barcodes + upload stock (non-blocking, best-effort)
+    barcode_msg = ""
+    stock_msg = ""
+    import time as _time
+    _time.sleep(3)  # Wait for Ozon to process the import
+
+    try:
+        with OzonSellerClient(client_id=client_id, api_key=api_key) as client:
+            # Check import status to get product_id
+            import_info = client.get_import_info(task_id=str(task_id)) if task_id else {}
+            imported_items = import_info.get("result", {}).get("items", [])
+            product_ids = [it.get("product_id") for it in imported_items if it.get("product_id") and it.get("status") in ("imported", "skipped")]
+
+            # Generate barcodes for imported products
+            if product_ids:
+                try:
+                    bc_result = client.generate_barcodes(product_ids=product_ids)
+                    barcode_msg = "barcodes generated"
+                except Exception as bc_exc:
+                    barcode_msg = f"barcode gen failed: {bc_exc}"
+
+            # Upload stock to warehouse
+            if warehouse_id and product_ids:
+                stocks = []
+                for it in imported_items:
+                    if it.get("status") in ("imported", "skipped"):
+                        stocks.append({
+                            "offer_id": it.get("offer_id", ""),
+                            "stock": 999,
+                            "warehouse_id": warehouse_id,
+                        })
+                if stocks:
+                    try:
+                        stock_result = client.update_stocks(stocks=stocks)
+                        stock_errors = stock_result.get("result", [])
+                        has_error = any(s.get("errors") for s in stock_errors)
+                        if has_error:
+                            errs = []
+                            for s in stock_errors:
+                                for e in s.get("errors", []):
+                                    errs.append(e.get("message", ""))
+                            stock_msg = f"stock upload warning: {'; '.join(errs[:2])}"
+                        else:
+                            stock_msg = f"stock uploaded ({len(stocks)} SKU x 999)"
+                    except Exception as stock_exc:
+                        stock_msg = f"stock upload failed: {stock_exc}"
+    except Exception as post_exc:
+        pass  # Post-import steps failed - don't block the response
+
     draft.status = "submitted"
     db.commit()
 
-    task_id = result.get("result", {}).get("task_id", "")
+    msg_parts = [f"submitted {len(items)} variants, task_id: {task_id}"]
+    if barcode_msg:
+        msg_parts.append(barcode_msg)
+    if stock_msg:
+        msg_parts.append(stock_msg)
+
     return {
         "ok": True,
         "task_id": task_id,
         "items_submitted": len(items),
-        "message": f"submitted {len(items)} variants, task_id: {task_id}" if task_id else "done",
+        "message": " | ".join(msg_parts) if task_id else "done",
     }
 
 

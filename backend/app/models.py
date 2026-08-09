@@ -33,6 +33,7 @@ class Warehouse(Base):
     cutoff_time: Mapped[str | None] = mapped_column(String(5), nullable=True)
     workdays: Mapped[str | None] = mapped_column(String(64), nullable=True)
     carrier: Mapped[str | None] = mapped_column(String(120), nullable=True)
+    warehouse_id: Mapped[str | None] = mapped_column(String(64), nullable=True)
     shop: Mapped[Shop] = relationship(back_populates="warehouses")
 
 

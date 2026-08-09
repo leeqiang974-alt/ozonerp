@@ -60,9 +60,21 @@ def validate_listing_draft(db: Session, draft: ListingDraftRecord) -> list[dict[
                 policy=PricePolicy(shop_id=str(draft.shop_id)),
             ))
             variant.calculated_price_cny = calculation.price
-            variant.min_price_cny = calculation.min_price
-            variant.old_price_cny = calculation.old_price
             all_risk_codes = [r.value for r in calculation.risk_codes]
+            # User pricing rules: if price_cny is manually set, derive old_price and min_price from it
+            # old_price = price * 2; min_price = floor(price), if integer then -1
+            if variant.price_cny:
+                from decimal import ROUND_FLOOR
+                _p = Decimal(str(variant.price_cny))
+                variant.old_price_cny = str(_p * Decimal("2"))
+                _whole = _p.to_integral_value(rounding=ROUND_FLOOR)
+                if _whole == _p:
+                    variant.min_price_cny = str(_whole - Decimal("1"))
+                else:
+                    variant.min_price_cny = str(_whole)
+            else:
+                variant.min_price_cny = calculation.min_price
+                variant.old_price_cny = calculation.old_price
         except ValueError as exc:
             issues.append({"field": prefix, "message": f"CNY 核价未通过：{exc}"})
     draft.status = "ready_for_approval" if not issues else "validation_failed"

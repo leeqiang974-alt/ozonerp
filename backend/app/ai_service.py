@@ -204,8 +204,7 @@ def generate_rich_content(
     widgets.append({
         "widgetName": "raTextBlock",
         "title": {"content": "", "color": "default", "fontSize": "medium"},
-        "content": {"content": welcome_ru, "color": "default", "fontSize": "medium"},
-        "padding": {"top": "medium", "bottom": "medium"},
+        "paragraphs": [{"content": welcome_ru, "color": "default", "fontSize": "medium"}],
     })
 
     # Text block 2: Product description
@@ -213,20 +212,20 @@ def generate_rich_content(
         widgets.append({
             "widgetName": "raTextBlock",
             "title": {"content": "", "color": "default", "fontSize": "medium"},
-            "content": {"content": description.strip(), "color": "default", "fontSize": "medium"},
-            "padding": {"top": "medium", "bottom": "medium"},
+            "paragraphs": [{"content": description.strip(), "color": "default", "fontSize": "medium"}],
         })
 
-    # Image blocks: up to 5 product detail images
-    for url in image_urls[:5]:
-        if url and url.strip():
-            widgets.append({
-                "widgetName": "raShowcase",
-                "content": {
-                    "images": [{"image": url.strip(), "width": 750}],
-                },
-                "padding": {"top": "small", "bottom": "small"},
-            })
+    # Image gallery: single raShowcase with up to 5 images
+    valid_imgs = [u.strip() for u in image_urls[:5] if u and u.strip()]
+    if valid_imgs:
+        widgets.append({
+            "widgetName": "raShowcase",
+            "type": "tileSecondary",
+            "title": {"content": ""},
+            "content": {
+                "images": [{"image": url, "width": 750} for url in valid_imgs],
+            },
+        })
 
     # Wrap in {"content": [...]} as Ozon requires
     rich_obj = {"content": widgets}
@@ -307,3 +306,4 @@ def match_category_with_ai(
         "reason": reason,
         "model": model,
     }
+

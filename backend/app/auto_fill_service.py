@@ -61,13 +61,13 @@ def _is_hardcoded(attr: dict) -> dict | None:
     if any(kw in name for kw in ["型号名称", "Название модели"]) or attr_id == "9048":
         return {"value_text": None, "method": "hardcoded", "from_offer_id": True}
 
-    # 卖家代码 -> Offer ID (free text)
+    # 卖家代码 -> default empty
     if any(kw in name for kw in ["卖家代码", "Артикул"]) and "модел" not in name_lower:
-        return {"value_text": None, "method": "hardcoded", "from_offer_id": True}
+        return {"value_text": None, "method": "manual"}
 
-    # 需要标记代码 -> false (Boolean)
+    # 需要标记代码 -> default empty
     if any(kw in name for kw in ["标记代码", "код маркировки"]) or attr_id == "23536":
-        return {"value_text": "false", "method": "hardcoded", "is_boolean": True}
+        return {"value_text": None, "method": "manual"}
 
     # #主题标签 -> AI generate (handled by frontend separately)
     if "#" in name or "主题标签" in name or "Хештеги" in name:
@@ -77,13 +77,17 @@ def _is_hardcoded(attr: dict) -> dict | None:
     if "JSON" in name or "富内容" in name or "rich" in name_lower:
         return {"value_text": None, "method": "skip_rich_content"}
 
-    # 简介 -> AI generate description (handled by frontend separately)
-    if name == "简介" or "Описание" in name and "JSON" not in name:
-        return {"value_text": None, "method": "ai_generate_description"}
+    # 简介/描述 -> mapped from section 4 (handled by frontend), hide from attributes
+    if name == "简介" or ("Описание" in name and "JSON" not in name):
+        return {"value_text": None, "method": "skip_description"}
 
     # 名称 -> AI generate (handled by frontend separately)
     if name == "名称" or "Название" == name.strip():
         return {"value_text": None, "method": "ai_generate_name"}
+
+    # HS编码 -> default empty
+    if any(kw in name for kw in ["HS编码", "ТН ВЭД", "код ТН ВЭД"]):
+        return {"value_text": None, "method": "manual"}
 
     return None
 

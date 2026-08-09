@@ -168,6 +168,10 @@ class OzonSellerClient:
             raise ValueError("at most 1000 items per import request")
         return self._post("/v3/product/import", {"items": items})
 
+    def list_warehouses(self) -> dict[str, Any]:
+        """Get FBS warehouse list (v2 endpoint, v1 is deprecated)."""
+        return self._post("/v2/warehouse/list", {})
+
     def get_import_info(self, *, task_id: str) -> dict[str, Any]:
         """Check the status of a product import task via /v1/product/import/info."""
         if not task_id.strip():

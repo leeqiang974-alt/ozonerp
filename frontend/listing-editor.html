@@ -4,7 +4,7 @@
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>Ozon 商品发布编辑器</title>
-  <link rel="stylesheet" href="./listing-editor.css?v=10" />
+  <link rel="stylesheet" href="./listing-editor.css?v=16" />
 <style>
   #le-layout { display: block !important; padding-top: 52px; padding-right: 340px; min-height: 100vh; }
   #le-form-area { max-width: 860px; margin: 0 auto !important; padding: 20px 24px; width: auto !important; }
@@ -18,8 +18,10 @@
     </div>
     <div class="le-topbar-right">
       <select id="le-shop-select"><option value="">选择店铺</option></select>
-      <button class="le-btn le-btn-save" id="le-save-btn">保存草稿</button>
-      <button class="le-btn le-btn-validate" id="le-validate-btn">预检</button>
+      <a href="./index.html" class="le-btn le-btn-back" style="text-decoration:none;display:inline-block">← 返回</a>
+      <button class="le-btn le-btn-save" id="le-save-btn">保存</button>
+      <button class="le-btn le-btn-precheck" id="le-precheck-btn">预检</button>
+      <button class="le-btn le-btn-validate" id="le-submit-btn">保存并提交</button>
     </div>
   </div>
 
@@ -106,7 +108,7 @@
       </section>
 
       <!-- 5. JSON 丰富描述 -->
-      <section class="le-section" id="le-section-rich" style="display:none">
+      <section class="le-section" id="le-section-rich">
         <h3 class="le-section-title">⑤ JSON 丰富描述（富内容）</h3>
         <div class="le-field-row">
           <div class="le-field-label-row">
@@ -125,54 +127,58 @@
           <input type="url" id="le-image-url-input" placeholder="粘贴图片 URL" />
           <button class="le-btn le-btn-sm" id="le-add-image">添加</button>
           <button class="le-btn le-btn-sm" id="le-import-source-images">从采集导入</button>
+          <button class="le-btn le-btn-sm" id="le-translate-images" style="margin-left:auto;background:#ff6a00;color:#fff;border-color:#ff6a00">翻译图片</button>
         </div>
         <small class="le-hint" style="margin-bottom:10px">推荐纵横比 3:4，最低 200×200，最多 50 张</small>
         <div id="le-image-grid" class="le-image-grid"></div>
       </section>
 
       <!-- 7. 视频 -->
-      <section class="le-section le-section-collapsed" id="le-section-video">
+      <section class="le-section" id="le-section-video">
         <h3 class="le-section-title">⑦ 视频 <small>（可选）</small></h3>
-        <div class="le-field-row">
-          <label>视频链接</label>
-          <input type="url" id="le-video-url" placeholder="https://..." />
-        </div>
-        <div class="le-field-row">
-          <label>视频封面</label>
-          <input type="url" id="le-video-cover" placeholder="https://..." />
+        <div class="le-field-row" style="align-items:flex-start">
+          <label style="min-width:80px">视频链接</label>
+          <div style="flex:1">
+            <div style="display:flex;gap:6px">
+              <input type="url" id="le-video-url" placeholder="https://... 采集商品的视频链接会自动填入" style="flex:1" />
+              <button class="le-btn le-btn-sm le-btn-danger" id="le-video-remove" type="button">删除视频</button>
+            </div>
+            <div id="le-video-player" style="margin-top:8px;display:none"></div>
+          </div>
         </div>
       </section>
 
       <!-- 8. 变体设置 -->
       <section class="le-section" id="le-section-variants">
         <h3 class="le-section-title">⑧ 变体设置（SKU）</h3>
-        <div class="le-variant-toolbar">
-          <div class="le-variant-attrs" id="le-variant-attrs">
+        <div class="le-variant-toolbar" style="flex-wrap:wrap;gap:8px">
+          <div class="le-variant-attrs" id="le-variant-attrs" style="flex:1;min-width:200px">
             <small class="le-hint">选择类目后，变体属性将自动识别。</small>
           </div>
-          <button class="le-btn le-btn-sm" id="le-add-variant-row">+ 添加一行</button>
+          <div style="display:flex;gap:6px;align-items:center;flex-wrap:wrap">
+            <label style="white-space:nowrap;font-size:13px"><input type="checkbox" id="le-enable-color-samples" checked /> 启动颜色样本</label>
+            <button class="le-btn le-btn-sm" id="le-add-variant-row" type="button">+ 添加一行</button>
+            <label style="white-space:nowrap;font-size:12px;display:flex;align-items:center;gap:4px">全局仓库:
+              <select id="le-global-warehouse" onchange="setAllWarehouseLevel(this.value)" style="font-size:12px;padding:2px 4px;border:1px solid #ddd;border-radius:4px">
+                <option value="">自动匹配</option>
+                <option value="Extra Small">Extra Small</option>
+                <option value="Budget">Budget</option>
+                <option value="Small">Small</option>
+                <option value="Big">Big</option>
+              </select>
+            </label>
+            <button class="le-btn le-btn-sm" id="le-fill-ean" type="button" onclick="fillEanBarcodes()">填充EAN</button>
+            <button class="le-btn le-btn-sm le-btn-danger" id="le-batch-delete-variants" type="button" onclick="batchRemoveVariants()">批量删除</button>
+          </div>
         </div>
+        <div class="le-color-samples" id="le-variant-color-samples" style="display:none"></div>
         <div class="le-table-wrap">
           <table class="le-variant-table" id="le-variant-table">
-            <thead>
-              <tr>
-                <th>产品</th>
-                <th>SKU编号</th>
-                <th>条形码</th>
-                <th>售价(CNY)</th>
-                <th>原价(CNY)</th>
-                <th>成本价(CNY)</th>
-                <th>库存</th>
-                <th>包裹尺寸(mm)<br><small>长×宽×高</small></th>
-                <th>毛重(g)</th>
-                <th>俄文名称</th>
-                <th></th>
-              </tr>
-            </thead>
+            <thead></thead>
             <tbody id="le-variant-rows"></tbody>
           </table>
         </div>
-        <small class="le-hint">变体属性由类目的 is_aspect 属性决定，非变体属性不能用于划分 SKU。</small>
+        <small class="le-hint">变体属性由类目的 is_aspect 属性决定，非变体属性不能用于划分 SKU。加载采集商品后自动导入变体。</small>
       </section>
 
       <!-- 9. 产品信息 -->
@@ -222,7 +228,7 @@
   </div>
 
   <div id="le-toast"></div>
-  <script src="./listing-editor.js?v=10"></script>
+  <script src="./listing-editor.js?v=16"></script>
 </body>
 </html>
 

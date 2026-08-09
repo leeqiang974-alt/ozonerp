@@ -1,5 +1,6 @@
 ﻿"""Persistent operational records for the Chinese CNY-only FBS ERP."""
 
+import json
 from datetime import datetime
 from decimal import Decimal
 
@@ -33,7 +34,7 @@ class SkuRecord(Base):
     product_id: Mapped[int] = mapped_column(ForeignKey("products.id", ondelete="CASCADE"), index=True)
     seller_sku: Mapped[str] = mapped_column(String(128))
     title: Mapped[str] = mapped_column(String(500))
-    min_price_cny: Mapped[Decimal | None] = mapped_column(Numeric(14, 2), nullable=True)
+    min_price_cny: Mapped[str | None] = mapped_column(String(32), nullable=True)
     product: Mapped[ProductRecord] = relationship(back_populates="skus")
 
 
@@ -146,8 +147,20 @@ class ListingDraftRecord(Base):
     primary_image_url: Mapped[str | None] = mapped_column(String(2000), nullable=True)
     status: Mapped[str] = mapped_column(String(32), default="draft", index=True)
     validation_json: Mapped[str | None] = mapped_column(Text, nullable=True)
+    images_json: Mapped[str | None] = mapped_column(Text, nullable=True)
+    source_product_id: Mapped[int | None] = mapped_column(Integer, nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())
+    @property
+    def images(self) -> list[str] | None:
+        if self.images_json:
+            try:
+                parsed = json.loads(self.images_json)
+                return parsed if isinstance(parsed, list) else None
+            except Exception:
+                return None
+        return None
+
     variants: Mapped[list["ListingVariantRecord"]] = relationship(back_populates="draft", cascade="all, delete-orphan")
     attribute_values: Mapped[list["ListingAttributeValueRecord"]] = relationship(back_populates="draft", cascade="all, delete-orphan")
 
@@ -167,6 +180,12 @@ class ListingVariantRecord(Base):
     calculated_price_cny: Mapped[Decimal | None] = mapped_column(Numeric(14, 2), nullable=True)
     min_price_cny: Mapped[str | None] = mapped_column(String(32), nullable=True)
     old_price_cny: Mapped[Decimal | None] = mapped_column(Numeric(14, 2), nullable=True)
+    barcode: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    stock: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    name_ru: Mapped[str | None] = mapped_column(String(500), nullable=True)
+    image_url: Mapped[str | None] = mapped_column(String(2000), nullable=True)
+    price_cny: Mapped[Decimal | None] = mapped_column(Numeric(14, 2), nullable=True)
+    variant_values_json: Mapped[str | None] = mapped_column(Text, nullable=True)
     draft: Mapped[ListingDraftRecord] = relationship(back_populates="variants")
 
 

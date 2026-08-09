@@ -58,6 +58,14 @@ def ensure_sqlite_operational_columns() -> None:
                 connection.execute(text("ALTER TABLE ozon_attribute_cache ADD COLUMN is_aspect BOOLEAN DEFAULT 0"))
     except Exception:
         pass
+    # listing_drafts: images_json for full image gallery
+    try:
+        listing_cols = {column["name"] for column in inspect(engine).get_columns("listing_drafts")}
+        if "images_json" not in listing_cols:
+            with engine.begin() as connection:
+                connection.execute(text("ALTER TABLE listing_drafts ADD COLUMN images_json TEXT"))
+    except Exception:
+        pass
     # Pipeline products: content_verified flag
     try:
         pipeline_columns = {column["name"] for column in inspect(engine).get_columns("pipeline_products")}

@@ -117,12 +117,19 @@ def translate_capture(payload: dict[str, Any], shop_id: int, *, source_platform:
             except (TypeError, ValueError):
                 stock_int = 0
             image_url = str(sv.get("image") or "").strip() or None
+            # Preserve per-SKU weight/dimensions from extension
+            sku_pkg = {}
+            for dim_key in ("weightG", "lengthMm", "widthMm", "heightMm"):
+                val = sv.get(dim_key)
+                if val:
+                    sku_pkg[dim_key] = str(val)
             variants_list.append({
                 "source_sku": source_sku,
                 "spec_name": spec_name,
                 "price_cny": price_decimal,
                 "stock": stock_int,
                 "image_url": image_url,
+                **sku_pkg,
             })
     if not variants_list:
         variants_list.append({
@@ -153,6 +160,15 @@ def translate_capture(payload: dict[str, Any], shop_id: int, *, source_platform:
         extra["review_count"] = payload["reviewCount"]
     if payload.get("image"):
         extra["primary_image_url"] = payload["image"]
+    # Preserve packageInfo (weightG, lengthMm, widthMm, heightMm) for variant auto-fill
+    pkg = payload.get("packageInfo")
+    if isinstance(pkg, dict) and (pkg.get("weightG") or pkg.get("lengthMm")):
+        extra["packageInfo"] = {
+            "weightG": str(pkg.get("weightG") or ""),
+            "lengthMm": str(pkg.get("lengthMm") or ""),
+            "widthMm": str(pkg.get("widthMm") or ""),
+            "heightMm": str(pkg.get("heightMm") or ""),
+        }
     return {
         "source_platform": source_platform,
         "source_product_id": offer_id,

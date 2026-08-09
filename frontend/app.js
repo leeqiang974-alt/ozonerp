@@ -14,10 +14,63 @@ function installCategorySelector() { const input = document.querySelector('#list
 async function loadListingCategories() { const shopId = $("#shop-filter").value; const select = $("#listing-category"); const token = listingCategoryRequests.begin(shopId); select.dataset.shopId = ""; select.innerHTML = '<option value="">正在加载 Ozon 类目…</option>'; try { let response = await fetch(`${apiBase}/api/v1/shops/${shopId}/metadata/categories`); let categories = response.ok ? await response.json() : []; if (!categories.length) { await fetch(`${apiBase}/api/v1/shops/${shopId}/metadata/categories`, { method: "POST" }); response = await fetch(`${apiBase}/api/v1/shops/${shopId}/metadata/categories`); categories = await response.json(); } if (!listingCategoryRequests.isCurrent(token, $("#shop-filter").value)) return; select.dataset.shopId = shopId; select.innerHTML = '<option value="">请选择末级类目与商品类型</option>' + categories.map(item => `<option value="${item.category_id}:${item.type_id}">${escapeHtml(item.title)}</option>`).join(""); } catch (_) { if (listingCategoryRequests.isCurrent(token, $("#shop-filter").value)) select.innerHTML = '<option value="">类目加载失败，请稍后重试</option>'; } }
 function installDictionarySearch(categoryId, typeId, shopId) { document.querySelectorAll('#listing-required-attributes input[data-attribute-kind="dictionary"]').forEach(control => { let timer; const requests = window.ListingAttributes.createRequestGate(); control.addEventListener("input", () => { control.setCustomValidity(""); clearTimeout(timer); const query = control.value.trim(); const list = document.getElementById(control.getAttribute("list")); const selected = [...(list?.options || [])].find(item => item.value === query); if (selected) { control.dataset.valueId = selected.dataset.valueId || ""; control.dataset.valueText = selected.dataset.valueText || ""; requests.invalidate(); return; } control.dataset.valueId = ""; control.dataset.valueText = ""; const token = requests.begin(query); if (query.length < 2) { if (list) list.innerHTML = ""; return; } timer = setTimeout(async () => { try { const response = await fetch(`${apiBase}/api/v1/shops/${shopId}/metadata/categories/${categoryId}/types/${typeId}/attributes/${control.dataset.listingAttribute}/values?query=${encodeURIComponent(query)}&limit=50`); if (!response.ok) throw new Error((await response.json()).detail || "属性值搜索失败"); const values = await response.json(); if (!requests.isCurrent(token, control.value.trim()) || $("#shop-filter").value !== shopId || !list) return; list.innerHTML = values.map(window.ListingAttributes.dictionaryOptionHtml).join(""); } catch (error) { if (requests.isCurrent(token, control.value.trim()) && list) { list.innerHTML = ""; toast(error.message || "Ozon 属性值搜索失败", true); } } }, 300); }); }); }
 async function loadCategoryAttributes() { const shopId = $("#shop-filter").value; const value = $("#listing-category").value; const context = `${shopId}:${value}`; const token = listingAttributeRequests.begin(context); const container = $("#listing-required-attributes"); if (!value) { container.innerHTML = '<span class="listing-attribute-title">选择类目后填写 Ozon 必填属性</span>'; return; } const [categoryId, typeId] = value.split(":"); container.innerHTML = '<span class="listing-attribute-title">正在加载 Ozon 必填属性…</span>'; try { const response = await fetch(`${apiBase}/api/v1/shops/${shopId}/metadata/categories/${categoryId}/types/${typeId}/attributes`); if (!response.ok) throw new Error((await response.json()).detail || "属性加载失败"); const attributes = (await response.json()).filter(item => item.required); if (!listingAttributeRequests.isCurrent(token, `${$("#shop-filter").value}:${$("#listing-category").value}`)) return; const fields = attributes.map(attribute => window.ListingAttributes.attributeFieldHtml(attribute, [])); container.innerHTML = `<span class="listing-attribute-title">Ozon 必填属性（${attributes.length}）</span>${fields.join("") || '<span class="muted">该商品类型没有必填属性</span>'}`; installDictionarySearch(categoryId, typeId, shopId); $("#listing-category").setCustomValidity(""); } catch (error) { if (listingAttributeRequests.isCurrent(token, `${$("#shop-filter").value}:${$("#listing-category").value}`)) { container.innerHTML = `<span class="listing-attribute-title">${escapeHtml(error.message || "属性加载失败，当前草稿不能保存")}</span>`; $("#listing-category").setCustomValidity("Ozon 必填属性加载失败"); } } }
-async function loadViewLocal(view) { if (["dashboard", "orders", "products"].includes(view)) return loadOperationalData(); if (view === "sync") return loadSyncRuns(); if (view === "listing") return loadListingDrafts(); }
+async function loadViewLocal(view) { if (["dashboard", "orders", "products"].includes(view)) return loadOperationalData(); if (view === "sync") return loadSyncRuns(); if (view === "listing") return loadListingDrafts(); if (view === "collection-box") return loadCollectionBox(); }
 const autoSyncController = window.AutoSyncPolicy.createAutoSyncController({ post: async (shopId, view) => { const response = await fetch(`${apiBase}/api/v1/shops/${shopId}/auto-sync`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ view }) }); if (!response.ok) throw new Error((await response.json()).detail || "自动校正启动失败"); return response.json(); }, onStatus: decisions => { if (decisions.some(item => item.status === "started")) $("#data-status").textContent = "● 已显示本地数据，后台正在增量校正"; } });
 function activateCurrentView() { return autoSyncController.activate({ shopId: $("#shop-filter").value, view: activeView, loadLocal: () => loadViewLocal(activeView) }).catch(error => toast(error.message || "自动校正失败，本地数据仍可使用。", true)); }
-function setView(view) { activeView = view; document.querySelectorAll(".view").forEach(item => item.classList.toggle("active", item.id === view)); document.querySelectorAll("#nav button").forEach(item => item.classList.toggle("active", item.dataset.view === view)); $("#crumb").textContent = document.querySelector(`#nav button[data-view="${view}"]`).textContent.trim(); $("#primary-action").style.display = view === "shops" || view === "dashboard" ? "inline-flex" : "none"; activateCurrentView(); }
+function setView(view) { activeView = view; document.querySelectorAll(".view").forEach(item => item.classList.toggle("active", item.id === view)); async function loadCollectionBox() {
+  try {
+    const shopId = $("#shop-filter").value;
+    const url = shopId ? `${apiBase}/api/v1/collection-box?shop_id=${shopId}` : `${apiBase}/api/v1/collection-box`;
+    const response = await fetch(url);
+    if (!response.ok) throw new Error("加载采集箱失败");
+    const items = await response.json();
+    renderCollectionBox(items);
+  } catch (error) {
+    $("#cb-rows").innerHTML = '<tr><td colspan="6" class="muted">加载失败</td></tr>';
+    toast(error.message || "加载采集箱失败", true);
+  }
+}
+
+function renderCollectionBox(items) {
+  $("#cb-count").textContent = `${items.length} 个采集商品`;
+  if (!items.length) {
+    $("#cb-rows").innerHTML = '<tr><td colspan="6" class="muted">暂无采集商品</td></tr>';
+    return;
+  }
+  const statusColors = { "未编辑": "#999", "保存": "#1976d2", "已提交": "#388e3c", "待修改": "#f57c00" };
+  $("#cb-rows").innerHTML = items.map(item => {
+    const img = item.main_image_url ? `<img src="${escapeHtml(item.main_image_url)}" style="width:32px;height:32px;border-radius:4px;object-fit:cover;vertical-align:middle;margin-right:8px" referrerpolicy="no-referrer" />` : "";
+    const statusColor = statusColors[item.draft_status] || "#999";
+    let actions = "";
+    if (item.draft_status === "未编辑") {
+      actions = `<button class="link cb-edit" data-sp="${item.source_product_id}" data-shop="${item.shop_id}">编辑</button>`;
+    } else if (item.draft_status === "保存") {
+      actions = `<button class="link cb-edit" data-sp="${item.source_product_id}" data-draft="${item.draft_id}" data-shop="${item.shop_id}">编辑</button> <button class="link cb-submit" data-draft="${item.draft_id}" data-shop="${item.shop_id}">提交</button>`;
+    } else if (item.draft_status === "已提交") {
+      actions = `<button class="link cb-edit" data-sp="${item.source_product_id}" data-draft="${item.draft_id}" data-shop="${item.shop_id}">查看</button>`;
+    } else if (item.draft_status === "待修改") {
+      actions = `<button class="link cb-edit" data-sp="${item.source_product_id}" data-draft="${item.draft_id}" data-shop="${item.shop_id}">编辑</button>`;
+    }
+    const date = item.collected_at ? new Date(item.collected_at).toLocaleDateString("zh-CN") : "-";
+    return `<tr><td>${img}${escapeHtml(item.title)}</td><td>${escapeHtml(item.source_platform)}</td><td>${escapeHtml(item.shop_name)}</td><td>${date}</td><td><span style="color:${statusColor};font-weight:600">${item.draft_status}</span></td><td>${actions}</td></tr>`;
+  }).join("");
+  document.querySelectorAll(".cb-edit").forEach(btn => btn.addEventListener("click", () => {
+    const sp = btn.dataset.sp; const draft = btn.dataset.draft; const shop = btn.dataset.shop;
+    let url = `./listing-editor.html?shop=${shop}&sp=${sp}`; if (draft) url += `&draft=${draft}`;
+    window.location.href = url;
+  }));
+  document.querySelectorAll(".cb-submit").forEach(btn => btn.addEventListener("click", async () => {
+    const draft = btn.dataset.draft; const shop = btn.dataset.shop;
+    if (!confirm("确认提交到 Ozon？")) return;
+    try {
+      const r = await fetch(`${apiBase}/api/v1/shops/${shop}/listing-drafts/${draft}/submit`, { method: "POST" });
+      const data = await r.json(); if (!r.ok) throw new Error(data.detail || "提交失败");
+      toast(data.message || "提交成功", false); loadCollectionBox();
+    } catch (e) { toast(e.message || "提交失败", true); }
+  }));
+}
+
+document.querySelectorAll("#nav button").forEach(item => item.classList.toggle("active", item.dataset.view === view)); $("#crumb").textContent = document.querySelector(`#nav button[data-view="${view}"]`).textContent.trim(); $("#primary-action").style.display = view === "shops" || view === "dashboard" ? "inline-flex" : "none"; activateCurrentView(); }
 function renderShops() { const query = $("#shop-search").value.trim().toLowerCase(); const displayed = shops.filter(shop => shop.name.toLowerCase().includes(query)); $("#shop-count").textContent = `${displayed.length} 个店铺`; $("#shop-rows").innerHTML = displayed.length ? displayed.map(shop => `<tr><td><b>${shop.name}</b><br><small>${shop.legal_entity || "未设置主体"}</small></td><td><span class="badge">FBS</span></td><td>CNY</td><td>${shop.manager_name || "未分配"}</td><td><span class="status ${shop.is_active ? "ready" : "off"}">${shop.is_active ? "待同步" : "已停用"}</span></td><td><button class="link delete-shop" data-shop-id="${shop.id}" data-shop-name="${shop.name}">删除</button></td></tr>`).join("") : '<tr><td colspan="6" class="muted">没有符合条件的店铺</td></tr>'; document.querySelectorAll(".delete-shop").forEach(button => button.addEventListener("click", () => deleteShop(button.dataset.shopId, button.dataset.shopName))); const filter = $("#shop-filter"); filter.innerHTML = '<option value="">全部店铺</option>' + shops.map(shop => `<option value="${shop.id}">${shop.name}</option>`).join(""); }
 async function loadShops() { try { const response = await fetch(`${apiBase}/api/v1/shops`); if (!response.ok) throw new Error(); shops = await response.json(); renderShops(); } catch (_) { $("#shop-rows").innerHTML = '<tr><td colspan="6" class="muted">无法连接后端。请先启动 FastAPI 服务。</td></tr>'; } }
 async function loadSyncRuns() { const shopId = $("#shop-filter").value; if (!shopId) { $("#sync-rows").innerHTML = '<tr><td colspan="6" class="muted">请选择一个店铺后查看或执行同步</td></tr>'; return; } try { const response = await fetch(`${apiBase}/api/v1/shops/${shopId}/sync-runs`); if (!response.ok) throw new Error(); const runs = await response.json(); const shop = shops.find(item => String(item.id) === shopId); $("#sync-rows").innerHTML = runs.length ? runs.map(run => `<tr><td>${shop?.name || "—"}</td><td>${run.resource === "products" ? "商品" : "FBS 订单"}</td><td><span class="status ${run.status === "succeeded" ? "ready" : "off"}">${run.status === "succeeded" ? "成功" : "失败"}</span></td><td>${run.records_seen} / ${run.records_changed}</td><td>${run.finished_at ? new Date(run.finished_at).toLocaleString("zh-CN") : "进行中"}</td><td>${run.error_summary || "—"}</td></tr>`).join("") : '<tr><td colspan="6" class="muted">尚无同步记录</td></tr>'; } catch (_) { $("#sync-rows").innerHTML = '<tr><td colspan="6" class="muted">无法读取同步记录</td></tr>'; } }

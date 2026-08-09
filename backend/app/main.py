@@ -1,4 +1,9 @@
-﻿from fastapi import BackgroundTasks, Depends, FastAPI, HTTPException, Query, Response, status
+﻿import hashlib
+import os
+import time
+import httpx
+import json
+from fastapi import BackgroundTasks, Depends, FastAPI, HTTPException, Query, Response, status
 from pydantic import BaseModel, Field
 from fastapi.middleware.cors import CORSMiddleware
 from sqlalchemy import select, or_, func
@@ -7,12 +12,12 @@ from sqlalchemy.orm import Session
 
 from .database import Base, engine, ensure_sqlite_operational_columns, get_db, settings
 from . import erp_models  # noqa: F401 - registers persistent operational tables.
-from .erp_models import AuditEventRecord, FbsPostingRecord, ListingAttributeValueRecord, ListingDraftRecord, ListingVariantRecord, OzonAttributeCacheRecord, OzonAttributeDictionaryQueryCacheRecord, OzonAttributeDictionaryValueRecord, OzonCategoryCacheRecord, ProductRecord, SyncRun, SyncState
+from .erp_models import AuditEventRecord, FbsPostingRecord, ListingAttributeValueRecord, ListingDraftRecord, ListingVariantRecord, OzonAttributeCacheRecord, OzonAttributeDictionaryQueryCacheRecord, OzonAttributeDictionaryValueRecord, OzonCategoryCacheRecord, ProductRecord, SyncRun, SyncState, SourceProductRecord
 from .models import ApiCredential, Shop
 from .schemas import OzonCredentialStatus, OzonCredentialUpsert, ShopCreate, ShopRead, ShopUpdate
 from .security import CredentialEncryptionUnavailable, encrypt_secret
 from .sync_service import sync_category_cache, sync_fbs_postings, sync_fbs_product_images, sync_products
-from .schemas import FbsPostingDetailRead, FbsPostingRead, FbsPostingSyncRequest, ListingDraftCreate, ListingDraftRead, ListingValidationRead, ProductRead, ProductSyncRequest, SyncRunRead
+from .schemas import FbsPostingDetailRead, FbsPostingRead, FbsPostingSyncRequest, ListingDraftCreate, ListingDraftRead, ListingValidationRead, ProductRead, ProductSyncRequest, SyncRunRead, ListingAttributeValueCreate, ListingVariantCreate
 from .listing_service import validate_listing_draft
 from .auto_sync import AutoSyncShopNotFound, request_auto_sync, run_auto_sync_resource
 from .schemas import AutoSyncDecisionRead, AutoSyncRequest
@@ -23,6 +28,7 @@ from .auto_fill_service import auto_fill_attributes
 from .pipeline.fact_extraction import ProductFacts, extract_facts
 from .pipeline.category_matching import recall_categories, rerank_categories
 from .erp_models import SourceProductRecord, SourceVariantRecord, SourceMediaRecord
+from .models import Warehouse
 from .erp_models import CategoryMatchHistoryRecord
 
 import hashlib
@@ -33,6 +39,33 @@ if settings.database_url.startswith("sqlite"):
     ensure_sqlite_operational_columns()
 
 app = FastAPI(title="Ozon ERP API", version="0.1.0")
+
+
+# ── Debug error logging ──
+_DEBUG_LOG_FILE = os.path.join(os.path.dirname(__file__), "save_errors.log")
+
+@app.exception_handler(Exception)
+async def _log_all_errors(request: Request, exc: Exception):
+    err_detail = str(exc)
+    if hasattr(exc, "errors"):
+        try:
+            err_detail = str(exc.errors())
+        except Exception:
+            pass
+    log_line = f"[{time.strftime('%Y-%m-%d %H:%M:%S')}] {request.method} {request.url.path} -> {type(exc).__name__}: {err_detail}\n"
+    try:
+        with open(_DEBUG_LOG_FILE, "a", encoding="utf-8") as lf:
+            lf.write(log_line)
+            lf.write(_traceback.format_exc())
+            lf.write("\n---\n")
+    except Exception:
+        pass
+    if isinstance(exc, HTTPException):
+        return JSONResponse(status_code=exc.status_code, content={"detail": exc.detail})
+    if hasattr(exc, "errors"):
+        return JSONResponse(status_code=422, content={"detail": str(exc.errors())})
+    return JSONResponse(status_code=500, content={"detail": err_detail})
+
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
@@ -221,19 +254,21 @@ def create_listing_draft(shop_id: int, payload: ListingDraftCreate, db: Session 
     if payload.category_id and payload.type_id and db.scalar(select(OzonCategoryCacheRecord.id).where(OzonCategoryCacheRecord.shop_id == shop_id, OzonCategoryCacheRecord.category_id == payload.category_id, OzonCategoryCacheRecord.type_id == payload.type_id)) is None:
         raise HTTPException(status_code=422, detail="所选 Ozon 类目不属于当前店铺，请重新选择")
     templates = {row.attribute_id: row for row in db.scalars(select(OzonAttributeCacheRecord).where(OzonAttributeCacheRecord.shop_id == shop_id, OzonAttributeCacheRecord.category_id == payload.category_id, OzonAttributeCacheRecord.type_id == payload.type_id))} if payload.category_id and payload.type_id else {}
-    draft = ListingDraftRecord(shop_id=shop_id, offer_id=payload.offer_id, title=payload.title, description=payload.description, category_id=payload.category_id, type_id=payload.type_id, primary_image_url=payload.primary_image_url)
+    draft = ListingDraftRecord(shop_id=shop_id, offer_id=payload.offer_id, title=payload.title, description=payload.description, category_id=payload.category_id, type_id=payload.type_id, primary_image_url=payload.primary_image_url, images_json=json.dumps(payload.images, ensure_ascii=False) if payload.images else None, source_product_id=payload.source_product_id)
     attribute_records = []
     for attribute in payload.attributes:
         template = templates.get(attribute.attribute_id)
         if template is None:
             raise HTTPException(status_code=422, detail=f"属性 {attribute.attribute_id} 不属于当前店铺所选类目")
         value_text = attribute.value_text
-        if template.dictionary_id:
-            cached_value = db.scalar(select(OzonAttributeDictionaryValueRecord).where(OzonAttributeDictionaryValueRecord.shop_id == shop_id, OzonAttributeDictionaryValueRecord.category_id == payload.category_id, OzonAttributeDictionaryValueRecord.type_id == payload.type_id, OzonAttributeDictionaryValueRecord.attribute_id == attribute.attribute_id, OzonAttributeDictionaryValueRecord.value_id == attribute.value_id))
-            if cached_value is None or (value_text and cached_value.value != value_text):
-                raise HTTPException(status_code=422, detail=f"属性“{template.name}”必须选择当前 Ozon 字典返回值")
-            value_text = cached_value.value
-        attribute_records.append(ListingAttributeValueRecord(attribute_id=attribute.attribute_id, name=template.name, value_id=attribute.value_id, value_text=value_text))
+        value_id = attribute.value_id
+        # For dictionary attributes: try to resolve value_id from cache, but don't block save
+        if template.dictionary_id and value_id:
+            cached_value = db.scalar(select(OzonAttributeDictionaryValueRecord).where(OzonAttributeDictionaryValueRecord.shop_id == shop_id, OzonAttributeDictionaryValueRecord.category_id == payload.category_id, OzonAttributeDictionaryValueRecord.type_id == payload.type_id, OzonAttributeDictionaryValueRecord.attribute_id == attribute.attribute_id, OzonAttributeDictionaryValueRecord.value_id == value_id))
+            if cached_value:
+                value_text = cached_value.value
+            # If not found in cache, still save with provided values (validate later)
+        attribute_records.append(ListingAttributeValueRecord(attribute_id=attribute.attribute_id, name=template.name, value_id=value_id, value_text=value_text))
     draft.attribute_values.extend(attribute_records)
     for variant in payload.variants:
         draft.variants.append(ListingVariantRecord(**variant.model_dump()))
@@ -255,13 +290,516 @@ def validate_listing(shop_id: int, draft_id: int, db: Session = Depends(get_db))
     issues = validate_listing_draft(db, draft)
     return {"draft_id": draft.id, "status": draft.status, "issues": issues}
 
+def _build_price_obj(variant) -> dict:
+    """Build Ozon price object; omit old_price if not set."""
+    price_val = str(variant.price_cny or variant.calculated_price_cny or "0")
+    price_obj = {
+        "price": price_val,
+        "min_price": str(variant.min_price_cny or "0"),
+        "vat": "0",
+    }
+    if variant.old_price_cny is not None:
+        price_obj["old_price"] = str(variant.old_price_cny)
+    return price_obj
 
+
+@app.post("/api/v1/shops/{shop_id}/listing-drafts/{draft_id}/submit")
+def submit_listing_to_ozon(shop_id: int, draft_id: int, db: Session = Depends(get_db)) -> dict:
+    from .sync_service import _credentials
+    from .integrations.ozon_seller import OzonSellerClient
+
+    draft = db.scalar(select(ListingDraftRecord).where(
+        ListingDraftRecord.id == draft_id,
+        ListingDraftRecord.shop_id == shop_id,
+    ))
+    if draft is None:
+        raise HTTPException(status_code=404, detail="上架草稿不存在")
+
+    issues = validate_listing_draft(db, draft)
+    if issues:
+        raise HTTPException(status_code=422, detail="; ".join(i["message"] for i in issues[:5]))
+
+    images = []
+    if draft.images_json:
+        try:
+            images = json.loads(draft.images_json)
+        except Exception:
+            pass
+    if not images and draft.primary_image_url:
+        images = [draft.primary_image_url]
+
+    # Upload localhost images to OSS for public access
+    _has_local = any("127.0.0.1" in u or "localhost" in u for u in images)
+    if _has_local:
+        try:
+            from .oss_upload import get_bucket, upload_bytes
+            import hashlib as _hl
+            _bucket = get_bucket()
+            _date = time.strftime("%Y%m%d")
+            _new_images = []
+            for _url in images:
+                if "127.0.0.1" in _url or "localhost" in _url:
+                    try:
+                        _parts = _url.split("/translated/", 1)
+                        if len(_parts) == 2:
+                            _local = os.path.join(
+                                os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+                                "frontend", "translated", _parts[1]
+                            )
+                            if os.path.exists(_local):
+                                with open(_local, "rb") as _f:
+                                    _bytes = _f.read()
+                                _digest = _hl.sha256(_bytes).hexdigest()[:24]
+                                _key = f"ozon-erp/images/{_date}/{_digest}.jpg"
+                                _oss_url = upload_bytes(_bytes, _key, content_type="image/jpeg", verify=True, bucket=_bucket)
+                                _new_images.append(_oss_url)
+                            else:
+                                _new_images.append(_url)
+                        else:
+                            _new_images.append(_url)
+                    except Exception:
+                        _new_images.append(_url)
+                else:
+                    _new_images.append(_url)
+            images = _new_images
+        except Exception:
+            pass  # fallback: keep original URLs
+
+    attr_cache = {}
+    if draft.category_id and draft.type_id:
+        for row in db.scalars(select(OzonAttributeCacheRecord).where(
+            OzonAttributeCacheRecord.shop_id == shop_id,
+            OzonAttributeCacheRecord.category_id == draft.category_id,
+            OzonAttributeCacheRecord.type_id == draft.type_id,
+        )):
+            attr_cache[row.name] = row
+
+    # Build set of is_aspect attribute IDs to exclude from product-level attrs
+    variant_attr_ids = set()
+    for row in attr_cache.values():
+        if row.is_aspect:
+            variant_attr_ids.add(row.attribute_id)
+
+    product_attrs = []
+    for av in draft.attribute_values:
+        if not av.value_text:
+            continue
+        # Skip variant-level (is_aspect) attributes - they go in item_attrs only
+        if av.attribute_id in variant_attr_ids:
+            continue
+        attr_obj = {"complex_id": 0, "id": int(av.attribute_id) if av.attribute_id.isdigit() else 0}
+        val_obj = {"value": av.value_text}
+        # Only add dictionary_value_id for valid integer value_ids (not "None", empty, etc.)
+        raw_vid = str(av.value_id).strip() if av.value_id is not None else ""
+        if raw_vid and raw_vid not in ("None", "none", "null", "0", ""):
+            try:
+                val_obj["dictionary_value_id"] = int(raw_vid)
+            except (ValueError, TypeError):
+                pass  # Skip invalid value_id - don't add dictionary_value_id
+        attr_obj["values"] = [val_obj]
+        product_attrs.append(attr_obj)
+
+    items = []
+    for variant in draft.variants:
+        item_attrs = list(product_attrs)
+        if variant.variant_values_json:
+            try:
+                vv = json.loads(variant.variant_values_json)
+                for attr_name, attr_value in vv.items():
+                    if not attr_value:
+                        continue
+                    cached = attr_cache.get(attr_name)
+                    if not cached:
+                        continue
+                    va = {"complex_id": int(cached.complex_id) if cached.complex_id and cached.complex_id.isdigit() else 0, "id": int(cached.attribute_id)}
+                    val_obj = {"value": str(attr_value)}
+                    if cached.dictionary_id:
+                        dict_val = db.scalar(select(OzonAttributeDictionaryValueRecord).where(
+                            OzonAttributeDictionaryValueRecord.shop_id == shop_id,
+                            OzonAttributeDictionaryValueRecord.category_id == draft.category_id,
+                            OzonAttributeDictionaryValueRecord.type_id == draft.type_id,
+                            OzonAttributeDictionaryValueRecord.attribute_id == cached.attribute_id,
+                            OzonAttributeDictionaryValueRecord.value == str(attr_value),
+                        ))
+                        if dict_val:
+                            try:
+                                val_obj["dictionary_value_id"] = int(dict_val.value_id)
+                            except (ValueError, TypeError):
+                                val_obj["dictionary_value_id"] = dict_val.value_id
+                    va["values"] = [val_obj]
+                    item_attrs.append(va)
+            except Exception:
+                pass
+
+        _price = str(variant.price_cny or variant.calculated_price_cny or "0")
+        _old_price_raw = str(variant.old_price_cny).strip() if variant.old_price_cny else ""
+        _old_price = _old_price_raw if _old_price_raw and _old_price_raw not in ("0", "0.0", "0.00", "None") else ""
+        _min_price = str(variant.min_price_cny or "0")
+        item = {
+            "offer_id": variant.seller_sku,
+            "name": draft.title,
+            "description_category_id": int(draft.category_id) if draft.category_id else 0,
+            "type_id": int(draft.type_id) if draft.type_id else 0,
+            "price": _price,
+            "min_price": _min_price,
+            "vat": "0",
+            "weight": int(variant.weight_g or 0),
+            "weight_unit": "g",
+            "length": int(variant.length_mm or 0),
+            "width": int(variant.width_mm or 0),
+            "height": int(variant.height_mm or 0),
+            "depth": int(variant.height_mm or 0),
+            "images": images[:15],
+            "description": draft.description or "",
+            "attributes": item_attrs,
+        }
+        if _old_price:
+            item["old_price"] = _old_price
+        if variant.barcode:
+            item["barcode"] = variant.barcode
+        items.append(item)
+
+    client_id, api_key = _credentials(db, shop_id)
+    try:
+        with OzonSellerClient(client_id=client_id, api_key=api_key) as client:
+            result = client.create_products(items=items)
+    except Exception as exc:
+        raise HTTPException(status_code=502, detail=f"Ozon API error: {exc}")
+
+    draft.status = "submitted"
+    db.commit()
+
+    task_id = result.get("result", {}).get("task_id", "")
+    return {
+        "ok": True,
+        "task_id": task_id,
+        "items_submitted": len(items),
+        "message": f"submitted {len(items)} variants, task_id: {task_id}" if task_id else "done",
+    }
+
+
+class ImageTranslateRequest(BaseModel):
+    urls: list[str] = Field(min_length=1, max_length=20)
+    source_lang: str = Field(default="CHS")
+    target_lang: str = Field(default="RUS")
+
+
+@app.post("/api/v1/image/translate")
+def translate_images(payload: ImageTranslateRequest) -> dict:
+    """Translate images via Xiangji (象寄) batch image translation API."""
+    import os
+    private_key = os.environ.get("XIANGJI_PRIVATE_KEY", "")
+    img_trans_key = os.environ.get("XIANGJI_IMG_TRANS_KEY", "")
+    if not private_key or not img_trans_key:
+        raise HTTPException(status_code=500, detail="象寄 API 密钥未配置")
+
+    commit_time = str(int(time.time()))
+    sign_str = f"{commit_time}_{private_key}_{img_trans_key}"
+    sign = hashlib.md5(sign_str.encode()).hexdigest().lower()
+
+    # URL-encode each image URL, then join with commas
+    from urllib.parse import quote
+    urls_param = ",".join(quote(u, safe="") for u in payload.urls)
+
+    data = {
+        "Action": "GetImageTranslateBatch",
+        "SourceLanguage": payload.source_lang,
+        "TargetLanguage": payload.target_lang,
+        "Urls": urls_param,
+        "ImgTransKey": img_trans_key,
+        "CommitTime": commit_time,
+        "Sign": sign,
+        "Sync": "1",
+        "NeedWatermark": "0",
+        "Qos": "BestQuality",
+    }
+
+    try:
+        resp = httpx.post(
+            "https://api.xiangjifanyi.com/",
+            data=data,
+            timeout=120.0,
+        )
+        result = resp.json()
+    except Exception as exc:
+        raise HTTPException(status_code=502, detail=f"象寄 API 请求失败: {exc}")
+
+    if result.get("Code") not in (200, 0, "200", "0"):
+        raise HTTPException(status_code=502, detail=f"象寄 API 错误: {result.get('Message', result)}")
+
+    # Parse translated URLs from response
+    translated = []
+    data_field = result.get("Data") or result.get("data") or {}
+    if isinstance(data_field, list):
+        for item in data_field:
+            if isinstance(item, dict):
+                translated.append(item.get("transUrl") or item.get("trans_url") or item.get("url", ""))
+            elif isinstance(item, str):
+                translated.append(item)
+    elif isinstance(data_field, dict):
+        for item in data_field.get("list", data_field.get("List", [])):
+            if isinstance(item, dict):
+                translated.append(item.get("transUrl") or item.get("trans_url") or item.get("url", ""))
+
+    return {"ok": True, "translated": translated, "raw": result}
+
+
+@app.post("/api/v1/image/translate-tencent")
+def translate_images_tencent(payload: ImageTranslateRequest) -> dict:
+    """Translate images via Tencent Cloud ImageTranslateLLM API.
+    Downloads images, sends as Base64. Returns saved image URLs.
+    Rate limit: 1 req/sec, so we add a delay between calls.
+    """
+    import os
+    import base64
+    import time as _time
+    secret_id = os.environ.get("TENCENT_SECRET_ID", "")
+    secret_key = os.environ.get("TENCENT_SECRET_KEY", "")
+    if not secret_id or not secret_key:
+        raise HTTPException(status_code=500, detail="腾讯云密钥未配置")
+
+    try:
+        from tencentcloud.common import credential as tc_cred
+        from tencentcloud.tmt.v20180321 import tmt_client, models as tmt_models
+    except ImportError:
+        raise HTTPException(status_code=500, detail="tencentcloud-sdk-python-tmt 未安装")
+
+    cred = tc_cred.Credential(secret_id, secret_key)
+    client = tmt_client.TmtClient(cred, "ap-beijing")
+
+    translated_urls = []
+    errors = []
+
+    for i, img_url in enumerate(payload.urls):
+        if i > 0:
+            _time.sleep(1.1)
+        try:
+            # Download image and convert to Base64
+            dl_resp = httpx.get(img_url, timeout=30.0, follow_redirects=True)
+            if dl_resp.status_code != 200:
+                errors.append(f"image {i}: download failed ({dl_resp.status_code})")
+                continue
+            img_b64 = base64.b64encode(dl_resp.content).decode("utf-8")
+
+            req = tmt_models.ImageTranslateLLMRequest()
+            req.Data = img_b64
+            req.Target = payload.target_lang.lower()
+            req.Mode = 1  # lite version
+
+            resp = client.ImageTranslateLLM(req)
+
+            if resp.Data:
+                out_bytes = base64.b64decode(resp.Data)
+                filename = f"trans_{int(_time.time()*1000)}_{i}.jpg"
+                save_dir = os.path.join(os.path.dirname(os.path.dirname(__file__)), "..", "frontend", "translated")
+                save_dir = os.path.abspath(save_dir)
+                os.makedirs(save_dir, exist_ok=True)
+                filepath = os.path.join(save_dir, filename)
+                with open(filepath, "wb") as f:
+                    f.write(out_bytes)
+                translated_urls.append(f"http://127.0.0.1:5500/translated/{filename}")
+            else:
+                errors.append(f"image {i}: empty response")
+        except Exception as exc:
+            errors.append(f"image {i}: {str(exc)}")
+
+    # Save translations to cache directly (do not rely on frontend POST)
+    if translated_urls:
+        try:
+            cache = _load_translation_cache()
+            for i, t_url in enumerate(translated_urls):
+                if i < len(payload.urls) and t_url:
+                    cache[payload.urls[i]] = t_url
+            _save_translation_cache(cache)
+        except Exception:
+            pass
+
+    return {
+        "ok": len(translated_urls) > 0,
+        "translated": translated_urls,
+        "errors": errors,
+        "count": len(translated_urls),
+    }
+
+
+
+
+
+# ── Image translation cache (persists original→translated URL mapping) ──
+_TRANSLATION_CACHE_FILE = os.path.join(os.path.dirname(__file__), "translation_cache.json")
+
+
+def _load_translation_cache() -> dict:
+    if os.path.exists(_TRANSLATION_CACHE_FILE):
+        try:
+            with open(_TRANSLATION_CACHE_FILE, "r", encoding="utf-8") as f:
+                return json.load(f)
+        except Exception:
+            pass
+    return {}
+
+
+def _save_translation_cache(cache: dict) -> None:
+    try:
+        with open(_TRANSLATION_CACHE_FILE, "w", encoding="utf-8") as f:
+            json.dump(cache, f, ensure_ascii=False, indent=2)
+    except Exception:
+        pass
+
+
+@app.get("/api/v1/image/translation-cache")
+def get_translation_cache() -> dict:
+    """Return all cached original→translated image URL mappings."""
+    return {"cache": _load_translation_cache()}
+
+
+@app.post("/api/v1/image/translation-cache")
+def add_translation_cache(payload: dict) -> dict:
+    """Add entries to the translation cache. Body: {"mappings": {"orig_url": "translated_url"}}"""
+    mappings = payload.get("mappings", {})
+    if not mappings:
+        raise HTTPException(status_code=422, detail="mappings is required")
+    cache = _load_translation_cache()
+    for k, v in mappings.items():
+        if k and v:
+            cache[k] = v
+    _save_translation_cache(cache)
+    return {"ok": True, "count": len(cache)}
+
+
+# Apply translation cache to source product images
+@app.get("/api/v1/image/translation-cache/apply")
+def apply_translation_cache(urls: str = Query(default="")) -> dict:
+    """Given comma-separated URLs, return translated URLs where cached."""
+    cache = _load_translation_cache()
+    url_list = [u.strip() for u in urls.split(",") if u.strip()]
+    result = {}
+    for u in url_list:
+        if u in cache:
+            result[u] = cache[u]
+    return {"translations": result}
 @app.post("/api/v1/shops/{shop_id}/metadata/categories")
 def sync_categories(shop_id: int, db: Session = Depends(get_db)) -> dict[str, int]:
     run = sync_category_cache(db, shop_id)
     if run.status != "succeeded":
         raise HTTPException(status_code=502, detail=run.error_summary or "Ozon 类目同步失败")
     return {"records": run.records_changed}
+
+
+# ── Collection box (unified source products + drafts view) ──
+
+@app.get("/api/v1/collection-box")
+def list_collection_box(shop_id: int = Query(default=0), db: Session = Depends(get_db)) -> list[dict]:
+    """Return unified list of collected source products with their listing draft status."""
+    # Get source products
+    sp_query = select(SourceProductRecord)
+    if shop_id:
+        sp_query = sp_query.where(SourceProductRecord.shop_id == shop_id)
+    sp_query = sp_query.order_by(SourceProductRecord.id.desc()).limit(500)
+    source_products = list(db.scalars(sp_query))
+
+    # Get all drafts indexed by source_product_id
+    drafts_by_sp = {}
+    drafts = list(db.scalars(select(ListingDraftRecord).order_by(ListingDraftRecord.id.desc())))
+    for d in drafts:
+        if d.source_product_id and d.source_product_id not in drafts_by_sp:
+            drafts_by_sp[d.source_product_id] = d
+
+    # Get shop names
+    shops = {s.id: s.name for s in db.scalars(select(Shop))}
+
+    result = []
+    for sp in source_products:
+        draft = drafts_by_sp.get(sp.id)
+        # Determine status
+        if not draft:
+            status = "未编辑"
+        elif draft.status == "submitted":
+            status = "已提交"
+        elif draft.status in ("validation_failed", "ready_for_approval"):
+            status = "待修改"
+        else:
+            status = "保存"
+
+        result.append({
+            "source_product_id": sp.id,
+            "title": sp.title or "",
+            "source_platform": sp.source_platform or "",
+            "shop_id": sp.shop_id,
+            "shop_name": shops.get(sp.shop_id, ""),
+            "collected_at": sp.created_at.isoformat() if sp.created_at else "",
+            "main_image_url": sp.main_image_url or "",
+            "draft_id": draft.id if draft else None,
+            "draft_status": status,
+            "offer_id": draft.offer_id if draft else "",
+            "category_id": draft.category_id if draft else None,
+        })
+    return result
+
+
+@app.get("/api/v1/shops/{shop_id}/import-info/{task_id}")
+def check_import_info(shop_id: int, task_id: str, db: Session = Depends(get_db)) -> dict:
+    """Check Ozon product import task status."""
+    from .sync_service import _credentials
+    from .integrations.ozon_seller import OzonSellerClient
+    client_id, api_key = _credentials(db, shop_id)
+    with OzonSellerClient(client_id=client_id, api_key=api_key) as client:
+        result = client.get_import_info(task_id=task_id)
+    return result
+
+
+# ── OSS image upload (replace localhost URLs with public OSS URLs) ──
+
+class OssUploadRequest(BaseModel):
+    urls: list[str] = Field(min_length=1, max_length=50)
+
+
+@app.post("/api/v1/image/upload-to-oss")
+def upload_images_to_oss(payload: OssUploadRequest) -> dict:
+    """Upload localhost image URLs to Aliyun OSS and return public URLs.
+
+    For URLs that are already public (not localhost), they are returned as-is.
+    For localhost URLs (127.0.0.1:5500/translated/...), the local file is
+    uploaded to OSS and the public URL is returned.
+    """
+    from .oss_upload import get_bucket, upload_bytes
+    import hashlib as _hashlib
+
+    bucket = None
+    result = {}
+    for url in payload.urls:
+        if "127.0.0.1" not in url and "localhost" not in url:
+            result[url] = url
+            continue
+        # Extract local file path from localhost URL
+        # URL format: http://127.0.0.1:5500/translated/trans_xxx.jpg
+        try:
+            parsed = url.split("/translated/", 1)
+            if len(parsed) != 2:
+                result[url] = url
+                continue
+            local_path = os.path.join(
+                os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+                "frontend", "translated", parsed[1]
+            )
+            if not os.path.exists(local_path):
+                result[url] = url
+                continue
+            with open(local_path, "rb") as fobj:
+                img_bytes = fobj.read()
+            # Generate OSS object key
+            digest = _hashlib.sha256(img_bytes).hexdigest()[:24]
+            date_str = time.strftime("%Y%m%d")
+            object_key = f"ozon-erp/images/{date_str}/{digest}.jpg"
+            if bucket is None:
+                bucket = get_bucket()
+            oss_url = upload_bytes(img_bytes, object_key, content_type="image/jpeg", verify=True, bucket=bucket)
+            result[url] = oss_url
+        except Exception as exc:
+            result[url] = url  # fallback to original on error
+
+    uploaded_count = sum(1 for k, v in result.items() if k != v)
+    return {"mappings": result, "uploaded": uploaded_count}
 
 
 @app.get("/api/v1/shops/{shop_id}/metadata/categories")
@@ -410,6 +948,96 @@ class MatchCategoryRequest(BaseModel):
     brand: str = Field(default="", max_length=200)
 
 
+
+# ── FBS Warehouse sync & matching
+
+
+class WarehouseMatchRequest(BaseModel):
+    weight_g: float = Field(gt=0)
+    price_cny: float = Field(gt=0)
+    length_mm: float = Field(gt=0)
+    width_mm: float = Field(gt=0)
+    height_mm: float = Field(gt=0)
+RMB_SHIPPING_LEVELS = [
+    {"name": "Extra Small", "weight_min": 1, "weight_max": 500, "price_min": 0.01, "price_max": 135, "sum_max": 90, "longest_max": 0, "rate_per_kg": 25, "fixed_fee": 3},
+    {"name": "Budget", "weight_min": 500, "weight_max": 30000, "price_min": 0.01, "price_max": 135, "sum_max": 150, "longest_max": 80, "rate_per_kg": 17, "fixed_fee": 23},
+    {"name": "Small", "weight_min": 1, "weight_max": 2000, "price_min": 135.01, "price_max": 635, "sum_max": 150, "longest_max": 80, "rate_per_kg": 25, "fixed_fee": 16},
+    {"name": "Big", "weight_min": 2001, "weight_max": 30000, "price_min": 135.01, "price_max": 635, "sum_max": 250, "longest_max": 150, "rate_per_kg": 17, "fixed_fee": 36},
+]
+
+
+def _match_warehouse_level(weight_g: float, price_cny: float, length_mm: float, width_mm: float, height_mm: float) -> dict | None:
+    """Match SKU to a warehouse level based on weight, price, and dimensions.
+    Returns the matched level dict or None if no match.
+    Multiple matches -> pick lowest shipping fee.
+    """
+    dims_cm = sorted([length_mm / 10, width_mm / 10, height_mm / 10], reverse=True)
+    sum_cm = sum(dims_cm)
+    longest_cm = dims_cm[0]
+    weight_kg = weight_g / 1000
+
+    candidates = []
+    for level in RMB_SHIPPING_LEVELS:
+        if not (level["weight_min"] <= weight_g <= level["weight_max"]):
+            continue
+        if not (level["price_min"] <= price_cny <= level["price_max"]):
+            continue
+        if sum_cm > level["sum_max"]:
+            continue
+        if level["longest_max"] > 0 and longest_cm > level["longest_max"]:
+            continue
+        fee = level["rate_per_kg"] * weight_kg + level["fixed_fee"]
+        candidates.append({**level, "shipping_fee_cny": round(fee, 2), "sum_cm": round(sum_cm, 1), "longest_cm": round(longest_cm, 1)})
+
+    if not candidates:
+        return None
+    return min(candidates, key=lambda c: c["shipping_fee_cny"])
+
+
+@app.get("/api/v1/shops/{shop_id}/warehouses")
+def list_shop_warehouses(shop_id: int, db: Session = Depends(get_db)) -> list[dict]:
+    """Fetch and cache FBS warehouses from Ozon API."""
+    from .sync_service import _credentials
+    from .integrations.ozon_seller import OzonSellerClient
+    if db.get(Shop, shop_id) is None:
+        raise HTTPException(status_code=404, detail="店铺不存在")
+    client_id, api_key = _credentials(db, shop_id)
+    try:
+        with OzonSellerClient(client_id=client_id, api_key=api_key) as client:
+            resp = client.list_warehouses()
+    except Exception as exc:
+        raise HTTPException(status_code=502, detail=f"Ozon API 错误: {exc}")
+    warehouses = resp.get("result", [])
+    # Cache to DB
+    db.query(Warehouse).filter(Warehouse.shop_id == shop_id).delete()
+    for wh in warehouses:
+        db.add(Warehouse(
+            shop_id=shop_id,
+            name=wh.get("name", ""),
+            pickup_point=wh.get("pickup_point", "") if isinstance(wh.get("pickup_point"), str) else "",
+            cutoff_time=str(wh.get("cutoff_time", "")),
+            workdays=str(wh.get("workdays", "")),
+            carrier=str(wh.get("carrier", "")),
+        ))
+    db.commit()
+    return [{"name": wh.get("name", ""), "carrier": wh.get("carrier", "")} for wh in warehouses]
+
+
+@app.post("/api/v1/shops/{shop_id}/match-warehouse")
+def match_warehouse(shop_id: int, payload: WarehouseMatchRequest, db: Session = Depends(get_db)) -> dict:
+    """Match a SKU to the correct warehouse level based on weight, price, dimensions."""
+    level = _match_warehouse_level(
+        weight_g=payload.weight_g,
+        price_cny=payload.price_cny,
+        length_mm=payload.length_mm,
+        width_mm=payload.width_mm,
+        height_mm=payload.height_mm,
+    )
+    if level is None:
+        return {"matched": False, "level": None, "error": "PRICING_SHIPPING_LEVEL_MISSING", "message": "尺重或售价不匹配任何仓库等级"}
+    return {"matched": True, "level": level["name"], "shipping_fee_cny": level["shipping_fee_cny"], "details": level}
+
+
 # ── Offer ID auto-generation ─────────────────────────────────────────────
 @app.get("/api/v1/shops/{shop_id}/next-offer-id")
 def get_next_offer_id(shop_id: int, db: Session = Depends(get_db)) -> dict:
@@ -420,10 +1048,16 @@ def get_next_offer_id(shop_id: int, db: Session = Depends(get_db)) -> dict:
     # Derive prefix from shop name: first 2 alphanumeric chars, uppercase
     raw = shop.name.upper()
     prefix = "".join(c for c in raw if c.isalnum())[:2] or "SK"
-    # Count existing drafts + products to get next sequence
-    draft_count = db.scalar(select(func.count(ListingDraftRecord.id)).where(ListingDraftRecord.shop_id == shop_id)) or 0
-    product_count = db.scalar(select(func.count(ProductRecord.id)).where(ProductRecord.shop_id == shop_id)) or 0
-    next_num = draft_count + product_count + 1
+    # Find max sequence number from existing offer IDs matching the prefix pattern
+    max_num = 0
+    all_offer_ids = [r[0] for r in db.execute(select(ListingDraftRecord.offer_id).where(ListingDraftRecord.shop_id == shop_id)).all()]
+    all_offer_ids += [r[0] for r in db.execute(select(ProductRecord.offer_id).where(ProductRecord.shop_id == shop_id)).all()]
+    for oid in all_offer_ids:
+        if oid and oid.startswith(prefix):
+            num_part = oid[len(prefix):]
+            if num_part.isdigit():
+                max_num = max(max_num, int(num_part))
+    next_num = max_num + 1
     offer_id = f"{prefix}{next_num:06d}"
     return {"offer_id": offer_id, "prefix": prefix, "sequence": next_num}
 
@@ -578,15 +1212,18 @@ Description: {payload.description[:500]}
 Category: {payload.category_zh}
 
 Rules (STRICT - Ozon will reject non-compliant tags):
-- Each hashtag starts with # and contains ONLY letters and digits
-- Multi-word hashtags use UNDERSCORES: #ручная_работа NOT #ручнаяработа
-- Space-separated, all on one line, max 30 tags
+- Generate EXACTLY 30 hashtags, no more, no less
+- Each hashtag starts with #
+- Each hashtag is 1-2 Russian words only (use underscore for 2 words: #ручная_работа)
+- NO 3+ word hashtags
+- Space-separated, all on one line
 - These are SEARCH keywords buyers would type to find this product
-- NO brand names, NO digits as standalone, NO marketing words (sale, discount, promo)
+- NO brand names, NO numbers/digits, NO marketing words (sale, discount, promo, акции)
+- NO banned words
 - Each tag max 30 characters
 - Return ONLY the hashtags line, nothing else
 
-Example output: #свечи #набор_для_свечей #ручная_работа #воск #своими_руками"""
+Example output: #свечи #форма #ручная_работа #воск #молд #гипс #смола #декор #подсвечник #силикон"""
     try:
         hashtags = _chat([{"role": "user", "content": prompt}], temperature=0.7, max_tokens=4096)
         return {"hashtags": hashtags}
@@ -643,7 +1280,10 @@ def ai_match_category(shop_id: int, payload: MatchCategoryRequest, db: Session =
                 "箱", "袋", "垫", "毯", "枕", "碗", "盘", "壶", "锅", "刀", "剪",
                 "链", "绳", "带", "扣", "环", "钩", "管", "棒", "板", "贴", "膜",
                 "器", "机", "线", "充", "耳", "玩具", "收纳", "整理", "装饰",
-                "配件", "套装", "工具", "仪器"]
+                "配件", "套装", "工具", "仪器",
+                # Additional product-type suffixes
+                "模具", "烛台", "香薰", "挂件", "贴纸", "手链", "项链", "耳环",
+                "花瓶", "相框", "钟表", "音响", "支架", "底座", "夹子"]
 
     keywords = set()
     import re as _re
@@ -669,6 +1309,31 @@ def ai_match_category(shop_id: int, payload: MatchCategoryRequest, db: Session =
     if not keywords:
         return {"candidates": [], "keywords": []}
 
+
+    # ── Context-aware keyword penalties ──
+    # When "模具" (mold) appears in the title, product-type words like "盒", "收纳"
+    # describe what the mold MAKES, not the product itself. Deprioritize them.
+    title_lower = title.lower()
+    context_penalties = {}
+    if "模具" in title:
+        for dep in ["收纳盒", "收纳", "盒", "箱", "袋", "碗", "盘", "杯", "壶"]:
+            if dep in keywords:
+                context_penalties[dep] = -100  # Heavy penalty
+    if "贴纸" in title or "贴膜" in title:
+        for dep in ["手机", "电脑", "平板"]:
+            if dep in keywords:
+                context_penalties[dep] = -80
+    # When "挂绳" or "手绳" is in title, "手机" is just the usage, not the product
+    if "挂绳" in title or "手绳" in title or "腕带" in title:
+        for dep in ["手机"]:
+            if dep in keywords:
+                context_penalties[dep] = -80
+
+    # Boost keywords that appear multiple times in the title (strong product type signal)
+    keyword_freq = {}
+    for kw in keywords:
+        keyword_freq[kw] = title.count(kw)
+
     # Search title_zh in category cache with smart scoring
     seen = {}
     for kw in sorted(keywords, key=len, reverse=True):
@@ -680,33 +1345,28 @@ def ai_match_category(shop_id: int, payload: MatchCategoryRequest, db: Session =
         for row in rows:
             key = (row.category_id, row.type_id)
             title_zh = row.title_zh or ""
-            # Split by " / " (space-slash-space) to separate parent / leaf
-            # This handles cases like "配饰 / 包/袋" where "包/袋" is the leaf
             parts = title_zh.split(" / ")
             leaf = parts[-1].strip() if parts else title_zh
             parent = " / ".join(parts[:-1]).strip() if len(parts) > 1 else ""
 
-            # Scoring: leaf match > parent match
             kw_len = len(kw)
             if kw in leaf:
                 base = kw_len * 20
-                # Shorter leaf = more general category
                 leaf_bonus = max(0, 10 - len(leaf)) * 3
-                # Keyword at start of leaf = strong signal
                 start_bonus = 50 if leaf.startswith(kw) else 0
-                # Very short leaf (1-3 chars) = very general category
                 short_bonus = 30 if len(leaf) <= 3 else (15 if len(leaf) <= 5 else 0)
-                # Exact match (leaf IS the keyword) - only for 2+ char keywords
                 exact_bonus = (100 if len(kw) >= 2 else 30) if leaf == kw else 0
-                # Leaf is "keyword/something" (e.g. "包/袋") = category IS this product type
                 type_bonus = 200 if leaf.startswith(kw + "/") else 0
-                # Penalty for compound words where keyword is just a prefix
-                # e.g. "包架" (bag rack) is not "包" (bag) itself
                 compound_penalty = -30 if (leaf.startswith(kw) and len(leaf) > len(kw) + 1
                                            and not leaf.startswith(kw + "/")) else 0
-                score = base + leaf_bonus + start_bonus + short_bonus + exact_bonus + type_bonus + compound_penalty
+                # Context penalty: e.g. "收纳盒" when "模具" is in title
+                ctx_pen = context_penalties.get(kw, 0)
+                # Frequency boost: keyword appearing multiple times = strong signal
+                freq_bonus = (keyword_freq.get(kw, 1) - 1) * 40
+                score = base + leaf_bonus + start_bonus + short_bonus + exact_bonus + type_bonus + compound_penalty + ctx_pen + freq_bonus
             elif kw in parent:
-                score = kw_len * 5
+                ctx_pen = context_penalties.get(kw, 0)
+                score = kw_len * 5 + ctx_pen
             else:
                 score = kw_len * 3
 
@@ -765,6 +1425,7 @@ def get_source_product_detail(shop_id: int, sp_id: int, db: Session = Depends(ge
         "brand": product.brand,
         "material": product.material,
         "raw_json": product.raw_json,
+        "packageInfo": (lambda r: r.get("packageInfo", {}))(json.loads(product.raw_json) if product.raw_json else {}),
         "variants": [
             {
                 "id": v.id,
@@ -773,6 +1434,12 @@ def get_source_product_detail(shop_id: int, sp_id: int, db: Session = Depends(ge
                 "price_cny": float(v.price_cny) if v.price_cny else None,
                 "stock": v.stock,
                 "image_url": v.image_url,
+                **(lambda r: {
+                    "weightG": r.get("weightG", ""),
+                    "lengthMm": r.get("lengthMm", ""),
+                    "widthMm": r.get("widthMm", ""),
+                    "heightMm": r.get("heightMm", ""),
+                })(json.loads(v.raw_json) if v.raw_json else {}),
             }
             for v in variants
         ],
@@ -810,8 +1477,11 @@ class ListingDraftUpdate(BaseModel):
     category_id: str | None = Field(default=None, max_length=64)
     type_id: str | None = Field(default=None, max_length=64)
     primary_image_url: str | None = Field(default=None, max_length=2000)
+    images: list[str] | None = Field(default=None, max_length=100)
     attributes: list[ListingAttributeValueCreate] | None = Field(default=None)
     variants: list[ListingVariantCreate] | None = Field(default=None)
+
+ListingDraftUpdate.model_rebuild()
 
 
 @app.put("/api/v1/shops/{shop_id}/listing-drafts/{draft_id}", response_model=ListingDraftRead)
@@ -832,6 +1502,8 @@ def update_listing_draft(shop_id: int, draft_id: int, payload: ListingDraftUpdat
         draft.type_id = payload.type_id
     if payload.primary_image_url is not None:
         draft.primary_image_url = payload.primary_image_url
+    if payload.images is not None:
+        draft.images_json = json.dumps(payload.images, ensure_ascii=False)
     if payload.attributes is not None:
         db.query(ListingAttributeValueRecord).where(ListingAttributeValueRecord.draft_id == draft_id).delete()
         for attr in payload.attributes:

@@ -3,7 +3,7 @@ from decimal import Decimal
 
 from typing import Literal
 
-from pydantic import BaseModel, ConfigDict, Field, SecretStr
+from pydantic import BaseModel, ConfigDict, Field, SecretStr, field_validator
 
 
 class ShopBase(BaseModel):
@@ -137,6 +137,21 @@ class ListingVariantCreate(BaseModel):
     length_mm: Decimal | None = Field(default=None, gt=0)
     width_mm: Decimal | None = Field(default=None, gt=0)
     height_mm: Decimal | None = Field(default=None, gt=0)
+    barcode: str | None = Field(default=None, max_length=64)
+    stock: int | None = Field(default=None, ge=0)
+    name_ru: str | None = Field(default=None, max_length=500)
+    image_url: str | None = Field(default=None, max_length=2000)
+    price_cny: Decimal | None = Field(default=None, ge=0)
+    old_price_cny: Decimal | None = Field(default=None, ge=0)
+    min_price_cny: str | None = Field(default=None, max_length=32)
+    variant_values_json: str | None = Field(default=None)
+
+    @field_validator("min_price_cny", mode="before")
+    @classmethod
+    def _coerce_min_price(cls, v):
+        if v is not None:
+            return str(v)
+        return v
 
 
 class ListingAttributeValueCreate(BaseModel):
@@ -153,6 +168,8 @@ class ListingDraftCreate(BaseModel):
     category_id: str | None = Field(default=None, max_length=64)
     type_id: str | None = Field(default=None, max_length=64)
     primary_image_url: str | None = Field(default=None, max_length=2000)
+    images: list[str] | None = Field(default=None, max_length=100)
+    source_product_id: int | None = None
     attributes: list[ListingAttributeValueCreate] = Field(default_factory=list, max_length=200)
     variants: list[ListingVariantCreate] = Field(min_length=1, max_length=100)
 
@@ -182,6 +199,8 @@ class ListingDraftRead(BaseModel):
     category_id: str | None
     type_id: str | None
     primary_image_url: str | None
+    images: list[str] | None
+    source_product_id: int | None
     status: str
     validation_json: str | None
     created_at: datetime
@@ -199,3 +218,11 @@ class ListingValidationRead(BaseModel):
     draft_id: int
     status: str
     issues: list[ListingValidationIssue]
+
+# Rebuild all models to resolve forward references
+ListingVariantCreate.model_rebuild()
+ListingAttributeValueCreate.model_rebuild()
+ListingDraftCreate.model_rebuild()
+ListingVariantRead.model_rebuild()
+ListingAttributeValueRead.model_rebuild()
+ListingDraftRead.model_rebuild()

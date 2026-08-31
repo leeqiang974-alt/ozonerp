@@ -1,4 +1,6 @@
-const ERP_BASE = "http://localhost:8000";
+// Ozon ERP is operated locally.  Keep this separate from the Mercado Libre
+// extension and never redirect its collection payloads to the server.
+const ERP_BASE = "http://127.0.0.1:8000";
 const WORKER_ID_KEY = "ozonErpCrawlerWorkerId";
 const HUMAN_CHECK_PAUSED_KEY = "ozonErpHumanCheckPaused";
 let busyByType = {};
@@ -11,23 +13,49 @@ let lastWorkerState = {
   needsHuman: false,
 };
 
-initializeCrawlerWorker();
+initializeCrawlerWorker().then(() => startCrawlerSlots());
 
 chrome.runtime.onInstalled.addListener(() => {
   initializeCrawlerWorker();
-  pollCrawlerJob();
+  startCrawlerSlots();
 });
 
 chrome.runtime.onStartup.addListener(() => {
   initializeCrawlerWorker();
-  pollCrawlerJob();
+  startCrawlerSlots();
 });
 
 chrome.alarms.onAlarm.addListener((alarm) => {
-  if (alarm.name === "ozon-erp-crawler-poll") pollCrawlerJob();
+  if (alarm.name === "ozon-erp-crawler-poll") startCrawlerSlots();
+  if (alarm.name === "ozon-erp-crawler-next-0") pollCrawlerJob({ slot: 0 });
+  if (alarm.name === "ozon-erp-crawler-next-1") pollCrawlerJob({ slot: 1 });
 });
 
 chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
+  if (message?.type === "FETCH_1688_DETAIL_IMAGES") {
+    fetch1688DetailImages(message.url).then(sendResponse);
+    return true;
+  }
+  if (message?.type === "OZON_ERP_REQUEST") {
+    proxyErpRequest(message).then(sendResponse);
+    return true;
+  }
+  if (message?.type === "MELI_AMAZON_CAPTURE") {
+    fetch("https://ml-erp.woxq.cn/api/imports/amazon-extension/capture", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(message.payload || {}),
+    }).then(async (response) => {
+      const data = await response.json().catch(() => ({}));
+      if (response.ok) await notifyMeliErpTabs({ draftId: data?.id ?? data?.draft_id ?? data?.draft?.id });
+      sendResponse(response.ok ? { ok: true, data } : { ok: false, error: data.detail || `美客多 ERP 返回 HTTP ${response.status}` });
+    }).catch((error) => sendResponse({ ok: false, error: error?.message || "无法连接美客多 ERP" }));
+    return true;
+  }
+  if (message?.type === "MELI_AMAZON_RECOLLECT") {
+    recollectAmazonForMeli(message).then(sendResponse);
+    return true;
+  }
   if (message?.type === "OPEN_OZON_CAPTURE_TAB" && /^https:\/\/[^/]*ozon\.(ru|com|by|kz)\//i.test(message.url || "")) {
     chrome.tabs.create({ url: message.url, active: true }).then((tab) => sendResponse({ ok: true, tabId: tab.id }));
     return true;
@@ -37,7 +65,8 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
     return false;
   }
   if (message?.type === "OZON_ERP_CRAWLER_POLL_NOW") {
-    pollCrawlerJob({ manual: true }).then(() => sendResponse({ ok: true, state: lastWorkerState }));
+    Promise.all([pollCrawlerJob({ manual: true, slot: 0 }), pollCrawlerJob({ manual: true, slot: 1 })])
+      .then(() => sendResponse({ ok: true, state: lastWorkerState }));
     return true;
   }
   if (message?.type === "OZON_ERP_CRAWLER_RESUME_AFTER_HUMAN") {
@@ -46,6 +75,118 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
   }
   return false;
 });
+
+async function notifyMeliErpTabs(detail) {
+  const tabs = await chrome.tabs.query({ url: "https://ml-erp.woxq.cn/*" });
+  await Promise.all(tabs.map((tab) => chrome.tabs.sendMessage(
+    tab.id,
+    { type: "MELI_AMAZON_DRAFT_READY", draftId: Number(detail?.draftId) || null },
+  ).catch(() => {})));
+}
+
+async function recollectAmazonForMeli(message) {
+  const sourceProductId = Number(message.sourceProductId);
+  const sourceUrl = String(message.sourceUrl || "").trim();
+  if (!Number.isInteger(sourceProductId) || sourceProductId < 1 || !/^https:\/\/[^/]*amazon\./i.test(sourceUrl)) {
+    return { ok: false, error: "Amazon 重采集请求无效" };
+  }
+  let tab;
+  let keepTabOpen = false;
+  try {
+    const recollectUrl = new URL(sourceUrl);
+    recollectUrl.hash = `meli-recollect-source=${sourceProductId}`;
+    // Keep normal recollection out of the seller's way. We only foreground the
+    // tab when Amazon asks the seller to log in or complete verification.
+    tab = await chrome.tabs.create({ url: recollectUrl.toString(), active: false });
+    await waitForTabLoad(tab.id);
+    await sleep(1800);
+    let captured;
+    try {
+      captured = await chrome.tabs.sendMessage(tab.id, { type: "COLLECT_MELI_AMAZON_PRODUCT", automatic: true, sourceProductId });
+    } catch {
+      await chrome.scripting.executeScript({ target: { tabId: tab.id }, files: ["amazon-content.js"] });
+      captured = await chrome.tabs.sendMessage(tab.id, { type: "COLLECT_MELI_AMAZON_PRODUCT", automatic: true, sourceProductId });
+    }
+    if (!captured?.ok) {
+      if (captured?.needsHuman) {
+        keepTabOpen = true;
+        await chrome.tabs.update(tab.id, { active: true });
+      }
+      return { ok: false, error: captured?.error || "Amazon 页面采集失败" };
+    }
+    const response = await fetch(
+      `https://ml-erp.woxq.cn/api/imports/source-products/${sourceProductId}/extension-capture`,
+      { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(captured.payload) },
+    );
+    const responseData = await response.json().catch(() => ({}));
+    if (!response.ok) {
+      return { ok: false, error: responseData.detail || `美客多 ERP 返回 HTTP ${response.status}` };
+    }
+    for (const draftId of responseData.draft_ids || []) await notifyMeliErpTabs({ draftId });
+    await chrome.tabs.sendMessage(tab.id, { type: "MELI_AMAZON_AUTO_CAPTURE_FINISHED", sourceProductId }).catch(() => {});
+    keepTabOpen = true;
+    return { ok: true, data: responseData };
+  } catch (error) {
+    return { ok: false, error: error?.message || "本机 Amazon 采集失败" };
+  } finally {
+    // Keep a successful manual recollection page visible. Failed pages are
+    // closed unless Amazon required human intervention (handled above).
+    if (tab?.id && !keepTabOpen) chrome.tabs.remove(tab.id).catch(() => {});
+  }
+}
+
+async function fetch1688DetailImages(value) {
+  const url = String(value || "").trim();
+  if (!/^https:\/\/itemcdn\.tmall\.com\/1688offer\/[a-z0-9_-]+$/i.test(url)) {
+    return { ok: false, images: [], error: "详情地址不合法" };
+  }
+  try {
+    const response = await fetch(url, { credentials: "omit", cache: "no-store" });
+    if (!response.ok) return { ok: false, images: [], error: `详情图接口 HTTP ${response.status}` };
+    const text = await response.text();
+    const jsonText = text.replace(/^\s*var\s+offer_details\s*=\s*/, "").replace(/;\s*$/, "");
+    const payload = JSON.parse(jsonText);
+    const html = String(payload?.content || "").replaceAll("\\/", "/");
+    const images = [];
+    for (const match of html.matchAll(/(?:src|data-src)=["'](https?:\/\/[^"']+)["']/gi)) images.push(match[1].replace(/&amp;/g, "&"));
+    return { ok: true, images: [...new Set(images)] };
+  } catch (error) {
+    return { ok: false, images: [], error: error?.message || "详情图读取失败" };
+  }
+}
+
+function resolveErpUrl(baseUrl, path) {
+  const origin = new URL(baseUrl || ERP_BASE);
+  const local = origin.protocol === "http:" && ["localhost", "127.0.0.1"].includes(origin.hostname) && origin.port === "8000";
+  if (!local) {
+    throw new Error("Ozon 插件只允许连接本机 http://127.0.0.1:8000");
+  }
+  if (!String(path || "").startsWith("/api/")) throw new Error("ERP 请求路径不合法");
+  return new URL(path, origin).toString();
+}
+
+async function proxyErpRequest(message) {
+  let url = "";
+  try {
+    url = resolveErpUrl(message.baseUrl, message.path);
+    const options = message.options || {};
+    const response = await fetch(url, {
+      method: options.method || "GET",
+      headers: options.body === undefined ? undefined : { "Content-Type": "application/json" },
+      body: options.body === undefined ? undefined : JSON.stringify(options.body),
+    });
+    const text = await response.text();
+    let data = null;
+    try { data = text ? JSON.parse(text) : null; } catch { data = text; }
+    if (!response.ok) {
+      const detail = typeof data === "object" && data ? (data.detail || data.error) : text;
+      return { ok: false, status: response.status, url, error: `ERP 返回 HTTP ${response.status}${detail ? `：${String(detail).slice(0, 300)}` : ""}`, data };
+    }
+    return { ok: true, status: response.status, url, data };
+  } catch (error) {
+    return { ok: false, status: 0, url, error: `无法连接本机 Ozon ERP：${error?.message || "网络请求失败"}。请确认 http://127.0.0.1:8000/health 可打开。` };
+  }
+}
 
 async function initializeCrawlerWorker() {
   ensureCrawlerAlarm();
@@ -56,9 +197,20 @@ function ensureCrawlerAlarm() {
   chrome.alarms.create("ozon-erp-crawler-poll", { periodInMinutes: 0.5 });
 }
 
+function startCrawlerSlots(options = {}) {
+  pollCrawlerJob({ ...options, slot: 0 });
+  pollCrawlerJob({ ...options, slot: 1 });
+}
+
+function scheduleCrawlerSlot(slot, delayMs = 1200) {
+  chrome.alarms.create(`ozon-erp-crawler-next-${slot}`, { when: Date.now() + delayMs });
+}
+
 async function pollCrawlerJob(options = {}) {
-  if (busyByType["poll"]) return;
-  busyByType["poll"] = true;
+  const slot = Number(options.slot || 0) === 1 ? 1 : 0;
+  const pollKey = `poll:${slot}`;
+  if (busyByType[pollKey]) return;
+  busyByType[pollKey] = true;
   try {
     const humanPause = await getHumanCheckPause();
     if (!options.resume && humanPause?.paused) {
@@ -72,7 +224,7 @@ async function pollCrawlerJob(options = {}) {
       return;
     }
     await setWorkerState({ status: "checking", job: null, message: "正在检查 ERP 任务", lastError: "", needsHuman: false });
-    const workerId = await getWorkerId();
+    const workerId = `${await getWorkerId()}_slot${slot}`;
     let data = { job: null };
 
     try {
@@ -107,11 +259,12 @@ async function pollCrawlerJob(options = {}) {
     const result = await runJob(data.job);
     if (!result?.keepState) {
       await setWorkerState({ status: "idle", job: null, message: "作业已回传，等待下一轮", lastError: "", needsHuman: false });
+      scheduleCrawlerSlot(slot);
     }
   } catch (error) {
     await setWorkerState({ status: "error", job: null, message: "ERP 未连接或后台任务失败", lastError: error.message || "ERP 未连接或后台任务失败" });
   } finally {
-    busyByType["poll"] = false;
+    busyByType[pollKey] = false;
   }
 }
 
@@ -292,7 +445,7 @@ async function resumeAfterHumanCheck() {
   if (humanPause?.job?.taskId && !String(humanPause.job.kind || "").startsWith("ozon_")) {
     await postJson(`/api/1688-crawler/tasks/${encodeURIComponent(humanPause.job.taskId)}/resume`, {});
   }
-  await pollCrawlerJob({ resume: true });
+  startCrawlerSlots({ resume: true });
 }
 
 async function waitForTabLoad(tabId) {

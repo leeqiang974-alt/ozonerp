@@ -180,6 +180,10 @@
   mount();
 
   chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
+    if (message?.type === "PING_MELI_AMAZON_COLLECTOR") {
+      sendResponse({ ok: true });
+      return false;
+    }
     if (message?.type === "MELI_AMAZON_AUTO_CAPTURE_FINISHED") {
       const button = document.getElementById(buttonId);
       if (button) {

@@ -1,6 +1,7 @@
-// Ozon ERP is operated locally.  Keep this separate from the Mercado Libre
-// extension and never redirect its collection payloads to the server.
+// Ozon ERP is operated locally. Amazon CBT collection is intentionally sent
+// to the remote Mercado Libre ERP queue; both flows remain separate.
 const ERP_BASE = "http://127.0.0.1:8000";
+const MELI_BASE = "https://ml-erp.woxq.cn";
 const WORKER_ID_KEY = "ozonErpCrawlerWorkerId";
 const HUMAN_CHECK_PAUSED_KEY = "ozonErpHumanCheckPaused";
 let busyByType = {};
@@ -227,6 +228,22 @@ async function pollCrawlerJob(options = {}) {
     const workerId = `${await getWorkerId()}_slot${slot}`;
     let data = { job: null };
 
+    // Amazon CBT jobs are processed by the local browser extension so the
+    // seller's signed-in browser session and human-verification flow are
+    // available. Use one Amazon slot only to avoid a request burst.
+    if (slot === 0) {
+      const meliJob = await claimMeliAmazonJob(`${await getWorkerId()}_meli`);
+      if (meliJob) {
+        await setWorkerState({ status: "running", job: meliJob, message: "正在执行 Amazon CBT 智能采集", lastError: "", needsHuman: false });
+        const result = await runMeliAmazonJob(meliJob, `${await getWorkerId()}_meli`);
+        if (!result?.keepState) {
+          await setWorkerState({ status: "idle", job: null, message: "Amazon 商品已回传，等待下一件", lastError: "", needsHuman: false });
+          scheduleCrawlerSlot(slot, 2500);
+        }
+        return;
+      }
+    }
+
     try {
       const ctrl = new AbortController();
       const tid = setTimeout(() => ctrl.abort(), 8000);
@@ -265,6 +282,80 @@ async function pollCrawlerJob(options = {}) {
     await setWorkerState({ status: "error", job: null, message: "ERP 未连接或后台任务失败", lastError: error.message || "ERP 未连接或后台任务失败" });
   } finally {
     busyByType[pollKey] = false;
+  }
+}
+
+async function claimMeliAmazonJob(workerId) {
+  try {
+    const ctrl = new AbortController();
+    const tid = setTimeout(() => ctrl.abort(), 8000);
+    const response = await fetch(`${MELI_BASE}/api/imports/amazon-extension/next?worker_id=${encodeURIComponent(workerId)}`, { signal: ctrl.signal });
+    clearTimeout(tid);
+    if (!response.ok) return null;
+    const data = await response.json();
+    return data?.job || null;
+  } catch {
+    return null;
+  }
+}
+
+async function runMeliAmazonJob(job, workerId) {
+  let humanCheckDetected = false;
+  const tab = await chrome.tabs.create({ url: job.url, active: false });
+  try {
+    await waitForTabLoad(tab.id);
+    await sleep(3500 + Math.floor(Math.random() * 1800));
+    await ensureAmazonContentScript(tab.id);
+    const result = await chrome.tabs.sendMessage(tab.id, {
+      type: "COLLECT_MELI_AMAZON_PRODUCT",
+      automatic: true,
+      collectionJobId: job.id,
+    });
+    if (result?.needsHuman) {
+      humanCheckDetected = true;
+      await reportHumanCheck(job, tab.id, result.error || "Amazon 页面需要人工验证");
+      await postMeliJobResult(job, workerId, { status: "needs_manual_action", message: result.error || "Amazon 页面需要人工验证" });
+      return { keepState: true };
+    }
+    if (!result?.ok) {
+      await postMeliJobResult(job, workerId, { status: "failed", message: result?.error || "Amazon 页面解析失败" });
+      return { keepState: false };
+    }
+    const response = await postMeliJobResult(job, workerId, { status: "collected", snapshot: result.payload?.snapshot || {} });
+    if (!response.ok) {
+      await setWorkerState({ status: "error", job, message: "Amazon 采集结果回传失败，任务保留待恢复", lastError: response.error, needsHuman: false });
+      return { keepState: true };
+    }
+    return { keepState: false };
+  } catch (error) {
+    const response = await postMeliJobResult(job, workerId, { status: "failed", message: error?.message || "Amazon 标签页执行失败" });
+    if (!response.ok) {
+      await setWorkerState({ status: "error", job, message: "Amazon 采集失败且结果未回传", lastError: response.error, needsHuman: false });
+      return { keepState: true };
+    }
+    return { keepState: false };
+  } finally {
+    if (!humanCheckDetected && tab?.id) chrome.tabs.remove(tab.id).catch(() => {});
+  }
+}
+
+async function postMeliJobResult(job, workerId, result) {
+  try {
+    const response = await fetch(`${MELI_BASE}/api/imports/amazon-extension/jobs/${encodeURIComponent(job.id)}/result`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        worker_id: workerId,
+        source_url: job.sourceUrl || job.url,
+        status: result.status,
+        message: result.message || "",
+        snapshot: result.snapshot || {},
+      }),
+    });
+    const data = await response.json().catch(() => ({}));
+    return response.ok ? { ok: true, data } : { ok: false, error: data.detail || `美客多 ERP 返回 HTTP ${response.status}` };
+  } catch (error) {
+    return { ok: false, error: error?.message || "无法连接美客多 ERP" };
   }
 }
 
@@ -468,6 +559,14 @@ async function ensureContentScript(tabId) {
     await chrome.tabs.sendMessage(tabId, { type: "PING_1688_COLLECTOR" });
   } catch {
     await chrome.scripting.executeScript({ target: { tabId }, files: ["content.js"] });
+  }
+}
+
+async function ensureAmazonContentScript(tabId) {
+  try {
+    await chrome.tabs.sendMessage(tabId, { type: "PING_MELI_AMAZON_COLLECTOR" });
+  } catch {
+    await chrome.scripting.executeScript({ target: { tabId }, files: ["amazon-content.js"] });
   }
 }
 

@@ -7,7 +7,12 @@ from os import getenv
 # Load .env from project root (parent of backend/) or current directory
 import os
 _load_env_path = os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(__file__))), ".env")
-load_dotenv(_load_env_path, override=True)
+# Process environment variables are authoritative.  This matters for
+# deployments and Alembic, where DATABASE_URL is intentionally injected by
+# the service manager and must not be silently replaced by a developer's
+# local .env file.  The .env file remains a fallback for values that were not
+# explicitly provided by the process.
+load_dotenv(_load_env_path, override=False)
 
 
 class Settings:

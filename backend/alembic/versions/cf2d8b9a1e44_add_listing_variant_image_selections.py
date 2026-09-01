@@ -5,7 +5,9 @@ Revises: c8d4a1f7e2b0
 """
 
 from alembic import op
+from alembic import context
 import sqlalchemy as sa
+from sqlalchemy import inspect
 
 
 revision = "cf2d8b9a1e44"
@@ -15,7 +17,18 @@ depends_on = None
 
 
 def upgrade() -> None:
-    op.add_column("listing_variants", sa.Column("image_urls_json", sa.Text(), nullable=True))
+    # ``listing_variants`` is part of the initial MVP schema, so this additive
+    # operation can be rendered unconditionally for offline SQL.  Online
+    # upgrades keep the introspection guard for pre-Alembic databases.
+    if context.is_offline_mode():
+        op.add_column("listing_variants", sa.Column("image_urls_json", sa.Text(), nullable=True))
+        return
+    bind = op.get_bind()
+    inspector = inspect(bind)
+    if not inspector.has_table("listing_variants"):
+        return
+    if "image_urls_json" not in {column["name"] for column in inspector.get_columns("listing_variants")}:
+        op.add_column("listing_variants", sa.Column("image_urls_json", sa.Text(), nullable=True))
 
 
 def downgrade() -> None:

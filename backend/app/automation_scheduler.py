@@ -21,6 +21,7 @@ from .automation_routes import mark_bulk_items_for_ozon_feedback, _queue_draft_s
 
 _stop = threading.Event()
 _thread: threading.Thread | None = None
+_allow_external_writes = False
 
 
 def _is_ozon_daily_quota_error(message: object) -> bool:
@@ -438,7 +439,7 @@ def _loop() -> None:
                         # A successful import with a blocking Ozon issue is not
                         # sellable.  Repair it from the real feedback first; do
                         # not overwrite the row back to "imported".
-                        if bulk_item and feedback_rows and _try_auto_repair_and_resubmit(db, candidate, bulk_item, feedback_rows):
+                        if _allow_external_writes and bulk_item and feedback_rows and _try_auto_repair_and_resubmit(db, candidate, bulk_item, feedback_rows):
                             continue
                         candidate.status = "needs_review" if feedback_rows and bulk_item and bulk_item.status == "needs_review" else "imported"
                         if bulk_item and bulk_item.status not in {"needs_review", "waiting_quota"}:
@@ -446,7 +447,7 @@ def _loop() -> None:
                             bulk_item.error_message = ("Ozon已导入；存在警告，库存继续由 Ozon 状态和仓库回读确认" if feedback_rows else None)
                     elif status in {"import_failed", "failed"}:
                         err = str(result.get("error") or result.get("message") or "Ozon 导入失败")[:2000]
-                        repaired = bool(bulk_item and feedback_rows and _try_auto_repair_and_resubmit(db, candidate, bulk_item, feedback_rows))
+                        repaired = bool(_allow_external_writes and bulk_item and feedback_rows and _try_auto_repair_and_resubmit(db, candidate, bulk_item, feedback_rows))
                         if repaired:
                             continue
                         if bulk_item:
@@ -480,17 +481,21 @@ def _loop() -> None:
             # existed.  This is bounded per tick and shares the exact same
             # repair/resubmit function as live callbacks.
             try:
-                _repair_existing_bulk_feedback(db, limit=10)
+                if _allow_external_writes:
+                    _repair_existing_bulk_feedback(db, limit=10)
                 db.commit()
             except Exception:
                 db.rollback()
 
 
-def start_scheduler() -> None:
-    global _thread
+def start_scheduler(*, allow_external_writes: bool = False) -> None:
+    global _thread, _allow_external_writes
+    _allow_external_writes = bool(allow_external_writes)
     if _thread and _thread.is_alive(): return
     _stop.clear(); _thread = threading.Thread(target=_loop, name="automation-scheduler", daemon=True); _thread.start()
 
 
 def stop_scheduler() -> None:
+    global _allow_external_writes
+    _allow_external_writes = False
     _stop.set()

@@ -103,8 +103,13 @@ from .decision_memory_service import finalize_successful_listing_memories, recor
 import hashlib
 import time as _time
 
-Base.metadata.create_all(bind=engine)
+# SQLite is intentionally kept as a local/test-only convenience.  Production
+# PostgreSQL schema changes are owned by Alembic and are applied by the
+# deployment entrypoint before Uvicorn starts; calling ``create_all`` here
+# would silently bypass migrations and can leave an already-running database
+# half upgraded.
 if settings.database_url.startswith("sqlite"):
+    Base.metadata.create_all(bind=engine)
     ensure_sqlite_operational_columns()
 
 app = FastAPI(title="Ozon ERP API", version="0.1.0")
@@ -119,8 +124,13 @@ def _background_external_writes_enabled() -> bool:
 
 
 def _background_stock_monitor_enabled() -> bool:
-    """Allow the persisted post-import stock monitor to resume after restart."""
-    return os.getenv("OZON_ENABLE_BACKGROUND_STOCK_MONITOR", "1").strip().lower() in {"1", "true", "yes", "on"}
+    """Read the optional stock-worker switch (safe by default).
+
+    The worker performs ``/v2/products/stocks`` writes.  It must therefore be
+    subordinate to ``OZON_ENABLE_BACKGROUND_WRITES``; a separate opt-in can
+    further disable it without disabling read-only feedback polling.
+    """
+    return os.getenv("OZON_ENABLE_BACKGROUND_STOCK_MONITOR", "0").strip().lower() in {"1", "true", "yes", "on"}
 
 
 def _background_polling_enabled() -> bool:
@@ -221,12 +231,14 @@ def start_listing_stock_monitor() -> None:
             name="ozon-startup-reconcile",
             daemon=True,
         ).start()
-    if stock_monitor and not (_stock_monitor_thread and _stock_monitor_thread.is_alive()):
+    # Stock reconciliation includes an external Ozon write.  Never let the
+    # optional stock flag bypass the explicit global write gate after restart.
+    if external_writes and stock_monitor and not (_stock_monitor_thread and _stock_monitor_thread.is_alive()):
         _stock_monitor_stop.clear()
         _stock_monitor_thread = threading.Thread(target=_stock_monitor_loop, name="listing-stock-monitor", daemon=True)
         _stock_monitor_thread.start()
     if polling or external_writes:
-        start_scheduler()
+        start_scheduler(allow_external_writes=external_writes)
 
 
 @app.on_event("shutdown")

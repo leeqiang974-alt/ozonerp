@@ -5,7 +5,9 @@ Revises: a41d8f6c0b72
 """
 
 from alembic import op
+from alembic import context
 import sqlalchemy as sa
+from sqlalchemy import inspect
 
 
 revision = "c8d4a1f7e2b0"
@@ -15,7 +17,14 @@ depends_on = None
 
 
 def upgrade() -> None:
-    op.add_column("automation_candidates", sa.Column("capture_json", sa.Text(), nullable=True))
+    if context.is_offline_mode():
+        return
+    bind = op.get_bind()
+    inspector = inspect(bind)
+    if not inspector.has_table("automation_candidates"):
+        return
+    if "capture_json" not in {column["name"] for column in inspector.get_columns("automation_candidates")}:
+        op.add_column("automation_candidates", sa.Column("capture_json", sa.Text(), nullable=True))
 
 
 def downgrade() -> None:

@@ -1,5 +1,14 @@
 ﻿# 阶段交接：MVP 领域骨架
 
+## 2026-09-01：Alembic 完整 schema 修复与暂停写入保护
+
+- 背景：历史生产迭代曾依赖 `Base.metadata.create_all()`，而 Alembic 初始链只覆盖 MVP 表；新 PostgreSQL 或部分历史库升级时，后续迁移会引用未在迁移史中创建的表/列，无法可靠部署。
+- 修正：新增 `e5f6a7b8c9d0_repair_complete_operational_schema.py`。该迁移按 ORM metadata 创建缺失表、补缺失列和索引，并只对旧 `skus.min_price_cny` 做保守的数值→文本兼容转换；已存在的结构和业务行均保留。此前 `9a72…/a41…/c8d…/cf2…/d4…` 迁移已加幂等保护。
+- 启动规则：`main.py` 仅在 SQLite 使用 `create_all()`；PostgreSQL 只能由 Alembic 迁移。`deploy/start_backend.sh` 在 Uvicorn 前执行 `alembic upgrade head`，Docker compose 与远程 bootstrap 使用同一入口。进程环境变量优先于 `.env`，避免服务器注入的 `DATABASE_URL` 被本机模板覆盖。
+- 安全：自动库存写入必须同时设置 `OZON_ENABLE_BACKGROUND_STOCK_MONITOR=1` 和 `OZON_ENABLE_BACKGROUND_WRITES=1`；自动回执修正/重提同样受写入总开关控制。默认安全启动不外发。
+- 暂停保护：OCR 处理只可修正本地图片证据，不能把已暂停批次恢复为 `running` 或隐式启动 worker；单条/批量重试和普通 start 在暂停时返回 409。worker 在领任务及 Ozon 提交前都检查持久化暂停状态，暂停接口与最终提交共用批次锁，避免暂停竞态多发一条。
+- 验证：全新 SQLite、旧 `d4a8…` 数据库、历史 `create_all` 完整数据库均升到 `e5f6…`；重复 `upgrade head` 和 `alembic check` 通过。`pytest` 全套为 `216 passed, 3 subtests passed`；暂停/回执相关定向测试为 `6 passed`；`compileall`、两个前端 `node --check` 通过。尚未连接真实 PostgreSQL、未启动批量发布或库存补录。
+
 ## 2026-09-01：批量刊登增加可持久化暂停/继续
 
 - 批量刊登列表的运行任务现在显示“暂停任务”；暂停通过 `POST /api/v1/automation/bulk-listing-batches/{batch_id}/pause` 持久化为 `paused`，worker 在商品之间和收尾阶段都保留该状态，不会继续生成或提交新商品。

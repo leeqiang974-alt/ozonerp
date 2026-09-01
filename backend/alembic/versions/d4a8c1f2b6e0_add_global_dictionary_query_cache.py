@@ -5,7 +5,9 @@ Revises: cf2d8b9a1e44
 """
 
 from alembic import op
+from alembic import context
 import sqlalchemy as sa
+from sqlalchemy import inspect
 
 revision = "d4a8c1f2b6e0"
 down_revision = "cf2d8b9a1e44"
@@ -14,6 +16,8 @@ depends_on = None
 
 
 def upgrade() -> None:
+    if not context.is_offline_mode() and inspect(op.get_bind()).has_table("ozon_global_dictionary_query_cache"):
+        return
     op.create_table(
         "ozon_global_dictionary_query_cache",
         sa.Column("id", sa.Integer(), nullable=False),

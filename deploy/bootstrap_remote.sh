@@ -20,7 +20,7 @@ docker rm -f ozon-erp-backend 2>/dev/null || true
 docker run -d --name ozon-erp-backend --restart unless-stopped --network host \
   --env-file /srv/ozon-erp/.env -e PYTHONPATH=/app/backend \
   -v /srv/ozon-erp:/app -w /app \
-  --entrypoint python mvp-skeleton-backend:latest \
-  -m uvicorn app.main:app --host 127.0.0.1 --port 8010 --workers 1
+  --entrypoint /bin/sh mvp-skeleton-backend:latest \
+  /app/deploy/start_backend.sh
 sleep 3
 curl -fsS http://127.0.0.1:8010/health

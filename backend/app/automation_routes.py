@@ -39,6 +39,7 @@ router = APIRouter(prefix="/api/v1/automation", tags=["automation"])
 
 _bulk_start_locks: dict[int, threading.Lock] = {}
 _bulk_start_locks_guard = threading.Lock()
+_BULK_PAUSED_STATUSES = frozenset({"paused", "paused_quality_audit"})
 
 _CJK_CONTENT_RE = re.compile(r"[\u3400-\u9fff]")
 _CYRILLIC_RE = re.compile(r"[А-Яа-яЁё]")
@@ -77,6 +78,18 @@ def _has_publishable_generated_content(pipeline: PipelineProductRecord) -> bool:
 def _bulk_start_lock(batch_id: int) -> threading.Lock:
     with _bulk_start_locks_guard:
         return _bulk_start_locks.setdefault(batch_id, threading.Lock())
+
+
+def _bulk_batch_is_paused(batch: BulkListingBatchRecord | None) -> bool:
+    """Return whether a batch safety pause blocks new local/external work.
+
+    A pause is deliberately represented by the persisted batch status rather
+    than by a worker-local flag.  Every retry/resume entry point must consult
+    this same predicate so a browser action cannot accidentally restart a
+    paused worker.  Resolving an OCR issue may still edit the local evidence,
+    but it must not transition the batch to ``running`` or enqueue a worker.
+    """
+    return batch is not None and batch.status in _BULK_PAUSED_STATUSES
 
 
 def _next_schedule_at(schedule_time: str, now: datetime | None = None) -> datetime:
@@ -1036,9 +1049,16 @@ def bulk_listing_ocr_review(batch_id: int, item_id: int, db: Session = Depends(g
 
 @router.post("/bulk-listing-batches/{batch_id}/items/{item_id}/ocr-review")
 def resolve_bulk_listing_ocr(batch_id: int, item_id: int, payload: BulkOcrResolveWrite, background_tasks: BackgroundTasks, db: Session = Depends(get_db)) -> dict:
+    batch = db.get(BulkListingBatchRecord, batch_id)
+    if batch is None:
+        raise HTTPException(404, "批量刊登任务不存在")
     item = db.get(BulkListingBatchItemRecord, item_id)
     if item is None or item.batch_id != batch_id:
         raise HTTPException(404, "批量任务商品不存在")
+    # OCR evidence is safe to resolve while paused, but resolving it must not
+    # be a hidden resume action. Keep the persisted pause authoritative and
+    # let the explicit execute/resume action start the worker later.
+    was_paused = _bulk_batch_is_paused(batch)
     audit = _latest_bulk_ocr_audit(db, item_id)
     if audit is None:
         raise HTTPException(409, "该商品没有可处理的OCR记录")
@@ -1077,8 +1097,8 @@ def resolve_bulk_listing_ocr(batch_id: int, item_id: int, payload: BulkOcrResolv
     else:
         item.status = "queued"
         item.error_message = None
-        batch = db.get(BulkListingBatchRecord, batch_id)
-        batch.status = "running"
+        if not was_paused:
+            batch.status = "running"
     details.update({"images": images,
                     "excluded_count": sum(1 for row in images if row.get("excluded")),
                     "resolved_action": payload.action})
@@ -1087,10 +1107,11 @@ def resolve_bulk_listing_ocr(batch_id: int, item_id: int, payload: BulkOcrResolv
         details_json=json.dumps(details, ensure_ascii=False)))
     db.flush()
     _reconcile_bulk_batch_state(db, batch_id)
-    if item.status == "queued":
+    if item.status == "queued" and not was_paused:
         background_tasks.add_task(_run_bulk_listing_pilot, batch_id, 1, True, "operator", [item.id])
     return {"item_id": item.id, "status": item.status, "error": item.error_message,
-            "image": target, "unresolved_count": len(unresolved)}
+            "image": target, "unresolved_count": len(unresolved),
+            "queued_for_resume": bool(item.status == "queued" and was_paused)}
 
 
 @router.post("/bulk-listing-batches/{batch_id}/items/{item_id}/retry")
@@ -1099,6 +1120,8 @@ def retry_bulk_listing_item(batch_id: int, item_id: int, background_tasks: Backg
     batch = db.get(BulkListingBatchRecord, batch_id)
     if batch is None:
         raise HTTPException(404, "批量刊登任务不存在")
+    if _bulk_batch_is_paused(batch):
+        raise HTTPException(409, "批次已暂停；请先明确恢复批次后再重试")
     item = db.get(BulkListingBatchItemRecord, item_id)
     if item is None or item.batch_id != batch_id:
         raise HTTPException(404, "批量商品不存在")
@@ -1119,6 +1142,8 @@ def retry_bulk_listing_items(batch_id: int, payload: BulkListingRetryWrite, back
     batch = db.get(BulkListingBatchRecord, batch_id)
     if batch is None:
         raise HTTPException(404, "批量刊登任务不存在")
+    if _bulk_batch_is_paused(batch):
+        raise HTTPException(409, "批次已暂停；请先明确恢复批次后再重试")
     item_ids = list(dict.fromkeys(payload.item_ids))
     items = list(db.scalars(select(BulkListingBatchItemRecord).where(
         BulkListingBatchItemRecord.batch_id == batch_id,
@@ -1249,6 +1274,12 @@ def _run_bulk_listing_pilot(batch_id: int, max_items: int, submit_after_prepare:
         batch = db.get(BulkListingBatchRecord, batch_id)
         if batch is None:
             return
+        # A persisted operator/quality pause is a hard stop for this worker.
+        # Do this before selecting rows so an explicitly selected retry cannot
+        # use ``item_ids`` to bypass the pause.
+        if _bulk_batch_is_paused(batch):
+            db.commit()
+            return
         rules = json.loads(batch.rules_json or "{}")
         if "pricing_mode_system" not in rules:
             # Never infer a pricing mode for legacy batches.  The old default
@@ -1322,7 +1353,7 @@ def _run_bulk_listing_pilot(batch_id: int, max_items: int, submit_after_prepare:
                 # previous worker only checked the batch before selecting its
                 # work list, so a pause could still drain the whole list.
                 live_batch = db.get(BulkListingBatchRecord, batch_id)
-                if live_batch is None or (live_batch.status in {"paused_quality_audit", "paused"} and not (item_ids and current.id in item_ids)):
+                if live_batch is None or _bulk_batch_is_paused(live_batch):
                     db.rollback()
                     break
                 # Do not spend time regenerating a product once this shop's
@@ -1600,26 +1631,43 @@ def _run_bulk_listing_pilot(batch_id: int, max_items: int, submit_after_prepare:
                         current.error_message = "目标店铺今日Ozon创建额度已用完，等待额度恢复后继续"
                         db.commit()
                         continue
-                    pipeline.publish_status = "approved"
-                    pipeline.pipeline_stage = "approved"
-                    candidate = db.get(AutomationCandidateRecord, current.candidate_id) if current.candidate_id else None
-                    if candidate:
-                        candidate.shop_id = current.assigned_shop_id
-                        candidate.source_record_id = current.source_product_id
-                        candidate.status = "approved"
-                        candidate.rejection_reason = None
-                    db.commit()
-                    result = submit_to_ozon(db, current.assigned_shop_id, current.source_product_id, actor_id)
-                    if result.get("status") != "submitted":
-                        raise RuntimeError(str(result.get("error") or "Ozon未返回submitted状态"))
-                    current.status = "submitted"
-                    current.ozon_task_id = result.get("task_id")
-                    current.error_message = None
-                    _queue_draft_stock_sync(db, current.listing_draft_id, result.get("task_id"))
-                    if candidate:
-                        candidate.status = "submitted"
-                    shop_capacity[current.assigned_shop_id] = max(0, shop_capacity[current.assigned_shop_id] - 1)
-                    db.commit()
+                    # Serialize the final pause check with the pause endpoint.
+                    # Without the shared lock, an operator could persist a
+                    # pause after this worker's read but before the external
+                    # submit call, making a paused batch send one more item.
+                    pause_lock = _bulk_start_lock(batch_id)
+                    pause_lock.acquire()
+                    try:
+                        live_batch = db.get(BulkListingBatchRecord, batch_id)
+                        if live_batch is None:
+                            raise RuntimeError("批量任务不存在")
+                        if _bulk_batch_is_paused(live_batch):
+                            current.status = "prepared"
+                            current.error_message = "批次已暂停，等待明确恢复后再提交 Ozon"
+                            db.commit()
+                            continue
+                        pipeline.publish_status = "approved"
+                        pipeline.pipeline_stage = "approved"
+                        candidate = db.get(AutomationCandidateRecord, current.candidate_id) if current.candidate_id else None
+                        if candidate:
+                            candidate.shop_id = current.assigned_shop_id
+                            candidate.source_record_id = current.source_product_id
+                            candidate.status = "approved"
+                            candidate.rejection_reason = None
+                        db.commit()
+                        result = submit_to_ozon(db, current.assigned_shop_id, current.source_product_id, actor_id)
+                        if result.get("status") != "submitted":
+                            raise RuntimeError(str(result.get("error") or "Ozon未返回submitted状态"))
+                        current.status = "submitted"
+                        current.ozon_task_id = result.get("task_id")
+                        current.error_message = None
+                        _queue_draft_stock_sync(db, current.listing_draft_id, result.get("task_id"))
+                        if candidate:
+                            candidate.status = "submitted"
+                        shop_capacity[current.assigned_shop_id] = max(0, shop_capacity[current.assigned_shop_id] - 1)
+                        db.commit()
+                    finally:
+                        pause_lock.release()
             except Exception as exc:
                 db.rollback()
                 failed = db.get(BulkListingBatchItemRecord, item_id)
@@ -1694,6 +1742,8 @@ def start_bulk_listing_batch(batch_id: int, payload: BulkListingBatchStart, back
     try:
         if batch.status == "running":
             raise HTTPException(409, "任务正在预处理")
+        if _bulk_batch_is_paused(batch):
+            raise HTTPException(409, "批次已暂停；请先明确恢复批次后再开始")
         queued = db.scalar(select(func.count(BulkListingBatchItemRecord.id)).where(BulkListingBatchItemRecord.batch_id == batch_id, BulkListingBatchItemRecord.status == "queued")) or 0
         if not queued:
             raise HTTPException(422, "没有等待预处理的商品")

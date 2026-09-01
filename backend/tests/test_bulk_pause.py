@@ -6,7 +6,7 @@ from sqlalchemy.orm import Session
 from sqlalchemy.pool import StaticPool
 
 from app.database import Base, get_db
-from app.erp_models import AuditEventRecord, BulkListingBatchRecord
+from app.erp_models import AuditEventRecord, BulkListingBatchItemRecord, BulkListingBatchRecord
 from app.main import app
 from app.models import Shop
 
@@ -56,5 +56,54 @@ def test_bulk_listing_pause_is_persisted_and_idempotent():
             assert saved.status == "paused"
             actions = db.scalars(select(AuditEventRecord.action)).all()
             assert actions == ["bulk_listing_batch_paused"]
+    finally:
+        app.dependency_overrides.clear()
+
+
+def test_paused_batch_rejects_retry_without_enqueuing_worker():
+    engine = create_engine(
+        "sqlite://",
+        connect_args={"check_same_thread": False},
+        poolclass=StaticPool,
+    )
+    Base.metadata.create_all(engine)
+
+    def override_db():
+        with Session(engine) as db:
+            yield db
+
+    app.dependency_overrides[get_db] = override_db
+    try:
+        with Session(engine) as db:
+            shop = Shop(name="暂停重试测试店", currency="CNY", timezone="Asia/Shanghai", is_active=True)
+            db.add(shop)
+            db.flush()
+            batch = BulkListingBatchRecord(
+                name="暂停重试测试批次",
+                source_shop_key="test-shop",
+                target_shop_ids_json=json.dumps([shop.id]),
+                status="paused",
+                total_count=1,
+            )
+            db.add(batch)
+            db.flush()
+            item = BulkListingBatchItemRecord(
+                batch_id=batch.id,
+                source_product_id=1,
+                assigned_shop_id=shop.id,
+                status="failed",
+                attempts=1,
+            )
+            db.add(item)
+            db.commit()
+            batch_id, item_id = batch.id, item.id
+
+        response = TestClient(app).post(
+            f"/api/v1/automation/bulk-listing-batches/{batch_id}/items/{item_id}/retry"
+        )
+        assert response.status_code == 409
+        assert "已暂停" in response.json()["detail"]
+        with Session(engine) as db:
+            assert db.get(BulkListingBatchItemRecord, item_id).status == "failed"
     finally:
         app.dependency_overrides.clear()

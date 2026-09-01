@@ -27,3 +27,12 @@ def test_volcano_can_use_legacy_environment_values(monkeypatch) -> None:
         "https://ark.example.test/api/v3",
         "volcano-model",
     )
+
+
+def test_default_secret_directory_uses_current_windows_desktop_when_legacy_path_missing(monkeypatch, tmp_path) -> None:
+    from app import secret_paths
+
+    monkeypatch.delenv("ERP_API_DIR", raising=False)
+    monkeypatch.setattr(secret_paths.Path, "home", staticmethod(lambda: tmp_path))
+    monkeypatch.setattr(secret_paths.Path, "is_dir", lambda self: False if str(self).startswith("D:\\Desktop\\api") else True)
+    assert secret_paths.api_file("deepseek.txt") == tmp_path / "Desktop" / "api" / "deepseek.txt"

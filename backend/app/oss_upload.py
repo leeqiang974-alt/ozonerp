@@ -17,6 +17,7 @@ from __future__ import annotations
 
 import hashlib
 import mimetypes
+import os
 import pathlib
 import urllib.parse
 import urllib.request
@@ -24,8 +25,21 @@ from typing import Optional
 
 import oss2
 
+from .secret_paths import api_file
+
 # -- Credential & endpoint config --
-_CRED_FILE = pathlib.Path(r"D:\Desktop\api\阿里云的key和secret.txt")
+_LEGACY_CRED_FILE = pathlib.Path(r"D:\Desktop\api\阿里云的key和secret.txt")
+
+
+def _credential_file() -> pathlib.Path:
+    """Resolve OSS credentials for the current workstation/deployment."""
+
+    configured = os.getenv("ALIYUN_OSS_CREDENTIAL_FILE", "").strip()
+    if configured:
+        return pathlib.Path(configured).expanduser()
+    if _LEGACY_CRED_FILE.is_file():
+        return _LEGACY_CRED_FILE
+    return api_file("阿里云的key和secret.txt")
 _ENDPOINT = "oss-cn-shanghai.aliyuncs.com"
 _BUCKET = "ozonshanghai"
 
@@ -41,9 +55,10 @@ def read_oss_config() -> dict:
     Returns dict with access_key_id, access_key_secret, endpoint, bucket.
     Never prints or logs the key values.
     """
-    lines = [x.strip() for x in _CRED_FILE.read_text(encoding="utf-8").splitlines() if x.strip()]
+    cred_file = _credential_file()
+    lines = [x.strip() for x in cred_file.read_text(encoding="utf-8").splitlines() if x.strip()]
     if len(lines) < 4:
-        raise ValueError(f"Credential file has too few non-blank lines: {_CRED_FILE}")
+        raise ValueError(f"Credential file has too few non-blank lines: {cred_file}")
     return {
         "access_key_id": lines[1],
         "access_key_secret": lines[3],

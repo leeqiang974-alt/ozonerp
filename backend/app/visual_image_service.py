@@ -12,6 +12,7 @@ from sqlalchemy.orm import Session
 
 from .database import SessionLocal
 from .erp_models import AuditEventRecord, ListingDraftRecord, SourceMediaRecord, SourceProductRecord, SourceProductShopRecord, SourceVariantRecord, VisualImageJobRecord
+from .secret_paths import api_file
 
 ROOT = Path(__file__).resolve().parents[2]
 OUTPUT_DIR = ROOT / "frontend" / "generated" / "ai-images"
@@ -106,7 +107,7 @@ def reconcile_interrupted_jobs(db: Session) -> int:
 
 def _keys() -> dict[str, str]:
     result: dict[str, str] = {}
-    path = Path(os.getenv("CANGYUAN_API_KEY_FILE", r"D:\Desktop\api\cangyuanapi.txt"))
+    path = Path(os.getenv("CANGYUAN_API_KEY_FILE", str(api_file("cangyuanapi.txt"))))
     if path.is_file():
         for raw in path.read_text(encoding="utf-8").splitlines():
             if "=" in raw:

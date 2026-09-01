@@ -53,6 +53,12 @@ uvicorn app.main:app --reload
 
 SQLite 仅用于单机开发和测试：`$env:DATABASE_URL = "sqlite:///./ozon_erp.db"`。正式部署不得使用 SQLite。
 
+Windows 本机/笔记本的第三方密钥文件可放在
+`C:\Users\Administrator\Desktop\api`（或设置 `ERP_API_DIR` 指向其他目录）。
+程序会在找不到旧的 `D:\Desktop\api` 时自动使用当前用户的
+`Desktop\api`；密钥文件本身不进入仓库。DeepSeek、沧猿和阿里云 OSS 分别读取
+`deepseek.txt`、`cangyuanapi.txt` 和 `阿里云的key和secret.txt`。
+
 Open `http://127.0.0.1:8000/docs` for Swagger UI.
 
 ## API

@@ -5,7 +5,7 @@ from sqlalchemy import create_engine, select
 from sqlalchemy.orm import Session
 
 from app.database import Base
-from app.erp_models import FbsPostingLineRecord, FbsPostingRecord, OzonCategoryCacheRecord, ProductRecord, SyncRun
+from app.erp_models import FbsPostingLineRecord, FbsPostingRecord, OzonGlobalCategoryCacheRecord, ProductRecord, SyncRun
 from app.models import ApiCredential, Shop
 from app.security import encrypt_secret
 from app.sync_service import sync_category_cache, sync_fbs_postings, sync_fbs_product_images, sync_products
@@ -87,7 +87,10 @@ def test_category_cache_sync_replaces_local_listing_types(monkeypatch) -> None:
         db.commit()
 
         run = sync_category_cache(db, shop.id)
-        row = db.scalar(select(OzonCategoryCacheRecord).where(OzonCategoryCacheRecord.shop_id == shop.id))
+        row = db.scalar(select(OzonGlobalCategoryCacheRecord).where(
+            OzonGlobalCategoryCacheRecord.category_id == "10",
+            OzonGlobalCategoryCacheRecord.type_id == "20",
+        ))
 
         assert run.status == "succeeded" and run.records_changed == 1
         assert row.category_id == "10" and row.type_id == "20" and row.title == "服饰 / 上衣"

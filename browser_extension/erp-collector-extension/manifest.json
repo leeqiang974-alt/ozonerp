@@ -1,8 +1,8 @@
 ﻿{
   "manifest_version": 3,
   "name": "Ozon ERP 统一采集助手",
-  "version": "0.5.1",
-  "description": "统一采集 1688 货源与 Ozon 前台竞品数据，并发送到本地 Ozon ERP。",
+  "version": "0.7.1",
+  "description": "统一采集 1688、Ozon 与 Amazon 商品，并发送到对应 ERP。",
   "action": {
     "default_title": "Ozon ERP 统一采集助手",
     "default_popup": "popup.html",
@@ -25,19 +25,44 @@
   },
   "host_permissions": [
     "https://*.1688.com/*",
+    "https://itemcdn.tmall.com/*",
     "https://login.taobao.com/*",
     "https://*.ozon.ru/*",
     "https://seller.ozon.ru/*",
+    "https://*.amazon.com/*",
+    "https://*.amazon.com.mx/*",
+    "https://*.amazon.ca/*",
+    "https://*.amazon.co.uk/*",
+    "https://*.amazon.de/*",
+    "https://*.amazon.fr/*",
+    "https://*.amazon.it/*",
+    "https://*.amazon.es/*",
+    "https://ml-erp.woxq.cn/*",
     "http://localhost:8000/*", "http://127.0.0.1:8000/*",
     "http://127.0.0.1:5000/*"
   ],
   "web_accessible_resources": [
     {
       "resources": ["injected.js"],
-      "matches": ["https://*.1688.com/*", "https://login.taobao.com/*", "https://*.ozon.ru/*", "https://seller.ozon.ru/*"]
+      "matches": ["https://*.1688.com/*", "https://login.taobao.com/*", "https://*.ozon.ru/*", "https://seller.ozon.ru/*", "https://*.amazon.com/*", "https://*.amazon.com.mx/*", "https://*.amazon.ca/*", "https://*.amazon.co.uk/*", "https://*.amazon.de/*", "https://*.amazon.fr/*", "https://*.amazon.it/*", "https://*.amazon.es/*"]
     }
   ],
   "content_scripts": [
+    {
+      "matches": ["https://ml-erp.woxq.cn/*"],
+      "js": ["meli-bridge.js"],
+      "run_at": "document_idle"
+    },
+    {
+      "matches": ["https://*.amazon.com/*", "https://*.amazon.com.mx/*", "https://*.amazon.ca/*", "https://*.amazon.co.uk/*", "https://*.amazon.de/*", "https://*.amazon.fr/*", "https://*.amazon.it/*", "https://*.amazon.es/*"],
+      "js": ["amazon-content.js"],
+      "run_at": "document_idle"
+    },
+    {
+      "matches": ["https://*.1688.com/*"],
+      "js": ["early-inject.js"],
+      "run_at": "document_start"
+    },
     {
       "matches": ["https://*.1688.com/*", "https://login.taobao.com/*", "https://*.ozon.ru/*", "https://seller.ozon.ru/*"],
       "js": ["content.js"],

@@ -23,6 +23,7 @@ class PricePolicy:
     target_profit_rate: Decimal = Decimal("0.30")
     max_iterations: int = 40
     old_price_multiplier: Decimal = Decimal("2")
+    listing_price_floor_cny: Decimal = Decimal("26.99")
     minimum_profit_rate: Decimal = Decimal("0.08")
     minimum_profit_cny: Decimal = Decimal("3")
     logistics_ratio_warn: Decimal = Decimal("0.35")

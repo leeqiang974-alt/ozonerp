@@ -1,6 +1,6 @@
 ﻿"""LLM-powered Chinese-to-Russian translation for product listings.
 
-Uses an OpenAI-compatible API when LLM_API_KEY / OPENAI_API_KEY is available.
+Uses the configured OpenAI-compatible listing-text provider when available.
 Falls back to a dictionary-based translation when no key is configured, and
 marks the output as unverified so the quality check can flag it for review.
 """
@@ -13,6 +13,8 @@ import re
 from typing import Any
 
 from dotenv import load_dotenv
+
+from ..llm_provider import get_listing_llm_config, get_listing_llm_provider
 
 # Load .env from project root or current directory
 load_dotenv(os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(os.path.dirname(__file__)))), ".env"), override=True)
@@ -93,11 +95,8 @@ def _has_cyrillic(text: str) -> bool:
 # --------------------------------------------------------------------------- #
 
 def _get_api_config() -> tuple[str | None, str, str]:
-    """Return (api_key, base_url, model) from environment."""
-    api_key = os.getenv("LLM_API_KEY") or os.getenv("OPENAI_API_KEY")
-    base_url = os.getenv("LLM_BASE_URL", "https://api.deepseek.com")
-    model = os.getenv("LLM_MODEL", "deepseek-chat")
-    return api_key, base_url, model
+    """Return (api_key, base_url, model) for title/description generation."""
+    return get_listing_llm_config()
 
 
 def is_llm_available() -> bool:
@@ -129,7 +128,7 @@ def translate_product_content(
     if api_key:
         try:
             return _llm_translate(
-                title_zh, api_key, base_url, model,
+                title_zh, api_key, base_url, model, get_listing_llm_provider(),
                 material=material, brand=brand, category_zh=category_zh, specs=specs,
             )
         except Exception:
@@ -142,7 +141,7 @@ def translate_product_content(
 
 
 def _llm_translate(
-    title_zh: str, api_key: str, base_url: str, model: str,
+    title_zh: str, api_key: str, base_url: str, model: str, provider: str,
     *, material: str = "", brand: str = "", category_zh: str = "",
     specs: list[dict[str, str]] | None = None,
 ) -> dict[str, Any]:
@@ -159,8 +158,6 @@ def _llm_translate(
     context_parts = []
     if material:
         context_parts.append(f"Material: {material}")
-    if brand:
-        context_parts.append(f"Brand: {brand}")
     if category_zh:
         context_parts.append(f"Category: {category_zh}")
     if spec_text:
@@ -181,18 +178,22 @@ Generate a JSON response with:
    - Usage scenarios
    Make it informative and appealing to Russian buyers. Use proper Russian grammar.
 
+Hard Ozon moderation rule: never write that the colour/model is random, mixed, selected after ordering, or "в ассортименте"/"случайный"/"уточняйте при заказе". Do not promise a bundle or combination product. When variants exist, state only their explicit SKU facts. Never include, translate, infer, or mention any brand, manufacturer, supplier, shop, marketplace, or platform name from the source copy.
+
 Respond with ONLY valid JSON, no markdown."""
 
-    response = client.chat.completions.create(
-        model=model,
-        messages=[
+    options: dict[str, Any] = {
+        "model": model,
+        "messages": [
             {"role": "system", "content": "You are an e-commerce listing translator. Respond only with valid JSON."},
             {"role": "user", "content": prompt},
         ],
-        temperature=0.3,
-        max_tokens=4096,
-        extra_body={"thinking": {"type": "disabled"}},
-    )
+        "temperature": 0.3,
+        "max_tokens": 4096,
+    }
+    if provider == "volcengine":
+        options["extra_body"] = {"thinking": {"type": "disabled"}}
+    response = client.chat.completions.create(**options)
 
     _msg = response.choices[0].message
     raw = (_msg.content or "").strip()
@@ -253,10 +254,6 @@ def _fallback_translate(
         mat_ru = _dict_translate(material)
         if mat_ru:
             desc_parts.append(f"\nМатериал: {mat_ru}")
-
-    # Brand
-    if brand:
-        desc_parts.append(f"Бренд: {brand}")
 
     description_ru = "\n".join(desc_parts)[:5000]
 

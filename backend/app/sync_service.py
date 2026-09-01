@@ -9,7 +9,14 @@ from typing import Any
 from sqlalchemy import or_, select
 from sqlalchemy.orm import Session
 
-from .erp_models import FbsPostingLineRecord, FbsPostingRecord, OzonCategoryCacheRecord, ProductRecord, SkuRecord, SyncRun
+from .erp_models import (
+    FbsPostingLineRecord,
+    FbsPostingRecord,
+    OzonGlobalCategoryCacheRecord,
+    ProductRecord,
+    SkuRecord,
+    SyncRun,
+)
 from .integrations.ozon_seller import OzonSellerClient, OzonSellerError
 from .models import ApiCredential, Shop
 from .security import CredentialEncryptionUnavailable, decrypt_secret
@@ -192,7 +199,9 @@ def _replace_category_cache(db: Session, shop_id: int, response: dict[str, Any],
     nodes = response.get("result", [])
     if not isinstance(nodes, list):
         raise ValueError("Ozon 类目树响应格式错误")
-    db.query(OzonCategoryCacheRecord).filter(OzonCategoryCacheRecord.shop_id == shop_id).delete()
+    # The category tree is Ozon-global.  The shop is only the credential/source
+    # used for this API call; never materialize a separate cache per shop.
+    db.query(OzonGlobalCategoryCacheRecord).delete()
 
     # Build (category_id, type_id) -> Chinese title map from the ZH tree
     zh_map: dict[tuple[str, str], str] = {}
@@ -222,8 +231,7 @@ def _replace_category_cache(db: Session, shop_id: int, response: dict[str, Any],
             elif item.get("type_id") is not None and parent_category:
                 type_title = str(item.get("type_name") or "未命名类型")
                 zh_title = zh_map.get((parent_category, str(item["type_id"])))
-                db.add(OzonCategoryCacheRecord(
-                    shop_id=shop_id,
+                db.add(OzonGlobalCategoryCacheRecord(
                     category_id=parent_category,
                     type_id=str(item["type_id"]),
                     title=f"{parent_title or ''} / {type_title}".strip(" /"),

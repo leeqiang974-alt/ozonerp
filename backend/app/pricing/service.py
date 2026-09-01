@@ -5,7 +5,7 @@ Follows the ozon-product-pricing-rules skill for all core formulas.
 
 from __future__ import annotations
 
-from decimal import Decimal, DivisionByZero, ROUND_CEILING, ROUND_FLOOR, ROUND_HALF_UP
+from decimal import Decimal, ROUND_CEILING, ROUND_FLOOR, ROUND_HALF_UP
 
 from .models import (
     AuditEvent,
@@ -84,15 +84,22 @@ class PricingService:
         commission = estimate * policy.commission_rate
         misc = estimate * policy.misc_fee_rate + policy.fixed_misc_fee
         base_cost = data.purchase_cost + commission + logistics + misc
-        price = estimate.quantize(CENT, rounding=ROUND_CEILING)
+        calculated_price = estimate.quantize(CENT, rounding=ROUND_CEILING)
+        price = max(calculated_price, policy.listing_price_floor_cny.quantize(CENT, rounding=ROUND_CEILING))
+        # The floor changes the actual sale price, so recompute all price-based
+        # amounts from the final price rather than reporting pre-floor values.
+        level, logistics = self._shipping_fee(data, price, risk_codes)
+        commission = price * policy.commission_rate
+        misc = price * policy.misc_fee_rate + policy.fixed_misc_fee
+        base_cost = data.purchase_cost + commission + logistics + misc
         profit = _money(price - base_cost)
         profit_rate = profit / base_cost if base_cost else Decimal("0")
 
         # --- §3: old_price ---
         old_price = _money(price * policy.old_price_multiplier)
 
-        # --- §4: min_price (profit-bottom-line formula) ---
-        min_price = self._compute_min_price(base_cost, policy, price, risk_codes)
+        # --- §4: Ozon minimum price follows the operator's integer rule ---
+        min_price = min_price_from_price(price)
 
         # --- §7.2: manual_review checks ---
         self._check_manual_review(price, logistics, profit_rate, policy, risk_codes)
@@ -147,25 +154,6 @@ class PricingService:
             return "big", Decimal("17") * (weight / 1000) + Decimal("36")
         risk_codes.append(RiskCode.PRICING_SHIPPING_LEVEL_MISSING)
         return "unknown", Decimal("0")
-
-    @staticmethod
-    def _compute_min_price(
-        base_cost: Decimal, policy: PricePolicy, price: Decimal, risk_codes: list[RiskCode],
-    ) -> str:
-        """§4.2 profit-bottom-line formula; fallback to §4.1 default if blocked."""
-        try:
-            rate_floor = base_cost / (Decimal("1") - policy.minimum_profit_rate)
-        except DivisionByZero:
-            rate_floor = base_cost * Decimal("1.1")
-        fixed_floor = base_cost + policy.minimum_profit_cny
-        min_p = max(rate_floor, fixed_floor, Decimal("1"))
-        min_p = min_p.to_integral_value(rounding=ROUND_CEILING)
-        result = str(min_p)
-        if Decimal(result) >= price:
-            risk_codes.append(RiskCode.PRICING_MIN_PRICE_INVALID)
-            # Fallback to §4.1 default rule
-            return min_price_from_price(price)
-        return result
 
     @staticmethod
     def _check_manual_review(

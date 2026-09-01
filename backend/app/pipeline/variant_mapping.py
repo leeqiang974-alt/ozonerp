@@ -41,10 +41,13 @@ def map_variants(db: Session, shop_id: int, source_product_id: int) -> dict[str,
     ))
     if pipeline is None:
         raise ValueError("pipeline product not found; run P2 first")
-    source_variants = list(db.scalars(select(SourceVariantRecord).where(
+    all_source_variants = list(db.scalars(select(SourceVariantRecord).where(
         SourceVariantRecord.source_product_id == source_product_id,
     )))
+    source_variants = [variant for variant in all_source_variants if variant.stock is None or variant.stock > 0]
     if not source_variants:
+        if all_source_variants:
+            raise ValueError("货源商品全部 SKU 库存为 0，已阻止生成 Ozon 变体")
         raise ValueError("source product has no variants")
     mapped: list[dict[str, Any]] = []
     for sv in source_variants:
@@ -77,6 +80,7 @@ def map_variants(db: Session, shop_id: int, source_product_id: int) -> dict[str,
         "media": arranged,
         "media_count": len(arranged),
         "sku_count": len(mapped),
+        "excluded_zero_stock_count": len(all_source_variants) - len(source_variants),
     }
 
 
@@ -100,22 +104,21 @@ def _arrange_media(
     media: list[SourceMediaRecord],
     variants: list[SourceVariantRecord],
 ) -> list[dict[str, Any]]:
-    """Arrange media for listing: primary image first, then variant images, then extras."""
+    """Arrange only the public gallery; SKU images remain on variant rows."""
+    # Video URLs are separate source evidence and must never enter Ozon image
+    # galleries or local image OCR.  They follow the dedicated video workflow.
+    media = [item for item in media if item.media_type == "image"]
+    variant_urls = {str(v.image_url).strip() for v in variants if v.image_url and str(v.image_url).strip()}
     arranged: list[dict[str, Any]] = []
     seen_urls: set[str] = set()
     # Primary image first
     for m in media:
-        if m.is_primary and m.url not in seen_urls:
+        if m.is_primary and m.url not in variant_urls and m.url not in seen_urls:
             arranged.append({"url": m.url, "type": "primary", "sort_order": len(arranged)})
             seen_urls.add(m.url)
-    # Variant images
-    for sv in variants:
-        if sv.image_url and sv.image_url not in seen_urls:
-            arranged.append({"url": sv.image_url, "type": "variant", "sku": sv.source_sku, "sort_order": len(arranged)})
-            seen_urls.add(sv.image_url)
     # Remaining media
     for m in media:
-        if m.url not in seen_urls:
+        if m.url not in variant_urls and m.url not in seen_urls:
             arranged.append({"url": m.url, "type": "gallery", "sort_order": len(arranged)})
             seen_urls.add(m.url)
     # Enforce max

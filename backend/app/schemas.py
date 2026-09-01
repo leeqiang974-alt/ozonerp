@@ -1,7 +1,7 @@
 ﻿from datetime import datetime
 from decimal import Decimal
 
-from typing import Literal
+from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, SecretStr, field_validator
 
@@ -102,18 +102,6 @@ class ProductRead(BaseModel):
     updated_at: datetime
 
 
-class FbsPostingRead(BaseModel):
-    model_config = ConfigDict(from_attributes=True)
-
-    id: int
-    shop_id: int
-    posting_number: str
-    normalized_status: str
-    raw_ozon_status: str | None
-    pack_by: datetime | None
-    updated_at: datetime
-
-
 class FbsPostingLineRead(BaseModel):
     model_config = ConfigDict(from_attributes=True)
 
@@ -126,8 +114,21 @@ class FbsPostingLineRead(BaseModel):
     quantity: int
 
 
-class FbsPostingDetailRead(FbsPostingRead):
+class FbsPostingRead(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    id: int
+    shop_id: int
+    posting_number: str
+    normalized_status: str
+    raw_ozon_status: str | None
+    pack_by: datetime | None
+    updated_at: datetime
     lines: list[FbsPostingLineRead]
+
+
+class FbsPostingDetailRead(FbsPostingRead):
+    pass
 
 
 class ListingVariantCreate(BaseModel):
@@ -141,6 +142,7 @@ class ListingVariantCreate(BaseModel):
     stock: int | None = Field(default=None, ge=0)
     name_ru: str | None = Field(default=None, max_length=500)
     image_url: str | None = Field(default=None, max_length=2000)
+    image_urls: list[str] | None = Field(default=None, max_length=100)
     price_cny: Decimal | None = Field(default=None, ge=0)
     old_price_cny: Decimal | None = Field(default=None, ge=0)
     min_price_cny: str | None = Field(default=None, max_length=32)
@@ -168,10 +170,21 @@ class ListingDraftCreate(BaseModel):
     category_id: str | None = Field(default=None, max_length=64)
     type_id: str | None = Field(default=None, max_length=64)
     primary_image_url: str | None = Field(default=None, max_length=2000)
+    video_url: str | None = Field(default=None, max_length=2000)
     images: list[str] | None = Field(default=None, max_length=100)
+    watermark_config: dict[str, Any] | None = Field(default=None)
     source_product_id: int | None = None
+    learn_attribute_ids: list[str] = Field(default_factory=list, max_length=200)
     attributes: list[ListingAttributeValueCreate] = Field(default_factory=list, max_length=200)
     variants: list[ListingVariantCreate] = Field(min_length=1, max_length=100)
+
+
+class ListingTemplateCreate(BaseModel):
+    name: str = Field(min_length=1, max_length=120)
+    category_id: str = Field(min_length=1, max_length=64)
+    type_id: str = Field(min_length=1, max_length=64)
+    attributes: list[ListingAttributeValueCreate] = Field(default_factory=list, max_length=200)
+    description: str | None = Field(default=None, max_length=10000)
 
 
 class ListingVariantRead(ListingVariantCreate):
@@ -199,14 +212,28 @@ class ListingDraftRead(BaseModel):
     category_id: str | None
     type_id: str | None
     primary_image_url: str | None
+    video_url: str | None = None
     images: list[str] | None
+    watermark_config: dict[str, Any] | None = None
     source_product_id: int | None
+    learning_attribute_ids: list[str] = Field(default_factory=list)
     status: str
     validation_json: str | None
     created_at: datetime
     updated_at: datetime
     variants: list[ListingVariantRead]
     attribute_values: list[ListingAttributeValueRead]
+    # Ozon content rating can contain half points (for example 77.5).
+    # Treating it as an integer made legacy drafts fail response validation.
+    quality_rating: float | None = None
+    moderation_status: str | None = None
+    ozon_issues: list[dict] | None = None
+    import_task_id: str | None = None
+    stock_sync_status: str | None = None
+    stock_sync_message: str | None = None
+    stock_sync_attempts: int = 0
+    stock_sync_next_at: datetime | None = None
+    stock_synced_at: datetime | None = None
 
 
 class ListingValidationIssue(BaseModel):

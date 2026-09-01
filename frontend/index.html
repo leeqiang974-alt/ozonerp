@@ -1,22 +1,1307 @@
-﻿<!doctype html>
+<!doctype html>
 <html lang="zh-CN">
-  <head><meta charset="UTF-8" /><meta name="viewport" content="width=device-width, initial-scale=1.0" /><title>Ozon FBS ERP</title><link rel="stylesheet" href="./styles.css" /><link rel="stylesheet" href="./listing-attributes.css" /><script src="./auto-sync-policy.js"></script><script src="./listing-attributes.js"></script><style>.drawer{position:fixed;z-index:10;top:0;right:0;width:min(420px,100vw);height:100vh;padding:24px;background:#fff;box-shadow:-10px 0 30px #071c3d26;transform:translateX(105%);transition:transform .2s;overflow:auto}.drawer.open{transform:none}.drawer header{display:flex;align-items:start;justify-content:space-between;border-bottom:1px solid #edf0f5;padding-bottom:16px;margin-bottom:18px}.drawer h3{margin:3px 0 0;font-size:18px}.drawer table{margin-top:10px}.drawer .meta{display:grid;gap:8px;margin-bottom:18px;color:#52627b;font-size:13px}.line-product{display:flex;align-items:center;gap:9px}.line-image,.line-image-placeholder{width:42px;height:42px;border-radius:6px;object-fit:cover;background:#edf2f8;flex:0 0 auto}.line-image-placeholder{display:grid;place-items:center;color:#728099;font-size:11px}</style></head>
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Ozon FBS ERP</title>
+        <link rel="stylesheet" href="./styles.css?v=41" />
+    <link rel="stylesheet" href="./listing-attributes.css" />
+    <script src="./auto-sync-policy.js"></script>
+    <script src="./listing-attributes.js"></script>
+    <script src="./erp-config.js"></script>
+    <style>
+      .drawer {
+        position: fixed;
+        z-index: 10;
+        top: 0;
+        right: 0;
+        width: min(420px, 100vw);
+        height: 100vh;
+        padding: 24px;
+        background: #fff;
+        box-shadow: -10px 0 30px #071c3d26;
+        transform: translateX(105%);
+        transition: transform 0.2s;
+        overflow: auto;
+      }
+      .drawer.open {
+        transform: none;
+      }
+      .drawer header {
+        display: flex;
+        align-items: start;
+        justify-content: space-between;
+        border-bottom: 1px solid #edf0f5;
+        padding-bottom: 16px;
+        margin-bottom: 18px;
+      }
+      .drawer h3 {
+        margin: 3px 0 0;
+        font-size: 18px;
+      }
+      .drawer table {
+        margin-top: 10px;
+      }
+      .drawer .meta {
+        display: grid;
+        gap: 8px;
+        margin-bottom: 18px;
+        color: #52627b;
+        font-size: 13px;
+      }
+      .line-product {
+        display: flex;
+        align-items: center;
+        gap: 9px;
+      }
+      .line-image,
+      .line-image-placeholder {
+        width: 42px;
+        height: 42px;
+        border-radius: 6px;
+        object-fit: cover;
+        background: #edf2f8;
+        flex: 0 0 auto;
+      }
+      .line-image-placeholder {
+        display: grid;
+        place-items: center;
+        color: #728099;
+        font-size: 11px;
+      }
+    </style>
+    <script>
+      window.onerror = function (m, s, l, c) {
+        var d = document.createElement("div");
+        d.style.cssText =
+          "position:fixed;top:0;left:0;right:0;background:#c00;color:#fff;padding:12px;z-index:99999;font-size:14px";
+        d.textContent = "JS Error: " + m + " (line " + l + ")";
+        document.body
+          ? document.body.appendChild(d)
+          : document.documentElement.appendChild(d);
+        return false;
+      };
+    </script>
+  </head>
   <body>
-    <aside><div class="brand"><b>OZ</b><div><h1>Ozon ERP</h1><small>FBS 运营中心</small></div></div>
-      <nav id="nav"><button class="active" data-view="dashboard">经营概览</button><button data-view="shops">店铺管理</button><button data-view="orders">FBS 订单 <em>0</em></button><button data-view="products">商品与库存</button><button data-view="listing">商品上架</button><button data-view="collection-box">采集箱</button><button data-view="pricing">定价与营销</button><button data-view="sync">同步中心</button></nav>
-      <div class="user">管理员<br><small>中文 · CNY</small></div>
+    <link rel="stylesheet" href="./pricing.css?v=1" />
+    <link rel="stylesheet" href="./orders.css?v=1" />
+    <link rel="stylesheet" href="./ozon-pull.css?v=1" />
+    <aside>
+      <div class="brand">
+        <b>OZ</b>
+        <div>
+          <h1>Ozon ERP</h1>
+          <small>FBS 运营中心</small>
+        </div>
+      </div>
+      <nav id="nav">
+        <button class="active" data-view="dashboard">经营概览</button
+        ><button data-view="automation">自动上品</button
+        ><button data-view="candidate-pool">候选商品</button
+        ><button data-view="bulk-listing">批量刊登</button
+        ><button data-view="approval-center">审批发布</button
+        ><button data-view="shops">店铺管理</button
+        ><button data-view="orders">FBS 订单 <em>0</em></button
+        ><button data-view="products">商品与库存</button
+        ><button data-view="listing">商品上架</button
+        ><button data-view="collection-box">采集箱</button
+        ><button data-view="jxhy">1688 严选</button
+        ><button data-view="yunniudun">云牛顿接入</button
+        ><button data-view="authorization-center">授权中心</button
+        ><button data-view="pricing">定价与营销</button
+        ><button data-view="sync">同步中心</button>
+        ><button data-view="operation-logs">操作日志</button>
+      </nav>
+      <div class="user">管理员<br /><small>中文 · CNY</small></div>
     </aside>
-    <main><header><div class="crumb" id="crumb">经营概览</div><div class="head-actions"><select id="shop-filter"><option value="">全部店铺</option></select><button class="secondary" id="sync-button">↻ 同步</button><button class="primary" id="primary-action">+ 添加店铺</button></div></header>
-      <section id="dashboard" class="view active"><div class="page-title"><div><h2>早上好，管理员</h2><p>优先处理有时效和库存风险的工作。</p></div><span class="live" id="data-status">● 数据待同步</span></div><div class="cards"><article><small>待打包订单</small><strong id="awaiting-packaging">—</strong><span>进入订单工作台处理</span></article><article><small>发货时效风险</small><strong id="delivery-risk">—</strong><span>距离截单不足 2 小时</span></article><article><small>库存风险 SKU</small><strong id="stock-risk">—</strong><span>低于安全库存</span></article><article><small>营销待审批</small><strong id="promotion-review">—</strong><span>触及利润保护线</span></article></div><section class="panel quick"><h3>今日优先事项</h3><div class="empty"><b id="next-task">先选择店铺并完成第一次只读同步</b><span>系统将自动生成待发货、库存和营销风险任务。</span><button class="primary open-shops">去添加店铺</button></div></section></section>
-      <section id="shops" class="view"><div class="page-title"><div><h2>店铺管理</h2><p>管理 Ozon 店铺、FBS 仓库和同步状态。</p></div></div><section class="panel"><div class="toolbar"><input id="shop-search" placeholder="搜索店铺名称" /><span id="shop-count">0 个店铺</span><button class="primary" id="add-shop">+ 添加店铺</button></div><table><thead><tr><th>店铺</th><th>履约模式</th><th>币种</th><th>负责人</th><th>同步状态</th><th>操作</th></tr></thead><tbody id="shop-rows"><tr><td colspan="6" class="muted">正在加载店铺…</td></tr></tbody></table></section></section>
-      <section id="orders" class="view"><div class="page-title"><div><h2>FBS 订单</h2><p>按截单时间处理打包、交接和异常订单。</p></div></div><section class="panel"><div class="toolbar tabs"><button class="tab active" data-order-filter="all">全部订单</button><button class="tab" data-order-filter="awaiting_packaging">待打包</button><button class="tab" data-order-filter="delivering">配送中</button><button class="tab" data-order-filter="risk">风险订单</button></div><table><thead><tr><th>订单号</th><th>Ozon 状态</th><th>ERP 状态</th><th>截单时间</th><th>风险</th><th>操作</th></tr></thead><tbody id="posting-rows"><tr><td colspan="6" class="muted">请选择店铺后查看订单</td></tr></tbody></table></section></section>
-      <section id="products" class="view"><div class="page-title"><div><h2>商品与库存</h2><p>统一查看各店 SKU、可售库存与预占数量。</p></div></div><section class="panel"><table><thead><tr><th>商品名称</th><th>Offer ID</th><th>Ozon 商品 ID</th><th>最近更新</th></tr></thead><tbody id="product-rows"><tr><td colspan="4" class="muted">请选择店铺后查看商品</td></tr></tbody></table></section></section>
-      <section id="listing" class="view"><div class="page-title"><div><h2>商品上架</h2><p>表单驱动的商品发布编辑器，每个字段可 AI 辅助填充。</p></div><a class="primary" href="./listing-editor.html" id="open-listing-editor" style="text-decoration:none;display:inline-block">+ 进入发布编辑器</a></div><section class="panel"><div class="toolbar"><span>预检通过后才可进入后续审批发布批次。</span></div><table><thead><tr><th>商品</th><th>Offer ID</th><th>变体</th><th>状态</th><th>定价风险</th><th>预检</th></tr></thead><tbody id="listing-rows"><tr><td colspan="6" class="muted">请选择店铺后查看上架草稿</td></tr></tbody></table></section></section>
-      <section id="collection-box" class="view"><div class="page-title"><div><h2>采集箱</h2><p>统一查看采集商品和上架状态，支持进入编辑或直接提交。</p></div></div><section class="panel"><div class="toolbar"><span id="cb-count">0 个采集商品</span></div><table><thead><tr><th>商品名称</th><th>来源</th><th>Ozon店铺</th><th>采集日期</th><th>状态</th><th>操作</th></tr></thead><tbody id="cb-rows"><tr><td colspan="6" class="muted">正在加载...</td></tr></tbody></table></section></section>
-<section id="pricing" class="view"><div class="page-title"><div><h2>定价与营销</h2><p>所有金额均按 CNY 计算，活动价受最低价与利润规则保护。</p></div></div><section class="panel"><div class="empty"><b>等待 SKU 数据</b><span>导入商品后即可试算价格、提交促销审批并保留操作审计。</span></div></section></section>
-      <section id="sync" class="view"><div class="page-title"><div><h2>同步中心</h2><p>只读同步商品和 FBS 订单；失败可查看原因并重试。</p></div><button class="primary" id="run-sync">↻ 立即只读同步</button></div><section class="panel"><table><thead><tr><th>店铺</th><th>资源</th><th>状态</th><th>读取/更新</th><th>完成时间</th><th>说明</th></tr></thead><tbody id="sync-rows"><tr><td colspan="6" class="muted">请选择店铺后查看同步记录</td></tr></tbody></table></section></section>
+    <main>
+      <header>
+        <div class="crumb" id="crumb">经营概览</div>
+        <div class="head-actions">
+          <select id="shop-filter">
+            <option value="">全部店铺</option></select
+          ><button class="secondary" id="sync-button">↻ 同步</button
+          ><button class="primary" id="primary-action">+ 添加店铺</button>
+        </div>
+      </header>
+      <section id="dashboard" class="view active">
+        <div class="page-title">
+          <div>
+            <h2>早上好，管理员</h2>
+            <p>优先处理有时效和库存风险的工作。</p>
+          </div>
+          <span class="live" id="data-status">● 数据待同步</span>
+        </div>
+        <div class="cards">
+          <article>
+            <small>待打包订单</small><strong id="awaiting-packaging">—</strong
+            ><span>进入订单工作台处理</span>
+          </article>
+          <article>
+            <small>发货时效风险</small><strong id="delivery-risk">—</strong
+            ><span>距离截单不足 2 小时</span>
+          </article>
+          <article>
+            <small>库存风险 SKU</small><strong id="stock-risk">—</strong
+            ><span>低于安全库存</span>
+          </article>
+          <article>
+            <small>营销待审批</small><strong id="promotion-review">—</strong
+            ><span>触及利润保护线</span>
+          </article>
+        </div>
+        <section class="panel quick">
+          <h3>今日优先事项</h3>
+          <div class="empty">
+            <b id="next-task">先选择店铺并完成第一次只读同步</b
+            ><span>系统将自动生成待发货、库存和营销风险任务。</span
+            ><button class="primary open-shops">去添加店铺</button>
+          </div>
+        </section>
+      </section>
+      <section id="automation" class="view automation-center">
+        <div class="automation-heading">
+          <div>
+            <h2>自动上品中心</h2>
+            <p>夜间采集严选候选，白天人工检查并选择店铺上架。</p>
+          </div>
+          <div class="automation-heading-actions">
+            <button id="automation-start-now" class="primary" type="button">
+              ▶ 立即采集候选</button
+            ><button id="automation-new" class="secondary" type="button">
+              新建夜间计划
+            </button>
+          </div>
+        </div>
+        <section class="automation-status">
+          <div>
+            <span class="automation-play">▶</span>
+            <div>
+              <strong id="automation-global-label">读取运行状态…</strong
+              ><small>系统只自动生成和预检；发布仍需批次审批。</small>
+            </div>
+          </div>
+          <div>
+            <small>下次计划执行</small
+            ><strong id="automation-next-run">—</strong>
+          </div>
+        </section>
+        <section id="automation-workflow" class="automation-workflow"></section>
+        <div class="automation-layout">
+          <section class="automation-main">
+            <header>
+              <div>
+                <h3>自动任务</h3>
+                <span id="automation-task-count" class="muted">0 个任务</span>
+              </div>
+              <div class="automation-table-actions">
+                <span id="automation-selected" class="muted">未选择任务</span
+                ><button
+                  id="automation-bulk-pause"
+                  class="secondary"
+                  type="button"
+                  disabled
+                >
+                  关闭所选定时</button
+                ><button
+                  id="automation-bulk-archive"
+                  class="secondary"
+                  type="button"
+                  disabled
+                >
+                  归档所选
+                </button>
+              </div>
+            </header>
+            <div class="table-wrap">
+              <table>
+                <thead>
+                  <tr>
+                    <th>
+                      <input id="automation-select-all" type="checkbox" />
+                    </th>
+                    <th>任务名称</th>
+                    <th>关键词</th>
+                    <th>筛选条件</th>
+                    <th>每日目标</th>
+                    <th>下次执行</th>
+                    <th>状态</th>
+                    <th></th>
+                  </tr>
+                </thead>
+                <tbody id="automation-task-rows">
+                  <tr>
+                    <td colspan="8" class="muted">正在加载…</td>
+                  </tr>
+                </tbody>
+              </table>
+            </div>
+          </section>
+          <aside class="automation-side">
+            <section>
+              <header><h3>店铺额度与健康</h3></header>
+              <div id="automation-shop-capacity" class="capacity-list"></div>
+            </section>
+            <section>
+              <header><h3>近期失败 / 需处理</h3></header>
+              <div id="automation-failures" class="failure-list">
+                <p class="muted">暂无需要处理的异常。</p>
+              </div>
+            </section>
+          </aside>
+        </div>
+      </section>
+      <section id="shops" class="view">
+        <div class="page-title">
+          <div>
+            <h2>店铺管理</h2>
+            <p>管理 Ozon 店铺、FBS 仓库和同步状态。</p>
+          </div>
+        </div>
+        <section class="panel">
+          <div class="toolbar">
+            <input id="shop-search" placeholder="搜索店铺名称" /><span
+              id="shop-count"
+              >0 个店铺</span
+            ><button class="primary" id="add-shop">+ 添加店铺</button>
+          </div>
+          <table>
+            <thead>
+              <tr>
+                <th>店铺</th>
+                <th>履约模式</th>
+                <th>币种</th>
+                <th>负责人</th>
+                <th>同步状态</th>
+                <th>操作</th>
+              </tr>
+            </thead>
+            <tbody id="shop-rows">
+              <tr>
+                <td colspan="6" class="muted">正在加载店铺…</td>
+              </tr>
+            </tbody>
+          </table>
+        </section>
+      </section>
+      <section id="orders" class="view">
+        <div class="page-title">
+          <div>
+            <h2>FBS 订单</h2>
+            <p>按截单时间处理打包、交接和异常订单。</p>
+          </div>
+        </div>
+        <section class="panel">
+          <div class="toolbar tabs">
+            <button class="tab active" data-order-filter="all">全部订单</button
+            ><button class="tab" data-order-filter="awaiting_packaging">
+              待打包</button
+            ><button class="tab" data-order-filter="delivering">配送中</button
+            ><button class="tab" data-order-filter="risk">风险订单</button>
+          </div>
+          <table>
+            <thead>
+              <tr>
+                <th>商品</th>
+                <th>订单号</th>
+                <th>Ozon 状态</th>
+                <th>ERP 状态</th>
+                <th>截单时间</th>
+                <th>风险</th>
+                <th>操作</th>
+              </tr>
+            </thead>
+            <tbody id="posting-rows">
+              <tr>
+                <td colspan="7" class="muted">请选择店铺后查看订单</td>
+              </tr>
+            </tbody>
+          </table>
+        </section>
+      </section>
+      <section id="products" class="view">
+        <div class="page-title">
+          <div>
+            <h2>商品与库存</h2>
+            <p>统一查看各店 SKU、可售库存与预占数量。</p>
+          </div>
+        </div>
+        <section class="panel">
+          <table>
+            <thead>
+              <tr>
+                <th>商品名称</th>
+                <th>Offer ID</th>
+                <th>Ozon 商品 ID</th>
+                <th>最近更新</th>
+              </tr>
+            </thead>
+            <tbody id="product-rows">
+              <tr>
+                <td colspan="4" class="muted">请选择店铺后查看商品</td>
+              </tr>
+            </tbody>
+          </table>
+        </section>
+      </section>
+      <section id="listing" class="view">
+        <div class="page-title">
+          <div>
+            <h2>商品上架</h2>
+            <p>表单驱动的商品发布编辑器，每个字段可 AI 辅助填充。</p>
+          </div>
+          <a
+            class="primary"
+            href="./listing-editor.html"
+            id="open-listing-editor"
+            style="text-decoration: none; display: inline-block"
+            >+ 进入发布编辑器</a
+          >
+        </div>
+        <section class="panel">
+          <div class="toolbar">
+            <span>预检通过后才可进入后续审批发布批次。</span>
+          </div>
+          <table>
+            <thead>
+              <tr>
+                <th>商品</th>
+                <th>Offer ID</th>
+                <th>变体</th>
+                <th>状态</th>
+                <th>定价风险</th>
+                <th>预检</th>
+              </tr>
+            </thead>
+            <tbody id="listing-rows">
+              <tr>
+                <td colspan="6" class="muted">请选择店铺后查看上架草稿</td>
+              </tr>
+            </tbody>
+          </table>
+        </section>
+      </section>
+      <section id="collection-box" class="view">
+        <div class="page-title">
+          <div>
+            <h2>采集箱</h2>
+            <p>
+              发布记录已绑定店铺；刷新后直接查看 Ozon 分数、问题和库存结果。
+            </p>
+          </div>
+        </div>
+        <section class="panel">
+          <div class="toolbar">
+            <span id="cb-count">0 个采集商品</span
+            ><button class="secondary" id="cb-refresh-selected" disabled>
+              刷新所选结果</button
+            ><button class="secondary" id="cb-refresh-all">刷新全部结果</button
+            ><button class="secondary" id="cb-delete-selected" disabled>删除所选</button
+            ><button
+              class="primary"
+              id="cb-pull-ozon"
+              style="margin-left: auto"
+            >
+              从 Ozon 拉取
+            </button>
+          </div>
+          <div class="cb-filterbar" aria-label="采集箱筛选与分页">
+            <label>来源店铺<select id="cb-source-shop-filter"><option value="">全部来源店铺</option></select></label>
+            <label>Ozon店铺<select id="cb-ozon-shop-filter"><option value="">全部Ozon店铺</option></select></label>
+            <label>每页<select id="cb-page-size"><option value="50">50</option><option value="100" selected>100</option><option value="200">200</option></select></label>
+            <span class="cb-pagination"><button class="secondary" id="cb-prev" type="button">上一页</button><span id="cb-page-label">第1页</span><button class="secondary" id="cb-next" type="button">下一页</button></span>
+          </div>
+          <div class="cb-table-wrap"><table class="cb-table">
+            <thead>
+              <tr>
+                <th style="width:40px"><input type="checkbox" id="cb-select-all" aria-label="全选采集箱"></th>
+                <th>编码</th>
+                <th>商品名称</th>
+                <th>来源</th>
+                <th>Ozon店铺</th>
+                <th>采集日期</th>
+                <th>状态</th>
+                <th>采集/发布标识</th>
+                <th>提交结果</th>
+                <th>操作</th>
+              </tr>
+            </thead>
+            <tbody id="cb-rows">
+              <tr>
+                <td colspan="10" class="muted">正在加载...</td>
+              </tr>
+            </tbody>
+          </table></div>
+        </section>
+      </section>
+      <section id="jxhy" class="view">
+        <div class="jxhy-hero">
+          <div>
+            <div class="jxhy-kicker">1688 · 选品工作台</div>
+            <h2>先筛选，再采集</h2>
+            <p>用严选 API 找到符合条件的货源；云牛顿 Agent 接入后可作为第二个选品来源。</p>
+          </div>
+          <div class="jxhy-hero-meta"><span class="jxhy-live-dot"></span><span id="jxhy-status">正在检查 1688 凭据…</span><button id="jxhy-configure" class="secondary" type="button">配置授权</button></div>
+        </div>
+        <section class="jxhy-storefront">
+          <form id="jxhy-search-form" class="jxhy-searchbar">
+            <span class="jxhy-search-icon" aria-hidden="true">⌕</span>
+            <input id="jxhy-keyword" maxlength="100" placeholder="搜索商品、类目或关键词，例如：连衣裙" />
+            <select id="jxhy-page-size" aria-label="每页商品数"><option>10</option><option selected>20</option><option>50</option></select>
+            <button class="primary" type="submit">搜索商品</button>
+          </form>
+          <div class="jxhy-advanced-search">
+            <input id="jxhy-category-id" inputmode="numeric" placeholder="1688 类目 ID（可选）" />
+            <input id="jxhy-price-start" inputmode="decimal" placeholder="采购价最低（元）" />
+            <input id="jxhy-price-end" inputmode="decimal" placeholder="采购价最高（元）" />
+            <input id="jxhy-rule-ids" placeholder="选品规则 ID，多个用逗号分隔" />
+            <details id="jxhy-filter-picker" class="jxhy-filter-picker"><summary>官方严选标签</summary><div id="jxhy-official-filters" class="jxhy-filter-options">展开后加载官方筛选条件…</div></details>
+          </div>
+          <div class="jxhy-category-row" aria-label="常用类目">
+            <span class="jxhy-category-label">热门搜索</span>
+            <button type="button" class="jxhy-category" data-jxhy-keyword="胸针">胸针</button>
+            <button type="button" class="jxhy-category" data-jxhy-keyword="收纳盒">收纳盒</button>
+            <button type="button" class="jxhy-category" data-jxhy-keyword="手机壳">手机壳</button>
+            <button type="button" class="jxhy-category" data-jxhy-keyword="家居用品">家居用品</button>
+          </div>
+          <div class="jxhy-resultbar">
+            <div><strong id="jxhy-result-count">等待搜索</strong><span id="jxhy-batch-status">先勾选商品；采集只保存货源，尺重不完整的商品可在采集箱补齐。</span></div>
+            <div class="jxhy-actions"><label><input id="jxhy-select-all" type="checkbox" /> 全选本页</label><label title="不影响 Ozon 上架预检，只决定是否先保存货源快照"><input id="jxhy-allow-incomplete" type="checkbox" checked /> 尺重不完整也先入库</label><button id="jxhy-inspect" class="secondary" type="button">仅核验所选</button><button id="jxhy-collect" class="primary" type="button">采集所选</button><a class="secondary jxhy-open-collection" href="#collection-box">去采集箱编辑</a></div>
+          </div>
+          <div id="jxhy-rows" class="jxhy-grid" aria-live="polite"><div class="jxhy-empty"><strong>开始浏览严选商品</strong><span>输入关键词后，这里会显示商品卡片、价格和供应商信息。</span></div></div>
+          <div id="jxhy-pagination" class="jxhy-pagination" aria-live="polite"></div>
+        </section>
+      </section>
+      <section id="yunniudun" class="view">
+        <div class="page-title">
+          <div>
+            <h2>云牛顿接入</h2>
+            <p>仅用于网页插件无法确认 SKU 时的按链接补采；不会替代正常采集，也不会自动发起询盘或下单。</p>
+          </div>
+          <span class="live" id="yunniudun-status">正在读取授权状态…</span>
+        </div>
+        <section class="panel" style="max-width:720px">
+          <h3>授权令牌</h3>
+          <p class="muted">Token 只在此本机页面提交给本地后端并加密保存。保存成功后输入框会立即清空，页面不会显示或回显令牌。</p>
+          <form id="yunniudun-token-form" style="display:grid;gap:14px;margin-top:16px">
+            <label style="display:grid;gap:6px;color:#52627b;font-size:13px">AccessToken
+              <input id="yunniudun-access-token" name="access_token" type="password" autocomplete="off" spellcheck="false" placeholder="在此粘贴云牛顿 author 授权后的 AccessToken" required />
+            </label>
+            <div class="form-note">请勿把 Token、回调地址或 code 发送到聊天里。保存本身不会调用云牛顿任务接口。</div>
+            <div class="head-actions" style="justify-content:flex-start">
+              <button class="primary" type="submit" disabled>安全保存令牌</button>
+              <button id="yunniudun-validate" class="secondary" type="button">只读验证授权</button>
+            </div>
+          </form>
+          <p id="yunniudun-detail" class="muted" style="margin:14px 0 0"></p>
+        </section>
+        <section class="panel" style="max-width:960px;margin-top:18px">
+          <h3>按链接补采</h3>
+          <p class="muted">用于插件无法确认 SKU 的特殊 1688 链接。创建任务只保存本地请求和审计，不会立即调用云牛顿。</p>
+          <form id="yunniudun-supplement-form" style="display:grid;grid-template-columns:minmax(0,1fr) 180px auto;gap:10px;margin-top:16px">
+            <input id="yunniudun-source-url" name="source_url" type="url" inputmode="url" placeholder="粘贴 detail.1688.com/offer/ 商品链接" required />
+            <select id="yunniudun-shop-id" name="shop_id" required><option value="">选择目标 Ozon 店铺</option></select>
+            <button class="secondary" type="submit" disabled>创建本地补采任务</button>
+          </form>
+          <div class="form-note" style="margin-top:12px">结果入库时，SKU 专属图与公共主图/商品描述详情图保持分离；不会自动生成草稿或提交 Ozon。</div>
+          <div class="table-wrap" style="margin-top:16px"><table><thead><tr><th>1688 链接</th><th>店铺</th><th>状态</th><th>SKU / 图片解析</th><th>更新时间</th><th>操作</th></tr></thead><tbody id="yunniudun-supplement-rows"><tr><td colspan="6" class="muted">正在读取本地补采任务…</td></tr></tbody></table></div>
+        </section>
+      </section>
+      <section id="authorization-center" class="view">
+        <div class="page-title">
+          <div><h2>授权中心</h2><p>严选、云牛顿和商品智能标题使用独立授权；在这里查看状态并进入对应配置。</p></div>
+        </div>
+        <div class="authorization-grid">
+          <section class="panel authorization-card">
+            <div class="authorization-card-head"><div><span class="authorization-kicker">1688 选品来源</span><h3>严选授权</h3></div><span class="live" id="auth-open1688-status">正在读取…</span></div>
+            <p class="muted">用于严选商品搜索、筛选、详情和尺重补采。授权与其他 1688 能力隔离。</p>
+            <button type="button" class="primary" id="auth-open1688-configure">配置严选授权</button>
+          </section>
+          <section class="panel authorization-card">
+            <div class="authorization-card-head"><div><span class="authorization-kicker">1688 Agent</span><h3>云牛顿授权</h3></div><span class="live" id="auth-yunniudun-status">正在读取…</span></div>
+            <p class="muted">用于特殊链接的 SKU 补采和任务回传。不会自动询盘、下单或发布。</p>
+            <button type="button" class="secondary" id="auth-yunniudun-open">进入云牛顿授权</button>
+          </section>
+          <section class="panel authorization-card authorization-card-wide">
+            <div class="authorization-card-head"><div><span class="authorization-kicker">1688 官方增值能力</span><h3>商品智能标题及卖点授权</h3></div><span class="live" id="intelligent-title-status">正在读取配置…</span></div>
+            <p class="muted">根据商品主图和已确认类目返回 CPV、卖点和建议标题，商品编辑器内可直接调用。</p>
+            <form id="intelligent-title-credentials" class="authorization-form">
+              <label>AppKey<input id="intelligent-title-app-key" value="4663405" inputmode="numeric" required /></label>
+              <label>AppSecret<input id="intelligent-title-app-secret" type="password" autocomplete="off" required /></label>
+              <label class="authorization-form-wide">AccessToken<input id="intelligent-title-access-token" type="password" autocomplete="off" placeholder="粘贴 author 授权后的 AccessToken" required /></label>
+              <div class="form-note authorization-form-wide">三项凭据仅提交到本机后端并加密保存。保存后不会回显 Token，也不会自动创建任务或提交 Ozon。</div>
+              <div class="head-actions authorization-form-wide"><button class="primary" type="submit">安全保存凭据</button><button class="secondary" id="intelligent-title-authorize" type="button">用此 AppKey 打开 author 授权</button><button class="secondary" id="intelligent-title-refresh" type="button">刷新状态</button></div>
+              <label class="authorization-form-wide">授权回调地址或 code（授权后粘贴）<textarea id="intelligent-title-code" rows="2" placeholder="粘贴 1688 授权返回的完整地址，或 code= 后的值"></textarea></label>
+              <button class="secondary authorization-form-wide" id="intelligent-title-exchange" type="button">换取并保存 AccessToken</button>
+            </form>
+          </section>
+        </div>
+      </section>
+      <section id="pricing" class="view">
+        <div class="page-title">
+          <div>
+            <h2>定价与营销</h2>
+            <p>
+              自动定价策略作用于 ERP 全部店铺，保存后新采集商品立即使用新参数。
+            </p>
+          </div>
+        </div>
+        <section class="panel">
+          <div class="toolbar tabs">
+            <button class="tab active" data-price-tab="rules">自动定价</button
+            ><button class="tab" data-price-tab="marketing">营销活动</button>
+          </div>
+          <div id="pricing-rules">
+            <div class="pricing-flow" aria-label="自动定价公式">
+              <article>
+                <small>① 采购成本</small><strong>货源价 + 采购缓冲</strong
+                ><span>补入国内运费和采购误差</span>
+              </article>
+              <i>→</i>
+              <article>
+                <small>② 物流等级</small><strong>尺重 + 预估售价</strong
+                ><span>Extra Small / Budget / Small / Big</span>
+              </article>
+              <i>→</i>
+              <article>
+                <small>③ 成本合计</small
+                ><strong>采购 + 物流 + 佣金 + 杂费</strong
+                ><span>佣金和比例杂费随售价迭代</span>
+              </article>
+              <i>→</i>
+              <article>
+                <small>④ 最终售价</small><strong>成本 ÷ (1 - 目标利润率)</strong
+                ><span>变化小于 ¥0.01 后停止</span>
+              </article>
+            </div>
+            <form id="pricing-policy-form" class="pricing-policy-form">
+              <div class="pricing-group">
+                <h3>成本参数</h3>
+                <label
+                  >采购缓冲（CNY）<input
+                    name="purchase_buffer_cny"
+                    type="number"
+                    min="0"
+                    max="1000"
+                    step="0.01"
+                    required /></label
+                ><label
+                  >平台佣金率（%）<input
+                    name="commission_percent"
+                    type="number"
+                    min="0"
+                    max="90"
+                    step="0.01"
+                    required /></label
+                ><label
+                  >比例杂费率（%）<input
+                    name="misc_percent"
+                    type="number"
+                    min="0"
+                    max="90"
+                    step="0.01"
+                    required /></label
+                ><label
+                  >固定杂费（CNY）<input
+                    name="fixed_misc_fee"
+                    type="number"
+                    min="0"
+                    max="1000"
+                    step="0.01"
+                    required
+                /></label>
+              </div>
+              <div class="pricing-group">
+                <h3>利润与展示价</h3>
+                <label
+                  >目标利润率（%）<input
+                    name="target_profit_percent"
+                    type="number"
+                    min="1"
+                    max="89"
+                    step="0.01"
+                    required /></label
+                ><label
+                  >销售价底线（CNY）<input
+                    name="listing_price_floor_cny"
+                    type="number"
+                    min="0.01"
+                    max="635"
+                    step="0.01"
+                    value="26.99"
+                    required /></label
+                ><label
+                  >原价倍数<input
+                    name="old_price_multiplier"
+                    type="number"
+                    min="1"
+                    max="10"
+                    step="0.01"
+                    required /></label
+                ><label
+                  >最低利润率（%）<input
+                    name="minimum_profit_percent"
+                    type="number"
+                    min="0"
+                    max="89"
+                    step="0.01"
+                    required /></label
+                ><label
+                  >最低利润额（CNY）<input
+                    name="minimum_profit_cny"
+                    type="number"
+                    min="0"
+                    max="10000"
+                    step="0.01"
+                    required
+                /></label>
+              </div>
+              <div class="pricing-group">
+                <h3>风险与计算</h3>
+                <label
+                  >物流占比提醒（%）<input
+                    name="logistics_warn_percent"
+                    type="number"
+                    min="1"
+                    max="100"
+                    step="0.01"
+                    required /></label
+                ><label
+                  >最大迭代次数<input
+                    name="max_iterations"
+                    type="number"
+                    min="5"
+                    max="100"
+                    step="1"
+                    required
+                /></label>
+                <div class="pricing-rule-note">
+                  最终售价不得低于销售价底线。Ozon
+                  最低售价按最终售价取整；若最终售价本身为整数，则减 1。
+                </div>
+                <button class="primary" type="submit">保存自动定价策略</button
+                ><span id="pricing-policy-meta" class="muted"></span>
+              </div>
+            </form>
+            <div class="pricing-simulator">
+              <div>
+                <h3>即时试算</h3>
+                <p>用当前输入参数预览，不需要先保存。</p>
+              </div>
+              <div class="pricing-simulator-inputs">
+                <label
+                  >货源价<input
+                    id="pricing-test-source"
+                    type="number"
+                    value="10"
+                    min="0"
+                    step="0.01" /></label
+                ><label
+                  >重量 g<input
+                    id="pricing-test-weight"
+                    type="number"
+                    value="100"
+                    min="1" /></label
+                ><label
+                  >长 mm<input
+                    id="pricing-test-length"
+                    type="number"
+                    value="100"
+                    min="1" /></label
+                ><label
+                  >宽 mm<input
+                    id="pricing-test-width"
+                    type="number"
+                    value="80"
+                    min="1" /></label
+                ><label
+                  >高 mm<input
+                    id="pricing-test-height"
+                    type="number"
+                    value="50"
+                    min="1" /></label
+                ><button
+                  class="secondary"
+                  id="pricing-test-button"
+                  type="button"
+                >
+                  按当前参数试算
+                </button>
+              </div>
+              <div id="pricing-test-result" class="pricing-result muted">
+                填写参数后点击试算。
+              </div>
+            </div>
+            <div class="shipping-levels">
+              <h3>人民币物流等级（只读规则）</h3>
+              <table>
+                <thead>
+                  <tr>
+                    <th>等级</th>
+                    <th>重量 / 售价</th>
+                    <th>尺寸上限</th>
+                    <th>运费</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  <tr>
+                    <td>Extra Small</td>
+                    <td>1–500g / ¥0.01–135</td>
+                    <td>三边和 ≤ 90cm</td>
+                    <td>¥25/kg + ¥3</td>
+                  </tr>
+                  <tr>
+                    <td>Budget</td>
+                    <td>500–30000g / ¥0.01–135</td>
+                    <td>三边和 ≤ 150cm，最长边 ≤ 80cm</td>
+                    <td>¥17/kg + ¥23</td>
+                  </tr>
+                  <tr>
+                    <td>Small</td>
+                    <td>1–2000g / ¥135.01–635</td>
+                    <td>三边和 ≤ 150cm，最长边 ≤ 80cm</td>
+                    <td>¥25/kg + ¥16</td>
+                  </tr>
+                  <tr>
+                    <td>Big</td>
+                    <td>2001–30000g / ¥135.01–635</td>
+                    <td>三边和 ≤ 250cm，最长边 ≤ 150cm</td>
+                    <td>¥17/kg + ¥36</td>
+                  </tr>
+                </tbody>
+              </table>
+            </div>
+          </div>
+          <div id="marketing-panel" style="display: none">
+            <div class="toolbar">
+              <button class="primary" id="load-promotions">
+                ↻ 拉取全部店铺活动</button
+              ><button
+                class="secondary"
+                id="exit-all-promotions"
+                style="color: #c62828; border-color: #c62828"
+              >
+                退出全部可退出活动</button
+              ><span>明确 CPC / CPO 活动仅展示，不纳入退出。</span>
+            </div>
+            <table>
+              <thead>
+                <tr>
+                  <th>店铺</th>
+                  <th>活动</th>
+                  <th>类型</th>
+                  <th>参与商品</th>
+                  <th>开始</th>
+                  <th>结束</th>
+                  <th>状态</th>
+                </tr>
+              </thead>
+              <tbody id="promotion-rows">
+                <tr>
+                  <td colspan="7" class="muted">点击“拉取全部店铺活动”查看</td>
+                </tr>
+              </tbody>
+            </table>
+          </div>
+        </section>
+      </section>
+      <section id="sync" class="view">
+        <div class="page-title">
+          <div>
+            <h2>同步中心</h2>
+            <p>只读同步商品和 FBS 订单；失败可查看原因并重试。</p>
+          </div>
+          <button class="primary" id="run-sync">↻ 立即只读同步</button>
+        </div>
+        <section class="panel">
+          <table>
+            <thead>
+              <tr>
+                <th>店铺</th>
+                <th>资源</th>
+                <th>状态</th>
+                <th>读取/更新</th>
+                <th>完成时间</th>
+                <th>说明</th>
+              </tr>
+            </thead>
+            <tbody id="sync-rows">
+              <tr>
+                <td colspan="6" class="muted">请选择店铺后查看同步记录</td>
+              </tr>
+            </tbody>
+          </table>
+        </section>
+      </section>
+      <section id="bulk-listing" class="view bulk-listing-view">
+        <div class="candidate-heading">
+          <div><h2>批量刊登</h2><p>管理同类商品批处理任务、预处理进度、异常审核与店铺发布额度。</p></div>
+          <div><button id="bulk-listing-refresh" class="secondary" type="button">刷新</button> <button id="bulk-listing-create" class="primary" type="button">创建批量任务</button></div>
+        </div>
+        <section class="candidate-surface">
+          <div id="bulk-listing-summary" class="candidate-stats"></div>
+          <div class="table-wrap"><table><thead><tr><th>任务与即时进度</th><th>来源</th><th>目标店铺</th><th>总数</th><th>等待中</th><th>需处理</th><th>已提交/成功</th><th>状态</th><th>操作</th></tr></thead><tbody id="bulk-listing-rows"><tr><td colspan="9" class="muted">正在加载批量任务…</td></tr></tbody></table></div>
+          <section id="bulk-task-detail" hidden><h3 id="bulk-task-detail-title">任务明细</h3><p id="bulk-task-detail-meta" class="muted"></p><div class="candidate-selection-bar"><button id="bulk-detail-refresh" type="button" class="secondary">刷新明细</button><button id="bulk-retry-selected" type="button" class="primary" disabled>批量重新处理所选</button><label><input id="bulk-detail-select-all" type="checkbox"> 全选当前筛选</label><span class="muted">重新处理会重建草稿、自动修复并预检；仍有问题会保留为“需处理”，通过后才提交。额度不足只停在“等待额度”。</span></div><div class="table-wrap"><table><thead><tr><th style="width:42px"><input id="bulk-detail-select-all-head" type="checkbox" aria-label="全选当前筛选"></th><th>ERP编码</th><th>1688货源ID</th><th>商品</th><th><details class="bulk-shop-filter"><summary id="bulk-item-shop-filter-label">Ozon店铺</summary><div id="bulk-item-shop-filter-options" class="bulk-shop-filter-options"></div></details></th><th><label class="bulk-th-filter">状态<select id="bulk-item-status-filter" class="bulk-status-filter"><option value="">全部</option><option value="queued">等待处理</option><option value="processing">正在处理</option><option value="waiting_quota">等待额度</option><option value="submitted">Ozon处理中</option><option value="imported">已成功</option><option value="failed">提交失败</option><option value="needs_review">需处理</option><option value="skipped">已归档</option></select></label></th><th><label class="bulk-th-filter">更新时间<select id="bulk-item-time-sort" class="bulk-status-filter" aria-label="按更新时间排序"><option value="desc">时间倒序（最新在前）</option><option value="asc">时间正序（最早在前）</option></select></label></th><th>问题</th><th>处理</th></tr></thead><tbody id="bulk-task-detail-rows"></tbody></table></div></section>
+        </section>
+      </section>
+      <section id="operation-logs" class="view">
+        <div class="candidate-heading">
+          <div><h2>操作日志</h2><p>记录批量提交、修正、回执、库存同步和人工操作；日志只追加，不覆盖历史。</p></div>
+          <button id="operation-logs-refresh" class="secondary" type="button">刷新</button>
+        </div>
+        <section class="candidate-surface">
+          <div class="candidate-filters"><select id="operation-log-shop"><option value="">全部店铺</option></select><input id="operation-log-action" placeholder="按动作筛选（可选）" /><span id="operation-log-summary" class="muted"></span></div>
+          <div class="table-wrap"><table><thead><tr><th>时间</th><th>操作者</th><th>店铺</th><th>动作</th><th>对象</th><th>结果/详情</th></tr></thead><tbody id="operation-log-rows"><tr><td colspan="6" class="muted">正在加载操作日志…</td></tr></tbody></table></div>
+        </section>
+      </section>
+      <section id="candidate-pool" class="view candidate-pool">
+        <div class="candidate-heading">
+          <div>
+            <h2>候选商品</h2>
+            <p>
+              查看夜间严选候选，人工检查后选择店铺进入上架编辑器。
+            </p>
+          </div>
+          <button id="candidate-refresh" class="secondary" type="button">
+            刷新
+          </button>
+        </div>
+        <section id="candidate-stats" class="candidate-stats"></section>
+        <section class="candidate-surface">
+          <div class="candidate-filters">
+            <input
+              id="candidate-query"
+              placeholder="搜索商品标题或 Offer ID"
+            /><select id="candidate-status">
+              <option value="">工作队列（可处理）</option>
+              <option value="ready_for_review" selected>待人工上架</option>
+              <option value="draft_ready">草稿就绪</option>
+              <option value="needs_review">需人工处理</option>
+              <option value="ai_failed">AI失败</option>
+              <option value="package_pending">待补尺重</option>
+              <option value="risk_rejected">风险品类淘汰</option>
+              <option value="oversize_rejected">超重/超大淘汰</option>
+              <option value="filter_rejected">筛选淘汰</option>
+              <option value="submitted">已提交</option>
+              <option value="imported">已导入</option>
+              <option value="publish_failed">发布失败</option></select
+            ><button id="candidate-search" class="secondary" type="button">
+              筛选</button
+            ><select id="candidate-review-level">
+              <option value="">全部审核等级</option>
+              <option value="green">绿色·可批次审批</option>
+              <option value="yellow">黄色·只处理局部问题</option>
+              <option value="red">红色·完整审核</option>
+            </select
+            ><span id="candidate-total" class="muted">0 个候选</span>
+          </div>
+          <div id="candidate-selection-bar" class="candidate-selection-bar">
+            <label
+              ><input id="candidate-select-all" type="checkbox" />
+              全选本页</label
+            ><span id="candidate-selected-count">未选择商品</span
+            ><button id="candidate-set-sample" class="secondary" type="button" disabled>设为批次样板</button
+            ><button id="candidate-select-green" class="secondary" type="button">选择本页绿色</button
+            ><button
+              id="candidate-batch-ai"
+              class="primary"
+              type="button"
+              disabled
+            >
+              批量套用样板生成草稿
+            </button>
+            <label><input id="candidate-only-exceptions" type="checkbox" /> 仅查看异常商品</label>
+            <span id="candidate-sample-label" class="muted">尚未设置样板</span>
+          </div>
+          <div class="table-wrap">
+            <table>
+              <thead>
+                <tr>
+                  <th></th>
+                  <th>商品</th>
+                  <th>采购参考</th>
+                  <th>尺重/SKU</th>
+                  <th>店铺</th>
+                  <th>状态与原因</th>
+                  <th>操作</th>
+                </tr>
+              </thead>
+              <tbody id="candidate-rows">
+                <tr>
+                  <td colspan="7" class="muted">正在加载候选商品…</td>
+                </tr>
+              </tbody>
+            </table>
+          </div>
+          <footer class="candidate-pagination">
+            <button id="candidate-prev" class="secondary" type="button">
+              上一页</button
+            ><span id="candidate-page">第1页</span
+            ><button id="candidate-next" class="secondary" type="button">
+              下一页
+            </button>
+          </footer>
+        </section>
+      </section>
+      <section id="approval-center" class="view approval-center">
+        <div class="candidate-heading">
+          <div>
+            <h2>审批与发布</h2>
+            <p>按店铺建立审批批次；只有明确确认后才允许提交到 Ozon。</p>
+          </div>
+          <button id="approval-refresh" class="secondary" type="button">
+            刷新
+          </button>
+        </div>
+        <section class="approval-summary">
+          <article>
+            <span>待审批</span><strong id="approval-pending">0</strong>
+          </article>
+          <article>
+            <span>已审批</span><strong id="approval-approved">0</strong>
+          </article>
+          <article>
+            <span>部分提交</span><strong id="approval-partial">0</strong>
+          </article>
+          <article>
+            <span>已完成</span><strong id="approval-submitted">0</strong>
+          </article>
+        </section>
+        <section class="candidate-surface">
+          <div class="candidate-filters">
+            <strong>发布批次</strong
+            ><span class="muted"
+              >批准只建立本地发布队列；真实提交每次最多 20 个，并在提交前读取 Ozon 店铺当日创建额度。</span
+            >
+          </div>
+          <div class="table-wrap">
+            <table>
+              <thead>
+                <tr>
+                  <th>批次</th>
+                  <th>店铺</th>
+                  <th>商品数</th>
+                  <th>状态</th>
+                  <th>今日创建额度</th>
+                  <th>审批信息</th>
+                  <th>操作</th>
+                </tr>
+              </thead>
+              <tbody id="approval-rows">
+                <tr>
+                  <td colspan="7" class="muted">正在加载审批批次…</td>
+                </tr>
+              </tbody>
+            </table>
+          </div>
+        </section>
+      </section>
     </main>
-    <dialog id="shop-dialog"><form method="dialog" id="shop-form"><header><h3>接入 Ozon 店铺</h3><button class="icon" value="cancel">×</button></header><label>店铺名称<input name="name" required maxlength="160" placeholder="例如：xymall" /></label><label>Client ID<input name="client_id" required inputmode="numeric" pattern="[0-9]+" placeholder="来自 api.txt 的 id" /></label><label>API Key<input name="api_key" required type="password" minlength="20" autocomplete="new-password" placeholder="来自 api.txt 的 key" /></label><label>密钥备注<input name="key_label" maxlength="160" placeholder="例如：运营密钥（可选）" /></label><label>负责人<input name="manager_name" maxlength="120" placeholder="运营负责人姓名（可选）" /></label><label>法人主体<input name="legal_entity" maxlength="160" placeholder="可选" /></label><div class="form-note">授权格式：Client ID + API Key。API Key 仅提交一次并加密保存，不会回显；履约模式固定 FBS，语言中文，币种 CNY。</div><footer><button class="secondary" value="cancel">取消</button><button class="primary" value="default">保存并接入</button></footer></form></dialog><dialog id="listing-dialog"><form method="dialog" id="listing-form"><header><h3>新建上架草稿</h3><button class="icon" value="cancel">×</button></header><label>商品标题<input name="title" required maxlength="500" placeholder="中文运营名称" /></label><label>Offer ID<input name="offer_id" required maxlength="128" placeholder="店铺内唯一货号" /></label><label>Ozon 末级类目 ID<input name="category_id" required maxlength="64" placeholder="从类目字典选择后填写" /></label><label>主图 URL<input name="primary_image_url" required type="url" placeholder="https://…" /></label><label>变体 SKU<input name="seller_sku" required maxlength="128" placeholder="例如：SKU-RED-M" /></label><label>采购成本（CNY）<input name="purchase_cost_cny" required type="number" min="0" step="0.01" /></label><label>重量（g）<input name="weight_g" required type="number" min="1" step="0.01" /></label><label>包装尺寸（mm，长 × 宽 × 高）<input name="length_mm" required type="number" min="1" step="0.01" /><input name="width_mm" required type="number" min="1" step="0.01" /><input name="height_mm" required type="number" min="1" step="0.01" /></label><div class="form-note">保存后仅建立本地草稿；点击“预检”才会计算 CNY 售价、最低价和物流档位，绝不会发布到 Ozon。</div><footer><button class="secondary" value="cancel">取消</button><button class="primary" value="default">保存草稿</button></footer></form></dialog><section id="order-drawer" class="drawer" aria-hidden="true"><header><div><small>FBS 订单明细</small><h3 id="drawer-posting-number">—</h3></div><button class="icon" id="close-order-drawer" aria-label="关闭">×</button></header><div id="drawer-content" class="muted">请选择订单查看商品明细。</div></section><div id="toast" role="status"></div><script src="./app.js"></script>
-  </body>
+    <dialog id="open1688-dialog">
+      <form id="open1688-form">
+        <header>
+          <h3>配置 1688 开放平台</h3>
+          <button class="icon" type="button" id="open1688-close">×</button>
+        </header>
+        <label
+          >AppKey<input id="open1688-app-key" value="4910210" required /></label
+        ><label
+          >AppSecret<input
+            id="open1688-app-secret"
+            type="password"
+            required /></label
+        ><label
+          >回调地址<input
+            id="open1688-redirect-uri"
+            type="url"
+            value="https://auth.1688.com/auth/authCode.htm"
+            required /></label
+        ><button class="primary" type="submit">保存并打开授权页</button
+        ><label
+          >授权后的完整地址或 code<textarea
+            id="open1688-code"
+            placeholder="粘贴包含 code=... 的地址"
+          ></textarea></label
+        ><button id="open1688-exchange" class="primary" type="button">
+          换取 AccessToken
+        </button>
+        <p class="form-note">密钥和 Token 仅在后端加密保存，不会回显。</p>
+      </form>
+    </dialog>
+    <dialog id="ozon-pull-dialog">
+      <form id="ozon-pull-form">
+        <header>
+          <h3>从 Ozon 拉取完整商品卡</h3>
+          <button class="icon" id="ozon-pull-close" type="button" aria-label="关闭">×</button>
+        </header>
+        <label
+          >Offer ID<input
+            id="ozon-pull-query"
+            maxlength="100"
+            placeholder="例如 KC000005"
+            required
+        /></label>
+        <div class="form-note">系统会在全部已接入店铺中查找，无需提前选择店铺；结果会标明所属店铺。</div>
+        <div id="ozon-pull-results" class="ozon-pull-results muted">
+          输入 Offer ID 后点击搜索。
+        </div>
+        <footer>
+          <button class="secondary" id="ozon-pull-cancel" type="button">取消</button
+          ><button class="primary" id="ozon-pull-search" type="submit">
+            搜索
+          </button>
+        </footer>
+      </form>
+    </dialog>
+    <dialog id="ozon-overwrite-dialog">
+      <form method="dialog" id="ozon-overwrite-form">
+        <header>
+          <h3>商品卡已有草稿</h3>
+          <button class="icon" value="cancel" aria-label="关闭">×</button>
+        </header>
+        <div id="ozon-overwrite-message" class="form-note"></div>
+        <footer>
+          <button class="secondary" id="ozon-open-existing" type="button">
+            打开原草稿</button
+          ><button class="primary" id="ozon-confirm-overwrite" type="button">
+            确认覆盖并重拉
+          </button>
+        </footer>
+      </form>
+    </dialog>
+    <dialog id="shop-dialog">
+      <form method="dialog" id="shop-form">
+        <header>
+          <h3>接入 Ozon 店铺</h3>
+          <button class="icon" value="cancel">×</button>
+        </header>
+        <label
+          >店铺名称<input
+            name="name"
+            required
+            maxlength="160"
+            placeholder="例如：xymall" /></label
+        ><label
+          >Client ID<input
+            name="client_id"
+            required
+            inputmode="numeric"
+            pattern="[0-9]+"
+            placeholder="来自 api.txt 的 id" /></label
+        ><label
+          >API Key<input
+            name="api_key"
+            required
+            type="password"
+            minlength="20"
+            autocomplete="new-password"
+            placeholder="来自 api.txt 的 key" /></label
+        ><label
+          >密钥备注<input
+            name="key_label"
+            maxlength="160"
+            placeholder="例如：运营密钥（可选）" /></label
+        ><label
+          >负责人<input
+            name="manager_name"
+            maxlength="120"
+            placeholder="运营负责人姓名（可选）" /></label
+        ><label
+          >法人主体<input
+            name="legal_entity"
+            maxlength="160"
+            placeholder="可选"
+        /></label>
+        <div class="form-note">
+          授权格式：Client ID + API Key。API Key
+          仅提交一次并加密保存，不会回显；履约模式固定 FBS，语言中文，币种 CNY。
+        </div>
+        <footer>
+          <button class="secondary" value="cancel">取消</button
+          ><button class="primary" value="default">保存并接入</button>
+        </footer>
+      </form>
+    </dialog>
+    <dialog id="listing-dialog">
+      <form method="dialog" id="listing-form">
+        <header>
+          <h3>新建上架草稿</h3>
+          <button class="icon" value="cancel">×</button>
+        </header>
+        <label
+          >商品标题<input
+            name="title"
+            required
+            maxlength="500"
+            placeholder="中文运营名称" /></label
+        ><label
+          >Offer ID<input
+            name="offer_id"
+            required
+            maxlength="128"
+            placeholder="店铺内唯一货号" /></label
+        ><label
+          >Ozon 末级类目 ID<input
+            name="category_id"
+            required
+            maxlength="64"
+            placeholder="从类目字典选择后填写" /></label
+        ><label
+          >主图 URL<input
+            name="primary_image_url"
+            required
+            type="url"
+            placeholder="https://…" /></label
+        ><label
+          >变体 SKU<input
+            name="seller_sku"
+            required
+            maxlength="128"
+            placeholder="例如：SKU-RED-M" /></label
+        ><label
+          >采购成本（CNY）<input
+            name="purchase_cost_cny"
+            required
+            type="number"
+            min="0"
+            step="0.01" /></label
+        ><label
+          >重量（g）<input
+            name="weight_g"
+            required
+            type="number"
+            min="1"
+            step="0.01" /></label
+        ><label
+          >包装尺寸（mm，长 × 宽 × 高）<input
+            name="length_mm"
+            required
+            type="number"
+            min="1"
+            step="0.01" /><input
+            name="width_mm"
+            required
+            type="number"
+            min="1"
+            step="0.01" /><input
+            name="height_mm"
+            required
+            type="number"
+            min="1"
+            step="0.01"
+        /></label>
+        <div class="form-note">
+          保存后仅建立本地草稿；点击“预检”才会计算 CNY
+          售价、最低价和物流档位，绝不会发布到 Ozon。
+        </div>
+        <footer>
+          <button class="secondary" value="cancel">取消</button
+          ><button class="primary" value="default">保存草稿</button>
+        </footer>
+      </form>
+    </dialog>
+    <section id="order-drawer" class="drawer" aria-hidden="true">
+      <header>
+        <div>
+          <small>FBS 订单明细</small>
+          <h3 id="drawer-posting-number">—</h3>
+        </div>
+        <button class="icon" id="close-order-drawer" aria-label="关闭">
+          ×
+        </button>
+      </header>
+      <div id="drawer-content" class="muted">请选择订单查看商品明细。</div>
+    </section>
+    <style>
+      .cb-quick-review-content{grid-template-columns:300px minmax(0,1fr)}
+      .cb-review-images{grid-column:1;grid-row:1 / span 5;position:sticky;top:0;align-self:start}
+      .cb-quick-image-grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:8px;max-height:500px;overflow:auto}
+      .cb-quick-image-card{position:relative;display:grid;gap:3px;font-size:11px;color:#728099;cursor:pointer}
+      .cb-quick-image-card input{position:absolute;z-index:1;left:5px;top:5px;width:16px;height:16px;accent-color:#1264db}
+      .cb-quick-image-card img{width:100%;aspect-ratio:1;object-fit:cover;border-radius:7px;border:2px solid transparent;background:#f5f7fb}
+      .cb-quick-image-card input:checked+img{border-color:#1264db;box-shadow:0 0 0 2px #1264db33}
+      .cb-quick-image-delete{position:absolute;z-index:2;right:5px;top:5px;width:24px;height:24px;padding:0;border:0;border-radius:50%;background:#c81e1ecc;color:#fff;font-size:18px;line-height:24px;cursor:pointer;opacity:.9}
+      .cb-quick-image-delete:hover,.cb-quick-image-delete:focus{opacity:1}
+      .cb-quick-image-dialog{width:min(96vw,1100px);height:min(96vh,900px);max-width:96vw;max-height:96vh;margin:auto;padding:18px;display:none;align-items:center;justify-content:center;overflow:hidden;border:0;border-radius:12px;background:#fff;box-shadow:0 20px 60px #071c3d66}
+      .cb-quick-image-dialog[open]{display:flex}
+      .cb-quick-image-dialog img{display:block;width:auto;height:auto;max-width:100%;max-height:100%;object-fit:contain;border-radius:6px}
+      .cb-quick-image-dialog>.icon{position:absolute;right:10px;top:6px;z-index:2;background:#fff;border-radius:50%}
+      .cb-image-dialog{width:min(96vw,1100px);height:min(96vh,900px);max-width:96vw;max-height:96vh;margin:auto;padding:18px;display:flex;align-items:center;justify-content:center;overflow:hidden;border:0;border-radius:10px;background:#fff}
+      .cb-image-dialog img{display:block;width:auto;height:auto;max-width:100%;max-height:100%;object-fit:contain;border-radius:6px;box-shadow:0 12px 40px rgba(0,0,0,.35);cursor:zoom-in}
+             .cb-review-card{margin-bottom:12px;padding:12px;border:1px solid #e5e9f0;border-radius:8px;background:#fff}
+       .cb-review-card h4{margin:0 0 8px;font-size:14px;color:#1a2b4a;font-weight:600}
+       .cb-review-status{display:flex;align-items:center;gap:8px;margin-bottom:8px}
+       .cb-review-dot{width:8px;height:8px;border-radius:50%;background:#2e7d32}
+       .cb-review-dot.warn{background:#f57c00}
+       .cb-review-dot.todo{background:#9e9e9e}
+       .cb-review-grid{display:grid;grid-template-columns:repeat(4,1fr);gap:8px}
+       .cb-review-grid label{display:flex;flex-direction:column;gap:3px;font-size:12px;color:#728099}
+       .cb-review-grid input{padding:6px 8px;border:1px solid #d5dbe6;border-radius:6px;font-size:13px}
+       .cb-review-note{margin:8px 0 0;font-size:12px;color:#728099;line-height:1.5}
+       .cb-review-note.success{color:#2e7d32}
+       .cb-review-note.warn{color:#c62828}
+       .cb-review-actions{display:flex;flex-wrap:wrap;gap:6px;margin-top:8px}
+       .cb-review-chip{display:inline-flex;align-items:center;padding:2px 8px;border-radius:10px;background:#eef2f9;color:#1a2b4a;font-size:11px;font-weight:500}
+       .cb-review-chip.warn{background:#fff3e0;color:#e65100}
+       .cb-review-chip.ok{background:#e8f5e9;color:#2e7d32}
+       .cb-quick-category-details summary{cursor:pointer;color:#1264db;padding:6px 0;font-size:13px;outline:none}
+       .cb-quick-candidate-list{display:grid;grid-template-columns:1fr;gap:6px;margin-top:6px}
+       .cb-quick-category-candidate{width:100%;justify-content:flex-start;text-align:left;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+       .cb-quick-review-dialog{width:min(96vw,1160px);max-width:96vw;margin:auto;padding:0;border:0;border-radius:12px;background:#fff;box-shadow:0 20px 60px rgba(7,28,61,.4)}
+       .cb-quick-review-form{display:flex;flex-direction:column;max-height:90vh}
+       .cb-quick-review-head{display:flex;justify-content:space-between;align-items:center;padding:14px 18px;border-bottom:1px solid #eef0f0}
+       .cb-quick-review-head h3{margin:2px 0 0;font-size:17px;color:#1a2b4a}
+       .cb-quick-review-head small{color:#728099;font-size:12px}
+       .cb-quick-review-content{padding:16px 18px;overflow-y:auto;display:grid;gap:12px;flex:1}
+       .cb-quick-review-form footer{display:flex;justify-content:flex-end;gap:10px;padding:12px 18px;border-top:1px solid #eef0f0}
+@media(max-width:600px){.cb-quick-review-content{grid-template-columns:1fr}.cb-review-images{grid-column:1;grid-row:auto;position:static}}
+    </style>
+    <dialog id="cb-quick-review" class="cb-quick-review-dialog" aria-labelledby="cb-quick-review-title">
+      <form method="dialog" class="cb-quick-review-form">
+        <header class="cb-quick-review-head">
+          <div><small>采集箱 · 快速审核</small><h3 id="cb-quick-review-title">确认商品后继续下一件</h3></div>
+          <button type="button" class="icon" id="cb-quick-review-close" aria-label="关闭">×</button>
+        </header>
+        <div id="cb-quick-review-content" class="cb-quick-review-content"></div>
+        <footer>
+          <button type="button" class="secondary" id="cb-quick-review-editor">进入完整编辑器</button>
+          <button type="button" class="primary" id="cb-quick-review-save">保存尺重并提交 Ozon</button>
+        </footer>
+      </form>
+    </dialog>
+    <dialog id="bulk-batch-dialog" class="badge-batch-dialog">
+      <form id="bulk-batch-form" method="dialog">
+        <header><div><small>通用同类商品批处理</small><h3>创建批量刊登任务</h3></div><button type="button" class="icon" id="bulk-batch-close">×</button></header>
+        <div class="badge-batch-grid">
+          <label>任务名称<input name="name" placeholder="例如：义乌卓博徽章第一批" required></label>
+          <label>来源范围<select name="source_shop_key" id="bulk-batch-source" required><option value="">请选择来源店铺</option></select></label>
+          <label>Ozon分类<div class="bulk-category-combobox"><input id="bulk-batch-category-search" type="search" placeholder="点击展开分类；输入关键词搜索" autocomplete="off"><input name="category_pair" id="bulk-batch-category" type="hidden"><div id="bulk-batch-category-menu" class="bulk-category-menu" hidden></div></div></label>
+          <fieldset><legend>分类属性（完整显示，可回填后人工纠错）</legend><button type="button" class="secondary" id="bulk-batch-autofill">按本批代表商品补空</button><div id="bulk-batch-attributes" class="listing-required-attributes"><span class="muted">选择分类后加载全部 Ozon 属性</span></div></fieldset>
+          <label>分配方式<select name="distribution_mode"><option value="round_robin">平均轮询分配</option><option value="quota_weighted">按Ozon额度智能分配</option><option value="fixed">全部固定到首个店铺</option></select></label>
+          <fieldset><legend>目标Ozon店铺</legend><div id="bulk-batch-shops" class="badge-batch-shops"></div></fieldset>
+          <fieldset><legend>定价方式</legend><div class="badge-batch-fields" style="grid-column:1/-1"><label style="flex-direction:row;align-items:center;gap:8px"><input name="pricing_mode_system" type="checkbox" style="width:auto"> 使用系统定价模型（勾选后按采购成本、物流和利润率计算；不勾选使用下方固定价格）</label></div><div class="badge-batch-fields" id="bulk-manual-price-fields"><label>售价<input name="sale_price_cny" type="number" value="26" step="0.01" required></label><label>原价<input name="old_price_cny" type="number" value="52" step="0.01" required></label><label>最低价<input name="min_price_cny" type="number" value="25" step="0.01" required></label><label>内部成本<input name="internal_cost_cny" type="number" value="0" step="0.01" disabled></label></div></fieldset>
+          <fieldset><legend>统一尺重、库存与SKU</legend><div class="badge-batch-fields"><label>重量g<input name="weight_g" type="number" min="0.01" step="0.01" required></label><label>长mm<input name="length_mm" type="number" min="0.01" step="0.01" required></label><label>宽mm<input name="width_mm" type="number" min="0.01" step="0.01" required></label><label>高mm<input name="height_mm" type="number" min="0.01" step="0.01" required></label><label>库存<input name="stock" type="number" value="999" min="0" required></label><label>SKU前缀<input name="sku_prefix" maxlength="20" placeholder="例如 BADGE"></label></div></fieldset>
+          <label>颜色策略<select name="color_strategy"><option value="dictionary_match_then_stable">先匹配真实颜色，失败再稳定分配</option><option value="stable_dictionary">使用Ozon字典稳定分配</option><option value="manual">全部人工确认</option></select></label>
+          <label class="badge-batch-check"><input name="ocr_remove_chinese_size_weight" type="checkbox" checked> OCR排除中文尺重图（保留英文尺重图，原始采集图不删除）</label>
+          <label class="badge-batch-check"><input name="ocr_remove_marketing_images" type="checkbox" checked> OCR排除营销/厂家/定制/促销/OEM等无关图片（含SKU图，原始采集图不删除）</label>
+          <label class="badge-batch-check"><input name="translate_product_images" type="checkbox"> 仅对OCR识别到文字的保留图片翻译为俄文（含SKU图；已排除图片不翻译）</label>
+          <label class="badge-batch-check"><input name="use_original_video" type="checkbox"> 使用采集到的原视频（默认不使用厂家介绍视频；勾选后仍通过 media.woxq.cn 处理）</label>
+          <label class="badge-batch-check"><input name="auto_continue_next_day" type="checkbox"> Ozon额度恢复后次日自动继续，无需逐项批准</label>
+          <fieldset><legend>批处理模板</legend><div class="badge-batch-fields" style="grid-column:1/-1;align-items:end"><label>模板名称<input name="template_name" placeholder="留空则不保存为模板；输入名称后自动保存"></label><select name="load_template" id="bulk-template-select"><option value="">加载已保存模板…</option></select><button type="button" class="secondary" id="bulk-save-template">保存当前输入为模板</button><button type="button" class="secondary" id="bulk-delete-template" style="display:none">删除模板</button></div></fieldset>
+          <p id="bulk-batch-preview" class="muted">选择来源范围后显示商品和SKU数量。创建后只建立本地任务队列。</p>
+          <p id="bulk-batch-error" class="bulk-batch-error" hidden></p>
+        </div>
+        <footer><button type="button" class="secondary" id="bulk-batch-cancel">取消</button><button type="submit" class="primary">创建本地任务</button></footer>
+      </form>
+    </dialog>
+    <div id="toast" role="status"></div>
+                 <script src="./app.js?v=127"></script>
+    <script src="./quick-review.js?v=2"></script>
+    <script src="./qr-injector.js"></script>
+    <div id="image-modal" class="image-modal" style="display:none;position:fixed;inset:0;background:#000000e6;z-index:9999;place-items:center;padding:24px;cursor:zoom-out">
+    <img id="image-modal-img" src="" alt="" style="max-width:92vw;max-height:92vh;object-fit:contain;cursor:default">
+  </div>
+</body>
 </html>
 

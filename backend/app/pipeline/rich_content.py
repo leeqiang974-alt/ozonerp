@@ -80,38 +80,16 @@ def build_showcase_widget(image_urls: list[str]) -> dict[str, Any]:
     }
 
 
-def build_text_widget(
-    title_lines: list[str] | None = None,
-    text_lines: list[str] | None = None,
-    theme: str = "bullet",
-) -> dict[str, Any]:
-    """Build a list (text) widget with optional title and body text."""
-    block: dict[str, Any] = {}
-    if title_lines:
-        block["title"] = {
-            "content": title_lines,
-            "size": "size4",
-            "align": "left",
-            "color": "color1",
-        }
-    if text_lines:
-        block["text"] = {
-            "content": text_lines,
-            "size": "size2",
-            "align": "left",
-            "color": "color1",
-        }
-    if not block:
-        block["text"] = {
-            "content": [""],
-            "size": "size2",
-            "align": "left",
-            "color": "color1",
-        }
+def build_text_widget(text: str) -> dict[str, Any]:
+    """Build the raTextBlock shape used by ERP listings accepted by Ozon."""
     return {
-        "widgetName": "list",
-        "theme": theme,
-        "blocks": [block],
+        "widgetName": "raTextBlock",
+        "type": "text",
+        "blocks": [{
+            "imgLink": "",
+            "img": {"src": "", "srcMobile": "", "alt": "", "position": "width_full", "positionMobile": "width_full"},
+            "paragraphs": [{"content": text, "size": "size3", "color": "color1", "align": "align1"}],
+        }],
     }
 
 
@@ -120,7 +98,7 @@ def build_rich_content(
     description_ru: str = "",
     title_ru: str = "",
     description_as_text_block: bool = True,
-    images_first: bool = True,
+    images_first: bool = False,
 ) -> str:
     """Build the complete Rich Content JSON string.
 
@@ -146,14 +124,7 @@ def build_rich_content(
     # Build text widget from description
     text_widget = None
     if description_as_text_block and description_ru:
-        # Split description into lines
-        desc_lines = [line.strip() for line in description_ru.split("\n") if line.strip()]
-        title_lines = [title_ru] if title_ru else None
-        if desc_lines:
-            text_widget = build_text_widget(
-                title_lines=title_lines,
-                text_lines=desc_lines,
-            )
+        text_widget = build_text_widget(description_ru.strip())
 
     # Order widgets
     if images_first:
@@ -175,7 +146,7 @@ def build_rich_content(
             "blocks": [],
         })
 
-    return json.dumps({"content": widgets}, ensure_ascii=False, separators=(",", ":"))
+    return json.dumps({"content": widgets, "version": 0.3}, ensure_ascii=False, separators=(",", ":"))
 
 
 def get_rich_content_attribute(image_urls: list[str], description_ru: str = "", title_ru: str = "") -> dict[str, Any]:

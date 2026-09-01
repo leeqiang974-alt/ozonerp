@@ -12,6 +12,8 @@ const workerStatus = document.querySelector("#workerStatus");
 const pollWorkerButton = document.querySelector("#pollWorkerButton");
 const skuList = document.querySelector("#skuList");
 const skuToggleButton = document.querySelector("#skuToggleButton");
+const shopScanButton = document.querySelector("#shopScanButton");
+const EXPECTED_CONTENT_VERSION = "0.6.5";
 let pendingPayload = null;
 let skuVariants = [];
 let selectedSkuKeys = new Set();
@@ -22,6 +24,12 @@ function setStatus(message, type = "") {
   statusEl.className = `status ${type}`.trim();
 }
 
+async function erpRequest(path, options = {}) {
+  const result = await chrome.runtime.sendMessage({ type: "OZON_ERP_REQUEST", path, options });
+  if (!result?.ok) throw new Error(result?.error || "本地 ERP 请求失败");
+  return result.data;
+}
+
 async function activeTab() {
   const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
   if (!tab?.id) throw new Error("没有找到当前标签页。");
@@ -30,12 +38,37 @@ async function activeTab() {
 
 async function ensureContentScript(tabId) {
   try {
-    await chrome.tabs.sendMessage(tabId, { type: "PING_1688_COLLECTOR" });
+    const pong = await chrome.tabs.sendMessage(tabId, { type: "PING_1688_COLLECTOR_061" });
+    if (pong?.version !== EXPECTED_CONTENT_VERSION) throw new Error("旧页面脚本");
   } catch {
+    await chrome.scripting.executeScript({
+      target: { tabId },
+      func: () => {
+        document.querySelector("#ozon-erp-1688-floating")?.remove();
+        delete document.documentElement.dataset.ozonErp1688Injected;
+      },
+    });
     await chrome.scripting.executeScript({
       target: { tabId },
       files: ["content.js"],
     });
+  }
+}
+
+async function startShopScan() {
+  shopScanButton.disabled = true;
+  setStatus("正在连接当前1688店铺页面...");
+  try {
+    const tab = await activeTab();
+    if (!/^https:\/\/[^/]*1688\.com\//i.test(tab.url || "")) throw new Error("请先打开1688店铺的“全部商品”页面");
+    await ensureContentScript(tab.id);
+    const result = await chrome.tabs.sendMessage(tab.id, { type: "START_1688_SHOP_SCAN" });
+    if (!result?.ok) throw new Error(result?.error || "无法启动全店扫描");
+    setStatus("全店采集已经启动，发现商品后会立即采集详情。请查看网页右侧浮窗中的实时进度。", "ok");
+  } catch (error) {
+    setStatus(error.message || "全店扫描启动失败", "error");
+  } finally {
+    shopScanButton.disabled = false;
   }
 }
 
@@ -53,13 +86,10 @@ async function collectCurrentProduct() {
     if (isOzon) {
       const ozonResult = await chrome.tabs.sendMessage(tab.id, { type: "COLLECT_OZON_PRODUCT_DETAIL" });
       if (!ozonResult?.ok) throw new Error(ozonResult?.error || "Ozon 商品采集失败");
-      const response = await fetch("http://localhost:8000/api/ozon/capture", {
+      const result = await erpRequest("/api/ozon-learning/extension/detail-result", {
         method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ storeId: storeSelect.value, payload: ozonResult.payload || {} }),
+        body: { storeId: storeSelect.value, payload: ozonResult.payload || {} },
       });
-      const result = await response.json();
-      if (!response.ok) throw new Error(result.detail || "Ozon 商品发送失败");
       setStatus(result.duplicate ? "已更新 Ozon 商品采集快照" : "Ozon 商品采集成功，已进入 ERP 二开草稿", "ok");
       return;
     }
@@ -83,10 +113,10 @@ async function collectCurrentProduct() {
     }
     pendingPayload = null;
     if (result.duplicate) {
-      setStatus(`已采集过：${result.title || "未命名商品"}\nERP 已保留原记录。`, "ok");
+      setStatus(`${result.duplicateMessage || `已采集过：${result.title || "未命名商品"}`}\n本次识别 ${result.imageCount ?? "-"} 张，图库现有 ${result.imageCount ?? "-"} 张。`, "ok");
       return;
     }
-    setStatus(`采集成功：${result.title || "未命名商品"}\n回到 ERP 点“读取助手结果”。`, "ok");
+    setStatus(`采集成功：${result.title || "未命名商品"}\n本次识别 ${result.imageCount ?? "-"} 张，图库现有 ${result.imageCount ?? "-"} 张。`, "ok");
   } catch (error) {
     setStatus(error.message, "error");
   } finally {
@@ -138,9 +168,7 @@ function prefillManualPackageInfo(packageInfo = {}) {
 
 async function loadStores() {
   try {
-    const response = await fetch("http://localhost:8000/api/stores");
-    if (!response.ok) throw new Error("ERP 未连接");
-    const data = await response.json();
+    const data = await erpRequest("/api/stores");
     const saved = await getSavedStoreId();
     storeSelect.innerHTML = (data.stores || [])
       .map((store) => `<option value="${store.id}">${store.name} - ${store.clientId}</option>`)
@@ -243,6 +271,7 @@ async function pollWorkerNow() {
 
 storeSelect.addEventListener("change", () => saveStoreId(storeSelect.value));
 button.addEventListener("click", collectCurrentProduct);
+shopScanButton.addEventListener("click", startShopScan);
 pollWorkerButton.addEventListener("click", pollWorkerNow);
 skuToggleButton.addEventListener("click", () => {
   const nextAll = !allSkuSelected;

@@ -15,6 +15,7 @@ from sqlalchemy.orm import Session
 
 from .listing_metadata_service import get_category_attributes, search_category_attribute_values
 from .ai_service import suggest_attribute_value, _chat
+from .decision_memory_service import recommend_attribute_memories
 
 
 # ── 1688 attribute name -> Ozon attribute name keywords mapping ──────────────
@@ -150,6 +151,14 @@ def _extract_search_keywords(title: str, description: str = "", variant_specs: l
     return unique
 
 
+def _dictionary_option_by_id(options: list[dict], value_id: Any) -> dict | None:
+    """Return the canonical Ozon option only when the id came from this menu."""
+    candidate_id = str(value_id or "").strip()
+    if not candidate_id:
+        return None
+    return next((option for option in options if str(option.get("id") or "") == candidate_id), None)
+
+
 def auto_fill_attributes(
     db: Session,
     shop_id: int,
@@ -184,11 +193,36 @@ def auto_fill_attributes(
             source_desc = raw.get("source_description", "") or ""
 
     results = []
+    trusted_memories = recommend_attribute_memories(
+        db, shop_id=shop_id, category_id=str(category_id), type_id=str(type_id),
+    )
     for attr in attributes:
         attr_id = str(attr["id"])
         attr_name = attr.get("name", "")
         is_required = attr.get("required", False)
         dict_id = attr.get("dictionary_id", "")
+
+        remembered = trusted_memories.get(attr_id)
+        if remembered:
+            # A trusted memory record is not allowed to downgrade a dictionary
+            # attribute into free text. Older memories may predate value_id
+            # persistence; make those fields manual until the operator picks a
+            # current menu option.
+            if dict_id and not str(remembered.get("value_id") or "").strip():
+                results.append({
+                    "attribute_id": attr_id, "name": attr_name,
+                    "value_id": None, "value_text": None,
+                    "method": "manual", "required": is_required,
+                })
+                continue
+            results.append({
+                "attribute_id": attr_id, "name": attr_name,
+                "value_id": remembered.get("value_id"),
+                "value_text": remembered.get("value_text"),
+                "method": "trusted_memory", "required": is_required,
+                "confidence": remembered.get("confidence"),
+            })
+            continue
 
         # Skip video, PDF, etc.
         if _should_skip(attr):
@@ -207,9 +241,11 @@ def auto_fill_attributes(
                     if vals:
                         results.append({"attribute_id": attr_id, "name": attr_name, "value_id": vals[0]["id"], "value_text": vals[0]["value"], "method": "hardcoded", "required": is_required})
                     else:
-                        results.append({"attribute_id": attr_id, "name": attr_name, "value_id": None, "value_text": hardcoded["value_text"], "method": "hardcoded", "required": is_required})
+                        # A dictionary label without its Ozon menu ID is not a
+                        # usable value. Leave it for the operator to select.
+                        results.append({"attribute_id": attr_id, "name": attr_name, "value_id": None, "value_text": None, "method": "manual", "required": is_required})
                 except Exception:
-                    results.append({"attribute_id": attr_id, "name": attr_name, "value_id": None, "value_text": hardcoded["value_text"], "method": "hardcoded", "required": is_required})
+                    results.append({"attribute_id": attr_id, "name": attr_name, "value_id": None, "value_text": None, "method": "manual", "required": is_required})
             elif hardcoded.get("is_boolean"):
                 results.append({"attribute_id": attr_id, "name": attr_name, "value_id": None, "value_text": "false", "method": "hardcoded", "required": is_required})
             elif hardcoded.get("method") in ("ai_generate_hashtags", "ai_generate_description", "ai_generate_name", "skip_rich_content"):
@@ -232,10 +268,9 @@ def auto_fill_attributes(
                             source_title, source_desc,
                             dictionary_options=all_vals[:30],
                         )
-                        vid = ai_result.get("value_id")
-                        vtext = ai_result.get("value", "")
-                        if vid and str(vid) != "None":
-                            results.append({"attribute_id": attr_id, "name": attr_name, "value_id": str(vid), "value_text": vtext, "method": "ai_match", "required": is_required})
+                        option = _dictionary_option_by_id(all_vals, ai_result.get("value_id"))
+                        if option:
+                            results.append({"attribute_id": attr_id, "name": attr_name, "value_id": str(option["id"]), "value_text": option["value"], "method": "ai_match", "required": is_required})
                         else:
                             results.append({"attribute_id": attr_id, "name": attr_name, "value_id": None, "value_text": None, "method": "manual", "required": is_required})
                     else:
@@ -265,13 +300,9 @@ def auto_fill_attributes(
                         source_title, source_desc,
                         dictionary_options=all_vals[:30],
                     )
-                    vid = ai_result.get("value_id")
-                    vtext = ai_result.get("value", "")
-                    if vid and str(vid) != "None":
-                        results.append({"attribute_id": attr_id, "name": attr_name, "value_id": str(vid), "value_text": vtext, "method": "ai_match", "required": is_required})
-                        continue
-                    elif vtext:
-                        results.append({"attribute_id": attr_id, "name": attr_name, "value_id": None, "value_text": vtext, "method": "ai_match", "required": is_required})
+                    option = _dictionary_option_by_id(all_vals, ai_result.get("value_id"))
+                    if option:
+                        results.append({"attribute_id": attr_id, "name": attr_name, "value_id": str(option["id"]), "value_text": option["value"], "method": "ai_match", "required": is_required})
                         continue
             except Exception as e:
                 import sys

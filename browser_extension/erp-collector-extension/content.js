@@ -1,5 +1,38 @@
 ﻿let pageContext = null;
 let floatingState = { minimized: false, selectedSkuKeys: new Set(), allSelected: true };
+const SHOP_SCAN_STORAGE_KEY = "ozonErp1688ShopScan";
+const COLLECTOR_VERSION = "0.6.5";
+let extensionContextAvailable = true;
+
+function getExtensionRuntime() {
+  if (!extensionContextAvailable) return null;
+  try {
+    const runtime = globalThis.chrome?.runtime;
+    if (!runtime) extensionContextAvailable = false;
+    return runtime || null;
+  } catch (_) {
+    extensionContextAvailable = false;
+    return null;
+  }
+}
+
+function extensionReloadedError() {
+  return new Error("扩展已重新加载，请刷新当前 1688 页面后再操作");
+}
+
+async function sendRuntimeMessage(message) {
+  const runtime = getExtensionRuntime();
+  if (typeof runtime?.sendMessage !== "function") throw extensionReloadedError();
+  try {
+    return await runtime.sendMessage(message);
+  } catch (error) {
+    if (/Extension context invalidated|context invalidated/i.test(String(error?.message || error))) {
+      extensionContextAvailable = false;
+      throw extensionReloadedError();
+    }
+    throw error;
+  }
+}
 
 if (is1688Page()) {
   injectPageReader();
@@ -20,7 +53,91 @@ window.addEventListener("message", (event) => {
   if (event.data?.type === "OZON_ERP_NETWORK_JSON" && isOzonPage()) {
     applyOzonNetworkPayload(event.data.url || "", event.data.payload);
   }
+  if (event.data?.type === "OZON_ERP_1688_SHOP_SCAN_PAGE") handleShopScanPage(event.data);
+  if (event.data?.type === "OZON_ERP_1688_SHOP_SCAN_ERROR") handleShopScanError(event.data);
+  if (event.data?.type === "OZON_ERP_1688_SKU_DATA" && is1688Page()) {
+    recordNetworkSkuData(event.data.url || "", event.data.payload);
+  }
 });
+
+// Network-captured SKU data (from 1688 API responses).
+// Used as a fallback when window.context has no skuMapOriginal.
+let __netSkuData = {};
+function recordNetworkSkuData(url, payload) {
+  if (!url || !payload) return;
+  __netSkuData[String(url).slice(0, 200)] = payload;
+}
+
+function normalizeSkuMapRows(value) {
+  if (Array.isArray(value)) return value.filter((item) => item && typeof item === "object");
+  if (!value || typeof value !== "object") return [];
+  return Object.entries(value).flatMap(([key, item]) => {
+    if (!item || typeof item !== "object" || Array.isArray(item)) return [];
+    return [{
+      ...item,
+      skuId: item.skuId || item.sku_id || item.id || key,
+      specAttrs: item.specAttrs || item.skuName || item.specName || item.name || key,
+    }];
+  });
+}
+
+function looksLikeSkuRow(value) {
+  if (!value || typeof value !== "object") return false;
+  return [
+    "skuId", "sku_id", "specId", "specAttrs", "skuName", "specName",
+    "price", "skuPrice", "discountPrice", "canBookCount", "stock", "quantity",
+  ].some((key) => value[key] !== undefined && value[key] !== null && value[key] !== "");
+}
+
+function findNestedSkuRows(root) {
+  const results = [];
+  const seen = new WeakSet();
+  const skuKey = /(?:sku|spec)(?:map|list|infos?|arr|data|prices?|inventory|snapshot|props)?/i;
+  const visit = (value, depth = 0, fieldName = "") => {
+    if (!value || typeof value !== "object" || depth > 8 || seen.has(value)) return;
+    seen.add(value);
+    if (skuKey.test(fieldName)) {
+      const rows = normalizeSkuMapRows(value).filter(looksLikeSkuRow);
+      if (rows.length) results.push(rows);
+    }
+    if (Array.isArray(value)) {
+      value.slice(0, 1000).forEach((item) => visit(item, depth + 1));
+      return;
+    }
+    Object.entries(value).slice(0, 1500).forEach(([key, child]) => visit(child, depth + 1, key));
+  };
+  visit(root);
+  return results.sort((left, right) => right.length - left.length);
+}
+
+function getNetworkSkuLists() {
+  const results = [];
+  for (const payload of Object.values(__netSkuData)) {
+    if (!payload || typeof payload !== "object") continue;
+    const data = payload.data || payload.result || payload;
+    if (!data || typeof data !== "object") continue;
+    results.push(...findNestedSkuRows(data));
+    for (const key of ["skuList", "skuInfos", "skuMap", "skus", "skuArr", "sku", "specs", "specList"]) {
+      const rows = normalizeSkuMapRows(data[key]);
+      if (rows.length > 0) results.push(rows);
+    }
+    const model = data.skuModel || data.skuInfo || data.sku || data.specInfo;
+    if (model && typeof model === "object") {
+      for (const key of ["skuList", "skuInfos", "skuMap", "skus", "props", "skuProps"]) {
+        const rows = normalizeSkuMapRows(model[key]);
+        if (rows.length > 0) results.push(rows);
+      }
+    }
+  }
+  return results;
+}
+
+if (is1688Page()) {
+  // Retrieve requests captured before the normal content script reached
+  // document_idle. The page-world hook replies with its bounded cache.
+  window.postMessage({ type: "OZON_ERP_1688_REQUEST_SKU_DATA" }, "*");
+}
+
 
 function is1688Page() {
   return /(^|\.)1688\.com$/i.test(location.hostname);
@@ -173,25 +290,36 @@ async function getActiveStoreId() {
     });
     return {
       storeId: cfg.selectedStoreId || "1",
-      baseUrl: cfg.serverBaseUrl || "http://127.0.0.1:8000",
+      // Do not reuse a historical remote URL from extension storage: Ozon
+      // collection is local-only and intentionally independent of Mercado.
+      baseUrl: "http://127.0.0.1:8000",
     };
   } catch (e) {
     return { storeId: "1", baseUrl: "http://127.0.0.1:8000" };
   }
 }
 
+async function erpRequest(path, options = {}, baseUrl = "") {
+  const result = await sendRuntimeMessage({
+    type: "OZON_ERP_REQUEST",
+    path,
+    baseUrl,
+    options,
+  });
+  if (!result?.ok) throw new Error(result?.error || "本地 ERP 请求失败");
+  return result.data;
+}
+
 async function importProductToErp(productData) {
   try {
     const { storeId, baseUrl } = await getActiveStoreId();
-    const resp = await fetch(`${baseUrl}/api/ozon/capture`, {
+    return await erpRequest("/api/1688/capture", {
       method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
+      body: {
         storeId: String(storeId),
         payload: productData,
-      }),
-    });
-    return await resp.json();
+      },
+    }, baseUrl);
   } catch (e) {
     return { error: e.message };
   }
@@ -381,7 +509,9 @@ function injectOzonNetworkReader() {
   if (window.__ozonErpNetworkReaderInjected) return;
   window.__ozonErpNetworkReaderInjected = true;
   const script = document.createElement("script");
-  script.src = chrome.runtime.getURL("injected.js");
+  const getUrl = getExtensionRuntime()?.getURL;
+  if (!getUrl) return;
+  script.src = getUrl("injected.js");
   script.dataset.ozonErpNetworkReader = "1";
   (document.head || document.documentElement).appendChild(script);
   script.onload = () => script.remove();
@@ -515,10 +645,9 @@ async function reportOzonSellerEditDiff() {
   const signature = JSON.stringify(changes);
   if (signature === state.lastSignature) return;
   state.lastSignature = signature;
-  await fetch("http://127.0.0.1:8000/api/listing-edit-journal/events", {
+  await erpRequest("/api/listing-edit-journal/events", {
     method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({
+    body: {
       stage: "ozon_backend_edit",
       source: "ozon_seller_plugin",
       offerId: ozonSellerOfferId(),
@@ -529,7 +658,7 @@ async function reportOzonSellerEditDiff() {
         title: document.title,
         capturedAt: new Date().toISOString(),
       },
-    }),
+    },
   }).catch(() => {});
 }
 
@@ -548,6 +677,7 @@ async function collectPage(options = {}) {
   const skuVariants = pickSkuVariants(contextData, packageInfo.skuPackageMap || {});
   const title = pickTitle(contextData);
   const images = pickImages(contextData);
+  const detailResult = await fetchDetailImages(pickDescription(contextData));
   const attributes = pickAttributes(contextData);
 
   return {
@@ -558,7 +688,8 @@ async function collectPage(options = {}) {
     description: pickDescription(contextData),
     html: document.documentElement.outerHTML,
     images,
-    detailImages: [],
+    detailImages: detailResult.images,
+    mediaComplete: detailResult.complete,
     video: options.includeVideo === false ? null : pickVideo(contextData),
     attributes,
     skuVariants,
@@ -583,7 +714,7 @@ function mountFloatingCollector() {
         </div>
       </div>
       <div class="ozon-erp-head-actions">
-        <a class="ozon-erp-link" href="http://127.0.0.1:8000/" target="_blank" title="打开 ERP">ERP</a>
+        <a class="ozon-erp-link" href="http://127.0.0.1:5500/" target="_blank" title="打开本机 ERP">ERP</a>
         <button type="button" id="ozon-erp-toggle" title="缩小">-</button>
       </div>
     </div>
@@ -593,6 +724,10 @@ function mountFloatingCollector() {
         <label class="ozon-erp-switch"><input type="checkbox" id="ozon-erp-1688-video" checked /> 视频</label>
       </div>
       <button type="button" id="ozon-erp-1688-collect">采集到 ERP</button>
+      <div class="ozon-erp-shop-scan">
+      <button type="button" id="ozon-erp-shop-scan-start">全店采集</button>
+        <span id="ozon-erp-shop-scan-status">店铺页静默扫描，每页30条</span>
+      </div>
       <div class="ozon-erp-sku-box">
         <div class="ozon-erp-sku-head">
           <span>SKU 采集</span>
@@ -652,6 +787,10 @@ function mountFloatingCollector() {
     #ozon-erp-1688-floating select:focus{border-color:#ff8a3d;box-shadow:0 0 0 3px rgba(255,106,0,.14)}
     #ozon-erp-1688-floating #ozon-erp-1688-collect{width:100%;height:38px;border:0;border-radius:7px;background:#ff6a00;color:#fff;font-size:14px;font-weight:800;cursor:pointer;box-shadow:0 8px 18px rgba(255,106,0,.22)}
     #ozon-erp-1688-floating #ozon-erp-1688-collect:disabled{opacity:.68;cursor:wait;box-shadow:none}
+    #ozon-erp-1688-floating .ozon-erp-shop-scan{display:grid;grid-template-columns:126px 1fr;align-items:center;gap:8px;padding:8px;border:1px solid #fed7aa;border-radius:8px;background:#fff7ed}
+    #ozon-erp-1688-floating #ozon-erp-shop-scan-start{height:32px;border:0;border-radius:6px;background:#ea580c;color:#fff;font-size:12px;font-weight:800;cursor:pointer}
+    #ozon-erp-1688-floating #ozon-erp-shop-scan-start:disabled{opacity:.65;cursor:wait}
+    #ozon-erp-1688-floating #ozon-erp-shop-scan-status{font-size:11px;line-height:16px;color:#9a3412}
     #ozon-erp-1688-floating .ozon-erp-switch{display:flex;align-items:center;gap:5px;height:36px;padding:0 10px;border:1px solid rgba(15,23,42,.12);border-radius:7px;background:#fff;color:#4b5563;font-size:12px;white-space:nowrap}
     #ozon-erp-1688-floating .ozon-erp-switch input{accent-color:#ff6a00}
     #ozon-erp-1688-floating .ozon-erp-meta{display:grid;gap:5px;padding:9px 10px;border:1px solid rgba(15,23,42,.10);border-radius:8px;background:#f8fafc}
@@ -679,12 +818,30 @@ function mountFloatingCollector() {
   document.documentElement.appendChild(panel);
   bindFloatingDrag(panel);
   bindMinimizeToggle(panel);
-  collectPage({ includeVideo: false }).then((payload) => {
+  let currentCapturePayload = null;
+  const refreshSkuPreview = async () => {
+    const payload = await collectPage({ includeVideo: false });
+    currentCapturePayload = payload;
     panel.querySelector("#ozon-erp-title").textContent = payload.title || "当前商品";
     prefillManualPackageInfo(panel, payload.packageInfo || {});
     renderSkuSelector(panel, payload.skuVariants || []);
+    return payload;
+  };
+  refreshSkuPreview().then((payload) => {
+    if (payload.skuVariants?.length) return;
+    // The new detail UI can render SKU state after the initial page context.
+    // Retry without changing any user SKU selection once rows are available.
+    [1200, 3200, 6500].forEach((delay) => {
+      setTimeout(() => {
+        if (currentCapturePayload?.skuVariants?.length) return;
+        refreshSkuPreview().catch(() => {});
+      }, delay);
+    });
   }).catch(() => {});
-  loadStoreOptions(panel.querySelector("#ozon-erp-1688-store"), panel.querySelector("#ozon-erp-1688-status"));
+  const floatingStoreSelect = panel.querySelector("#ozon-erp-1688-store");
+  loadStoreOptions(floatingStoreSelect, panel.querySelector("#ozon-erp-1688-status")).then(() => showCurrentCaptureStatus(panel, currentCapturePayload));
+  floatingStoreSelect.addEventListener("change", () => showCurrentCaptureStatus(panel, currentCapturePayload));
+  bindShopScanner(panel);
   panel.querySelector("#ozon-erp-1688-collect").addEventListener("click", async () => {
     const button = panel.querySelector("#ozon-erp-1688-collect");
     const status = panel.querySelector("#ozon-erp-1688-status");
@@ -707,21 +864,18 @@ function mountFloatingCollector() {
         button.textContent = "补齐后入箱";
         return;
       }
-      const response = await fetch("http://127.0.0.1:8000/api/1688/capture", {
+      const result = await erpRequest("/api/1688/capture", {
         method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(payload),
+        body: payload,
       });
-      if (!response.ok) throw new Error("发送失败");
-      const result = await response.json();
       button.textContent = "采集到 ERP";
       if (result.duplicate) {
-        status.textContent = `已采集过 ${result.id || ""}`;
+        status.textContent = `${result.duplicateMessage || `已采集过 ${result.id || ""}`}，当前图库 ${result.imageCount ?? payload.images.length} 张`;
         status.style.color = "#b54708";
         return;
       }
       status.textContent = sizeWeightStatus.ok
-        ? `已入箱 ${result.id || ""}`
+        ? `已入箱 ${result.id || ""}，本次识别 ${payload.images.length} 张，图库现有 ${result.imageCount ?? payload.images.length} 张`
         : `已入箱，${sizeWeightStatus.message}`;
       status.style.color = sizeWeightStatus.ok ? "#667085" : "#b42318";
     } catch (error) {
@@ -731,6 +885,140 @@ function mountFloatingCollector() {
       button.disabled = false;
     }
   });
+}
+
+function is1688ShopListPage() {
+  return /page\/offerlist|offerlist_/i.test(location.href);
+}
+
+function shopScanStorageGet() {
+  return new Promise((resolve) => chrome.storage.local.get([SHOP_SCAN_STORAGE_KEY], (data) => resolve(data?.[SHOP_SCAN_STORAGE_KEY] || null)));
+}
+
+function shopScanStorageSet(value) {
+  return new Promise((resolve) => chrome.storage.local.set({ [SHOP_SCAN_STORAGE_KEY]: value }, resolve));
+}
+
+function shopScanIdentity() {
+  return `${location.hostname}${location.pathname.split("/page/")[0]}`;
+}
+
+async function bindShopScanner(panel) {
+  const button = panel.querySelector("#ozon-erp-shop-scan-start");
+  const status = panel.querySelector("#ozon-erp-shop-scan-status");
+  if (!is1688ShopListPage()) {
+    button.disabled = true;
+    status.textContent = "进入店铺“全部商品”页后可用";
+    return;
+  }
+  const saved = await shopScanStorageGet();
+  if (saved?.shopKey === shopScanIdentity()) {
+    const count = Object.keys(saved.items || {}).length;
+    status.textContent = saved.finished ? `已扫描 ${count}/${saved.total || count}，去重 ${saved.duplicateCount || 0}` : `可从第 ${saved.nextPage || 1} 页继续，已有 ${count} 条`;
+    button.textContent = saved.finished ? "重新采集缺失商品" : "全店采集";
+  }
+  button.addEventListener("click", async () => {
+    const previous = await shopScanStorageGet();
+    const hasSavedScan = previous?.shopKey === shopScanIdentity() && Object.keys(previous.items || {}).length > 0;
+    const state = hasSavedScan ? previous : { shopKey: shopScanIdentity(), items: {}, total: 0, nextPage: 1, duplicateCount: 0, finished: false, startedAt: new Date().toISOString() };
+    const wasFinished = Boolean(state.finished);
+    state.requestId = `shop_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
+    state.error = "";
+    state.storeId = panel.querySelector("#ozon-erp-1688-store")?.value || state.storeId || "";
+    if (!state.storeId) {
+      status.textContent = "请先选择归属店铺";
+      return;
+    }
+    await shopScanStorageSet(state);
+    button.disabled = true;
+    button.textContent = "扫描并采集中...";
+    status.textContent = `正在把已扫描的 ${Object.keys(state.items || {}).length} 个商品写入详情队列`;
+    try {
+      await syncStoredShopScanToErp(state, status);
+    } catch (error) {
+      button.disabled = false;
+      button.textContent = "继续全店采集";
+      status.textContent = error?.message || "ERP详情队列写入失败";
+      return;
+    }
+    sendRuntimeMessage({ type: "OZON_ERP_CRAWLER_POLL_NOW" }).catch(() => {});
+    if (wasFinished) {
+      state.finished = true;
+      await shopScanStorageSet(state);
+      button.disabled = false;
+      button.textContent = "采集中...";
+      status.textContent = `发现 ${Object.keys(state.items || {}).length}/${state.total || "?"}，待详情 ${state.queued || 0}，已完整 ${state.collected || 0}`;
+      return;
+    }
+    state.finished = false;
+    status.textContent = `从第 ${state.nextPage || 1} 页继续扫描并采集`;
+    window.postMessage({ type: "OZON_ERP_1688_SHOP_SCAN_START", requestId: state.requestId, startPage: state.nextPage || 1, expectedTotal: state.total || 0 }, "*");
+  });
+}
+
+async function syncStoredShopScanToErp(state, statusElement) {
+  const items = Object.values(state.items || {});
+  for (let index = 0; index < items.length; index += 100) {
+    const result = await erpRequest("/api/1688/shop-scan/chunk", {
+      method: "POST",
+      body: { storeId: state.storeId, shopKey: state.shopKey, items: items.slice(index, index + 100), total: state.total || 0, finished: state.finished },
+    });
+    state.runId = result.runId;
+    state.queued = result.queued;
+    state.collected = result.collected;
+    if (statusElement) statusElement.textContent = `补写详情队列 ${Math.min(index + 100, items.length)}/${items.length}，待采 ${result.queued}，已完整采集 ${result.collected}`;
+  }
+  await shopScanStorageSet(state);
+}
+
+async function handleShopScanPage(message) {
+  const state = await shopScanStorageGet();
+  if (!state || state.requestId !== message.requestId || state.shopKey !== shopScanIdentity()) return;
+  let duplicateCount = Number(state.duplicateCount || 0);
+  state.items ||= {};
+  for (const item of message.items || []) {
+    if (state.items[item.offerId]) duplicateCount += 1;
+    else state.items[item.offerId] = item;
+  }
+  try {
+    const queued = await erpRequest("/api/1688/shop-scan/chunk", {
+      method: "POST",
+      body: { storeId: state.storeId, shopKey: state.shopKey, items: message.items || [], total: message.total || state.total || 0, finished: Boolean(message.finished) },
+    });
+    state.runId = queued.runId;
+    state.queued = queued.queued;
+    state.collected = queued.collected;
+    state.erpExistingCount = Number(queued.alreadyKnown || 0) + Number(state.erpExistingCount || 0);
+  } catch (error) {
+    state.erpCheckError = error?.message || "ERP详情队列写入失败";
+  }
+  state.total = Number(message.total || state.total || 0);
+  state.nextPage = Number(message.pageNum || 0) + 1;
+  state.duplicateCount = duplicateCount;
+  state.finished = Boolean(message.finished);
+  state.memberId = message.memberId || state.memberId || "";
+  state.categoryId = message.categoryId || "";
+  state.updatedAt = new Date().toISOString();
+  await shopScanStorageSet(state);
+  const panel = document.querySelector("#ozon-erp-1688-floating");
+  const button = panel?.querySelector("#ozon-erp-shop-scan-start");
+  const status = panel?.querySelector("#ozon-erp-shop-scan-status");
+  const count = Object.keys(state.items).length;
+  if (status) status.textContent = `${state.finished ? "扫描完成" : `第${message.pageNum}页`}：发现 ${count}/${state.total || "?"}，待详情 ${state.queued || 0}，已完整 ${state.collected || 0}`;
+  if (state.finished && button) { button.disabled = false; button.textContent = "重新采集缺失商品"; }
+}
+
+async function handleShopScanError(message) {
+  const state = await shopScanStorageGet();
+  if (!state || state.requestId !== message.requestId) return;
+  state.error = message.error || "扫描失败";
+  state.updatedAt = new Date().toISOString();
+  await shopScanStorageSet(state);
+  const panel = document.querySelector("#ozon-erp-1688-floating");
+  const button = panel?.querySelector("#ozon-erp-shop-scan-start");
+  const status = panel?.querySelector("#ozon-erp-shop-scan-status");
+  if (button) { button.disabled = false; button.textContent = "继续全店采集"; }
+  if (status) status.textContent = `${state.error}；断点在第 ${state.nextPage || 1} 页`;
 }
 
 function bindFloatingDrag(panel) {
@@ -954,9 +1242,7 @@ function applyManualPackageInfo(payload, manual, applyAllSku = true) {
 
 async function loadStoreOptions(select, statusEl) {
   try {
-      const response = await fetch("http://127.0.0.1:8000/api/stores");
-    if (!response.ok) throw new Error("店铺读取失败");
-    const data = await response.json();
+    const data = await erpRequest("/api/stores");
     const saved = await getSavedStoreId();
     select.innerHTML = (data.stores || [])
       .map((store) => `<option value="${escapeAttr(store.id)}">${escapeHtml(store.name)} - ${escapeHtml(store.clientId)}</option>`)
@@ -986,9 +1272,29 @@ function saveStoreId(storeId) {
   }
 }
 
+async function showCurrentCaptureStatus(panel, payload) {
+  const storeId = panel.querySelector("#ozon-erp-1688-store")?.value || "";
+  const offerId = String(payload?.offerId || "").trim();
+  const status = panel.querySelector("#ozon-erp-1688-status");
+  if (!storeId || !offerId || !status) return;
+  try {
+    const result = await erpRequest(`/api/1688/status?storeId=${encodeURIComponent(storeId)}&offerId=${encodeURIComponent(offerId)}`);
+    if (result.other_shop_published) {
+      status.textContent = `其他店已发布：${result.published_shops.map(row => `${row.shop_name}(${row.offer_id})`).join("、")}`;
+      status.style.color = "#b42318";
+    } else if (result.current_shop_published) {
+      status.textContent = "本店已发布";
+      status.style.color = "#15803d";
+    } else if (result.collected) {
+      status.textContent = "该 1688 商品已采集过";
+      status.style.color = "#b54708";
+    }
+  } catch (_) {}
+}
+
 function injectPageReader() {
   if (document.documentElement.dataset.ozonErp1688Injected === "1") return true;
-  const getUrl = globalThis.chrome?.runtime?.getURL;
+  const getUrl = getExtensionRuntime()?.getURL;
   if (!getUrl) return false;
   document.documentElement.dataset.ozonErp1688Injected = "1";
   const script = document.createElement("script");
@@ -1034,17 +1340,40 @@ function pickDescription(data) {
 
 function pickImages(data) {
   const gallery = data?.gallery?.fields || {};
-  const images = [
+  // Public gallery only: SKU-specific images are sent separately in
+  // `skuVariants` and must never be mixed into `images`.
+  const structured = [
     ...(Array.isArray(gallery.mainImage) ? gallery.mainImage : []),
     ...(Array.isArray(gallery.offerImgList) ? gallery.offerImgList : []),
-    ...domProductImages(),
   ];
+  // The DOM fallback is restricted to the product-detail description area.
+  const images = structured.some(Boolean) ? structured : domProductImages();
   return dedupe(images.map(normalizeImage).filter(Boolean)).slice(0, 80);
+}
+
+async function fetchDetailImages(detailUrl) {
+  const url = String(detailUrl || "").trim();
+  if (!/^https:\/\/itemcdn\.tmall\.com\/1688offer\//i.test(url)) return { images: [], complete: false };
+  try {
+    const response = await sendRuntimeMessage({ type: "FETCH_1688_DETAIL_IMAGES", url });
+    return response?.ok
+      ? { images: dedupe((response.images || []).map(normalizeImage).filter(Boolean)).slice(0, 80), complete: true }
+      : { images: [], complete: false };
+  } catch (_) {
+    return { images: [], complete: false };
+  }
 }
 
 function pickVideo(data) {
   const video = data?.gallery?.fields?.video || {};
-  const url = video.videoUrl || document.querySelector("video")?.currentSrc || document.querySelector("video")?.src || "";
+  const candidates = [
+    video.videoUrl, video.url, data?.productInfo?.fields?.mainVedio,
+    data?.productInfo?.mainVedio, data?.mainVedio, data?.mainVideo,
+    document.querySelector("video")?.currentSrc, document.querySelector("video")?.src,
+    ...findVideoUrls(data),
+    ...findVideoUrlsFromScripts(),
+  ];
+  const url = candidates.map(value => String(value || "").trim()).find(value => /^https?:\/\//i.test(value) && /\.(mp4|m3u8)(?:[?#]|$)/i.test(value)) || "";
   if (!url) return null;
   return {
     url,
@@ -1054,12 +1383,96 @@ function pickVideo(data) {
   };
 }
 
+function findVideoUrls(value, depth = 0, found = []) {
+  if (!value || depth > 5 || found.length >= 8) return found;
+  if (typeof value === "string") {
+    for (const match of value.matchAll(/https?:\/\/[^"'\\s]+\.(?:mp4|m3u8)(?:\?[^"'\\s]*)?/gi)) found.push(match[0]);
+    return found;
+  }
+  if (Array.isArray(value)) { value.forEach(item => findVideoUrls(item, depth + 1, found)); return found; }
+  if (typeof value === "object") {
+    for (const [key, child] of Object.entries(value)) {
+      if (/video|vedio|media/i.test(key) || depth < 2) findVideoUrls(child, depth + 1, found);
+    }
+  }
+  return found;
+}
+
+function findVideoUrlsFromScripts() {
+  const urls = [];
+  document.querySelectorAll("script").forEach(script => {
+    if (urls.length >= 8) return;
+    const text = script.textContent || "";
+    for (const match of text.matchAll(/https?:\/\/[^"'\s]+\.(?:mp4|m3u8)(?:\?[^"'\s]*)?/gi)) {
+      urls.push(match[0].replace(/\\\//g, "/"));
+      if (urls.length >= 8) break;
+    }
+  });
+  return urls;
+}
+
 function domProductImages() {
-  return [...document.images]
-    .map((image) => image.currentSrc || image.src)
-    .filter((src) => /cbu01\.alicdn\.com\/img\/ibank|alicdn\.com\/img\/ibank/i.test(src))
+  // Only scrape images from the product detail description area,
+  // never the full page — avoids picking up recommended products, ads, etc.
+  const selectors = [
+    "#desc-lazyload-container",
+    "#de-description-detail",
+    ".detail-desc",
+    ".detail-content",
+    ".desc-module",
+    ".product-detail",
+    ".detail-gallery",
+    ".pc-offer-detail__main",
+  ];
+  let root = null;
+  for (const sel of selectors) {
+    const el = document.querySelector(sel);
+    if (el && el.children.length > 0) { root = el; break; }
+  }
+  if (!root) return [];
+  const values = [];
+  root.querySelectorAll("img, source").forEach((node) => {
+    const attrs = [
+      node.currentSrc, node.src,
+      node.getAttribute("data-src"), node.getAttribute("data-original"),
+      node.getAttribute("data-lazy-src"), node.getAttribute("data-image-url"),
+      node.getAttribute("srcset"), node.getAttribute("data-srcset"),
+    ];
+    attrs.filter(Boolean).forEach((value) => {
+      String(value).split(",").forEach((part) => values.push(part.trim().split(/\s+/)[0]));
+    });
+  });
+  return values
+    .filter((src) => /(?:cbu\d+|img)\.alicdn\.com\/img\/ibank|alicdn\.com\/img\/ibank/i.test(src))
     .filter((src) => !/tps-|cms\/upload|icon|logo|overseas_pic/i.test(src));
 }
+
+function domSkuVariants() {
+  // Newer 1688 pages sometimes render SKU rows after context data is loaded.
+  // Only rows with explicit SKU-related data attributes are considered.
+  const rows = [];
+  document.querySelectorAll("[data-sku-id], [data-skuid], [data-sku]").forEach((node) => {
+    const skuId = String(
+      node.getAttribute("data-sku-id") || node.getAttribute("data-skuid") || node.getAttribute("data-sku") || ""
+    ).trim();
+    const specAttrs = cleanText(
+      node.getAttribute("data-spec-attrs") || node.getAttribute("data-spec-name") ||
+      node.getAttribute("data-sku-name") || node.getAttribute("title") || node.innerText || ""
+    );
+    const priceNode = node.querySelector("[class*=price], [class*=Price]");
+    const imageNode = node.querySelector("img");
+    if (!skuId && !specAttrs) return;
+    rows.push({
+      skuId,
+      specAttrs,
+      price: node.getAttribute("data-price") || priceNode?.innerText || "",
+      stock: node.getAttribute("data-stock") || node.getAttribute("data-quantity") || "",
+      imageUrl: imageNode?.currentSrc || imageNode?.src || "",
+    });
+  });
+  return dedupeBy(rows, (item) => item.skuId || item.specAttrs);
+}
+
 
 function pickAttributes(data) {
   const attrs = [];
@@ -1119,8 +1532,97 @@ function pickPackageInfo(data) {
 }
 
 function pickSkuVariants(data, skuPackageMap) {
+  // Try multiple known SKU data paths - 1688 has several page architectures.
+  // The first path that returns a non-empty array wins.
+  const skuCandidates = [
+    // Original: mainPrice -> tradeWithoutPromotion -> skuMapOriginal
+    (() => {
+      const priceData = data?.mainPrice?.fields?.finalPriceModel?.tradeWithoutPromotion || {};
+      return normalizeSkuMapRows(priceData.skuMapOriginal);
+    })(),
+    // Alternate: direct mainPrice skuMap / skuList / skuInfos
+    (() => {
+      const priceData = data?.mainPrice?.fields || {};
+      for (const key of ["skuMapOriginal", "skuMap", "skuList", "skuInfos"]) {
+        const rows = normalizeSkuMapRows(priceData[key]);
+        if (rows.length) return rows;
+      }
+      return [];
+    })(),
+    // Root level skuList / skuInfos / skuMap (newer page architectures)
+    (() => {
+      for (const key of ["skuList", "skuInfos", "skuMap", "skuArr"]) {
+        const rows = normalizeSkuMapRows(data?.[key]);
+        if (rows.length) return rows;
+      }
+      return [];
+    })(),
+    // Root -> dataJson -> skuModel -> skuProps / skuMap
+    (() => {
+      const skuModel = data?.Root?.fields?.dataJson?.skuModel;
+      if (!skuModel) return [];
+      for (const key of ["skuMap", "skuList", "skuInfos"]) {
+        const rows = normalizeSkuMapRows(skuModel[key]);
+        if (rows.length) return rows;
+      }
+      const props = skuModel.skuProps || [];
+      if (Array.isArray(props) && props.length) {
+        const flat = [];
+        for (const prop of props) {
+          for (const v of prop.value || []) {
+            flat.push({
+              skuId: v.specId || v.valueId || "",
+              specAttrs: `${prop.prop || prop.name || ""}: ${v.name || v.value}`,
+              skuName: v.name || v.value || "",
+              price: v.price || "",
+              imageUrl: v.imageUrl || "",
+            });
+          }
+        }
+        if (flat.length) return flat;
+      }
+      return [];
+    })(),
+    // Newer 1688 React payloads often nest the SKU model below an opaque
+    // state key. Search those containers only after the explicit paths.
+    (() => findNestedSkuRows(data)[0] || [])(),
+    // Network-captured SKU data (from intercepted 1688 API responses)
+    (() => {
+      const lists = (typeof getNetworkSkuLists === "function") ? getNetworkSkuLists() : [];
+      if (lists.length === 0) return [];
+      for (const list of lists) {
+        if (Array.isArray(list) && list.length > 0) return list;
+      }
+      return [];
+    })(),
+    // offerPriceInfo / priceInfo -> skuPriceMap / skuList
+    (() => {
+      const priceInfo = data?.offerPriceInfo || data?.priceInfo || {};
+      for (const key of ["skuPriceMap", "skuList", "skuMap", "skuInfos"]) {
+        const rows = normalizeSkuMapRows(priceInfo[key]);
+        if (rows.length) return rows;
+      }
+      if (priceInfo.skuPriceMap && typeof priceInfo.skuPriceMap === "object") {
+        const out = [];
+        for (const [skuId, info] of Object.entries(priceInfo.skuPriceMap)) {
+          out.push({ skuId, ...info });
+        }
+        if (out.length) return out;
+      }
+      return [];
+    })(),
+  ];
+
+  let skuMap = [];
+  for (const candidates of skuCandidates) {
+    if (Array.isArray(candidates) && candidates.length) {
+      skuMap = candidates;
+      break;
+    }
+  }
+  if (!skuMap.length) skuMap = domSkuVariants();
+
   const priceData = data?.mainPrice?.fields?.finalPriceModel?.tradeWithoutPromotion || {};
-  const skuMap = Array.isArray(priceData.skuMapOriginal) ? priceData.skuMapOriginal : [];
   const displayPrice = data?.mainPrice?.fields?.displayPrice || "";
   const priceRange = priceData.offerMinPrice && priceData.offerMaxPrice
     ? (priceData.offerMinPrice === priceData.offerMaxPrice ? priceData.offerMinPrice : `${priceData.offerMinPrice}-${priceData.offerMaxPrice}`)
@@ -1129,24 +1631,25 @@ function pickSkuVariants(data, skuPackageMap) {
   const mainImages = data?.gallery?.fields?.mainImage || [];
 
   const variants = skuMap.map((item, index) => {
-    const skuId = String(item.skuId || "");
-    const spec = cleanText(item.specAttrs || item.skuName || "");
+    const skuId = String(item.skuId || item.sku_id || item.id || item.specId || "");
+    const spec = cleanText(item.specAttrs || item.skuName || item.name || item.specName || item.title || "");
     const pkg = skuPackageMap[skuId] || {};
     return {
       skuId,
       spec,
-      price: cleanPrice(item.price || item.discountPrice || item.skuPrice || item.tradePrice || priceRange || displayPrice),
-      stock: toNumber(item.canBookCount || item.stock || item.quantity),
-      image: normalizeImage(imageMap[spec] || mainImages[index % Math.max(mainImages.length, 1)] || ""),
-      weightG: pkg.weightG || "",
-      lengthMm: pkg.lengthMm || "",
-      widthMm: pkg.widthMm || "",
-      heightMm: pkg.heightMm || "",
+      price: cleanPrice(item.price || item.discountPrice || item.skuPrice || item.tradePrice || item.priceRange || item.originalPrice || priceRange || displayPrice),
+      stock: toNumber(item.canBookCount || item.stock || item.quantity || item.canBook || item.inventory),
+      image: normalizeImage(item.imageUrl || item.imgUrl || item.picUrl || item.image || imageMap[spec] || mainImages[index % Math.max(mainImages.length, 1)] || ""),
+      weightG: pkg.weightG || item.weight || "",
+      lengthMm: pkg.lengthMm || item.length || "",
+      widthMm: pkg.widthMm || item.width || "",
+      heightMm: pkg.heightMm || item.height || "",
     };
   }).filter((item) => item.spec || item.price || item.skuId);
 
   if (variants.length) return dedupeBy(variants, (item) => item.spec || item.skuId);
 
+  // Last-ditch fallback: parse from spec attributes in CPV data
   const styleAttr = pickAttributes(data).find((item) => /款式|颜色|规格|型号/.test(item.name) && item.value.includes(","));
   if (!styleAttr) return [];
   return styleAttr.value.split(/[,，]/).map(cleanText).filter(Boolean).map((value) => ({
@@ -1159,12 +1662,33 @@ function pickSkuVariants(data, skuPackageMap) {
 }
 
 function skuImageMap(data) {
-  const props = data?.Root?.fields?.dataJson?.skuModel?.skuProps || [];
+  // Multiple fallback paths for SKU image mapping
+  const candidates = [
+    // Original path
+    data?.Root?.fields?.dataJson?.skuModel?.skuProps,
+    // Alternate: direct skuProps at root
+    data?.skuProps,
+    // Alternate: mainPrice skuImageMap
+    data?.mainPrice?.fields?.skuImageMap,
+    // Alternate: gallery skuList
+    data?.gallery?.fields?.skuList,
+  ];
+
   const map = {};
-  for (const prop of props) {
-    for (const value of prop.value || []) {
-      if (value?.name && value?.imageUrl) map[cleanText(value.name)] = normalizeImage(value.imageUrl);
+  for (const props of candidates) {
+    if (!Array.isArray(props) || !props.length) continue;
+    for (const prop of props) {
+      const values = prop.value || prop.values;
+      if (!Array.isArray(values)) continue;
+      for (const value of values) {
+        if (value?.name && value?.imageUrl) {
+          map[cleanText(value.name)] = normalizeImage(value.imageUrl);
+        } else if (value?.specName && value?.imgUrl) {
+          map[cleanText(value.specName)] = normalizeImage(value.imgUrl);
+        }
+      }
     }
+    if (Object.keys(map).length) break;
   }
   return map;
 }
@@ -1556,25 +2080,17 @@ function collectOzonDetail() {
 }
 
 async function sendToErp(payload) {
-  const response = await fetch("http://127.0.0.1:8000/api/1688/capture", {
+  return erpRequest("/api/1688/capture", {
     method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify(payload),
+    body: payload,
   });
-  const text = await response.text();
-  let data = {};
-  try {
-    data = JSON.parse(text);
-  } catch {
-    data = { raw: text };
-  }
-  if (!response.ok) {
-    throw new Error(data.error || `ERP 接收失败：HTTP ${response.status}`);
-  }
-  return data;
 }
 
-chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
+getExtensionRuntime()?.onMessage?.addListener?.((message, _sender, sendResponse) => {
+  if (message?.type === "PING_1688_COLLECTOR_061") {
+    sendResponse({ ok: true, version: COLLECTOR_VERSION });
+    return false;
+  }
   if (message?.type === "EXTRACT_1688_OFFER_LINKS") {
     (async () => {
       sendResponse({
@@ -1586,6 +2102,16 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
       });
     })();
     return true;
+  }
+  if (message?.type === "START_1688_SHOP_SCAN") {
+    const button = document.querySelector("#ozon-erp-shop-scan-start");
+    if (!button || button.disabled) {
+      sendResponse({ ok: false, error: document.querySelector("#ozon-erp-shop-scan-status")?.textContent || "请进入店铺全部商品页" });
+      return false;
+    }
+    button.click();
+    sendResponse({ ok: true, version: COLLECTOR_VERSION });
+    return false;
   }
   if (message?.type === "COLLECT_1688_PRODUCT_RAW") {
     (async () => {
@@ -1629,9 +2155,9 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
   return false;
 });
 
-chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
+getExtensionRuntime()?.onMessage?.addListener?.((message, _sender, sendResponse) => {
   if (message?.type === "PING_1688_COLLECTOR") {
-    sendResponse({ ok: true });
+    sendResponse({ ok: true, version: COLLECTOR_VERSION });
     return false;
   }
   if (message?.type !== "COLLECT_1688_PRODUCT") return false;
@@ -1664,9 +2190,11 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
         duplicate: Boolean(result.duplicate),
         message: result.duplicateMessage || "",
         id: result.id || "",
-        title: result.title || payload.title || "",
+         title: result.title || payload.title || "",
+          imageCount: payload.images.length,
         url: payload.url,
-        receivedAt: result.receivedAt || "",
+         receivedAt: result.receivedAt || "",
+         imageCount: result.imageCount ?? payload.images.length,
       });
     } catch (error) {
       sendResponse({ ok: false, error: error.message });

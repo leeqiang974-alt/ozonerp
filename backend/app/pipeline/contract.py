@@ -96,10 +96,13 @@ def normalize_snapshot(snapshot: dict[str, Any]) -> dict[str, Any]:
         "source_product_id": str(snapshot.get("source_product_id", "")).strip(),
         "title": str(snapshot.get("title", "")).strip()[:500],
         "source_url": str(snapshot.get("source_url", "")).strip() or None,
+        "source_shop_name": str(snapshot.get("source_shop_name", "")).strip()[:300] or None,
+        "source_shop_key": str(snapshot.get("source_shop_key", "")).strip()[:180] or None,
         "main_image_url": str(snapshot.get("main_image_url", "")).strip() or None,
         "category_hint": str(snapshot.get("category_hint", "")).strip() or None,
         "brand": str(snapshot.get("brand", "")).strip() or None,
         "material": str(snapshot.get("material", "")).strip() or None,
+        "media_complete": bool(snapshot.get("media_complete")),
     }
     variants_out: list[dict[str, Any]] = []
     for variant in snapshot.get("variants", []):

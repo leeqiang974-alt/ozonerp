@@ -8,14 +8,30 @@ polls so it can operate without the legacy ERP on port 5178.
 
 from __future__ import annotations
 
+import re
 from typing import Any
+from urllib.parse import quote
 
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from ..erp_models import SourceProductRecord
+from ..erp_models import SourceMediaRecord, SourceProductRecord
 from ..models import ApiCredential, Shop
 from .ingestion_service import ingest_source_product
+from ..source_duplicate_service import source_publication_status
+
+
+MEDIA_PROXY_BASE = "https://media.woxq.cn/proxy?url="
+
+
+def _media_proxy_url(url: str) -> str:
+    """Convert a third-party media URL to the project's durable media proxy."""
+    value = str(url or "").strip()
+    if not value or value.startswith(MEDIA_PROXY_BASE):
+        return value
+    if not value.lower().startswith(("http://", "https://")):
+        return value
+    return MEDIA_PROXY_BASE + quote(value, safe="")
 
 
 def translate_capture(payload: dict[str, Any], shop_id: int, *, source_platform: str = "1688") -> dict[str, Any]:
@@ -65,6 +81,8 @@ def translate_capture(payload: dict[str, Any], shop_id: int, *, source_platform:
     # Use supplier as brand fallback
     if not brand:
         brand = str(payload.get("supplier") or "").strip() or None
+    source_shop_name = str(payload.get("sourceShopName") or payload.get("supplier") or "").strip()[:300] or None
+    source_shop_key = str(payload.get("sourceShopKey") or "").strip()[:180] or None
     # Images
     raw_images = payload.get("images") or []
     if isinstance(raw_images, list):
@@ -97,6 +115,19 @@ def translate_capture(payload: dict[str, Any], shop_id: int, *, source_platform:
                     "sort_order": len(media_list),
                     "is_primary": False,
                 })
+    # The extension returns one optional product video as `video`.  It must be
+    # persisted as source media instead of being left in the raw capture only,
+    # otherwise the collection box and listing editor cannot display it.
+    video = payload.get("video")
+    if isinstance(video, dict):
+        video_url = str(video.get("url") or "").strip()
+        if video_url:
+            media_list.append({
+                "url": _media_proxy_url(video_url),
+                "media_type": "video",
+                "sort_order": len(media_list),
+                "is_primary": False,
+            })
     # Variants
     raw_variants = payload.get("skuVariants") or []
     variants_list = []
@@ -116,7 +147,7 @@ def translate_capture(payload: dict[str, Any], shop_id: int, *, source_platform:
                 stock_int = int(stock) if stock is not None else 0
             except (TypeError, ValueError):
                 stock_int = 0
-            image_url = str(sv.get("image") or "").strip() or None
+            image_url = str(sv.get("image") or sv.get("skuImageUrl") or sv.get("sku_image_url") or "").strip() or None
             # Preserve per-SKU weight/dimensions from extension
             sku_pkg = {}
             for dim_key in ("weightG", "lengthMm", "widthMm", "heightMm"):
@@ -139,6 +170,9 @@ def translate_capture(payload: dict[str, Any], shop_id: int, *, source_platform:
             "stock": 0,
             "image_url": None,
         })
+    # Keep SKU-specific images on their variant rows only.  Public gallery
+    # images are subject to Ozon's product-level cap; mixing variant images
+    # here would make a public-gallery trim silently remove SKU evidence.
     # Preserve source tracking and supplement data in raw_json for audit
     extra = {}
     # Preserve full attributes list and description for AI description generation
@@ -160,6 +194,15 @@ def translate_capture(payload: dict[str, Any], shop_id: int, *, source_platform:
         extra["review_count"] = payload["reviewCount"]
     if payload.get("image"):
         extra["primary_image_url"] = payload["image"]
+    extra["media_complete"] = bool(payload.get("mediaComplete"))
+    if isinstance(video, dict):
+        extra["video"] = {
+            "url": _media_proxy_url(str(video.get("url") or "").strip()),
+            "sourceUrl": str(video.get("url") or "").strip(),
+            "coverUrl": _media_proxy_url(str(video.get("coverUrl") or "").strip()),
+            "title": str(video.get("title") or "").strip()[:500],
+            "videoId": str(video.get("videoId") or "").strip()[:200],
+        }
     # Preserve packageInfo (weightG, lengthMm, widthMm, heightMm) for variant auto-fill
     pkg = payload.get("packageInfo")
     if isinstance(pkg, dict) and (pkg.get("weightG") or pkg.get("lengthMm")):
@@ -174,6 +217,8 @@ def translate_capture(payload: dict[str, Any], shop_id: int, *, source_platform:
         "source_product_id": offer_id,
         "title": title,
         "source_url": str(payload.get("url") or "").strip() or None,
+        "source_shop_name": source_shop_name,
+        "source_shop_key": source_shop_key,
         "main_image_url": main_image,
         "category_hint": category_hint or None,
         "brand": brand or None,
@@ -191,17 +236,31 @@ def ingest_capture(db: Session, shop_id: int, payload: dict[str, Any]) -> dict[s
     existing = db.scalar(select(SourceProductRecord).where(
         SourceProductRecord.source_platform == "1688",
         SourceProductRecord.source_product_id == translated["source_product_id"],
-        SourceProductRecord.shop_id == shop_id,
     ))
     record = ingest_source_product(db, shop_id, translated)
+    image_count = sum(1 for media in db.scalars(select(SourceMediaRecord).where(
+        SourceMediaRecord.source_product_id == record.id,
+        SourceMediaRecord.media_type == "image",
+    )))
+    duplicate_status = source_publication_status(db, "1688", translated["source_product_id"], current_shop_id=shop_id)
+    published_names = "、".join(row["shop_name"] for row in duplicate_status["published_shops"])
     return {
         "ok": True,
         "id": str(record.id),
         "duplicate": existing is not None,
-        "duplicateMessage": "该 1688 商品已采集过，已更新为最新数据" if existing is not None else "",
+        "duplicateMessage": (
+            f"该 1688 商品已发布到：{published_names}" if published_names
+            else "该 1688 商品已采集过，ERP 已保留原记录"
+        ) if existing is not None else "",
+        "duplicateStatus": duplicate_status,
         "title": record.title,
         "receivedAt": record.updated_at.isoformat() if record.updated_at else "",
+        "imageCount": image_count,
     }
+
+
+def capture_status(db: Session, shop_id: int, source_platform: str, offer_id: str) -> dict[str, Any]:
+    return source_publication_status(db, source_platform, offer_id, current_shop_id=shop_id)
 
 
 def ingest_ozon_capture(db: Session, shop_id: int, payload: dict[str, Any]) -> dict[str, Any]:

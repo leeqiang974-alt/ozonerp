@@ -1,0 +1,36 @@
+services:
+  postgres:
+    image: docker.m.daocloud.io/library/postgres:16
+    environment:
+      POSTGRES_DB: ozon_erp
+      POSTGRES_USER: ozon_erp
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+    ports:
+      - "127.0.0.1:55432:5432"
+    volumes:
+      - ozon_erp_postgres:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ozon_erp -d ozon_erp"]
+      interval: 5s
+      timeout: 3s
+      retries: 12
+
+  backend:
+    image: mvp-skeleton-backend:latest
+    network_mode: host
+    working_dir: /app
+    env_file:
+      - .env
+    environment:
+      PYTHONPATH: /app/backend
+    volumes:
+      - ./backend:/app/backend
+    entrypoint: ["python"]
+    command: ["-m", "uvicorn", "app.main:app", "--host", "127.0.0.1", "--port", "8010", "--workers", "1"]
+    restart: always
+    depends_on:
+      postgres:
+        condition: service_healthy
+
+volumes:
+  ozon_erp_postgres:

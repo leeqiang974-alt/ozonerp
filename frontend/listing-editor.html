@@ -4,28 +4,50 @@
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>Ozon 商品发布编辑器</title>
-  <link rel="stylesheet" href="./listing-editor.css?v=16" />
+  <link rel="stylesheet" href="./listing-editor.css?v=29" />
 <style>
-  #le-layout { display: block !important; padding-top: 52px; padding-right: 340px; min-height: 100vh; }
-  #le-form-area { max-width: 860px; margin: 0 auto !important; padding: 20px 24px; width: auto !important; }
+  #le-layout { padding-top: 52px; padding-left: 272px; padding-right: 280px; min-height: 100vh; }
+  #le-form-area { max-width: 1180px; margin: 0 auto; padding: 20px 24px; width: 100%; }
 </style>
 </head>
 <body>
+<!-- Ozon issues side panel -->
+<div id="le-issues-panel" style="display:none;position:fixed;left:0;top:60px;bottom:0;width:280px;background:#fff;border-right:1px solid #d1d5db;box-shadow:2px 0 8px rgba(0,0,0,.08);z-index:50;overflow-y:auto;padding:12px">
+  <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:10px">
+    <b style="font-size:14px;color:#d32f2f">Ozon 审核问题</b>
+    <button onclick="document.getElementById('le-issues-panel').style.display='none'" style="border:none;background:none;cursor:pointer;font-size:16px;color:#999">×</button>
+  </div>
+  <div id="le-issues-list"></div>
+</div>
   <div id="le-topbar">
     <div class="le-topbar-left">
-      <a href="./index.html" class="le-back">← 返回</a>
+      <a href="./index.html#collection-box" class="le-back">← 返回采集箱</a>
       <span class="le-topbar-title">商品发布编辑器</span>
     </div>
     <div class="le-topbar-right">
       <select id="le-shop-select"><option value="">选择店铺</option></select>
-      <a href="./index.html" class="le-btn le-btn-back" style="text-decoration:none;display:inline-block">← 返回</a>
+      <select id="le-template-select" title="旧模板兼容功能"><option value="">旧模板（可选）</option></select>
+      <button class="le-btn le-btn-sm" id="le-apply-template-btn" title="兼容旧模板；日常使用无需模板">套用旧模板</button>
+      <button class="le-btn le-btn-sm" id="le-save-template-btn" title="兼容旧流程；推荐使用属性记忆">另存旧模板</button>
+      <a href="./index.html#collection-box" class="le-btn le-btn-back" style="text-decoration:none;display:inline-block">← 返回采集箱</a>
       <button class="le-btn le-btn-save" id="le-save-btn">保存</button>
-      <button class="le-btn le-btn-precheck" id="le-precheck-btn">预检</button>
       <button class="le-btn le-btn-validate" id="le-submit-btn">保存并提交</button>
+      <button class="le-btn le-btn-sm" id="le-update-attributes-btn" style="display:none" title="仅更新已存在 Ozon 商品的属性；不会更新价格、尺重、图片或 SKU">仅更新产品属性</button>
+      <span id="le-submit-status" class="le-submit-status" hidden></span>
+      <button class="le-btn le-btn-feedback" id="le-sync-feedback-btn" style="background:#6c5ce7;color:#fff;display:none">刷新 Ozon 状态</button>
+      <button class="le-btn le-btn-autofix" id="le-auto-fix-btn" style="background:#e17055;color:#fff;display:none">自动修复</button>
     </div>
   </div>
 
   <div id="le-layout">
+    <aside id="le-product-queue" aria-label="商品编辑列表">
+      <div class="le-queue-head">
+        <div><strong>商品列表</strong><small id="le-queue-count">加载中…</small></div>
+        <button type="button" id="le-queue-refresh" title="刷新商品状态">↻</button>
+      </div>
+      <div class="le-queue-legend"><span class="unedited">未编辑</span><span class="edited">已编辑</span><span class="published">已发布</span></div>
+      <div id="le-queue-list" class="le-queue-list"><p class="le-placeholder">正在读取商品…</p></div>
+    </aside>
     <div id="le-form-area">
 
       <!-- 1. 店铺与类目 -->
@@ -35,13 +57,19 @@
         <div class="le-field-row">
           <label>平台分类 <span class="le-required">*</span></label>
           <div class="le-combobox">
-            <input type="text" id="le-category-search" placeholder="搜索类目（至少2个字），或点击右侧箭头浏览" autocomplete="off" />
+            <input type="text" id="le-category-search" placeholder="输入中文、俄文或单个字符搜索，或点击右侧箭头浏览" autocomplete="off" />
             <button type="button" id="le-category-dropdown-btn" class="le-combobox-arrow">&#9660;</button>
             <button type="button" id="le-tree-browser-btn" class="le-combobox-tree-btn" title="手动浏览类目树">🗂</button>
             <div id="le-category-dropdown" class="le-combobox-dropdown" style="display:none"></div>
           </div>
           <small class="le-hint" id="le-category-path">未选择类目</small>
+          <button type="button" id="le-memory-manage" class="le-memory-manage">管理可信记忆</button>
           <div id="le-category-suggestions" class="le-cat-suggestions"></div>
+          <div id="le-category-memory-actions" class="le-memory-actions" hidden>
+            <div><strong id="le-memory-action-title">是否让系统记住这次选择？</strong><small>手动确认可立即记住；成功导入 Ozon 后也会自动升级为可信类目记忆。</small><small id="le-memory-action-feedback" class="le-memory-feedback" aria-live="polite"></small></div>
+            <button type="button" id="le-memory-confirm" class="le-memory-primary">确认正确并记住</button>
+            <button type="button" id="le-memory-once" class="le-memory-secondary">仅本次使用</button>
+          </div>
         </div>
 
         <div class="le-field-row">
@@ -55,6 +83,7 @@
           <div class="le-input-with-ai">
             <input type="text" id="le-title" placeholder="使用俄文，推荐格式：类目+品牌+名称+变体属性" maxlength="500" />
             <button class="le-ai-btn" data-ai-action="translate-title" title="AI翻译标题">AI</button>
+            <button class="le-ai-btn le-ai-btn-secondary" type="button" id="le-intelligent-title" title="调用1688商品智能标题及卖点">1688 智能识别</button>
           </div>
           <small class="le-hint">推荐格式: 类目+品牌(如有)+名称+变体属性</small>
         </div>
@@ -64,6 +93,7 @@
             <input type="checkbox" id="le-smart-title" /> 智能标题（多变体自动加入变体属性信息）
           </label>
         </div>
+        <div id="le-intelligent-title-result" class="le-intelligent-title-result" hidden></div>
       </section>
 
       <!-- 2. 产品属性 -->
@@ -74,7 +104,9 @@
           <button class="le-btn le-btn-sm" data-ai-action="match-materials">AI 材料匹配</button>
           <button class="le-btn le-btn-sm" data-ai-action="generate-hashtags">AI 生成标签</button>
           <label class="le-checkbox-line"><input type="checkbox" id="le-show-optional" checked /> 显示选填属性</label>
+          <label class="le-checkbox-line"><input type="checkbox" id="le-template-description" /> 描述加入旧模板</label>
         </div>
+        <small class="le-hint">勾选“记住此属性”会随草稿保存；只有 Ozon 导入成功后才进入可信记忆，下次同类目自动补空，不覆盖人工填写。</small>
         <div id="le-attributes-container">
           <p class="le-placeholder">请先在上方选择类目，属性将自动加载。</p>
         </div>
@@ -85,7 +117,10 @@
         <h3 class="le-section-title">③ 本地信息 <small>（不会同步到 Ozon）</small></h3>
         <div class="le-field-row">
           <label>来源 URL</label>
-          <input type="url" id="le-source-url" placeholder="https://detail.1688.com/offer/..." />
+          <div class="le-source-url-line">
+            <input type="url" id="le-source-url" placeholder="https://detail.1688.com/offer/..." />
+            <button type="button" class="le-btn le-btn-sm le-source-open-btn" id="le-open-source-url">打开原链接</button>
+          </div>
         </div>
         <div class="le-field-row">
           <label>备注</label>
@@ -128,9 +163,24 @@
           <button class="le-btn le-btn-sm" id="le-add-image">添加</button>
           <button class="le-btn le-btn-sm" id="le-import-source-images">从采集导入</button>
           <button class="le-btn le-btn-sm" id="le-translate-images" style="margin-left:auto;background:#ff6a00;color:#fff;border-color:#ff6a00">翻译图片</button>
+          <select class="le-ai-generate-mode" id="le-ai-generate-mode" aria-label="AI 生图范围"><option value="all">生成全套（5张）</option><option value="hero">只生成主图</option></select>
+          <button class="le-btn le-btn-sm le-ai-image-button" id="le-ai-generate-images">✨ 开始生图</button>
         </div>
         <small class="le-hint" style="margin-bottom:10px">推荐纵横比 3:4，最低 200×200，最多 50 张</small>
         <div id="le-image-grid" class="le-image-grid"></div>
+        <div class="le-watermark-panel" id="le-watermark-panel">
+          <div class="le-watermark-head"><div><strong>图片水印设置</strong><small>保存并提交时，所有产品图片会按此设置生成带水印版本。</small></div><label><input type="checkbox" id="le-watermark-enabled" /> 启用</label></div>
+          <div class="le-watermark-body">
+            <label class="le-watermark-upload">上传 PNG 水印<input type="file" id="le-watermark-file" accept="image/png" /></label>
+            <div class="le-watermark-preview-wrap"><div class="le-watermark-preview" id="le-watermark-preview"><span>图片位置预览</span><img id="le-watermark-preview-mark" alt="水印预览" hidden /></div><div class="le-watermark-points" id="le-watermark-points"><button type="button" data-watermark-position="tl">左上</button><button type="button" data-watermark-position="tm">上中</button><button type="button" data-watermark-position="tr">右上</button><button type="button" data-watermark-position="ml">左中</button><button type="button" data-watermark-position="mm">中间</button><button type="button" data-watermark-position="mr">右中</button><button type="button" data-watermark-position="bl">左下</button><button type="button" data-watermark-position="bm">下中</button><button type="button" data-watermark-position="br">右下</button></div></div>
+            <div class="le-watermark-sliders"><label>大小 <input type="range" id="le-watermark-scale" min="0.25" max="2" step="0.05" value="1" /><output id="le-watermark-scale-value">100%</output></label><label>透明度 <input type="range" id="le-watermark-opacity" min="0.1" max="1" step="0.05" value="0.65" /><output id="le-watermark-opacity-value">65%</output></label></div>
+          </div>
+        </div>
+        <div class="le-ai-image-panel" id="le-ai-image-panel">
+          <div class="le-ai-image-head"><div><strong>AI Ozon 套图</strong><small id="le-ai-image-status">尚未生成</small></div><div class="le-ai-image-actions"><label class="le-ai-select-all"><input type="checkbox" id="le-ai-select-all" disabled /> 全选</label><button class="le-btn le-btn-sm" id="le-ai-apply-images" disabled>使用所选套图</button></div></div>
+          <div class="le-ai-image-analysis" id="le-ai-image-analysis">AI会读取采集图库和SKU信息并生成俄文套图。生成结果先进入候选区；部分失败时，已生成的图片仍可选择使用。</div>
+          <div class="le-ai-image-grid" id="le-ai-image-grid"></div>
+        </div>
       </section>
 
       <!-- 7. 视频 -->
@@ -186,12 +236,10 @@
         <h3 class="le-section-title">⑨ 产品信息</h3>
         <div class="le-field-row">
           <label>增值税 <span class="le-required">*</span></label>
-          <select id="le-vat">
-            <option value="">请选择</option>
-            <option value="0">0%</option>
-            <option value="0.1">10%</option>
-            <option value="0.2">20%</option>
+          <select id="le-vat" value="0" disabled aria-label="增值税固定为 0%">
+            <option value="0" selected>0%</option>
           </select>
+          <small class="le-hint">当前店铺上架统一按 0% 提交。</small>
         </div>
         <div class="le-field-row">
           <label>积分评价</label>
@@ -227,8 +275,29 @@
     </div>
   </div>
 
+  <div id="le-memory-modal" class="le-tree-modal" style="display:none">
+    <div class="le-memory-modal-content">
+      <div class="le-tree-modal-header">
+        <div><h3>可信决策记忆</h3><small>自动推荐不会写入；这里只有人工确认和 Ozon 验证过的记录。</small></div>
+        <button id="le-memory-close" class="le-tree-close-btn" type="button">&times;</button>
+      </div>
+      <div id="le-memory-list" class="le-memory-list"></div>
+    </div>
+  </div>
+
+    <!-- Quality feedback panel -->
+  <div id="le-feedback-panel" style="display:none;margin:12px 0;padding:12px;border:1px solid #6c5ce7;border-radius:8px;background:#f8f7ff">
+    <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px">
+      <strong style="color:#6c5ce7">Ozon 质量反馈</strong>
+      <span id="le-feedback-rating" style="font-size:18px;font-weight:bold;color:#6c5ce7"></span>
+    </div>
+    <div id="le-feedback-groups" style="display:flex;gap:12px;margin-bottom:8px;flex-wrap:wrap"></div>
+    <div id="le-feedback-issues" style="max-height:300px;overflow-y:auto"></div>
+  </div>
+
   <div id="le-toast"></div>
-  <script src="./listing-editor.js?v=16"></script>
+<script src="./erp-config.js"></script>
+<script src="./listing-editor.js?v=99"></script>
 </body>
 </html>
 

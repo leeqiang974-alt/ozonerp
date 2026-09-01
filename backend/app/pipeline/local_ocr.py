@@ -1,0 +1,132 @@
+﻿"""Free local OCR image gate used by bulk-listing preprocessing.
+
+The source media is immutable.  This module only returns a filtered list for
+the draft plus auditable OCR evidence.  English-only dimension images remain.
+"""
+
+from __future__ import annotations
+
+import asyncio
+import re
+import tempfile
+import urllib.request
+from pathlib import Path
+from typing import Any
+from urllib.parse import urlparse
+
+
+_HAN_RE = re.compile(r"[\u4e00-\u9fff]")
+_MEASURE_RE = re.compile(
+    r"(?:尺寸|重量|净重|克重|长|宽|高|厚|直径|厘米|毫米|公斤|克|"
+    r"\b(?:size|weight|length|width|height|diameter|cm|mm|kg|g|inch|in)\b)",
+    re.IGNORECASE,
+)
+
+# 营销/厂家/定制/促销类关键词——命中即说明图片与产品本身无关
+_MARKETING_RE = re.compile(
+    r"(?:厂家|直销|源头|工厂|定制|来图|定做|OEM|ODM|代工|批发|批量|供货|"
+    r"一件代发|代发|包邮|促销|特价|清仓|甩卖|折扣|优惠|活动|限时|"
+    r"量大|价优|微信|加微|扫码|联系|客服|电话|下单|订购|预约|"
+    r"赠品|礼品|礼盒|免费|赠送|爆款|热销|网红|同款|"
+    r"\b(?:factory|wholesale|custom|oem|odm|bulk|drop.?ship|promotion|sale|discount|free shipping)\b)",
+    re.IGNORECASE,
+)
+
+
+async def _recognize_url(url: str) -> str:
+    from winrt.windows.globalization import Language
+    from winrt.windows.graphics.imaging import BitmapDecoder
+    from winrt.windows.media.ocr import OcrEngine
+    from winrt.windows.storage import FileAccessMode, StorageFile
+
+    suffix = Path(urlparse(url).path).suffix.lower()
+    if suffix not in {".jpg", ".jpeg", ".png", ".bmp", ".gif", ".tif", ".tiff"}:
+        suffix = ".jpg"
+    with tempfile.TemporaryDirectory(prefix="ozon-ocr-") as folder:
+        path = Path(folder) / f"source{suffix}"
+        request = urllib.request.Request(url, headers={"User-Agent": "Mozilla/5.0"})
+        with urllib.request.urlopen(request, timeout=20) as response:
+            path.write_bytes(response.read())
+        storage_file = await StorageFile.get_file_from_path_async(str(path.resolve()))
+        stream = await storage_file.open_async(FileAccessMode.READ)
+        decoder = await BitmapDecoder.create_async(stream)
+        bitmap = await decoder.get_software_bitmap_async()
+        engine = OcrEngine.try_create_from_language(Language("zh-Hans-CN"))
+        if engine is None:
+            raise RuntimeError("Windows 本地简体中文 OCR 不可用")
+        result = await engine.recognize_async(bitmap)
+        return (result.text or "").strip()
+
+
+def filter_chinese_measure_images(media: list[dict[str, Any]]) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+    """Exclude only images containing both Chinese and measurement evidence."""
+    kept: list[dict[str, Any]] = []
+    evidence: list[dict[str, Any]] = []
+    for item in media:
+        url = str(item.get("url") or "").strip()
+        if not url:
+            continue
+        try:
+            text = asyncio.run(_recognize_url(url))
+            excluded = bool(_HAN_RE.search(text) and _MEASURE_RE.search(text))
+            evidence.append({"url": url, "text": text[:1000], "excluded": excluded})
+            if not excluded:
+                kept.append(item)
+        except Exception as exc:
+            kept.append(item)
+            evidence.append({"url": url, "text": "", "excluded": False, "error": str(exc)[:500]})
+    return kept, evidence
+
+
+def filter_bulk_images(
+    media: list[dict[str, Any]],
+    *,
+    remove_chinese_measure: bool = False,
+    remove_marketing: bool = False,
+) -> tuple[list[dict[str, Any]], list[dict[str, Any]], list[str]]:
+    """OCR过滤图片，返回(保留图片, 审计证据, 有文字需翻译的URL列表)。
+
+    - 中文尺重图：remove_chinese_measure=True 时排除
+    - 营销/厂家/定制图：remove_marketing=True 时排除
+    - 只有OCR成功且识别到非空文字的图片才会加入需翻译列表
+    - 被排除的图片绝不进入翻译列表
+    - OCR失败的图片保留但不翻译
+    """
+    kept: list[dict[str, Any]] = []
+    evidence: list[dict[str, Any]] = []
+    translatable_urls: list[str] = []
+    for item in media:
+        url = str(item.get("url") or "").strip()
+        if not url:
+            continue
+        try:
+            text = asyncio.run(_recognize_url(url))
+            excluded_reasons: list[str] = []
+            if remove_chinese_measure and _HAN_RE.search(text) and _MEASURE_RE.search(text):
+                excluded_reasons.append("chinese_measure")
+            if remove_marketing and _MARKETING_RE.search(text):
+                excluded_reasons.append("marketing")
+            excluded = bool(excluded_reasons)
+            has_text = bool(text.strip())
+            evidence.append({
+                "url": url, "text": text[:1000], "excluded": excluded,
+                "reasons": excluded_reasons, "has_text": has_text,
+            })
+            if not excluded:
+                kept.append(item)
+                if has_text:
+                    translatable_urls.append(url)
+        except Exception as exc:
+            kept.append(item)
+            evidence.append({"url": url, "text": "", "excluded": False, "error": str(exc)[:500], "has_text": False})
+    return kept, evidence, translatable_urls
+
+
+def inspect_image(url: str) -> dict[str, Any]:
+    """OCR one image for an operator retry without touching source media."""
+    try:
+        text = asyncio.run(_recognize_url(url))
+        excluded = bool(_HAN_RE.search(text) and _MEASURE_RE.search(text))
+        return {"url": url, "text": text[:1000], "excluded": excluded, "error": None}
+    except Exception as exc:
+        return {"url": url, "text": "", "excluded": False, "error": str(exc)[:500]}

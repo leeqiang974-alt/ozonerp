@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "Ozon ERP 统一采集助手",
-  "version": "0.5.0",
+  "version": "0.5.2",
   "description": "统一采集 1688 货源与 Ozon 前台竞品数据，并发送到本地 Ozon ERP。",
   "action": {
     "default_title": "Ozon ERP 统一采集助手",
@@ -28,16 +28,36 @@
     "https://login.taobao.com/*",
     "https://*.ozon.ru/*",
     "https://seller.ozon.ru/*",
+    "https://*.amazon.com/*",
+    "https://*.amazon.com.mx/*",
+    "https://*.amazon.ca/*",
+    "https://*.amazon.co.uk/*",
+    "https://*.amazon.de/*",
+    "https://*.amazon.fr/*",
+    "https://*.amazon.it/*",
+    "https://*.amazon.es/*",
+    "https://ml-erp.woxq.cn/*",
     "http://localhost:8000/*",
+    "http://127.0.0.1:8000/*",
     "http://127.0.0.1:5000/*"
   ],
   "web_accessible_resources": [
     {
       "resources": ["erp-collector-extension/injected.js"],
-      "matches": ["https://*.1688.com/*", "https://login.taobao.com/*", "https://*.ozon.ru/*", "https://seller.ozon.ru/*"]
+      "matches": ["https://*.1688.com/*", "https://login.taobao.com/*", "https://*.ozon.ru/*", "https://seller.ozon.ru/*", "https://*.amazon.com/*", "https://*.amazon.com.mx/*", "https://*.amazon.ca/*", "https://*.amazon.co.uk/*", "https://*.amazon.de/*", "https://*.amazon.fr/*", "https://*.amazon.it/*", "https://*.amazon.es/*"]
     }
   ],
   "content_scripts": [
+    {
+      "matches": ["https://ml-erp.woxq.cn/*"],
+      "js": ["erp-collector-extension/meli-bridge.js"],
+      "run_at": "document_idle"
+    },
+    {
+      "matches": ["https://*.amazon.com/*", "https://*.amazon.com.mx/*", "https://*.amazon.ca/*", "https://*.amazon.co.uk/*", "https://*.amazon.de/*", "https://*.amazon.fr/*", "https://*.amazon.it/*", "https://*.amazon.es/*"],
+      "js": ["erp-collector-extension/amazon-content.js"],
+      "run_at": "document_idle"
+    },
     {
       "matches": ["https://*.1688.com/*", "https://login.taobao.com/*", "https://*.ozon.ru/*", "https://seller.ozon.ru/*"],
       "js": ["erp-collector-extension/content.js"],

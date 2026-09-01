@@ -1,6 +1,6 @@
 ﻿"""P2: Category matching.
 
-Recalls Top-20 Ozon categories from the local cache and re-ranks to Top-5
+Recalls Top-20 Ozon categories from the global cache and re-ranks to Top-5
 using rule-based scoring against extracted product facts.  The operator
 confirms the final choice; nothing is written to Ozon.
 """
@@ -14,7 +14,8 @@ from decimal import Decimal
 from sqlalchemy import or_, select
 from sqlalchemy.orm import Session
 
-from ..erp_models import OzonCategoryCacheRecord, PipelineProductRecord, SourceProductRecord
+from ..erp_models import OzonGlobalCategoryCacheRecord, PipelineProductRecord, SourceProductRecord
+from ..listing_cache_service import promote_legacy_listing_caches
 from .fact_extraction import ProductFacts, extract_facts
 
 
@@ -29,11 +30,12 @@ class CategoryCandidate:
 
 
 def recall_categories(db: Session, shop_id: int, facts: ProductFacts, limit: int = 20) -> list[CategoryCandidate]:
-    """Search the local Ozon category cache and return up to *limit* matches.
+    """Search the global Ozon category cache and return up to *limit* matches.
 
     Searches both the Russian title and the Chinese title_zh so that Chinese
     product keywords can match Chinese category names directly.
     """
+    promote_legacy_listing_caches(db)
     keywords = facts.keywords or [facts.core_product]
     # Build search terms: full keywords + 2-char segments for Chinese text
     search_terms: list[str] = []
@@ -50,12 +52,11 @@ def recall_categories(db: Session, shop_id: int, facts: ProductFacts, limit: int
     for term in search_terms:
         if len(term) < 2:
             continue
-        rows = db.scalars(select(OzonCategoryCacheRecord).where(
-            OzonCategoryCacheRecord.shop_id == shop_id,
-            OzonCategoryCacheRecord.type_id != "",
+        rows = db.scalars(select(OzonGlobalCategoryCacheRecord).where(
+            OzonGlobalCategoryCacheRecord.type_id != "",
             or_(
-                OzonCategoryCacheRecord.title.ilike(f"%{term}%"),
-                OzonCategoryCacheRecord.title_zh.ilike(f"%{term}%"),
+                OzonGlobalCategoryCacheRecord.title.ilike(f"%{term}%"),
+                OzonGlobalCategoryCacheRecord.title_zh.ilike(f"%{term}%"),
             ),
         ).limit(limit)).all()
         for row in rows:
@@ -228,6 +229,10 @@ def lock_category(db: Session, shop_id: int, source_product_id: int, category_id
     pipeline = _ensure_pipeline_product(db, shop_id, source_product_id)
     pipeline.matched_category_id = category_id
     pipeline.matched_type_id = type_id
+    # A complete category pair explicitly selected by the operator is the
+    # strongest possible evidence.  It must not inherit the zero confidence
+    # of an earlier AI/category recall attempt.
+    pipeline.category_confidence = Decimal("100")
     pipeline.pipeline_stage = "category_locked"
     db.commit()
     db.refresh(pipeline)

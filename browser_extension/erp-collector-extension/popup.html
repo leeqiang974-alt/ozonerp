@@ -33,6 +33,11 @@
         <label class="option compact"><input id="applyAllSku" type="checkbox" checked /> 同步填入所有缺尺重 SKU</label>
       </section>
       <button id="collectButton">采集当前商品</button>
+      <section class="shop-scan-box">
+        <strong>1688 店铺批量采集</strong>
+        <span>进入店铺“全部商品”页，静默按30条扫描并去重。</span>
+        <button id="shopScanButton" type="button">全店采集</button>
+      </section>
       <section class="worker-box">
         <div>
           <strong>1688 / Ozon 自动采集后台</strong>
@@ -41,7 +46,7 @@
         <button id="pollWorkerButton" type="button">立即检查任务</button>
       </section>
       <div id="status" class="status">等待采集</div>
-      <a href="http://localhost:8000/" target="_blank">打开 Ozon ERP</a>
+      <a href="http://127.0.0.1:5500/" target="_blank">打开本机 Ozon ERP</a>
     </main>
     <script src="popup.js"></script>
   </body>

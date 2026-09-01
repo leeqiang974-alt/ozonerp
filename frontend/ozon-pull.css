@@ -1,0 +1,33 @@
+.ozon-pull-results {
+  display: grid;
+  gap: 8px;
+  max-height: 320px;
+  overflow: auto;
+}
+
+.ozon-pull-result {
+  display: grid;
+  grid-template-columns: 1fr auto;
+  gap: 4px 16px;
+  padding: 11px;
+  color: #26374e;
+  text-align: left;
+  cursor: pointer;
+  background: #fff;
+  border: 1px solid #d8e0eb;
+  border-radius: 8px;
+}
+
+.ozon-pull-result:hover {
+  background: #f4f8ff;
+  border-color: #1264db;
+}
+
+.ozon-pull-result small { grid-column: 1; }
+.ozon-pull-result span {
+  grid-row: 1 / 3;
+  grid-column: 2;
+  align-self: center;
+  color: #1264db;
+  font-size: 12px;
+}

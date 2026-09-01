@@ -2,10 +2,14 @@
 
 from __future__ import annotations
 
+import json
+
 from fastapi import APIRouter, Depends, HTTPException, status
+from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
 from ..database import get_db
+from ..erp_models import AutomationCandidateRecord, AutomationRunRecord, AutomationTaskRecord, ListingDraftRecord, SourceProductRecord
 from ..models import Shop
 from . import (
     attribute_mapping,
@@ -57,6 +61,15 @@ def ingest_snapshot(shop_id: int, payload: SourceProductIngest, db: Session = De
 def list_source_products(shop_id: int, db: Session = Depends(get_db)):
     _get_shop_or_404(db, shop_id)
     products = ingestion_service.list_source_products(db, shop_id)
+    product_ids = [p.id for p in products]
+    drafts = list(db.scalars(
+        select(ListingDraftRecord)
+        .where(ListingDraftRecord.shop_id == shop_id, ListingDraftRecord.source_product_id.in_(product_ids))
+        .order_by(ListingDraftRecord.updated_at.desc(), ListingDraftRecord.id.desc())
+    )) if product_ids else []
+    latest_draft_by_source = {}
+    for draft in drafts:
+        latest_draft_by_source.setdefault(draft.source_product_id, draft)
     return [
         {
             "id": p.id,
@@ -71,6 +84,18 @@ def list_source_products(shop_id: int, db: Session = Depends(get_db)):
             "variant_count": len(p.variants),
             "media_count": len(p.media),
             "created_at": p.created_at.isoformat() if p.created_at else None,
+            "draft_id": latest_draft_by_source[p.id].id if p.id in latest_draft_by_source else None,
+            "offer_id": latest_draft_by_source[p.id].offer_id if p.id in latest_draft_by_source else None,
+            "draft_status": latest_draft_by_source[p.id].status if p.id in latest_draft_by_source else None,
+            "editor_status": (
+                "published"
+                if p.id in latest_draft_by_source and (
+                    latest_draft_by_source[p.id].status == "submitted"
+                    or latest_draft_by_source[p.id].import_task_id
+                    or latest_draft_by_source[p.id].ozon_product_id
+                )
+                else "edited" if p.id in latest_draft_by_source else "unedited"
+            ),
         }
         for p in products
     ]
@@ -244,6 +269,13 @@ def ext_list_stores(db: Session = Depends(get_db)):
     return extension_bridge.stores_for_extension(db)
 
 
+@ext_router.get("/1688/status")
+def ext_1688_status(storeId: int, offerId: str, db: Session = Depends(get_db)):
+    if db.get(Shop, storeId) is None:
+        raise HTTPException(status_code=404, detail="shop not found")
+    return extension_bridge.capture_status(db, storeId, "1688", offerId.strip())
+
+
 @ext_router.post("/1688/capture")
 def ext_capture_1688(payload: dict, db: Session = Depends(get_db)):
     store_id = str(payload.get("storeId") or "").strip()
@@ -279,7 +311,31 @@ def ext_crawler_heartbeat(payload: dict, db: Session = Depends(get_db)):
 
 @ext_router.get("/1688-crawler/extension/next")
 def ext_crawler_next(workerId: str = "", db: Session = Depends(get_db)):
-    return {"job": None, "message": "no jobs available"}
+    # A shop scan is a streaming producer: every discovered Offer ID is
+    # immediately eligible for detail capture. Do not hold the queue behind a
+    # separate 100-item gate; human-verification pauses are handled by the
+    # extension worker and remain the only external stop condition.
+    candidate = db.scalar(select(AutomationCandidateRecord).where(
+        AutomationCandidateRecord.status.in_(["queued_detail", "test_queued_detail", "full_hold_detail"])
+    ).order_by(AutomationCandidateRecord.id).limit(1))
+    if candidate is None:
+        queued = db.scalar(select(func.count(AutomationCandidateRecord.id)).where(
+            AutomationCandidateRecord.status == "queued_detail"
+        )) or 0
+        return {"job": None, "message": "waiting for discovered detail tasks", "queued": queued}
+    candidate.status = "test_running_detail"
+    db.commit()
+    return {
+        "job": {
+            "id": candidate.id,
+            "kind": "detail",
+            "url": candidate.source_url or f"https://detail.1688.com/offer/{candidate.offer_id}.html",
+            "offerId": candidate.offer_id,
+            "storeId": str(candidate.shop_id or ""),
+            "testBatch": False,
+        },
+        "message": "streaming 1688 detail collection",
+    }
 
 
 @ext_router.post("/1688-crawler/extension/detail-result")
@@ -287,14 +343,34 @@ def ext_crawler_detail_result(payload: dict, db: Session = Depends(get_db)):
     # Background job results -- ingest if payload contains product data
     inner = payload.get("payload") or {}
     store_id = str(inner.get("storeId") or payload.get("storeId") or "").strip()
+    candidate = db.get(AutomationCandidateRecord, int(payload.get("jobId") or 0)) if str(payload.get("jobId") or "").isdigit() else None
+    if candidate:
+        try:
+            candidate_meta = json.loads(candidate.package_json or "{}")
+        except (TypeError, ValueError):
+            candidate_meta = {}
+        if candidate_meta.get("source_shop_key") and not inner.get("sourceShopKey"):
+            inner["sourceShopKey"] = candidate_meta["source_shop_key"]
     if store_id and store_id.isdigit() and inner.get("title"):
         shop_id = int(store_id)
         if db.get(Shop, shop_id) is not None:
             try:
                 result = extension_bridge.ingest_capture(db, shop_id, inner)
+                if candidate:
+                    candidate.status = "collected"
+                    candidate.source_record_id = result.get("id")
+                    candidate.capture_json = json.dumps(inner, ensure_ascii=False)
+                    db.commit()
                 return {"ok": True, "ingested": True, **result}
-            except ValueError:
-                pass
+            except ValueError as exc:
+                if candidate:
+                    candidate.status = "failed"
+                    candidate.rejection_reason = str(exc)[:1000]
+                    db.commit()
+    if candidate:
+        candidate.status = "waiting_human" if payload.get("needsHuman") else "failed"
+        candidate.rejection_reason = str(payload.get("error") or "详情采集未返回有效商品")[:1000]
+        db.commit()
     return {"ok": True, "ingested": False}
 
 
@@ -359,6 +435,86 @@ def ext_ozon_capture(payload: dict, db: Session = Depends(get_db)):
         return extension_bridge.ingest_ozon_capture(db, shop_id, snapshot)
     except ValueError as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from exc
+
+
+@ext_router.post("/1688/shop-scan/check")
+def ext_1688_shop_scan_check(payload: dict, db: Session = Depends(get_db)):
+    """Check a shop-list page against the global 1688 strong identity.
+
+    This endpoint is deliberately read-only: enumerating a public shop catalog
+    must not create incomplete source products or listing drafts.
+    """
+    offer_ids = list(dict.fromkeys(
+        str(value).strip() for value in (payload.get("offerIds") or [])
+        if str(value).strip().isdigit()
+    ))[:100]
+    if not offer_ids:
+        return {"existingOfferIds": [], "newOfferIds": []}
+    existing = set(db.scalars(select(SourceProductRecord.source_product_id).where(
+        SourceProductRecord.source_platform == "1688",
+        SourceProductRecord.source_product_id.in_(offer_ids),
+    )).all())
+    return {
+        "existingOfferIds": [offer_id for offer_id in offer_ids if offer_id in existing],
+        "newOfferIds": [offer_id for offer_id in offer_ids if offer_id not in existing],
+    }
+
+
+@ext_router.post("/1688/shop-scan/chunk")
+def ext_1688_shop_scan_chunk(payload: dict, db: Session = Depends(get_db)):
+    """Persist one shop page and enqueue each new Offer ID for detail capture."""
+    shop_id = int(payload.get("storeId") or 0)
+    if not shop_id or db.get(Shop, shop_id) is None:
+        raise HTTPException(status_code=422, detail="请先在插件选择归属店铺")
+    shop_key = str(payload.get("shopKey") or "").strip()[:180]
+    if not shop_key:
+        raise HTTPException(status_code=422, detail="shopKey is required")
+    task_name = f"1688店铺采集:{shop_key}"[:160]
+    task = db.scalar(select(AutomationTaskRecord).where(AutomationTaskRecord.name == task_name))
+    if task is None:
+        task = AutomationTaskRecord(name=task_name, keywords_json="[]", filters_json="{}", daily_target=100000, status="active")
+        db.add(task)
+        db.flush()
+    run = db.scalar(select(AutomationRunRecord).where(
+        AutomationRunRecord.task_id == task.id,
+        AutomationRunRecord.status.in_(["queued", "running"]),
+    ).order_by(AutomationRunRecord.id.desc()))
+    if run is None:
+        run = AutomationRunRecord(task_id=task.id, status="running", current_stage="shop_detail")
+        db.add(run)
+        db.flush()
+    added = already_known = 0
+    for item in (payload.get("items") or [])[:100]:
+        offer_id = str(item.get("offerId") or "").strip()
+        if not offer_id.isdigit():
+            continue
+        if db.scalar(select(AutomationCandidateRecord.id).where(
+            AutomationCandidateRecord.run_id == run.id,
+            AutomationCandidateRecord.offer_id == offer_id,
+        )):
+            already_known += 1
+            continue
+        source = db.scalar(select(SourceProductRecord).where(
+            SourceProductRecord.source_platform == "1688",
+            SourceProductRecord.source_product_id == offer_id,
+        ))
+        db.add(AutomationCandidateRecord(
+            run_id=run.id, task_id=task.id, offer_id=offer_id,
+            title=str(item.get("title") or f"1688商品 {offer_id}")[:500],
+            image_url=str(item.get("image") or "")[:2000] or None,
+            source_url=str(item.get("url") or f"https://detail.1688.com/offer/{offer_id}.html")[:2000],
+            package_json=json.dumps({"source_shop_key": shop_key}, ensure_ascii=False),
+            status="collected" if source else "queued_detail",
+            source_record_id=source.id if source else None, shop_id=shop_id,
+        ))
+        already_known += int(source is not None)
+        added += int(source is None)
+    db.flush()
+    run.discovered_count = db.scalar(select(func.count(AutomationCandidateRecord.id)).where(AutomationCandidateRecord.run_id == run.id)) or 0
+    run.collected_count = db.scalar(select(func.count(AutomationCandidateRecord.id)).where(AutomationCandidateRecord.run_id == run.id, AutomationCandidateRecord.status == "collected")) or 0
+    db.commit()
+    queued = db.scalar(select(func.count(AutomationCandidateRecord.id)).where(AutomationCandidateRecord.run_id == run.id, AutomationCandidateRecord.status == "queued_detail")) or 0
+    return {"runId": run.id, "addedToDetailQueue": added, "alreadyKnown": already_known, "discovered": run.discovered_count, "queued": queued, "collected": run.collected_count}
 
 
 @ext_router.post("/listing-edit-journal/events")

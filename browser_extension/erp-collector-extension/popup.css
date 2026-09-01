@@ -115,6 +115,11 @@ button:disabled {
   background: rgba(4, 15, 29, .72);
 }
 
+.shop-scan-box { display:grid; gap:8px; padding:12px; border:1px solid rgba(255,153,51,.65); border-radius:8px; background:rgba(118,55,0,.26); }
+.shop-scan-box strong { color:#ffd19a; }
+.shop-scan-box span { color:#ffc078; font-size:12px; line-height:1.5; }
+.shop-scan-box button { background:linear-gradient(135deg,#f97316,#fb923c); box-shadow:none; }
+
 .worker-box div {
   display: grid;
   gap: 4px;

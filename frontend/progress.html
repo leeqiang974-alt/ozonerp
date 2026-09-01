@@ -92,8 +92,9 @@
             <p>最后更新: <span id="last-update">--</span> | 自动刷新间隔 10 秒</p>
         </footer>
     </div>
+    <script src="./erp-config.js"></script>
     <script>
-        const apiBase = window.ERP_API_BASE || "http://127.0.0.1:8000";
+        const apiBase = window.ERP_API_BASE || ((location.hostname === "127.0.0.1" || location.hostname === "localhost") ? "http://127.0.0.1:8000" : "");
         let refreshTimer = null;
 
         async function refresh() {

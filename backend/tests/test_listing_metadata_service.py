@@ -24,6 +24,10 @@ class FakeClient:
             return {"result": [], "has_next": False}
         return {"result": [{"id": 970718, "value": "测试品牌", "info": "", "picture": ""}], "has_next": False}
 
+    def get_category_attribute_values(self, **kwargs):
+        type(self).value_calls += 1
+        return {"result": [{"id": 970718, "value": "测试品牌", "info": "", "picture": ""}], "has_next": False}
+
 
 def test_attribute_templates_and_dictionary_values_are_cached(monkeypatch) -> None:
     FakeClient.attribute_calls = 0
@@ -41,7 +45,11 @@ def test_attribute_templates_and_dictionary_values_are_cached(monkeypatch) -> No
         first_values = search_category_attribute_values(db, shop.id, "123", "456", "85", "测试")
         second_values = search_category_attribute_values(db, shop.id, "123", "456", "85", "测试")
 
-        assert first_attributes == second_attributes == [{"id": "85", "name": "品牌", "required": True, "dictionary_id": "1", "type": "String"}]
+        assert first_attributes == second_attributes == [{
+            "id": "85", "name": "品牌", "required": True,
+            "dictionary_id": "1", "type": "String", "complex_id": "0",
+            "description": "", "is_collection": False, "is_aspect": False,
+        }]
         assert first_values == second_values == [{"id": "970718", "value": "测试品牌", "info": "", "picture": ""}]
         assert FakeClient.attribute_calls == 1
         assert FakeClient.value_calls == 1
@@ -49,3 +57,17 @@ def test_attribute_templates_and_dictionary_values_are_cached(monkeypatch) -> No
         assert search_category_attribute_values(db, shop.id, "123", "456", "85", "空结果") == []
         assert search_category_attribute_values(db, shop.id, "123", "456", "85", "空结果") == []
         assert FakeClient.value_calls == 2
+
+
+def test_single_character_dictionary_search_is_allowed(monkeypatch) -> None:
+    FakeClient.value_calls = 0
+    monkeypatch.setattr("app.listing_metadata_service.OzonSellerClient", FakeClient)
+    monkeypatch.setattr("app.listing_metadata_service._credentials", lambda db, shop_id: ("id", "key"))
+    engine = create_engine("sqlite://")
+    Base.metadata.create_all(engine)
+    with Session(engine) as db:
+        shop = Shop(name="单字搜索店铺", currency="CNY")
+        db.add(shop); db.commit(); db.refresh(shop)
+        result = search_category_attribute_values(db, shop.id, "123", "456", "85", "中")
+        assert result[0]["value"] == "测试品牌"
+        assert FakeClient.value_calls == 1

@@ -10,6 +10,7 @@ from app.database import Base
 from app.erp_models import (
     OzonAttributeCacheRecord,
     OzonCategoryCacheRecord,
+    OzonGlobalDictValueRecord,
     SourceProductRecord,
 )
 from cryptography.fernet import Fernet
@@ -23,11 +24,13 @@ from app.pipeline.contract import (
     validate_snapshot,
 )
 from app.pipeline.ingestion_service import ingest_source_product, list_source_products
+from app.pipeline.extension_bridge import ingest_capture
+from app.source_duplicate_service import source_publication_status
 from app.pipeline.fact_extraction import extract_facts
 from app.pipeline.category_matching import match_categories, lock_category
 from app.pipeline.attribute_mapping import map_attributes
 from app.pipeline.variant_mapping import generate_sku, map_variants, check_media_compliance
-from app.pipeline.content_generation import generate_content
+from app.pipeline.content_generation import generate_content, _is_publishable_russian_text, _safe_category_fallback
 from app.pipeline.quality_check import run_quality_check, preview_payload
 from app.pipeline.publish_service import (
     approve_for_publish,
@@ -36,11 +39,34 @@ from app.pipeline.publish_service import (
     submit_to_ozon,
 )
 from app.pipeline.progress import get_progress
+from app.main import ai_match_category, MatchCategoryRequest
+
+
+def add_test_color_dictionary(db: Session, category_id: str, type_id: str) -> None:
+    """Provide the global Ozon color menu required by publish payload tests."""
+    db.add(OzonGlobalDictValueRecord(
+        category_id=category_id, type_id=type_id, attribute_id="10096",
+        value_id="61574", value="黑色",
+    ))
 
 
 # ---------------------------------------------------------------------------
 # P0: contract
 # ---------------------------------------------------------------------------
+
+def test_culinary_silicone_mold_never_matches_apparel_history():
+    engine=create_engine("sqlite://");Base.metadata.create_all(engine)
+    with Session(engine) as db:
+        shop=Shop(name="category-guard",currency="CNY");db.add(shop);db.commit();db.refresh(shop)
+        from app.erp_models import OzonCategoryCacheRecord,CategoryMatchHistoryRecord
+        db.add_all([
+            OzonCategoryCacheRecord(shop_id=shop.id,category_id="cook",type_id="mold",title="Cooking / Mold",title_zh="烹饪配件 / 冰格、糖果模具"),
+            OzonCategoryCacheRecord(shop_id=shop.id,category_id="fashion",type_id="badge",title="Fashion / Badge",title_zh="服装首饰 / 徽章"),
+            CategoryMatchHistoryRecord(shop_id=shop.id,title="错误历史",title_keywords="蛋糕 装饰 模具",title_hash="bad",category_id="fashion",type_id="badge",category_title_zh="服装首饰 / 徽章",source="manual",hit_count=99),
+        ]);db.commit()
+        result=ai_match_category(shop.id,MatchCategoryRequest(title="六孔硅胶蛋糕甜品装饰模具",material="硅胶",brand=""),db)
+        assert result["candidates"][0]["category_id"]=="cook"
+        assert all(item["category_id"]!="fashion" for item in result["candidates"])
 
 class TestP0Contract:
     def test_valid_snapshot_passes_validation(self):
@@ -146,6 +172,49 @@ class TestP1Ingestion:
             products = list_source_products(db, shop.id)
             assert len(products) == 1
 
+    def test_same_1688_offer_is_detected_across_shops(self):
+        engine = create_engine("sqlite://")
+        Base.metadata.create_all(engine)
+        with Session(engine) as db:
+            first = Shop(name="店铺 A", currency="CNY")
+            second = Shop(name="店铺 B", currency="CNY")
+            db.add_all([first, second]); db.commit(); db.refresh(first); db.refresh(second)
+            payload = {
+                "offerId": "678901234", "title": "同一货源商品",
+                "url": "https://detail.1688.com/offer/678901234.html",
+                "skuVariants": [{"skuId": "sku-1", "spec": "红色", "price": 10, "stock": 5}],
+            }
+            first_result = ingest_capture(db, first.id, {**payload, "storeId": str(first.id)})
+            second_result = ingest_capture(db, second.id, {**payload, "storeId": str(second.id)})
+
+            assert first_result["duplicate"] is False
+            assert second_result["duplicate"] is True
+            assert second_result["id"] == first_result["id"]
+            assert db.query(SourceProductRecord).count() == 1
+            assert [row.id for row in list_source_products(db, second.id)] == [int(first_result["id"])]
+
+    def test_source_status_lists_published_shops_by_strong_offer_identity(self):
+        from app.erp_models import ListingDraftRecord
+        engine = create_engine("sqlite://")
+        Base.metadata.create_all(engine)
+        with Session(engine) as db:
+            first = Shop(name="店铺 A", currency="CNY")
+            second = Shop(name="店铺 B", currency="CNY")
+            db.add_all([first, second]); db.commit(); db.refresh(first); db.refresh(second)
+            source = ingest_source_product(db, first.id, self._snapshot())
+            db.add(ListingDraftRecord(
+                shop_id=first.id, source_product_id=source.id, offer_id="KA000001",
+                title="已发布商品", status="submitted",
+            ))
+            db.commit()
+
+            status = source_publication_status(db, "1688", "678901234", current_shop_id=second.id)
+
+            assert status["collected"] is True
+            assert status["other_shop_published"] is True
+            assert status["current_shop_published"] is False
+            assert status["published_shops"][0]["shop_name"] == "店铺 A"
+
 
 # ---------------------------------------------------------------------------
 # P2: fact extraction + category matching
@@ -245,7 +314,7 @@ class TestP2CategoryMatching:
                 "source_product_id": "111",
                 "title": "不锈钢厨房收纳架",
                 "material": "不锈钢",
-                "variants": [{"source_sku": "s1", "spec_name": "default"}],
+                "variants": [{"source_sku": "s1", "spec_name": "default", "stock": 1}],
             })
             db.add(OzonCategoryCacheRecord(shop_id=shop.id, category_id="100", type_id="200", title="厨房收纳"))
             db.commit()
@@ -380,6 +449,31 @@ class TestP4VariantMapping:
             skus = [v["seller_sku"] for v in result["variants"]]
             assert len(set(skus)) == 2  # all unique
 
+    def test_map_variants_excludes_explicit_zero_stock_skus(self):
+        engine = create_engine("sqlite://")
+        Base.metadata.create_all(engine)
+        with Session(engine) as db:
+            shop = Shop(name="zero-stock-filter", currency="CNY")
+            db.add(shop); db.commit(); db.refresh(shop)
+            record = ingest_source_product(db, shop.id, {
+                "source_product_id": "zero-filter-1",
+                "title": "mixed stock product",
+                "variants": [
+                    {"source_sku": "QHXZ1243", "spec_name": "QHXZ1243", "price_cny": "1.7", "stock": 0},
+                    {"source_sku": "QHXZ1242", "spec_name": "QHXZ1242", "price_cny": "1.7", "stock": 1684},
+                    {"source_sku": "QHXZ737", "spec_name": "QHXZ737", "price_cny": "1.7", "stock": 0},
+                    {"source_sku": "QHXZ1245", "spec_name": "QHXZ1245", "price_cny": "1.7", "stock": 401},
+                ],
+                "media": [{"url": "https://example.com/1.jpg", "is_primary": True}],
+            })
+            lock_category(db, shop.id, record.id, "700", "800")
+
+            result = map_variants(db, shop.id, record.id)
+
+            assert result["sku_count"] == 2
+            assert result["excluded_zero_stock_count"] == 2
+            assert {row["source_sku"] for row in result["variants"]} == {"QHXZ1242", "QHXZ1245"}
+
     def test_media_compliance_checks(self):
         assert len(check_media_compliance(0)) > 0
         assert len(check_media_compliance(5)) > 0  # below recommended
@@ -392,6 +486,18 @@ class TestP4VariantMapping:
 # ---------------------------------------------------------------------------
 
 class TestP5ContentGeneration:
+    def test_bad_ai_output_uses_only_ozon_category_safe_fallback(self):
+        title, description = _safe_category_fallback("Бижутерные украшения / Значок")
+        assert title == "Значок"
+        assert description == "Значок. Бижутерное украшение."
+        assert not any("\u4e00" <= char <= "\u9fff" for char in f"{title} {description}")
+
+    def test_non_russian_category_has_no_content_fallback(self):
+        assert _safe_category_fallback("服装首饰 / 徽章") is None
+
+    def test_multiline_prompt_residue_is_not_a_publishable_title(self):
+        assert not _is_publishable_russian_text("Значок\n**Правила:**\nбулавка", minimum_cyrillic=4, single_line=True)
+
     def test_generates_russian_title_and_pricing(self):
         engine = create_engine("sqlite://")
         Base.metadata.create_all(engine)
@@ -472,6 +578,7 @@ class TestP6QualityCheck:
                 shop_id=shop.id, category_id="1300", type_id="1400",
                 attribute_id="3001", name="Material", required=False, dictionary_id="", value_type="String",
             ))
+            add_test_color_dictionary(db, "1300", "1400")
             db.commit()
             map_attributes(db, shop.id, record.id)
             map_variants(db, shop.id, record.id)
@@ -509,6 +616,7 @@ class TestP7Publish:
                 shop_id=shop.id, category_id="1500", type_id="1600",
                 attribute_id="4001", name="Material", required=False, dictionary_id="", value_type="String",
             ))
+            add_test_color_dictionary(db, "1500", "1600")
             db.commit()
             map_attributes(db, shop.id, record.id)
             map_variants(db, shop.id, record.id)
@@ -531,6 +639,19 @@ class TestP7Publish:
                 def get_import_info(self, *, task_id):
                     return {"result": {"items": [{"offer_id": "test-sku", "product_id": 999, "status": "imported"}]}}
             monkeypatch.setattr("app.pipeline.publish_service.OzonSellerClient", _FakeOzonClient)
+            # The submission unit test mocks the Ozon write.  Keep the image
+            # preflight deterministic as well; the example.com URL is not a
+            # real product image and must not cause this test to make a
+            # network request or fail before the mocked write.
+            monkeypatch.setattr(
+                "app.pipeline.publish_service._materialize_submission_images",
+                lambda *_args, **_kwargs: {
+                    "public_count": 1,
+                    "sku_count": 1,
+                    "invalid_count": 0,
+                    "mirrored_count": 0,
+                },
+            )
             result = submit_to_ozon(db, shop.id, record.id, "test-approver")
             assert result["task_id"] != ""
             assert result["status"] == "submitted"
@@ -538,7 +659,7 @@ class TestP7Publish:
             status = poll_task_status(db, shop.id, record.id)
             assert status["task_id"] == result["task_id"]
 
-    def test_submit_without_approval_raises(self):
+    def test_submit_without_approval_raises(self, monkeypatch):
         engine = create_engine("sqlite://")
         Base.metadata.create_all(engine)
         with Session(engine) as db:
@@ -547,7 +668,7 @@ class TestP7Publish:
             record = ingest_source_product(db, shop.id, {
                 "source_product_id": "999",
                 "title": "test",
-                "variants": [{"source_sku": "s1", "spec_name": "default"}],
+                "variants": [{"source_sku": "s1", "spec_name": "default", "stock": 1}],
             })
             lock_category(db, shop.id, record.id, "1700", "1800")
             db.add(OzonCategoryCacheRecord(shop_id=shop.id, category_id="1700", type_id="1800", title="Cat"))
@@ -555,11 +676,13 @@ class TestP7Publish:
                 shop_id=shop.id, category_id="1700", type_id="1800",
                 attribute_id="4001", name="Material", required=False, dictionary_id="", value_type="String",
             ))
+            add_test_color_dictionary(db, "1700", "1800")
             db.commit()
             map_attributes(db, shop.id, record.id)
             map_variants(db, shop.id, record.id)
             generate_content(db, shop.id, record.id)
             run_quality_check(db, shop.id, record.id)
+            monkeypatch.setattr("app.pipeline.publish_service.generate_product_hashtags", lambda *_args, **_kwargs: "#товар")
             create_listing_draft_from_pipeline(db, shop.id, record.id)
             with pytest.raises(ValueError, match="approved"):
                 submit_to_ozon(db, shop.id, record.id, "hacker")
@@ -582,16 +705,16 @@ class TestRichContent:
         parsed = json.loads(json_str)
         assert "content" in parsed
         widgets = parsed["content"]
-        # Should have 2 widgets: showcase (images) + list (text)
+        # Must match the raTextBlock + raShowcase structure accepted by the
+        # ERP's successful Ozon listings.
         assert len(widgets) == 2
-        assert widgets[0]["widgetName"] == "raShowcase"
-        assert widgets[1]["widgetName"] == "list"
+        assert widgets[0]["widgetName"] == "raTextBlock"
+        assert widgets[1]["widgetName"] == "raShowcase"
         # Showcase should have 2 image blocks
-        assert len(widgets[0]["blocks"]) == 2
-        assert widgets[0]["blocks"][0]["img"]["src"] == "https://example.com/1.jpg"
-        # Text widget should have title and text
-        assert "title" in widgets[1]["blocks"][0]
-        assert "text" in widgets[1]["blocks"][0]
+        assert len(widgets[1]["blocks"]) == 2
+        assert widgets[1]["blocks"][0]["img"]["src"] == "https://example.com/1.jpg"
+        # Text widget must use the Ozon raTextBlock paragraph schema.
+        assert widgets[0]["blocks"][0]["paragraphs"][0]["content"] == "Отличные наушники с шумоподавлением"
 
     def test_build_rich_content_images_only(self):
         from app.pipeline.rich_content import build_rich_content
@@ -673,5 +796,3 @@ class TestProgress:
             p1_stage = next(s for s in report["stages"] if s["stage"] == "P1")
             ingest_task = next(t for t in p1_stage["tasks"] if "ingest at least" in t["text"])
             assert ingest_task["done"] is True
-
-

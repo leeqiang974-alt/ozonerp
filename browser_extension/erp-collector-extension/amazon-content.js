@@ -3,11 +3,28 @@
   const buttonId = "meli-amazon-capture";
   const automaticSourceId = new URLSearchParams(location.hash.replace(/^#/, "")).get("meli-recollect-source");
 
-  const text = (selector) => document.querySelector(selector)?.textContent?.replace(/\s+/g, " ").trim() || "";
+  const cleanNodeText = (node) => {
+    if (!node) return "";
+    // A+ blocks can contain inline <style>/<script> payloads. Read rendered
+    // text from a clone so CSS/JSON is never sent as product description.
+    const clone = node.cloneNode?.(true);
+    clone?.querySelectorAll?.("script, style, noscript, template").forEach((item) => item.remove());
+    return String(clone?.innerText || clone?.textContent || node.innerText || node.textContent || "")
+      .replace(/\s+/g, " ").trim();
+  };
+  const text = (selector) => cleanNodeText(document.querySelector(selector));
+  const textList = (selector) => [...document.querySelectorAll(selector)].map(cleanNodeText).filter(Boolean);
   const unique = (values) => [...new Set(values.filter((value) => /^https?:\/\//.test(value)))];
+  // Amazon's carousel returns one source image in many render sizes, e.g.
+  // ``..._SX342_`` / ``..._SX385_`` alongside ``..._SL1500_``. Converting
+  // each to the unrendered original removes duplicates and thumbnail pixels.
   const fullImageUrl = (value) => String(value || "")
-    .replace(/\.(?:_AC_)?(?:US|SS|SX|SY|SL)\d+(?:_[^.]*)?\.(jpg|jpeg|png|webp)(?:\?.*)?$/i, "._AC_SL1500_.$1")
-    .replace(/\.SS\d+_[^.]*(\.(?:jpg|jpeg|png|webp))(?:\?.*)?$/i, "._AC_SL1500_$1");
+    .replace(/\._[^/?]+_\.(jpg|jpeg|png|webp)(?=\?.*$|$)/i, ".$1");
+
+  // Only used by the extension's offline parser test; normal pages do not set it.
+  if (globalThis.__MELI_AMAZON_COLLECTOR_TEST__ && typeof globalThis.__MELI_AMAZON_COLLECTOR_TEST__ === "object") {
+    globalThis.__MELI_AMAZON_COLLECTOR_TEST__.fullImageUrl = fullImageUrl;
+  }
 
   function canonicalUrl() {
     const asin = location.pathname.match(/\/(?:dp|gp\/product|gp\/aw\/d)\/([A-Z0-9]{10})/i)?.[1];
@@ -101,22 +118,31 @@
       const textValue = String(value || "").replace(/\s+/g, " ").trim();
       if (key && textValue && key.length <= 120 && textValue.length <= 1000 && !details[key]) details[key] = textValue;
     };
-    for (const row of document.querySelectorAll("#productDetails_techSpec_section_1 tr, #productDetails_detailBullets_sections1 tr, #productDetails_db_sections tr")) {
-      add(row.querySelector("th, .prodDetSectionEntry")?.textContent, row.querySelector("td, .prodDetAttrValue")?.textContent);
+    for (const row of document.querySelectorAll("[id^='productDetails_techSpec_section_'] tr, [id^='productDetails_detailBullets_sections'] tr, [id^='productDetails_db_sections'] tr, #productOverview_feature_div tr")) {
+      add(cleanNodeText(row.querySelector("th, .prodDetSectionEntry, .a-span3")), cleanNodeText(row.querySelector("td, .prodDetAttrValue, .a-span9")));
     }
-    for (const item of document.querySelectorAll("#detailBullets_feature_div li")) {
-      const label = item.querySelector(".a-text-bold")?.textContent || "";
-      const value = item.textContent?.replace(label, "") || "";
+    for (const item of document.querySelectorAll("#detailBullets_feature_div li, #detailBulletsWrapper_feature_div li, #productOverview_feature_div li")) {
+      const label = cleanNodeText(item.querySelector(".a-text-bold, .a-list-item .a-text-bold"));
+      const value = cleanNodeText(item).replace(label, "");
       add(label, value);
     }
     return details;
   }
 
   async function waitForProductEvidence() {
-    for (let attempt = 0; attempt < 12; attempt += 1) {
+    // Title and the landing image arrive before Amazon's lazy detail modules.
+    // Wait for those modules to settle when available, while still allowing
+    // products with no bullets/details to finish after a bounded delay.
+    for (let attempt = 0; attempt < 20; attempt += 1) {
       const hasTitle = Boolean(text("#productTitle"));
       const hasImage = Boolean(document.querySelector("#landingImage[data-a-dynamic-image], #landingImage[data-old-hires], #altImages img"));
-      if (hasTitle && hasImage) return;
+      const hasAdditionalEvidence = Boolean(document.querySelector(
+        "#feature-bullets li, #productDescription, #aplus, #bookDescription_feature_div, [id^='productDetails_techSpec_section_'] tr, #detailBullets_feature_div li, #productOverview_feature_div tr, [id^='variation_'][id$='_name']",
+      ));
+      if (hasTitle && hasImage && (hasAdditionalEvidence || attempt >= 8)) {
+        await new Promise((resolve) => setTimeout(resolve, 900));
+        return;
+      }
       await new Promise((resolve) => setTimeout(resolve, 500));
     }
   }
@@ -152,8 +178,8 @@
         source_url: canonicalUrl(), title: text("#productTitle"),
         price: { amount: Number.isFinite(amount) && amount > 0 ? amount : null, currency },
         brand: text("#bylineInfo").replace(/^(Brand:|Visit the)\s*/i, "").replace(/\s*Store$/i, ""),
-        bullets: [...document.querySelectorAll("#feature-bullets li")].map((node) => node.textContent.replace(/\s+/g, " ").trim()).filter(Boolean),
-        description: text("#productDescription, #aplus, #bookDescription_feature_div"), images, video_urls: videos, variants: captureVariants(), technical_details: captureTechnicalDetails(), measurements: {},
+        bullets: textList("#feature-bullets li, #feature-bullets_feature_div li"),
+        description: [...new Set(textList("#productDescription, #productDescription_feature_div, #aplus, #aplus_feature_div, #bookDescription_feature_div"))].join("\n\n").slice(0, 30000), images, video_urls: videos, variants: captureVariants(), technical_details: captureTechnicalDetails(), measurements: {},
       },
     };
   }

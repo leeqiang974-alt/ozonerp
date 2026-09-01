@@ -1,4 +1,4 @@
-﻿const assert = require("node:assert/strict");
+const assert = require("node:assert/strict");
 const fs = require("node:fs");
 const path = require("node:path");
 const vm = require("node:vm");
@@ -42,4 +42,14 @@ assert.equal(
   "https://m.media-amazon.com/images/I/41DFwtawoGL.jpg",
 );
 
+assert.equal(typeof testHook.isProductVideoUrl, "function", "product video validator must be exposed to its parser test");
+assert.equal(
+  testHook.isProductVideoUrl("https://m.media-amazon.com/images/S/vse-vms-transcoding-artifact-us-east-1-prod/a/video.mp4"),
+  true,
+);
+assert.equal(
+  testHook.isProductVideoUrl("https://m.media-amazon.com/images/S/ads/recommendation.mp4"),
+  false,
+);
+assert.equal(testHook.isProductVideoUrl("https://cdn.example/video.mp4"), false);
 console.log("amazon original-image normalizer tests passed");

@@ -24,6 +24,7 @@
   // Only used by the extension's offline parser test; normal pages do not set it.
   if (globalThis.__MELI_AMAZON_COLLECTOR_TEST__ && typeof globalThis.__MELI_AMAZON_COLLECTOR_TEST__ === "object") {
     globalThis.__MELI_AMAZON_COLLECTOR_TEST__.fullImageUrl = fullImageUrl;
+    globalThis.__MELI_AMAZON_COLLECTOR_TEST__.isProductVideoUrl = isProductVideoUrl;
   }
 
   function canonicalUrl() {
@@ -111,6 +112,42 @@
     return urls;
   }
 
+  function isProductVideoUrl(value) {
+    try {
+      const url = new URL(String(value || ""));
+      return url.protocol === "https:"
+        && url.hostname.toLowerCase() === "m.media-amazon.com"
+        && /vse/i.test(url.pathname)
+        && /\.(?:mp4|m3u8)$/i.test(url.pathname);
+    } catch (_) {
+      return false;
+    }
+  }
+
+  function captureProductGalleryVideos() {
+    // Do not scan all document scripts/videos: Amazon also embeds autoplay
+    // ads and recommendation videos there. Only media mounted in the product
+    // gallery (or its VSE player) is evidence for this ASIN.
+    const selector = [
+      "#imageBlock video", "#imageBlock video source",
+      "#imageBlock [data-video-url]", "#imageBlock [data-video-sd-url]", "#imageBlock [data-video-hd-url]",
+      "#altImages video", "#altImages video source",
+      "#altImages [data-video-url]", "#altImages [data-video-sd-url]", "#altImages [data-video-hd-url]",
+      "#vse-dp-video video", "#vse-dp-video video source",
+      "#vse-dp-video [data-video-url]", "#vse-dp-video [data-video-sd-url]", "#vse-dp-video [data-video-hd-url]",
+      ".vse-player video", ".vse-player video source",
+      ".vse-player [data-video-url]", ".vse-player [data-video-sd-url]", ".vse-player [data-video-hd-url]",
+    ].join(", ");
+    const candidates = [...document.querySelectorAll(selector)].flatMap((node) => [
+      node.currentSrc,
+      node.src,
+      node.getAttribute("src"),
+      node.getAttribute("data-video-url"),
+      node.getAttribute("data-video-sd-url"),
+      node.getAttribute("data-video-hd-url"),
+    ]);
+    return unique(candidates.filter(isProductVideoUrl)).slice(0, 3);
+  }
   function captureTechnicalDetails() {
     const details = {};
     const add = (label, value) => {
@@ -161,13 +198,7 @@
         .flatMap((node) => [node.getAttribute("data-old-hires"), node.getAttribute("data-src"), node.currentSrc || node.src]),
       ...urlsFromState(statePayloads, "image"),
     ].map(fullImageUrl).filter((url) => !/grey[-_]pixel|pkplay-button|play-button-mb-image-grid|video-thumb/i.test(url || ""))).slice(0, 20);
-    const videos = unique([
-      ...[...document.querySelectorAll("video, video source")].map((node) => node.currentSrc || node.src),
-      ...[...document.querySelectorAll("[data-video-url], [data-video-sd-url], [data-video-hd-url]")]
-        .flatMap((node) => [node.dataset.videoUrl, node.dataset.videoSdUrl, node.dataset.videoHdUrl]),
-      ...urlsFromState(statePayloads, "video"),
-      ...[...document.scripts].flatMap((node) => [...String(node.textContent || "").replace(/\\\//g, "/").matchAll(/https?:\/\/[^"'\s]+?\.(?:mp4|m3u8)(?:[?#][^"'\s]*)?/gi)].map((match) => match[0])),
-    ]).slice(0, 8);
+    const videos = captureProductGalleryVideos();
     const priceText = text("#corePrice_feature_div .a-offscreen, #apex_desktop .a-price .a-offscreen, #priceblock_ourprice");
     const amount = Number((priceText.match(/[\d,.]+/)?.[0] || "").replace(/,/g, ""));
     const currency = location.hostname.includes("amazon.com.mx") ? "MXN" : location.hostname.includes("amazon.ca") ? "CAD" : location.hostname.includes("amazon.co.uk") ? "GBP" : /amazon\.(de|fr|it|es)/.test(location.hostname) ? "EUR" : "USD";

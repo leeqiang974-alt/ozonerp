@@ -2393,8 +2393,11 @@ def check_import_info(shop_id: int, task_id: str, db: Session = Depends(get_db))
     return result
 
 
-class OzonProductArchiveRequest(BaseModel):
+class OzonProductIdsRequest(BaseModel):
     product_ids: list[int] = Field(min_length=1, max_length=100)
+
+
+class OzonProductArchiveRequest(OzonProductIdsRequest):
     confirm: bool = False
     reason: str = Field(min_length=1, max_length=500)
 
@@ -2425,6 +2428,38 @@ def archive_ozon_products(
     ))
     db.commit()
     return {"ok": True, "product_ids": product_ids, "ozon_response": result}
+
+
+@app.post("/api/v1/shops/{shop_id}/ozon-products/status")
+def read_ozon_product_statuses(
+    shop_id: int,
+    payload: OzonProductIdsRequest,
+    db: Session = Depends(get_db),
+) -> dict:
+    """Read back exact Ozon product states after a write action.
+
+    Reuses the explicit-ID request schema so callers cannot accidentally scan a
+    whole shop while checking the outcome of a constrained operation. It
+    deliberately has no confirmation field because it never writes to Ozon or
+    local business state.
+    """
+    from .sync_service import _credentials
+    from .integrations.ozon_seller import OzonSellerClient
+
+    _get_shop_or_404(db, shop_id)
+    product_ids = sorted(set(int(product_id) for product_id in payload.product_ids if int(product_id) > 0))
+    client_id, api_key = _credentials(db, shop_id)
+    with OzonSellerClient(client_id=client_id, api_key=api_key) as client:
+        result = client.get_product_info(product_ids=product_ids)
+    items = result.get("items", []) or result.get("result", {}).get("items", [])
+    return {
+        "ok": True,
+        "product_ids": product_ids,
+        "items": items,
+        "missing_product_ids": sorted(
+            set(product_ids) - {int(item.get("id")) for item in items if item.get("id")}
+        ),
+    }
 
 
 

@@ -1802,21 +1802,58 @@ const AI_IMAGE_DEFAULT_SLOTS = [
   {slot:"scene_gift",title:"礼赠场景"}
 ];
 
-function creativeGroupForVariant(variant) {
-  const values = variant?.variant_values || {};
-  const dimension = (state.variantDimensions || []).find(attr => {
-    const name = String(attr?.name || "").toLowerCase();
-    return name && !/(尺寸|尺码|大小|size|dimension|规格)/.test(name);
+const SIZE_VARIANT_NAME_RE = /(尺寸|尺码|大小|size|dimension|规格|length|width|height|длин|ширин|размер)/i;
+const STYLE_VARIANT_NAME_RE = /(款式|花色|图案|颜色|color|цвет|style|model|модель)/i;
+
+function sourceVariantForEditorVariant(variant) {
+  const sellerSku = String(variant?.seller_sku || "");
+  const imageUrl = String(variant?.image_url || "");
+  return (state.sourceProduct?.variants || []).find(source => {
+    const sourceSku = String(source?.source_sku || "");
+    return (sourceSku && sellerSku.endsWith(sourceSku)) || (imageUrl && imageUrl === String(source?.image_url || source?.sku_image_url || ""));
+  }) || null;
+}
+
+function styleVariantDimension() {
+  const candidates = (state.variantDimensions || []).filter(attr => {
+    const name = String(attr?.name || "");
+    return name && !SIZE_VARIANT_NAME_RE.test(name) && !isColorNameVariantAttribute(attr);
   });
-  const name = String(dimension?.name || "款式");
-  let value = String(values[name] || "").trim();
-  if (!value) {
-    const parsed = parseSourceSkuSpec(variant?.spec_name || "");
-    const entry = parsed.find(item => !/(尺寸|尺码|大小|size|dimension|规格)/.test(String(item.attributeName || item.name || "").toLowerCase()));
-    value = String(entry?.attributeValue || entry?.value || "").trim();
+  return candidates.find(attr => STYLE_VARIANT_NAME_RE.test(String(attr.name || ""))) || candidates[0] || null;
+}
+
+function sourceStyleEvidence(variant) {
+  const source = sourceVariantForEditorVariant(variant);
+  const specName = String(source?.spec_name || variant?.spec_name || variant?.source_variant_label || "").trim();
+  const structured = parseSourceSkuSpec(specName);
+  const entry = structured.find(item => {
+    const name = String(item?.attributeName || item?.name || "");
+    return name && !SIZE_VARIANT_NAME_RE.test(name) && STYLE_VARIANT_NAME_RE.test(name);
+  }) || structured.find(item => !SIZE_VARIANT_NAME_RE.test(String(item?.attributeName || item?.name || "")));
+  if (entry) {
+    const value = String(entry.attributeValue || entry.value || "").trim();
+    if (value) return { name: String(entry.attributeName || entry.name || "款式"), value };
   }
-  if (!value) value = String(variant?.seller_sku || "未分组");
-  return { key: `${name}:${value}`, label: value };
+  // Some extension snapshots are plain text such as "橡木色 - 45×75cm".
+  // The leading token is the only safe style evidence; never fall back to a
+  // generated seller SKU, otherwise every size becomes a fake style group.
+  const first = specName.split(/[|,，;；/\\\n]|\s+-\s+|\s+—\s+|\s+–\s+/).map(token => token.trim()).find(Boolean);
+  return first ? { name: "款式", value: first } : null;
+}
+
+function creativeGroupForVariant(variant) {
+  const dimension = styleVariantDimension();
+  const name = String(dimension?.name || "").trim();
+  let value = name ? String(variant?.variant_values?.[name] || "").trim() : "";
+  const sourceEvidence = sourceStyleEvidence(variant);
+  if (!value && sourceEvidence) value = sourceEvidence.value;
+  // An unlabelled single-SKU source has no reliable shared-style evidence.
+  // It remains a singleton, but is explicitly marked rather than pretending
+  // the generated Ozon SKU is a product style.
+  if (!value) value = "未识别款式";
+  const groupName = name || sourceEvidence?.name || "款式";
+  const sourceIdentity = value === "未识别款式" ? String(variant?.seller_sku || "未识别") : value;
+  return { key: `${groupName}:${sourceIdentity}`, label: value, dimension };
 }
 
 function variantCreativeGroups() {
@@ -1829,6 +1866,23 @@ function variantCreativeGroups() {
     groups.set(group.key, existing);
   });
   return [...groups.values()];
+}
+
+function creativeGroupAtIndex(index) {
+  return variantCreativeGroups().find(group => group.indexes.includes(index)) || null;
+}
+
+function applyImagesToCreativeGroup(index, imageUrls) {
+  const group = creativeGroupAtIndex(index);
+  const urls = [...new Set((imageUrls || []).map(url => String(url || "").trim()).filter(Boolean))];
+  const indexes = group?.indexes || [index];
+  indexes.forEach(variantIndex => {
+    const variant = state.variants[variantIndex];
+    if (!variant) return;
+    variant.image_urls = [...urls];
+    variant.image_url = urls[0] || "";
+  });
+  return group;
 }
 
 function syncAiCreativeGroupPicker() {
@@ -2226,12 +2280,16 @@ function normalizeLoadedVariantValues(values, sellerSku = "") {
 function renderVariantTable() {
   const tb = $("#le-variant-rows");
   const variantAttrs = state.variantDimensions || [];
+  const groupDimension = styleVariantDimension();
+  // A style/color belongs to the merged style cell.  Only the remaining
+  // dimensions (normally size) are rendered as the SKU rows on the right.
+  const skuRowAttrs = variantAttrs.filter(attr => String(attr?.name || "") !== String(groupDimension?.name || ""));
   const creativeGroups = variantCreativeGroups();
   const groupByIndex = new Map();
   creativeGroups.forEach(group => group.indexes.forEach((index, position) => groupByIndex.set(index, { group, position })));
   syncAiCreativeGroupPicker();
 
-  const dimCols = variantAttrs.map(a => {
+  const dimCols = skuRowAttrs.map(a => {
     const isColorDim = isColorVariantAttribute(a);
     const randomLink = isColorDim
       ? `<br><a href="javascript:void(0)" onclick="randomColorAssign()" style="font-size:10px;color:#e74c3c;text-decoration:none" title="随机分配1-2个颜色">随机</a> <a href="javascript:void(0)" onclick="suggestColorAssign()" style="font-size:10px;color:#16803c;text-decoration:none" title="按采集 SKU 颜色匹配 Ozon 字典">建议</a>`
@@ -2249,7 +2307,7 @@ function renderVariantTable() {
     thead.innerHTML = `<tr>
       <th style="width:30px"><input type="checkbox" id="le-variant-select-all" /></th>
       <th style="width:82px">款式图<br><small>独立素材</small></th>
-      <th style="min-width:116px">款式<br><small>合并同款尺寸</small></th>
+      <th style="min-width:130px">款式 / 颜色<br><small>一套素材，合并同款尺寸</small></th>
       <th style="width:60px">颜色样本</th>
       <th style="width:60px">产品图</th>
       ${dimCols}
@@ -2277,7 +2335,7 @@ function renderVariantTable() {
   }
 
   tb.innerHTML = state.variants.map((v, i) => {
-    const dimInputs = variantAttrs.map(a => {
+    const dimInputs = skuRowAttrs.map(a => {
       const val = v.variant_values?.[a.name] || "";
       const isColor = (a.name || "").toLowerCase().includes("颜色") || (a.name || "").toLowerCase().includes("цвет") || (a.name || "").toLowerCase().includes("color");
       if (isColorNameVariantAttribute(a)) {
@@ -2300,12 +2358,18 @@ function renderVariantTable() {
     const imgCount = variantProductImages(i).length;
 
     const groupEntry = groupByIndex.get(i);
-    const groupCells = groupEntry?.position === 0 ? `<td rowspan="${groupEntry.group.indexes.length}" class="le-variant-group-image"><img class="le-variant-thumb" src="${esc(groupEntry.group.image_url || skuImg)}" loading="lazy" referrerpolicy="no-referrer" onerror="this.style.opacity=0.3" /><button type="button" class="le-variant-group-ai" data-ai-style-key="${esc(groupEntry.group.key)}">AI 作图</button></td><td rowspan="${groupEntry.group.indexes.length}" class="le-variant-group-name"><strong>${esc(groupEntry.group.label)}</strong><small>${groupEntry.group.indexes.length} 个尺寸 SKU</small></td>` : "";
+    const groupSize = groupEntry?.group.indexes.length || 1;
+    const groupLead = state.variants[groupEntry?.group.indexes[0] ?? i] || v;
+    const groupImg = groupEntry?.group.image_url || groupLead.image_url || skuImg;
+    const groupImages = variantProductImages(groupEntry?.group.indexes[0] ?? i);
+    const groupDimensionValue = groupDimension ? String(groupLead.variant_values?.[groupDimension.name] || groupEntry?.group.label || "") : "";
+    const groupStyleEditor = !groupDimension ? "" : (isColorVariantAttribute(groupDimension)
+      ? `<input class="le-color-ms-trigger le-group-style-trigger" type="text" value="${esc(groupDimensionValue)}" placeholder="请选择" data-group-first-idx="${i}" data-group-dim="${esc(groupDimension.name)}" title="设置后同步到同款全部尺寸" autocomplete="off" />`
+      : `<input class="le-group-style-input" type="text" value="${esc(groupDimensionValue)}" data-group-first-idx="${i}" data-group-dim="${esc(groupDimension.name)}" title="设置后同步到同款全部尺寸" />`);
+    const groupCells = groupEntry?.position === 0 ? `<td rowspan="${groupSize}" class="le-variant-group-image"><img class="le-variant-thumb" src="${esc(groupImg)}" loading="lazy" referrerpolicy="no-referrer" onerror="this.style.opacity=0.3" /><button type="button" class="le-variant-group-ai" data-ai-style-key="${esc(groupEntry.group.key)}">AI 作图</button></td><td rowspan="${groupSize}" class="le-variant-group-name"><strong>${esc(groupEntry.group.label)}</strong>${groupStyleEditor}<small>${groupSize} 个尺寸 SKU</small></td><td rowspan="${groupSize}" class="le-variant-group-image"><img class="le-variant-thumb le-color-thumb" src="${esc(groupImg)}" loading="lazy" referrerpolicy="no-referrer" onerror="this.style.opacity=0.3" title="同款颜色样本" /></td><td rowspan="${groupSize}" style="position:relative" class="le-variant-group-image"><img class="le-variant-thumb" src="${esc(groupImg)}" loading="lazy" referrerpolicy="no-referrer" onerror="this.style.opacity=0.3" data-click="product-img" data-idx="${i}" title="点击设置该款式图片库" style="cursor:pointer" /><span class="le-img-badge">${groupImages.length}</span></td>` : "";
     return `<tr data-row-idx="${i}">
       <td><input type="checkbox" class="le-variant-row-check" data-idx="${i}" /></td>
       ${groupCells}
-      <td><img class="le-variant-thumb le-color-thumb" src="${esc(colorImg)}" loading="lazy" referrerpolicy="no-referrer" onerror="this.style.opacity=0.3" data-click="color-sample" data-idx="${i}" title="点击更换" style="cursor:pointer" /></td>
-      <td style="position:relative"><img class="le-variant-thumb" src="${esc(skuImg)}" loading="lazy" referrerpolicy="no-referrer" onerror="this.style.opacity=0.3" data-click="product-img" data-idx="${i}" title="点击选择图库" style="cursor:pointer" /><span class="le-img-badge">${imgCount}</span></td>
       ${dimInputs}
       <td style="white-space:nowrap"><input type="text" maxlength="50" value="${esc(v.seller_sku)}" data-field="seller_sku" data-idx="${i}" style="width:150px" title="Ozon 最多 50 个字符" /><div style="display:flex;gap:4px;margin-top:2px"><small>${String(v.seller_sku || "").length}/50</small><button class="le-btn le-btn-sm" onclick="translateSku(${i})" title="翻译后缀为俄文" style="padding:1px 6px;font-size:11px;border:1px solid #4a90d9;color:#4a90d9;background:#f0f7ff">译俄文</button></div></td>
       <td><input type="text" value="${esc(v.barcode)}" data-field="barcode" data-idx="${i}" style="width:80px" placeholder="Ozon自动" /></td>
@@ -2373,6 +2437,24 @@ function renderVariantTable() {
   $$("#le-variant-rows img[data-click]").forEach(img => {
     img.addEventListener("click", () => openImageGallery(parseInt(img.dataset.idx), img.dataset.click));
   });
+
+  // One style/color editor is intentionally shared by its size rows.  The
+  // source dimensions stay per-SKU, while the visual style must not drift
+  // between 40×60, 50×80, etc. of the same style.
+  $$(".le-group-style-input").forEach(inp => inp.addEventListener("input", () => {
+    const group = creativeGroupAtIndex(Number(inp.dataset.groupFirstIdx));
+    if (!group) return;
+    group.indexes.forEach(index => {
+      const variant = state.variants[index];
+      variant.variant_values = variant.variant_values || {};
+      variant.variant_values[inp.dataset.groupDim] = inp.value;
+    });
+    renderColorSamples();
+  }));
+  $$(".le-group-style-trigger").forEach(inp => inp.addEventListener("click", () => {
+    const group = creativeGroupAtIndex(Number(inp.dataset.groupFirstIdx));
+    toggleColorMultiSelect(Number(inp.dataset.groupFirstIdx), inp, group?.indexes || []);
+  }));
   $$("[data-ai-style-key]").forEach(button => button.addEventListener("click", async () => {
     state.aiCreativeGroupKey = button.dataset.aiStyleKey;
     syncAiCreativeGroupPicker();
@@ -2382,8 +2464,8 @@ function renderVariantTable() {
 
 }
 
-// Product image library for one variant.  The public gallery is a read-only
-// source here; selection changes are stored only on the clicked variant.
+// Product image library for one style. The public gallery is read-only here;
+// selection is copied only to the current style's size SKUs.
 function openImageGallery(variantIdx, imgType) {
   const modal = document.createElement("div");
   modal.className = "le-product-gallery-modal";
@@ -2407,9 +2489,10 @@ function openImageGallery(variantIdx, imgType) {
       const selected = new Set(selectedImgs);
       const current = variant.image_url || selectedImgs[0] || imgs[0];
       const availableImgs = publicGalleryImages();
-      const card = (url, isSelected, index) => { const isSku = url === variant.image_url; return `<div class="le-product-gallery-card ${isSelected ? "active" : ""}" data-gallery-url="${esc(url)}" draggable="${isSelected ? "true" : "false"}" data-selected-index="${isSelected ? index : ""}"><img src="${esc(url)}" loading="lazy" referrerpolicy="no-referrer" /><span class="le-product-gallery-order">${isSelected ? `${index + 1}${index === 0 ? " · 首图" : ""}` : "可补充"}${isSku ? " · SKU图" : " · 公共图"}</span>${isSelected ? `<button type="button" class="le-product-gallery-primary" data-gallery-primary="${esc(url)}">${url === current ? "当前首图" : "设为首图"}</button><button type="button" class="le-product-gallery-delete" data-gallery-remove="${esc(url)}" title="从当前 SKU 移除">×</button>` : `<button type="button" class="le-product-gallery-add" data-gallery-add="${esc(url)}">加入此 SKU</button>`}</div>`; };
-      const sourceCard = url => { const isAdded = selected.has(url); return `<div class="le-product-gallery-card le-product-gallery-source-card ${isAdded ? "active" : ""}" data-gallery-url="${esc(url)}"><img src="${esc(url)}" loading="lazy" referrerpolicy="no-referrer" /><span class="le-product-gallery-order">公共图${isAdded ? " · 已加入" : " · 可补充"}</span>${isAdded ? '<button type="button" class="le-product-gallery-added" disabled>已加入当前 SKU</button>' : `<button type="button" class="le-product-gallery-add" data-gallery-add="${esc(url)}">加入此 SKU</button>`}</div>`; };
-      modal.innerHTML = `<div class="le-product-gallery-dialog"><div class="le-product-gallery-head"><div><strong>SKU 图片设置</strong><small>左侧为当前 SKU 已选图片，右侧为完整公共总图库；只影响当前 SKU</small></div><button type="button" data-gallery-close>×</button></div><div class="le-product-gallery-columns"><section class="le-product-gallery-pane"><h4>当前 SKU 已选（${selectedImgs.length}）</h4><div class="le-product-gallery-grid le-product-gallery-selected">${selectedImgs.map((url, i) => card(url, true, i)).join("") || '<p class="le-product-gallery-empty">暂无已选图片</p>'}</div></section><section class="le-product-gallery-pane"><h4>总图库（${availableImgs.length}）</h4><div class="le-product-gallery-grid le-product-gallery-available">${availableImgs.map(sourceCard).join("") || '<p class="le-product-gallery-empty">暂无公共图库图片</p>'}</div></section></div><div class="le-product-gallery-foot"><span>拖动左侧图片调整顺序；第一张为该 SKU 首图。右侧只补充图片，不会删除公共图库。</span><button type="button" data-gallery-close>完成</button></div></div>`;
+      const card = (url, isSelected, index) => { const isSku = url === variant.image_url; return `<div class="le-product-gallery-card ${isSelected ? "active" : ""}" data-gallery-url="${esc(url)}" draggable="${isSelected ? "true" : "false"}" data-selected-index="${isSelected ? index : ""}"><img src="${esc(url)}" loading="lazy" referrerpolicy="no-referrer" /><span class="le-product-gallery-order">${isSelected ? `${index + 1}${index === 0 ? " · 首图" : ""}` : "可补充"}${isSku ? " · 款式图" : " · 公共图"}</span>${isSelected ? `<button type="button" class="le-product-gallery-primary" data-gallery-primary="${esc(url)}">${url === current ? "当前首图" : "设为首图"}</button><button type="button" class="le-product-gallery-delete" data-gallery-remove="${esc(url)}" title="从当前款式移除">×</button>` : `<button type="button" class="le-product-gallery-add" data-gallery-add="${esc(url)}">加入此款式</button>`}</div>`; };
+      const sourceCard = url => { const isAdded = selected.has(url); return `<div class="le-product-gallery-card le-product-gallery-source-card ${isAdded ? "active" : ""}" data-gallery-url="${esc(url)}"><img src="${esc(url)}" loading="lazy" referrerpolicy="no-referrer" /><span class="le-product-gallery-order">公共图${isAdded ? " · 已加入" : " · 可补充"}</span>${isAdded ? '<button type="button" class="le-product-gallery-added" disabled>已加入当前款式</button>' : `<button type="button" class="le-product-gallery-add" data-gallery-add="${esc(url)}">加入此款式</button>`}</div>`; };
+      const targetCount = creativeGroupAtIndex(variantIdx)?.indexes.length || 1;
+      modal.innerHTML = `<div class="le-product-gallery-dialog"><div class="le-product-gallery-head"><div><strong>款式图片设置</strong><small>左侧为当前款式已选图片，右侧为完整公共总图库；会同步本款 ${targetCount} 个尺寸 SKU，不影响公共图库或其他款式。</small></div><button type="button" data-gallery-close>×</button></div><div class="le-product-gallery-columns"><section class="le-product-gallery-pane"><h4>当前款式已选（${selectedImgs.length}）</h4><div class="le-product-gallery-grid le-product-gallery-selected">${selectedImgs.map((url, i) => card(url, true, i)).join("") || '<p class="le-product-gallery-empty">暂无已选图片</p>'}</div></section><section class="le-product-gallery-pane"><h4>总图库（${availableImgs.length}）</h4><div class="le-product-gallery-grid le-product-gallery-available">${availableImgs.map(sourceCard).join("") || '<p class="le-product-gallery-empty">暂无公共图库图片</p>'}</div></section></div><div class="le-product-gallery-foot"><span>拖动左侧图片调整顺序；第一张会成为本款所有尺寸的首图。右侧只补充图片，不会删除公共图库。</span><button type="button" data-gallery-close>完成</button></div></div>`;
     }
     modal.querySelectorAll("[data-gallery-close]").forEach(button => button.addEventListener("click", () => modal.remove()));
     const moveSelectedImage = (from, to) => {
@@ -2420,8 +2503,7 @@ function openImageGallery(variantIdx, imgType) {
       const moved = ordered.splice(from, 1)[0];
       if (!moved) return false;
       ordered.splice(to, 0, moved);
-      currentVariant.image_urls = ordered;
-      currentVariant.image_url = ordered[0] || "";
+      applyImagesToCreativeGroup(variantIdx, ordered);
       onImagesChanged();
       render();
       return true;
@@ -2473,8 +2555,7 @@ function openImageGallery(variantIdx, imgType) {
       const url = button.dataset.galleryAdd;
       const selectedUrls = Array.isArray(variant.image_urls) ? [...variant.image_urls] : [...imgs];
       if (!selectedUrls.includes(url)) selectedUrls.push(url);
-      variant.image_urls = selectedUrls;
-      if (!variant.image_url) variant.image_url = selectedUrls[0] || "";
+      applyImagesToCreativeGroup(variantIdx, selectedUrls);
       onImagesChanged();
       render();
     }));
@@ -2484,8 +2565,7 @@ function openImageGallery(variantIdx, imgType) {
       const url = button.dataset.galleryRemove;
       const selectedUrls = (Array.isArray(variant.image_urls) ? variant.image_urls : imgs).filter(item => item !== url);
       if (!selectedUrls.length) { toast("每个 SKU 至少保留一张图片", "error"); return; }
-      variant.image_urls = selectedUrls;
-      if (variant.image_url === url) variant.image_url = selectedUrls[0];
+      applyImagesToCreativeGroup(variantIdx, selectedUrls);
       onImagesChanged();
       render();
     }));
@@ -2495,8 +2575,7 @@ function openImageGallery(variantIdx, imgType) {
       const url = button.dataset.galleryPrimary;
       const currentUrls = Array.isArray(variant.image_urls) ? variant.image_urls : [...imgs];
       if (!currentUrls.includes(url)) return;
-      variant.image_urls = [url, ...currentUrls.filter(item => item !== url)];
-      variant.image_url = url;
+      applyImagesToCreativeGroup(variantIdx, [url, ...currentUrls.filter(item => item !== url)]);
       onImagesChanged();
       render();
     }));
@@ -2547,8 +2626,7 @@ function openImageGallery(variantIdx, imgType) {
     const moved = ordered.splice(drag.from, 1)[0];
     if (!moved) return;
     ordered.splice(to, 0, moved);
-    currentVariant.image_urls = ordered;
-    currentVariant.image_url = ordered[0] || "";
+    applyImagesToCreativeGroup(variantIdx, ordered);
     onImagesChanged();
     render();
   });
@@ -2686,13 +2764,13 @@ window.translateVariantName = async function(idx, dimName) {
 };
 
 // Toggle multi-select color dropdown panel
-window.toggleColorMultiSelect = async function(idx, triggerEl) {
+window.toggleColorMultiSelect = async function(idx, triggerEl, targetIndexes = null) {
   // Close any existing panel
   const existing = document.querySelector(".le-color-ms-panel");
   if (existing) { existing.remove(); return; }
 
   const variantAttrs = state.variantDimensions || [];
-  const dimName = triggerEl.dataset.dim;
+  const dimName = triggerEl.dataset.dim || triggerEl.dataset.groupDim;
   const attr = variantAttrs.find(a => a.name === dimName);
   if (!attr) return;
 
@@ -2750,11 +2828,18 @@ window.toggleColorMultiSelect = async function(idx, triggerEl) {
 
   const applyColors = () => {
     const checked = Array.from(panel.querySelectorAll(".le-color-ms-option input:checked"));
-    v.variant_values = v.variant_values || {};
-    v.variant_value_ids = v.variant_value_ids || {};
-    v.variant_values[dimName] = checked.map(cb => cb.value).join(", ");
-    v.variant_value_ids[dimName] = checked.map(cb => cb.dataset.valueId);
-    triggerEl.value = v.variant_values[dimName];
+    const nextValue = checked.map(cb => cb.value).join(", ");
+    const nextIds = checked.map(cb => cb.dataset.valueId);
+    const indexes = Array.isArray(targetIndexes) && targetIndexes.length ? targetIndexes : [idx];
+    indexes.forEach(targetIndex => {
+      const target = state.variants[targetIndex];
+      if (!target) return;
+      target.variant_values = target.variant_values || {};
+      target.variant_value_ids = target.variant_value_ids || {};
+      target.variant_values[dimName] = nextValue;
+      target.variant_value_ids[dimName] = [...nextIds];
+    });
+    triggerEl.value = nextValue;
     renderColorSamples();
     renderVariantTable();
   };

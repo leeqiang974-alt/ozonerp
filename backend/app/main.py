@@ -2402,6 +2402,10 @@ class OzonProductArchiveRequest(OzonProductIdsRequest):
     reason: str = Field(min_length=1, max_length=500)
 
 
+class OzonArchiveConfirmationRequest(OzonProductIdsRequest):
+    reason: str = Field(min_length=1, max_length=500)
+
+
 @app.post("/api/v1/shops/{shop_id}/ozon-products/archive")
 def archive_ozon_products(
     shop_id: int,
@@ -2461,6 +2465,56 @@ def read_ozon_product_statuses(
             set(product_ids) - {int(item.get("id")) for item in items if item.get("id")}
         ),
     }
+
+
+@app.post("/api/v1/shops/{shop_id}/listing-drafts/{draft_id}/confirm-ozon-archive")
+def confirm_listing_draft_ozon_archive(
+    shop_id: int,
+    draft_id: int,
+    payload: OzonArchiveConfirmationRequest,
+    db: Session = Depends(get_db),
+) -> dict:
+    """Stop local retries only after Ozon readback proves every supplied product is archived."""
+    from .sync_service import _credentials
+    from .integrations.ozon_seller import OzonSellerClient
+
+    draft = db.scalar(select(ListingDraftRecord).where(
+        ListingDraftRecord.id == draft_id,
+        ListingDraftRecord.shop_id == shop_id,
+    ))
+    if draft is None:
+        raise HTTPException(status_code=404, detail="上架草稿不存在")
+    product_ids = sorted(set(int(product_id) for product_id in payload.product_ids if int(product_id) > 0))
+    client_id, api_key = _credentials(db, shop_id)
+    with OzonSellerClient(client_id=client_id, api_key=api_key) as client:
+        response = client.get_product_info(product_ids=product_ids)
+    items = response.get("items", []) or response.get("result", {}).get("items", [])
+    archived_ids = {int(item.get("id")) for item in items if item.get("id") and item.get("is_archived") is True}
+    if archived_ids != set(product_ids):
+        raise HTTPException(status_code=409, detail={
+            "message": "Ozon 回读尚未确认全部商品归档，本地草稿不会停止重试",
+            "expected_product_ids": product_ids,
+            "archived_product_ids": sorted(archived_ids),
+        })
+
+    draft.status = "archived"
+    draft.stock_sync_status = "archived"
+    draft.stock_sync_message = "Ozon 已回读确认归档；禁止自动重提和库存回写。"
+    draft.stock_sync_next_at = None
+    db.add(AuditEventRecord(
+        shop_id=shop_id,
+        actor_id="operator_confirmed",
+        action="listing_draft_ozon_archive_confirmed",
+        entity_type="listing_draft",
+        entity_id=str(draft.id),
+        details_json=json.dumps({
+            "reason": payload.reason,
+            "product_ids": product_ids,
+            "ozon_readback": [{"id": item.get("id"), "offer_id": item.get("offer_id"), "is_archived": item.get("is_archived")} for item in items],
+        }, ensure_ascii=False),
+    ))
+    db.commit()
+    return {"ok": True, "draft_id": draft.id, "status": draft.status, "stock_sync_status": draft.stock_sync_status}
 
 
 

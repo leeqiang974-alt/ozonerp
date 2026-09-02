@@ -52,4 +52,45 @@ assert.equal(
   false,
 );
 assert.equal(testHook.isProductVideoUrl("https://cdn.example/video.mp4"), false);
+
+assert.equal(typeof testHook.variantValue, "function", "variant title normalizer must be exposed to its parser test");
+assert.equal(testHook.variantValue("Click to select Black"), "Black");
+assert.equal(testHook.variantValue("Choose a color"), "a color");
+
+function variantOption(asin, title, selected = false) {
+  return {
+    dataset: { defaultasin: asin },
+    textContent: title,
+    getAttribute(name) {
+      if (name === "title") return title;
+      if (name === "data-defaultAsin") return asin;
+      return null;
+    },
+    querySelector() { return null; },
+    classList: { contains(name) { return selected && name === "swatchSelect"; } },
+  };
+}
+
+const amazonColorGroup = {
+  id: "variation_color_name",
+  querySelectorAll(selector) {
+    assert.match(selector, /data-defaultasin/i);
+    return [
+      variantOption("B0FZ8YTXFC", "Click to select Black", true),
+      variantOption("B0FZ8WSVSB", "Click to select Brown"),
+      variantOption("B0FZ916R1F", "Click to select Gray"),
+    ];
+  },
+};
+sandbox.document.querySelectorAll = (selector) => {
+  if (selector === "[id^='variation_'][id$='_name']") return [amazonColorGroup];
+  if (selector === 'script[type="a-state"]') return [];
+  return [];
+};
+const capturedVariants = JSON.parse(JSON.stringify(Array.from(testHook.captureVariants())));
+assert.deepEqual(capturedVariants.map((item) => ({ asin: item.asin, attributes: item.attributes, selected: item.selected })), [
+  { asin: "B0FZ8YTXFC", attributes: { Color: "Black" }, selected: true },
+  { asin: "B0FZ8WSVSB", attributes: { Color: "Brown" }, selected: false },
+  { asin: "B0FZ916R1F", attributes: { Color: "Gray" }, selected: false },
+]);
 console.log("amazon original-image normalizer tests passed");

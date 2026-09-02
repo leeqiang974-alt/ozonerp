@@ -39,11 +39,22 @@
     return raw.replace(/_/g, " ").replace(/\b\w/g, (char) => char.toUpperCase());
   }
 
+  function variantValue(value) {
+    // Desktop twister choices commonly expose `title="Click to select Black"`.
+    // That is product data, not an instruction to discard the choice.  Remove
+    // only Amazon's UI prefix before validating the actual option name.
+    return String(value || "")
+      .replace(/\s+/g, " ")
+      .trim()
+      .replace(/^(?:click\s+to\s+)?(?:select|choose)\s+/i, "")
+      .trim();
+  }
+
   function captureVariants() {
     const variants = new Map();
     const addVariant = (asin, attribute, value, imageUrl, selected = false) => {
       const normalizedAsin = String(asin || "").trim().toUpperCase();
-      if (!/^[A-Z0-9]{10}$/.test(normalizedAsin) || !value || /select|choose/i.test(value)) return;
+      if (!/^[A-Z0-9]{10}$/.test(normalizedAsin) || !value || /^(?:select|choose)$/i.test(value)) return;
       const existing = variants.get(normalizedAsin) || { asin: normalizedAsin, attributes: {}, image_urls: [], selected: false };
       existing.attributes[attribute] = value;
       if (/^https?:\/\//.test(imageUrl || "") && !/grey[-_]pixel/i.test(imageUrl)) existing.image_urls.push(fullImageUrl(imageUrl));
@@ -53,12 +64,18 @@
     };
     for (const group of document.querySelectorAll("[id^='variation_'][id$='_name']")) {
       const attribute = variantLabel(group.id);
-      for (const option of group.querySelectorAll("li, option")) {
-        const asin = String(option.dataset.defaultasin || option.dataset.asin || option.getAttribute("data-asin") || "").trim().toUpperCase();
-        const value = String(option.getAttribute("title") || option.dataset.defaultasinLabel || option.querySelector("img")?.alt || option.textContent || "").replace(/\s+/g, " ").trim();
-        if (!asin || !/^[A-Z0-9]{10}$/.test(asin) || !value || /select|choose/i.test(value)) continue;
+      for (const option of group.querySelectorAll("[data-asin], [data-defaultasin], [data-defaultAsin]")) {
+        const asin = String(option.dataset.defaultasin || option.dataset.asin || option.getAttribute("data-defaultAsin") || option.getAttribute("data-asin") || "").trim().toUpperCase();
+        const value = variantValue(option.getAttribute("title") || option.dataset.defaultasinLabel || option.querySelector("img")?.alt || option.textContent || "");
+        if (!asin || !/^[A-Z0-9]{10}$/.test(asin) || !value) continue;
         const image = option.querySelector("img");
-        addVariant(asin, attribute, value, image?.getAttribute("data-old-hires") || image?.currentSrc || image?.src || "", option.classList.contains("selected") || option.getAttribute("aria-selected") === "true");
+        const classes = option.classList;
+        const selected = classes?.contains("selected")
+          || classes?.contains("swatchSelect")
+          || classes?.contains("a-button-selected")
+          || option.getAttribute("aria-selected") === "true"
+          || option.getAttribute("aria-checked") === "true";
+        addVariant(asin, attribute, value, image?.getAttribute("data-old-hires") || image?.currentSrc || image?.src || "", selected);
       }
     }
     // New Amazon desktop pages keep the twister choices in an a-state JSON
@@ -77,6 +94,11 @@
     }
     const currentAsin = canonicalUrl().match(/\/dp\/([A-Z0-9]{10})/i)?.[1]?.toUpperCase();
     return [...variants.values()].map((variant) => ({ ...variant, selected: variant.selected || variant.asin === currentAsin }));
+  }
+
+  if (globalThis.__MELI_AMAZON_COLLECTOR_TEST__ && typeof globalThis.__MELI_AMAZON_COLLECTOR_TEST__ === "object") {
+    globalThis.__MELI_AMAZON_COLLECTOR_TEST__.variantValue = variantValue;
+    globalThis.__MELI_AMAZON_COLLECTOR_TEST__.captureVariants = captureVariants;
   }
 
   function amazonStatePayloads() {

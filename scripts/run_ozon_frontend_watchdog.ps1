@@ -10,6 +10,11 @@ if ([string]::IsNullOrWhiteSpace($ProjectRoot)) {
 }
 $frontend = Join-Path $ProjectRoot 'frontend'
 $logDir = Join-Path $frontend 'logs'
+$venvPython = Join-Path $ProjectRoot '.venv\Scripts\python.exe'
+$python = if (Test-Path -LiteralPath $venvPython) { $venvPython } else { 'C:\Python314\python.exe' }
+if (-not (Test-Path -LiteralPath $python)) {
+  throw "Python executable was not found. Checked project virtual environment and $python"
+}
 New-Item -ItemType Directory -Force -Path $logDir | Out-Null
 
 # Keep the static ERP interface independent from an interactive terminal.
@@ -22,7 +27,7 @@ while ($true) {
   try {
     $env:OZON_FRONTEND_BIND_HOST = $BindHost
     $env:OZON_FRONTEND_PORT = [string]$Port
-    & 'C:\Python314\python.exe' 'serve_threaded.py' 1>>$outLog 2>>$errLog
+    & $python 'serve_threaded.py' 1>>$outLog 2>>$errLog
     $exitCode = $LASTEXITCODE
   } finally {
     Pop-Location

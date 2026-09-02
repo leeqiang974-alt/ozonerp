@@ -1213,7 +1213,15 @@ def validate_listing(shop_id: int, draft_id: int, db: Session = Depends(get_db))
     draft = db.scalar(select(ListingDraftRecord).where(ListingDraftRecord.id == draft_id, ListingDraftRecord.shop_id == shop_id))
     if draft is None:
         raise HTTPException(status_code=404, detail="上架草稿不存在")
+    from .quality_preflight import run_quality_preflight
+
     issues = validate_listing_draft(db, draft)
+    content_gate = run_quality_preflight(db, draft, auto_fix=False)
+    for item in content_gate.get("issues_remaining", []):
+        issues.append({
+            "field": item.get("error_field", "content"),
+            "message": item.get("description", "内容安全预检未通过"),
+        })
     return {"draft_id": draft.id, "status": draft.status, "issues": issues}
 
 def _build_price_obj(variant) -> dict:
@@ -1346,6 +1354,20 @@ def submit_listing_to_ozon(shop_id: int, draft_id: int, db: Session = Depends(ge
         raise HTTPException(
             status_code=409,
             detail=f"同一 1688 货源商品已在其他 Ozon 店铺发布：{labels}。为避免重复铺货，本次提交已阻止。",
+        )
+
+    # Manual submissions must use the same content gate as the automation
+    # worker.  Do not let a user-facing “提交” path bypass a known Ozon
+    # moderation error merely because it did not originate from a batch.
+    from .quality_preflight import run_quality_preflight
+    content_gate = run_quality_preflight(db, draft, auto_fix=True)
+    content_issues = content_gate.get("issues_remaining", [])
+    if content_issues:
+        draft.status = "needs_review"
+        db.commit()
+        raise HTTPException(
+            status_code=422,
+            detail="; ".join(str(item.get("description") or item.get("error_code")) for item in content_issues[:5]),
         )
 
     issues = validate_listing_draft(db, draft)

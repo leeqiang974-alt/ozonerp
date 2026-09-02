@@ -88,12 +88,12 @@ def test_unrelated_ozon_failure_does_not_demote_category_memory():
     db.close()
 
 
-def test_source_product_cannot_train_an_unrelated_shop():
+def test_global_source_product_can_train_another_shop():
     db, shop, product = _fixture()
     other = Shop(name="other-shop", currency="CNY")
     db.add(other); db.commit(); db.refresh(other)
-    with pytest.raises(ValueError, match="does not belong"):
-        record_category_decision(db, shop_id=other.id, source_product_id=product.id, category_id="cook", type_id="mold", category_title="烹饪配件 / 冰格、糖果模具", learning_mode="remember")
+    memory = record_category_decision(db, shop_id=other.id, source_product_id=product.id, category_id="cook", type_id="mold", category_title="烹饪配件 / 冰格、糖果模具", learning_mode="remember")
+    assert memory is not None
     db.close()
 
 

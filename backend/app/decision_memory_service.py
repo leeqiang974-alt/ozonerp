@@ -16,7 +16,7 @@ from sqlalchemy import select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
-from .erp_models import DecisionFeedbackReceiptRecord, DecisionFeedbackRecord, DecisionMemoryRecord, ListingDraftRecord, OzonGlobalCategoryCacheRecord, SourceProductRecord, SourceProductShopRecord
+from .erp_models import DecisionFeedbackReceiptRecord, DecisionFeedbackRecord, DecisionMemoryRecord, ListingDraftRecord, OzonGlobalCategoryCacheRecord, SourceProductRecord
 from .listing_cache_service import promote_legacy_listing_caches
 
 
@@ -69,14 +69,10 @@ def _source_context(db: Session, shop_id: int, source_product_id: int | None, ti
     product = db.get(SourceProductRecord, source_product_id) if source_product_id else None
     if source_product_id and product is None:
         raise ValueError("source product not found")
-    if product and product.shop_id != shop_id:
-        shared = db.scalar(select(SourceProductShopRecord.id).where(
-            SourceProductShopRecord.source_product_id == product.id,
-            SourceProductShopRecord.shop_id == shop_id,
-            SourceProductShopRecord.is_deleted.is_(False),
-        ))
-        if shared is None:
-            raise ValueError("source product does not belong to this shop")
+    # Source snapshots and category/attribute caches are global evidence. The
+    # target shop still scopes the learned decision rows and any draft writes,
+    # but a source captured for one shop must be usable when matching a
+    # different target shop.
     resolved_title = (product.title if product else title).strip()
     resolved_material = ((product.material or "") if product else material).strip()
     return product, resolved_title, resolved_material

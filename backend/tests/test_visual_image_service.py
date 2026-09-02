@@ -151,6 +151,13 @@ def test_style_group_prefers_structured_non_size_axis_and_plan_has_eight_slots()
     ]
 
 
+def test_generated_prompts_forbid_prohibited_gender_identity_symbolism() -> None:
+    product = SourceProductRecord(shop_id=1, source_product_id="content-safety", title="门垫")
+    prompts = [item["prompt"].lower() for item in plan(product, {})]
+    assert prompts
+    assert all("rainbow/pride flags" in prompt for prompt in prompts)
+
+
 def test_generated_result_download_has_idle_total_and_size_guards() -> None:
     import inspect
     from app import visual_image_service

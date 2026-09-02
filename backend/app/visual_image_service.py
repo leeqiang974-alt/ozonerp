@@ -215,8 +215,10 @@ def analyze(db: Session, shop_id: int, source_id: int, creative_group_key: str =
     urls = [url for url in urls[:12] if urlparse(url).scheme in {"http", "https"} and urlparse(url).netloc]
     instruction = (
         "你是Ozon商品视觉分析器。结合标题、SKU和图片严格输出JSON，不得虚构。区分在售主体和示例成品；识别尺寸证据、不可修改结构、包装不包含物、图片角色及SKU差异。"
-        "键必须为sold_product,product_truth,dimensions,not_included,image_assets,reference_urls,sku_strategy,sku_risks,manual_review_required,confidence。"
+        "键必须为sold_product,product_truth,dimensions,not_included,image_assets,reference_urls,sku_strategy,sku_risks,manual_review_required,content_safety,confidence。"
         "image_assets中逐张记录role、可读文字OCR、是否适合作为唯一生图参考及原因；reference_urls只能返回1张最适合保持产品外观的原图。"
+        "content_safety 必须包含 prohibited_lgbt_symbolism 布尔值和 reasons 数组。若图片或文案出现 LGBT/跨性别/彩虹旗等非传统性关系宣传或其文字（例如 trans rights），该值必须为 true，"
+        "并且 reference_urls 必须为空、manual_review_required 必须为 true。"
         f"\n标题：{product.title}\n材质：{product.material or ''}\nSKU：{json.dumps([{'sku':v.source_sku,'spec':v.spec_name,'image_url':v.image_url} for v in variants], ensure_ascii=False)}\n图片URL：{json.dumps(urls, ensure_ascii=False)}"
     )
     content: list[dict[str, Any]] = [{"type": "text", "text": instruction}]
@@ -235,7 +237,7 @@ def plan(product: SourceProductRecord, analysis: dict[str, Any], creative_group_
     dims = json.dumps(analysis.get("dimensions") or {}, ensure_ascii=False)
     excluded = json.dumps(analysis.get("not_included") or [], ensure_ascii=False)
     group_lock = f" STYLE VARIANT LOCK: this is only style '{creative_group_label}'. Never use another style, pattern, colourway or SKU image." if creative_group_label else ""
-    common = f"Campaign Style Lock: {STYLE_LOCK}. PRODUCT TRUTH LOCK: sold product {analysis.get('sold_product') or product.title}; visible facts {facts}; not included {excluded}.{group_lock} Preserve exact identity, quantity, color, structure and visible hardware. Russian Ozon ecommerce image, vertical 3:4, crisp short Russian text. No Chinese, English, price, watermark, QR, fake certification or invented specifications."
+    common = f"Campaign Style Lock: {STYLE_LOCK}. PRODUCT TRUTH LOCK: sold product {analysis.get('sold_product') or product.title}; visible facts {facts}; not included {excluded}.{group_lock} Preserve exact identity, quantity, color, structure and visible hardware. Russian Ozon ecommerce image, vertical 3:4, crisp short Russian text. No Chinese, English, price, watermark, QR, fake certification or invented specifications. Never create, retain, or embellish LGBT/sexual-orientation/gender-identity messaging, rainbow/pride flags, transgender symbols, or related slogans."
     return [
         {"slot":"hero","title":"销售首图","prompt":common+" Premium hero infographic, product 38%, concise Russian headline and exactly three evidence-backed labels."},
         {"slot":"dimensions","title":"尺寸规格","prompt":common+f" E-commerce dimension infographic, top-down. Only verified dimensions: {dims}. If none, show structure without numbers."},
@@ -375,7 +377,11 @@ def generate_set(db: Session, shop_id: int, source_id: int, draft_id: int | None
         run_id, _ = _new_run(db, job)
     _update_run(db, job, run_id, "analyzing", started_at=_timestamp())
     try:
-        analysis, refs, usage = analyze(db,shop_id,source_id,creative_group_key); image_plan=plan(product,analysis,group_label)
+        analysis, refs, usage = analyze(db,shop_id,source_id,creative_group_key)
+        content_safety = analysis.get("content_safety") if isinstance(analysis, dict) else {}
+        if isinstance(content_safety, dict) and content_safety.get("prohibited_lgbt_symbolism") is True:
+            raise ValueError("图片分析命中 Ozon 禁止的 LGBT/非传统性别关系宣传内容；禁止生图，必须人工移除相关素材或归档商品")
+        image_plan=plan(product,analysis,group_label)
         if requested_slots:
             requested = set(requested_slots)
             image_plan = [item for item in image_plan if item.get("slot") in requested]

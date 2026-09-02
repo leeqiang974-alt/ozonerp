@@ -32,6 +32,34 @@ _MARKETING_RE = re.compile(
     re.IGNORECASE,
 )
 
+# Platform policy hard-stop. This is intentionally separate from ordinary
+# marketing text: a matched image must not be translated, regenerated around,
+# or submitted as a product detail image.
+_PROHIBITED_LGBT_SYMBOL_RE = re.compile(
+    r"(?:\b(?:lgbtq?\+?|pride|trans(?:gender)?|trans\s+rights|gay\s+rights|"
+    r"lesbian|non[-\s]?binary)\b|лгбт|прайд|транс(?:гендер|\s+прав|\b)|"
+    r"радужн\w*|rainbow|彩虹|跨性别|性少数|非二元)",
+    re.IGNORECASE,
+)
+
+
+def exclusion_reasons_for_ocr_text(
+    text: str,
+    *,
+    remove_chinese_measure: bool = False,
+    remove_marketing: bool = False,
+) -> list[str]:
+    """Classify OCR evidence without mutating a source image."""
+    reasons: list[str] = []
+    if remove_chinese_measure and _HAN_RE.search(text) and _MEASURE_RE.search(text):
+        reasons.append("chinese_measure")
+    if remove_marketing and _MARKETING_RE.search(text):
+        reasons.append("marketing")
+    # Always enforce this policy gate; it must never depend on a UI checkbox.
+    if _PROHIBITED_LGBT_SYMBOL_RE.search(text):
+        reasons.append("prohibited_lgbt_symbolism")
+    return reasons
+
 
 async def _recognize_url(url: str) -> str:
     from winrt.windows.globalization import Language
@@ -51,11 +79,21 @@ async def _recognize_url(url: str) -> str:
         stream = await storage_file.open_async(FileAccessMode.READ)
         decoder = await BitmapDecoder.create_async(stream)
         bitmap = await decoder.get_software_bitmap_async()
-        engine = OcrEngine.try_create_from_language(Language("zh-Hans-CN"))
-        if engine is None:
-            raise RuntimeError("Windows 本地简体中文 OCR 不可用")
-        result = await engine.recognize_async(bitmap)
-        return (result.text or "").strip()
+        recognised: list[str] = []
+        # The former Chinese-only engine could not see English/Russian policy
+        # text such as “trans rights”. Missing language packs are tolerated so
+        # ordinary collection still works on a minimal Windows installation.
+        for language_tag in ("zh-Hans-CN", "en-US", "ru-RU"):
+            engine = OcrEngine.try_create_from_language(Language(language_tag))
+            if engine is None:
+                continue
+            result = await engine.recognize_async(bitmap)
+            value = (result.text or "").strip()
+            if value and value not in recognised:
+                recognised.append(value)
+        if not recognised:
+            raise RuntimeError("Windows 本地 OCR 语言包不可用")
+        return "\n".join(recognised)
 
 
 def filter_chinese_measure_images(media: list[dict[str, Any]]) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
@@ -101,11 +139,11 @@ def filter_bulk_images(
             continue
         try:
             text = asyncio.run(_recognize_url(url))
-            excluded_reasons: list[str] = []
-            if remove_chinese_measure and _HAN_RE.search(text) and _MEASURE_RE.search(text):
-                excluded_reasons.append("chinese_measure")
-            if remove_marketing and _MARKETING_RE.search(text):
-                excluded_reasons.append("marketing")
+            excluded_reasons = exclusion_reasons_for_ocr_text(
+                text,
+                remove_chinese_measure=remove_chinese_measure,
+                remove_marketing=remove_marketing,
+            )
             excluded = bool(excluded_reasons)
             has_text = bool(text.strip())
             evidence.append({
@@ -126,7 +164,7 @@ def inspect_image(url: str) -> dict[str, Any]:
     """OCR one image for an operator retry without touching source media."""
     try:
         text = asyncio.run(_recognize_url(url))
-        excluded = bool(_HAN_RE.search(text) and _MEASURE_RE.search(text))
-        return {"url": url, "text": text[:1000], "excluded": excluded, "error": None}
+        reasons = exclusion_reasons_for_ocr_text(text, remove_chinese_measure=True)
+        return {"url": url, "text": text[:1000], "excluded": bool(reasons), "reasons": reasons, "error": None}
     except Exception as exc:
         return {"url": url, "text": "", "excluded": False, "error": str(exc)[:500]}

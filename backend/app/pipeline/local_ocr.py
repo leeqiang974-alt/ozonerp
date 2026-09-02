@@ -38,7 +38,9 @@ _MARKETING_RE = re.compile(
 _PROHIBITED_LGBT_SYMBOL_RE = re.compile(
     r"(?:\b(?:lgbtq?\+?|pride|trans(?:gender)?|trans\s+rights|gay\s+rights|"
     r"lesbian|non[-\s]?binary)\b|лгбт|прайд|транс(?:гендер|\s+прав|\b)|"
-    r"радужн\w*|rainbow|彩虹|跨性别|性少数|非二元)",
+    r"(?:rainbow|радужн\w*|彩虹)\s*(?:flag|pride|rights|флаг|прайд|旗)|"
+    r"(?:lgbt|pride|trans|跨性别|性少数|非二元)\s*(?:rainbow|радужн\w*|彩虹|旗|flag)|"
+    r"跨性别|性少数|非二元)",
     re.IGNORECASE,
 )
 

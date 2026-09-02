@@ -9,6 +9,7 @@ def test_policy_text_is_always_excluded_even_without_optional_filters():
 
 def test_ordinary_image_text_is_not_excluded_by_policy_gate():
     assert exclusion_reasons_for_ocr_text("Metal heart pin, 3 cm") == []
+    assert exclusion_reasons_for_ocr_text("Rainbow colour gradient") == []
 
 
 def test_policy_and_marketing_reasons_are_both_retained_for_audit():

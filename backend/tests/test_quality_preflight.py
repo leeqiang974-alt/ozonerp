@@ -101,7 +101,8 @@ def test_preflight_blocks_lgbt_symbolism_in_title_description_tags_and_rich_cont
         result = run_quality_preflight(db, draft, auto_fix=False)
 
         hits = [issue for issue in result["issues_remaining"] if issue["error_code"] == "prohibited_lgbt_symbolism"]
-        assert {issue["error_field"] for issue in hits} >= {"title", "description", "attribute:23171", "attribute:11254"}
+        assert {issue["error_field"] for issue in hits} >= {"description", "attribute:23171", "attribute:11254"}
+        assert "title" not in {issue["error_field"] for issue in hits}
 
 
 def test_theme_tags_are_submitted_as_one_ozon_attribute_value():

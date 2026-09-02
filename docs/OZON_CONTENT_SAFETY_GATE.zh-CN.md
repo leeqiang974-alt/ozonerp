@@ -6,7 +6,7 @@
 
 ## 执行规则
 
-1. 上架预检扫描标题、描述、主题标签、富内容和其他属性；命中 `LGBT/pride/trans/rainbow/彩虹/跨性别/性少数/非二元` 等线索即硬阻断，禁止自动改写后重提。
+1. 上架预检扫描标题、描述、主题标签、富内容和其他属性；命中 `LGBT/pride/trans/跨性别/性少数/非二元`，或“彩虹 + 旗帜/骄傲/权利”等明确宣传组合时硬阻断，禁止自动改写后重提。普通彩虹色、彩虹渐变本身不等于违规。
 2. 图片 OCR 同时使用可用的中文、英语和俄语 Windows OCR；命中 `prohibited_lgbt_symbolism` 的图片从草稿/翻译队列排除，并保留 OCR 证据和排除原因。OCR 不可用时不能把“未识别”当作合规结论。
 3. AI 生图分析必须标出 `content_safety.prohibited_lgbt_symbolism`；命中后禁止调用付费生图。未命中时，所有生图提示仍明确禁止生成或强化相关旗帜、符号、口号和身份宣传。
 4. Ozon 已创建商品使用官方 `POST /v1/product/archive`；随后必须用 `/v3/product/info/list` 回读 `is_archived=true`，才将本地草稿设为 `archived` 并停止自动重提/库存回写。

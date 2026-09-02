@@ -2086,6 +2086,36 @@ async function extractOzonSearchItemsWithScroll(maxProducts = 30) {
   return items.slice(0, target);
 }
 
+function collectOzonPublicVariants(primaryTitle, primaryImage) {
+  const currentUrl = new URL(location.href);
+  const currentId = ozonProductIdFromUrl(currentUrl.href);
+  const variants = [];
+  const seen = new Set();
+  const add = (url, label, image = "") => {
+    const productId = ozonProductIdFromUrl(url);
+    if (!productId || seen.has(productId)) return;
+    seen.add(productId);
+    variants.push({
+      skuId: productId,
+      // This is public Ozon reference data. Its RUB price intentionally stays
+      // out of skuVariants.price, which the ERP treats as a CNY source cost.
+      spec: cleanText(label || `Ozon ${productId}`),
+      image: normalizeOzonImageUrl(image) || "",
+    });
+  };
+  add(currentUrl.href, primaryTitle, primaryImage);
+  // Ozon renders sibling color/size choices as product links with from_sku.
+  // Restrict to those explicit variation links so recommendations never become
+  // fake SKU rows in the ERP.
+  for (const link of document.querySelectorAll('a[href*="/product/"][href*="from_sku="]')) {
+    const href = link.href || link.getAttribute("href") || "";
+    const label = link.getAttribute("title") || cleanText(link.innerText) || cleanText(link.querySelector("img")?.alt || "");
+    const image = link.querySelector("img")?.currentSrc || link.querySelector("img")?.src || "";
+    add(href, label, image);
+  }
+  return variants;
+}
+
 function collectOzonDetail() {
   const title = cleanText(document.querySelector("h1")?.innerText || document.title.replace(/\s+\|.*$/, ""));
   // Prefer the visible product gallery.  document.images also contains site
@@ -2102,6 +2132,14 @@ function collectOzonDetail() {
   const priceEl = document.querySelector("[data-widget='webPrice'] span, .pdp-block__price .tsHeadline500Medium, [class*='price'] [class*='value']");
   if (priceEl) {
     price = parseRubPrice(priceEl.innerText);
+  }
+  // New Ozon product pages frequently render the actual price as a button.
+  // Use a strict ₽ candidate fallback, never an arbitrary number on the page.
+  if (!price) {
+    const priceText = [...document.querySelectorAll("button, [data-widget*='price' i], [class*='price' i]")]
+      .map(node => cleanText(node.innerText || ""))
+      .find(text => /\d[\d\s.,]*₽/.test(text));
+    price = parseRubPrice(priceText || "");
   }
 
   // 提取属性 - 多种选择器
@@ -2166,6 +2204,13 @@ function collectOzonDetail() {
     const m = reviewEl.innerText.match(/\d+/);
     if (m) reviewCount = m[0];
   }
+  if (!rating || !reviewCount) {
+    const ratingMatch = (document.body?.innerText || "").match(/(\d[,.]\d)\s*[•·]\s*([\d\s]+)\s*(?:отзыв|review)/i);
+    if (ratingMatch) {
+      if (!rating) rating = ratingMatch[1].replace(",", ".");
+      if (!reviewCount) reviewCount = ratingMatch[2].replace(/\s/g, "");
+    }
+  }
 
   return {
     url: location.href,
@@ -2176,6 +2221,7 @@ function collectOzonDetail() {
     reviewCount,
     image: images[0] || "",
     images,
+    skuVariants: collectOzonPublicVariants(title, images[0] || ""),
     category: breadcrumbs.join(" > "),
     packageInfo: extractOzonPackageHint(document.body?.innerText || ""),
     salesHint: extractOzonSalesHint(document.body?.innerText || ""),

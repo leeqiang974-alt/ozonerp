@@ -710,6 +710,65 @@ async function runPricingSimulator() {
     result.innerHTML = `<b>建议售价 ¥${escapeHtml(pricingNumber(quote.price_cny))}</b>　原价 ¥${escapeHtml(pricingNumber(quote.old_price_cny))}　最低价 ¥${escapeHtml(String(quote.min_price_cny))}<br><small>采购成本 ¥${escapeHtml(pricingNumber(quote.purchase_cost_cny))} · 物流 ${escapeHtml(quote.shipping_level || "—")} ¥${escapeHtml(pricingNumber(quote.logistics_fee_cny))} · 佣金 ¥${escapeHtml(pricingNumber(quote.commission_cny))} · 杂费 ¥${escapeHtml(pricingNumber(quote.misc_fee_cny))} · 预计利润 ¥${escapeHtml(pricingNumber(quote.profit_cny))}（${escapeHtml(pricingNumber(Number(quote.profit_rate) * 100))}%）</small>`;
   } catch (error) { result.className = "pricing-result muted"; result.textContent = error.message || "试算失败"; toast(error.message || "试算失败", true); }
 }
+
+function setPricingTab(tabName) {
+  const marketing = tabName === "marketing";
+  document.querySelectorAll("[data-price-tab]").forEach(button => {
+    button.classList.toggle("active", button.dataset.priceTab === tabName);
+  });
+  $("#pricing-rules").style.display = marketing ? "none" : "block";
+  $("#marketing-panel").style.display = marketing ? "block" : "none";
+}
+
+function promotionDate(value) {
+  if (!value) return "—";
+  const parsed = new Date(value);
+  return Number.isNaN(parsed.getTime()) ? escapeHtml(String(value)) : displayTime(parsed.toISOString());
+}
+
+function renderMarketingPromotions(items) {
+  const rows = $("#promotion-rows");
+  if (!rows) return;
+  rows.innerHTML = items.length ? items.map(item => {
+    if (item.load_error) {
+      return `<tr><td>${escapeHtml(item.shop_name || `店铺 ${item.shop_id || "—"}`)}</td><td colspan="6" class="muted">读取失败：${escapeHtml(item.load_error)}</td></tr>`;
+    }
+    const participating = item.is_participating === true ? "参与中" : item.is_participating === false ? "未参与" : "—";
+    const protectedLabel = item.protected ? "仅展示（CPC/CPO）" : participating;
+    return `<tr><td>${escapeHtml(item.shop_name || `店铺 ${item.shop_id || "—"}`)}</td><td>${escapeHtml(item.title || item.name || `活动 #${item.id || "—"}`)}</td><td>${escapeHtml(item.action_type || item.type || "—")}</td><td>${escapeHtml(String(item.product_count ?? item.participating_product_count ?? item.products_count ?? "—"))}</td><td>${promotionDate(item.date_from || item.start_date || item.start_time)}</td><td>${promotionDate(item.date_to || item.end_date || item.end_time)}</td><td>${escapeHtml(protectedLabel)}</td></tr>`;
+  }).join("") : '<tr><td colspan="7" class="muted">当前店铺没有可显示的营销活动</td></tr>';
+}
+
+async function loadMarketingPromotions() {
+  const button = $("#load-promotions");
+  if (button) { button.disabled = true; button.textContent = "正在读取全部店铺活动…"; }
+  try {
+    const response = await fetch(`${apiBase}/api/v1/marketing/promotions`);
+    const body = await response.json();
+    if (!response.ok) throw new Error(body.detail || "读取营销活动失败");
+    renderMarketingPromotions(Array.isArray(body) ? body : []);
+  } catch (error) {
+    $("#promotion-rows").innerHTML = `<tr><td colspan="7" class="muted">${escapeHtml(error.message || "读取营销活动失败")}</td></tr>`;
+    toast(error.message || "读取营销活动失败", true);
+  } finally {
+    if (button) { button.disabled = false; button.textContent = "↻ 拉取全部店铺活动"; }
+  }
+}
+
+async function exitAllMarketingPromotions() {
+  if (!window.confirm("确认退出全部可退出的营销活动？CPC / CPO 活动会保留。本操作会写入 Ozon 并生成操作日志。")) return;
+  const button = $("#exit-all-promotions");
+  if (button) { button.disabled = true; button.textContent = "正在退出…"; }
+  try {
+    const response = await fetch(`${apiBase}/api/v1/marketing/promotions/exit-all`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ confirmed: true }) });
+    const result = await response.json();
+    if (!response.ok) throw new Error(result.detail || "退出营销活动失败");
+    toast(`已退出 ${result.completed_actions?.length || 0} 个活动，移除 ${result.removed_products || 0} 个商品；保留 ${result.protected_actions?.length || 0} 个受保护活动。`, Boolean(result.failures?.length));
+    await loadMarketingPromotions();
+  } catch (error) { toast(error.message || "退出营销活动失败", true); }
+  finally { if (button) { button.disabled = false; button.textContent = "退出全部可退出活动"; } }
+}
+
 function renderShops() { const query = $("#shop-search").value.trim().toLowerCase(); const displayed = shops.filter(shop => shop.name.toLowerCase().includes(query)); $("#shop-count").textContent = `${displayed.length} 个店铺`; $("#shop-rows").innerHTML = displayed.length ? displayed.map(shop => `<tr><td><b>${shop.name}</b><br><small>${shop.legal_entity || "未设置主体"}</small></td><td><span class="badge">FBS</span></td><td>CNY</td><td>${shop.manager_name || "未分配"}</td><td><span class="status ${shop.is_active ? "ready" : "off"}">${shop.is_active ? "待同步" : "已停用"}</span></td><td><button class="link delete-shop" data-shop-id="${shop.id}" data-shop-name="${shop.name}">删除</button></td></tr>`).join("") : '<tr><td colspan="6" class="muted">没有符合条件的店铺</td></tr>'; document.querySelectorAll(".delete-shop").forEach(button => button.addEventListener("click", () => deleteShop(button.dataset.shopId, button.dataset.shopName))); const filter = $("#shop-filter"); filter.innerHTML = '<option value="">全部店铺</option>' + shops.map(shop => `<option value="${shop.id}">${shop.name}</option>`).join(""); }
 async function loadShops() { try { const response = await fetch(`${apiBase}/api/v1/shops`); if (!response.ok) throw new Error(); shops = await response.json(); renderShops(); } catch (_) { $("#shop-rows").innerHTML = '<tr><td colspan="6" class="muted">无法连接后端。请先启动 FastAPI 服务。</td></tr>'; } }
 async function loadSyncRuns() { const shopId = $("#shop-filter").value; if (!shopId) { $("#sync-rows").innerHTML = '<tr><td colspan="6" class="muted">请选择一个店铺后查看或执行同步</td></tr>'; return; } try { const response = await fetch(`${apiBase}/api/v1/shops/${shopId}/sync-runs`); if (!response.ok) throw new Error(); const runs = await response.json(); const shop = shops.find(item => String(item.id) === shopId); $("#sync-rows").innerHTML = runs.length ? runs.map(run => `<tr><td>${shop?.name || "—"}</td><td>${run.resource === "products" ? "商品" : "FBS 订单"}</td><td><span class="status ${run.status === "succeeded" ? "ready" : "off"}">${run.status === "succeeded" ? "成功" : "失败"}</span></td><td>${run.records_seen} / ${run.records_changed}</td><td>${run.finished_at ? new Date(run.finished_at).toLocaleString("zh-CN") : "进行中"}</td><td>${run.error_summary || "—"}</td></tr>`).join("") : '<tr><td colspan="6" class="muted">尚无同步记录</td></tr>'; } catch (_) { $("#sync-rows").innerHTML = '<tr><td colspan="6" class="muted">无法读取同步记录</td></tr>'; } }
@@ -1816,6 +1875,9 @@ const listingForm = $("#listing-form");
 if (listingForm) listingForm.addEventListener("submit", saveListingDraft);
 const pricingPolicyForm = $("#pricing-policy-form");
 if (pricingPolicyForm) pricingPolicyForm.addEventListener("submit", savePricingPolicy);
+document.querySelectorAll("[data-price-tab]").forEach(button => button.addEventListener("click", () => setPricingTab(button.dataset.priceTab || "rules")));
+$("#load-promotions")?.addEventListener("click", loadMarketingPromotions);
+$("#exit-all-promotions")?.addEventListener("click", exitAllMarketingPromotions);
 const yunniudunTokenForm = $("#yunniudun-token-form");
 if (yunniudunTokenForm) yunniudunTokenForm.addEventListener("submit", saveYunNewtonAccessToken);
 const yunniudunValidateButton = $("#yunniudun-validate");

@@ -226,7 +226,7 @@ class OzonSellerClient:
 
     def archive_products(self, *, product_ids: list[int]) -> dict[str, Any]:
         """Archive existing Ozon products via the documented /v1/product/archive endpoint."""
-        normalized = [int(product_id) for product_id in product_ids if int(product_id) > 0]
+        normalized = sorted({int(product_id) for product_id in product_ids if int(product_id) > 0})
         if not normalized:
             raise ValueError("at least one product ID is required")
         if len(normalized) > 100:

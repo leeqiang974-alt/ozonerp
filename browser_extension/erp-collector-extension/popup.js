@@ -90,6 +90,9 @@ async function collectCurrentProduct() {
         method: "POST",
         body: { storeId: storeSelect.value, payload: ozonResult.payload || {} },
       });
+      if (!result?.ok || !result?.ingested) {
+        throw new Error(result?.error || "ERP 未接收该商品，请检查已选择的店铺");
+      }
       setStatus(result.duplicate ? "已更新 Ozon 商品采集快照" : "Ozon 商品采集成功，已进入 ERP 二开草稿", "ok");
       return;
     }

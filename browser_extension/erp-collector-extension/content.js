@@ -151,6 +151,10 @@ function isOzonSellerPage() {
   return /^seller\.ozon\.ru$/i.test(location.hostname);
 }
 
+function isOzonProductDetailPage() {
+  return isOzonPage() && /^\/product\/[^/]+-\d+\/?$/i.test(location.pathname);
+}
+
 function mountOzonSellerEditMonitor() {
   if (window.__ozonErpSellerEditMonitor) return;
   window.__ozonErpSellerEditMonitor = {
@@ -325,6 +329,23 @@ async function importProductToErp(productData) {
   }
 }
 
+async function importCurrentOzonDetailToErp() {
+  if (pageNeedsOzonHumanCheck()) return { error: "当前 Ozon 页面需要登录或人工验证，请完成后再采集" };
+  const payload = collectOzonDetail();
+  if (!payload.title) return { error: "商品标题尚未加载完成，请等待页面加载后重试" };
+  try {
+    const { storeId, baseUrl } = await getActiveStoreId();
+    const result = await erpRequest("/api/ozon-learning/extension/detail-result", {
+      method: "POST",
+      body: { storeId: String(storeId || ""), payload },
+    }, baseUrl);
+    if (!result?.ok || !result?.ingested) return { error: result?.error || "ERP 未接收该商品，请检查店铺选择" };
+    return result;
+  } catch (error) {
+    return { error: error?.message || "Ozon 商品回传失败" };
+  }
+}
+
 async function importCurrentPageProducts() {
   if (isOzonSellerProductsAnalyticsPage()) return importVisibleOzonMarketAnalytics();
   const products = collectAllVisibleOzonProducts();
@@ -454,23 +475,25 @@ function mountOzonListInfo() {
   const processedProducts = new Set();
   window.__ozonErpListPanels = window.__ozonErpListPanels || [];
 
-  // floating batch action bar
+  const isDetailPage = isOzonProductDetailPage();
+  // A public product page has no product-card list, so show the detail
+  // capture action instead of the list-page "import visible" action.
   const bar = document.createElement("div");
   bar.className = "ozon-erp-list-bar";
   bar.innerHTML = `
     <div class="ozon-erp-list-bar-title">Ozon ERP 采集</div>
-    <button class="ozon-erp-list-bar-btn" id="ozon-erp-import-visible">${isOzonSellerProductsAnalyticsPage() ? "采集当前分析表" : "导入可见商品"}</button>
+    <button class="ozon-erp-list-bar-btn" id="ozon-erp-import-visible">${isDetailPage ? "采集当前商品" : (isOzonSellerProductsAnalyticsPage() ? "采集当前分析表" : "导入可见商品")}</button>
     <span class="ozon-erp-list-bar-status" id="ozon-erp-list-status"></span>
   `;
   document.body.appendChild(bar);
   bar.querySelector("#ozon-erp-import-visible").addEventListener("click", async () => {
     const status = bar.querySelector("#ozon-erp-list-status");
-    status.textContent = "导入中...";
-    const result = await importCurrentPageProducts();
+    status.textContent = isDetailPage ? "采集当前商品中..." : "导入中...";
+    const result = isDetailPage ? await importCurrentOzonDetailToErp() : await importCurrentPageProducts();
     if (result?.error) {
       status.textContent = result.error;
     } else {
-      status.textContent = "已采集 " + (result.imported || 0) + " 条";
+      status.textContent = isDetailPage ? "当前商品已进入 ERP" : "已采集 " + (result.imported || 0) + " 条";
     }
     setTimeout(() => { status.textContent = ""; }, 3000);
   });

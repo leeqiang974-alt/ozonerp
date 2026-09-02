@@ -105,6 +105,26 @@ def test_preflight_blocks_lgbt_symbolism_in_title_description_tags_and_rich_cont
         assert "title" not in {issue["error_field"] for issue in hits}
 
 
+def test_preflight_blocks_a_source_with_confirmed_image_policy_risk():
+    with _session() as db:
+        shop = Shop(name="quality-source-risk", currency="CNY")
+        db.add(shop); db.flush()
+        source = SourceProductRecord(
+            shop_id=shop.id, source_platform="ozon", source_product_id="source-risk",
+            title="普通渐变颜色商品", ingestion_status="content_policy_blocked",
+        )
+        db.add(source); db.flush()
+        draft = ListingDraftRecord(
+            shop_id=shop.id, offer_id="SOURCE-RISK-1", source_product_id=source.id,
+            title="Обычный цветной товар",
+        )
+        db.add(draft); db.flush()
+
+        result = run_quality_preflight(db, draft, auto_fix=False)
+
+        assert any(issue["error_code"] == "source_content_policy_blocked" for issue in result["issues_remaining"])
+
+
 def test_theme_tags_are_submitted_as_one_ozon_attribute_value():
     with _session() as db:
         shop = Shop(name="tag-payload", currency="CNY")

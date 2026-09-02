@@ -214,6 +214,20 @@ def _prohibited_lgbt_symbol_issues(draft: ListingDraftRecord) -> list[dict[str, 
     return findings
 
 
+def _source_content_policy_issues(db: Session, draft: ListingDraftRecord) -> list[dict[str, str]]:
+    """Keep a confirmed image-policy finding effective for legacy drafts too."""
+    if not draft.source_product_id:
+        return []
+    source = db.get(SourceProductRecord, draft.source_product_id)
+    if source and source.ingestion_status == "content_policy_blocked":
+        return [{
+            "error_code": "source_content_policy_blocked",
+            "error_field": "source_media",
+            "description": "该货源已被标记为 Ozon 内容政策风险（图片/内容宣传）；必须更换全部风险素材并人工解除封禁后才能提交。",
+        }]
+    return []
+
+
 def _clean_vulgar_text(draft: ListingDraftRecord) -> list[str]:
     """清理文本字段中的粗俗/冒犯词汇。"""
     fixed = []
@@ -521,6 +535,7 @@ def run_quality_preflight(
     # imagery safe, so the operator must remove/replace all related media or
     # archive an already-created product.
     issues_remaining.extend(_prohibited_lgbt_symbol_issues(draft))
+    issues_remaining.extend(_source_content_policy_issues(db, draft))
 
     # 2. 如果有修改，保存草稿更新时间
     if any_fixed:

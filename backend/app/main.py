@@ -2428,6 +2428,11 @@ class OzonArchiveConfirmationRequest(OzonProductIdsRequest):
     reason: str = Field(min_length=1, max_length=500)
 
 
+class SourceContentPolicyBlockRequest(BaseModel):
+    confirm: bool = False
+    reason: str = Field(min_length=1, max_length=500)
+
+
 @app.post("/api/v1/shops/{shop_id}/ozon-products/archive")
 def archive_ozon_products(
     shop_id: int,
@@ -2454,6 +2459,31 @@ def archive_ozon_products(
     ))
     db.commit()
     return {"ok": True, "product_ids": product_ids, "ozon_response": result}
+
+
+@app.post("/api/v1/source-products/{source_id}/content-policy-block")
+def block_source_product_for_content_policy(
+    source_id: int,
+    payload: SourceContentPolicyBlockRequest,
+    db: Session = Depends(get_db),
+) -> dict:
+    """Persist a confirmed platform content finding across every shop/draft using a source."""
+    if not payload.confirm:
+        raise HTTPException(status_code=422, detail="封禁货源必须传 confirm=true")
+    source = db.get(SourceProductRecord, source_id)
+    if source is None:
+        raise HTTPException(status_code=404, detail="采集货源不存在")
+    source.ingestion_status = "content_policy_blocked"
+    db.add(AuditEventRecord(
+        shop_id=source.shop_id,
+        actor_id="operator_confirmed",
+        action="source_content_policy_blocked",
+        entity_type="source_product",
+        entity_id=str(source.id),
+        details_json=json.dumps({"reason": payload.reason}, ensure_ascii=False),
+    ))
+    db.commit()
+    return {"ok": True, "source_id": source.id, "ingestion_status": source.ingestion_status}
 
 
 @app.post("/api/v1/shops/{shop_id}/ozon-products/status")

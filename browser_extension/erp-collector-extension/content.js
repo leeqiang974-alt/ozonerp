@@ -290,12 +290,12 @@ async function getActiveStoreId() {
     });
     return {
       storeId: cfg.selectedStoreId || "1",
-      // Do not reuse a historical remote URL from extension storage: Ozon
-      // collection is local-only and intentionally independent of Mercado.
-      baseUrl: "http://127.0.0.1:8000",
+      // Ozon collection is handled by the dedicated LAN notebook. Do not
+      // route it through the separate Mercado Libre ERP service.
+      baseUrl: "http://192.168.0.147:8000",
     };
   } catch (e) {
-    return { storeId: "1", baseUrl: "http://127.0.0.1:8000" };
+    return { storeId: "1", baseUrl: "http://192.168.0.147:8000" };
   }
 }
 
@@ -326,6 +326,7 @@ async function importProductToErp(productData) {
 }
 
 async function importCurrentPageProducts() {
+  if (isOzonSellerProductsAnalyticsPage()) return importVisibleOzonMarketAnalytics();
   const products = collectAllVisibleOzonProducts();
   if (!products.length) return { error: "未找到商品" };
   const results = [];
@@ -334,6 +335,76 @@ async function importCurrentPageProducts() {
     results.push({ sku: p.sku, result: r });
   }
   return { total: products.length, imported: results.length, results };
+}
+
+function cleanAnalyticsText(value) {
+  return String(value || "").replace(/\u00a0/g, " ").replace(/[ \t]+/g, " ").replace(/\n{3,}/g, "\n\n").trim();
+}
+
+function analyticsNumber(value) {
+  const match = cleanAnalyticsText(value).replace(/\s/g, "").match(/-?[\d.,]+/);
+  if (!match) return null;
+  const normalized = match[0].replace(/,(?=\d{3}(?:\D|$))/g, "").replace(/\.(?=\d{3}(?:\D|$))/g, "").replace(",", ".");
+  const number = Number(normalized);
+  return Number.isFinite(number) ? number : null;
+}
+
+function isOzonSellerProductsAnalyticsPage() {
+  if (!isOzonSellerPage()) return false;
+  const text = cleanAnalyticsText(document.body?.innerText).slice(0, 12000).toLowerCase();
+  return (text.includes("ozon 上的商品") || text.includes("товары на ozon")) &&
+    (text.includes("订购金额") || text.includes("заказ") || text.includes("ordered"));
+}
+
+function findOzonAnalyticsTable() {
+  return [...document.querySelectorAll("table, [role='table'], [role='grid']")].find((node) => {
+    const text = cleanAnalyticsText(node.innerText).toLowerCase();
+    return (text.includes("商品名称") || text.includes("товар")) && (text.includes("订购金额") || text.includes("заказ"));
+  }) || null;
+}
+
+function collectVisibleOzonMarketAnalytics() {
+  const table = findOzonAnalyticsTable();
+  if (!table) return { error: "未识别到“Ozon 上的商品”数据表，请等待页面加载完成" };
+  const headers = [...table.querySelectorAll("thead th, [role='columnheader']")].map((node) => cleanAnalyticsText(node.innerText));
+  const aliases = {
+    product: ["商品名称", "товар", "product"], category: ["类目", "категор", "category"], features: ["商品特征", "признак", "feature"],
+    searchPosition: ["搜索结果中的位置", "позици", "search position"], orderedAmount: ["订购金额", "заказано на сумму", "ordered amount"],
+    dynamics: ["动态", "динамик", "dynamic"], orderedUnits: ["已订购商品", "заказано товар", "ordered product"], averagePrice: ["平均", "средн", "average"],
+  };
+  const index = {};
+  for (const [key, values] of Object.entries(aliases)) index[key] = headers.findIndex((h) => values.some((a) => h.toLowerCase().includes(a)));
+  const rowNodes = [...table.querySelectorAll("tbody tr, [role='row']")].filter((row) => !row.matches("thead tr") && row.querySelector("td, [role='gridcell']"));
+  const rows = rowNodes.map((row) => {
+    const cells = [...row.querySelectorAll(":scope > td, :scope > [role='gridcell']")];
+    const textAt = (key) => index[key] >= 0 ? cleanAnalyticsText(cells[index[key]]?.innerText) : "";
+    const first = cells[index.product >= 0 ? index.product : 0] || row;
+    const productText = textAt("product") || cleanAnalyticsText(first.innerText);
+    const readLabel = (labels) => productText.match(new RegExp(`(?:${labels})\\s*[:：]?\\s*([^\\n]+)`, "i"))?.[1]?.trim() || "";
+    return {
+      title: productText.split("\n").find((line) => !/^(?:品牌|卖家|货号|бренд|продавец|артикул)/i.test(line)) || productText,
+      productUrl: first.querySelector('a[href*="/product/"], a[href]')?.href || "", imageUrl: first.querySelector("img")?.src || "",
+      offerId: readLabel("货号|артикул|offer\\s*id"), seller: readLabel("卖家|продавец|seller"), brand: readLabel("品牌|бренд|brand"),
+      category: textAt("category"), features: textAt("features"), searchPositionText: textAt("searchPosition"),
+      orderedAmountRub: analyticsNumber(textAt("orderedAmount")), dynamicsPercent: analyticsNumber(textAt("dynamics")),
+      orderedUnits: analyticsNumber(textAt("orderedUnits")), averagePriceRub: analyticsNumber(textAt("averagePrice")),
+      evidenceText: cleanAnalyticsText(row.innerText).slice(0, 4000),
+    };
+  }).filter((row) => row.title && !/商品平均值|среднее/i.test(row.title));
+  const pageText = cleanAnalyticsText(document.body?.innerText).slice(0, 20000);
+  const periodDays = /(^|\D)28\s*天|28\s*дн/i.test(pageText) ? 28 : (/(^|\D)7\s*天|7\s*дн/i.test(pageText) ? 7 : null);
+  return { sourcePage: "products_on_ozon", sourceUrl: location.href, capturedAt: new Date().toISOString(), captureMethod: "visible_dom", periodDays, categoryFilter: pageText.match(/(?:类目|категория)\s*[:：]\s*([^\n]+)/i)?.[1]?.trim() || "", headers, rows };
+}
+
+async function importVisibleOzonMarketAnalytics() {
+  const snapshot = collectVisibleOzonMarketAnalytics();
+  if (snapshot.error) return snapshot;
+  const { storeId, baseUrl } = await getActiveStoreId();
+  try {
+    return await erpRequest("/api/ozon/market-snapshots", { method: "POST", body: { storeId: String(storeId), snapshot } }, baseUrl);
+  } catch (error) {
+    return { error: error?.message || "市场分析快照入库失败" };
+  }
 }
 
 function collectAllVisibleOzonProducts() {
@@ -388,7 +459,7 @@ function mountOzonListInfo() {
   bar.className = "ozon-erp-list-bar";
   bar.innerHTML = `
     <div class="ozon-erp-list-bar-title">Ozon ERP 采集</div>
-    <button class="ozon-erp-list-bar-btn" id="ozon-erp-import-visible">导入可见商品</button>
+    <button class="ozon-erp-list-bar-btn" id="ozon-erp-import-visible">${isOzonSellerProductsAnalyticsPage() ? "采集当前分析表" : "导入可见商品"}</button>
     <span class="ozon-erp-list-bar-status" id="ozon-erp-list-status"></span>
   `;
   document.body.appendChild(bar);
@@ -399,7 +470,7 @@ function mountOzonListInfo() {
     if (result?.error) {
       status.textContent = result.error;
     } else {
-      status.textContent = "已导入 " + (result.imported || 0) + " 个";
+      status.textContent = "已采集 " + (result.imported || 0) + " 条";
     }
     setTimeout(() => { status.textContent = ""; }, 3000);
   });
@@ -714,7 +785,7 @@ function mountFloatingCollector() {
         </div>
       </div>
       <div class="ozon-erp-head-actions">
-        <a class="ozon-erp-link" href="http://127.0.0.1:5500/" target="_blank" title="打开本机 ERP">ERP</a>
+        <a class="ozon-erp-link" href="http://192.168.0.147:5500/" target="_blank" title="打开笔记本 ERP">ERP</a>
         <button type="button" id="ozon-erp-toggle" title="缩小">-</button>
       </div>
     </div>

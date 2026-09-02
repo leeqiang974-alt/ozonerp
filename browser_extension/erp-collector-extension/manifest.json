@@ -38,7 +38,7 @@
     "https://*.amazon.it/*",
     "https://*.amazon.es/*",
     "https://ml-erp.woxq.cn/*",
-    "http://localhost:8000/*", "http://127.0.0.1:8000/*",
+    "http://192.168.0.147:8000/*", "http://localhost:8000/*", "http://127.0.0.1:8000/*",
     "http://127.0.0.1:5000/*"
   ],
   "web_accessible_resources": [

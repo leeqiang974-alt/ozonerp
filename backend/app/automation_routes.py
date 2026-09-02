@@ -1583,7 +1583,7 @@ def _run_bulk_listing_pilot(batch_id: int, max_items: int, submit_after_prepare:
                                 "message": "提交前质量门禁：" + str(preflight_issue.get("description") or "内容不符合发布规则"),
                             })
                 except Exception as pf_exc:
-                    # A preflight failure is non-blocking, but PostgreSQL
+                    # A preflight failure must not allow a submission, but PostgreSQL
                     # marks the whole transaction failed after any SQL error.
                     # Never swallow that error and then misreport the later
                     # OCR audit INSERT as ``InFailedSqlTransaction``.
@@ -1602,6 +1602,11 @@ def _run_bulk_listing_pilot(batch_id: int, max_items: int, submit_after_prepare:
                     if current is None or draft is None:
                         raise RuntimeError("质量预检回滚后找不到当前批量草稿")
                     current.listing_draft_id = draft.id
+                    issues.append({
+                        "code": "quality_preflight_failed",
+                        "field": "content",
+                        "message": f"提交前质量门禁执行失败，已转人工复核：{str(pf_exc)[:300]}",
+                    })
 
                 # Separate blocking errors from non-blocking warnings
                 blocking_issues = []
@@ -1613,7 +1618,6 @@ def _run_bulk_listing_pilot(batch_id: int, max_items: int, submit_after_prepare:
                     is_warning = (
                         code == "preflight_fixed"
                         or (field == "media" and "recommended" in msg.lower())
-                        or code == "local_ocr_failed"
                     )
                     if is_warning:
                         warning_msgs.append(msg)

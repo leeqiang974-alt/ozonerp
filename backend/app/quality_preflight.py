@@ -25,6 +25,7 @@ from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.orm import Session
 
 from .ai_service import sanitize_hashtags
+from .ozon_content_compliance import evaluate_draft_content
 from .erp_models import (
     AuditEventRecord,
     ListingDraftRecord,
@@ -536,6 +537,11 @@ def run_quality_preflight(
     # archive an already-created product.
     issues_remaining.extend(_prohibited_lgbt_symbol_issues(draft))
     issues_remaining.extend(_source_content_policy_issues(db, draft))
+    issues_remaining.extend({
+        "error_code": issue.rule_id,
+        "error_field": issue.field,
+        "description": issue.message,
+    } for issue in evaluate_draft_content(draft))
 
     # 2. 如果有修改，保存草稿更新时间
     if any_fixed:

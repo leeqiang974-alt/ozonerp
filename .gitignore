@@ -32,3 +32,6 @@ Thumbs.db
 **/api/
 *.key
 *.pem
+
+# One-time local database migration archives and restore logs.
+/migration-in/

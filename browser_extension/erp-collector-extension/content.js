@@ -1856,6 +1856,14 @@ function normalizeOzonImageUrl(value = "") {
   }
 }
 
+function isOzonProductImageUrl(value = "") {
+  const url = normalizeOzonImageUrl(value);
+  if (!url) return false;
+  // Public product pages include global promotion banners in document.images.
+  // Those are page chrome, never product media, and must not become a main image.
+  return !/\/marketing-api\/banners?\//i.test(new URL(url).pathname);
+}
+
 function parseRubPrice(text = "") {
   const match = String(text || "").replace(/\s+/g, "").match(/\d+(?:[,.]\d+)?/);
   return match ? Number(match[0].replace(",", ".")) : "";
@@ -2080,9 +2088,13 @@ async function extractOzonSearchItemsWithScroll(maxProducts = 30) {
 
 function collectOzonDetail() {
   const title = cleanText(document.querySelector("h1")?.innerText || document.title.replace(/\s+\|.*$/, ""));
-  const images = dedupe([...document.images]
+  // Prefer the visible product gallery.  document.images also contains site
+  // banners and recommendation cards, which are only a fallback after the
+  // gallery and are filtered by URL.
+  const galleryImages = [...document.querySelectorAll("[data-widget*='gallery' i] img, [class*='gallery' i] img")];
+  const images = dedupe([...galleryImages, ...document.images]
     .map((image) => normalizeOzonImageUrl(image.currentSrc || image.src))
-    .filter((src) => /ozon|cdn/i.test(src))
+    .filter(isOzonProductImageUrl)
     .slice(0, 80));
 
   // 提取价格

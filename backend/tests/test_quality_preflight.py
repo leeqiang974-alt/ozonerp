@@ -81,6 +81,29 @@ def test_preflight_reports_unrecoverable_title_after_auto_fix():
         assert any(issue["error_code"] == "title_quality_invalid" for issue in result["issues_remaining"])
 
 
+def test_preflight_blocks_lgbt_symbolism_in_title_description_tags_and_rich_content():
+    with _session() as db:
+        shop = Shop(name="quality-prohibited-symbol", currency="CNY")
+        db.add(shop); db.flush()
+        source = SourceProductRecord(shop_id=shop.id, source_product_id="source-prohibited", title="彩虹胸针")
+        db.add(source); db.flush()
+        draft = ListingDraftRecord(
+            shop_id=shop.id, offer_id="PROHIBITED-1", source_product_id=source.id,
+            title="Значок с радужным градиентом", description="Аксессуар с trans rights символикой",
+        )
+        db.add(draft); db.flush()
+        db.add_all([
+            ListingAttributeValueRecord(draft_id=draft.id, attribute_id="23171", name="主题标签", value_text="#значок_прайд"),
+            ListingAttributeValueRecord(draft_id=draft.id, attribute_id="11254", name="JSON富内容", value_text=json.dumps({"text": "LGBT символ"})),
+        ])
+        db.commit(); db.refresh(draft)
+
+        result = run_quality_preflight(db, draft, auto_fix=False)
+
+        hits = [issue for issue in result["issues_remaining"] if issue["error_code"] == "prohibited_lgbt_symbolism"]
+        assert {issue["error_field"] for issue in hits} >= {"title", "description", "attribute:23171", "attribute:11254"}
+
+
 def test_theme_tags_are_submitted_as_one_ozon_attribute_value():
     with _session() as db:
         shop = Shop(name="tag-payload", currency="CNY")

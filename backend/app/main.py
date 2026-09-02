@@ -2393,6 +2393,40 @@ def check_import_info(shop_id: int, task_id: str, db: Session = Depends(get_db))
     return result
 
 
+class OzonProductArchiveRequest(BaseModel):
+    product_ids: list[int] = Field(min_length=1, max_length=100)
+    confirm: bool = False
+    reason: str = Field(min_length=1, max_length=500)
+
+
+@app.post("/api/v1/shops/{shop_id}/ozon-products/archive")
+def archive_ozon_products(
+    shop_id: int,
+    payload: OzonProductArchiveRequest,
+    db: Session = Depends(get_db),
+) -> dict:
+    """Archive explicit Ozon product IDs with confirmation and an audit record."""
+    if not payload.confirm:
+        raise HTTPException(status_code=422, detail="归档 Ozon 商品必须传 confirm=true")
+    if db.get(Shop, shop_id) is None:
+        raise HTTPException(status_code=404, detail="店铺不存在")
+    from .sync_service import _credentials
+    from .integrations.ozon_seller import OzonSellerClient
+    product_ids = sorted(set(int(product_id) for product_id in payload.product_ids if int(product_id) > 0))
+    client_id, api_key = _credentials(db, shop_id)
+    with OzonSellerClient(client_id=client_id, api_key=api_key) as client:
+        result = client.archive_products(product_ids=product_ids)
+    if result.get("result") is not True:
+        raise HTTPException(status_code=502, detail="Ozon 未确认归档请求")
+    db.add(AuditEventRecord(
+        shop_id=shop_id, actor_id="operator_confirmed", action="ozon_products_archived",
+        entity_type="ozon_product", entity_id=",".join(str(product_id) for product_id in product_ids),
+        details_json=json.dumps({"reason": payload.reason, "product_ids": product_ids, "ozon_response": result}, ensure_ascii=False),
+    ))
+    db.commit()
+    return {"ok": True, "product_ids": product_ids, "ozon_response": result}
+
+
 
 
 @app.get("/api/v1/shops/{shop_id}/ozon-products/search")
@@ -3928,19 +3962,7 @@ def _check_title_issues(title: str) -> list[dict]:
         if len(clean) > 2:
             word_counts[clean] = word_counts.get(clean, 0) + 1
     repeated = {w: c for w, c in word_counts.items() if c > 1}
-    feedback_text = " ".join(
-        str(issue.get(key) or "")
-        for issue in raw_issues
-        for key in ("code", "field", "description", "message")
-    ).lower()
-    title_feedback = (
-        "description_decline" in issue_codes
-        and any(token in feedback_text for token in (
-            "названи", "бессмысленн", "грамматическ", "повтор",
-            "спецсимвол", "перечислен", "ключев",
-        ))
-    )
-    if repeated or title_feedback:
+    if repeated:
         issues.append({
             "description": "标题中有重复词汇: " + ", ".join(f"{w}({c}次)" for w, c in repeated.items()),
             "repeated_words": repeated,

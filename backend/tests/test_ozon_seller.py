@@ -110,6 +110,15 @@ class OzonSellerClientTests(unittest.TestCase):
             response = client.get_product_upload_quota()
         self.assertEqual(response["daily_create"]["limit"] - response["daily_create"]["usage"], 188)
 
+    def test_product_archive_uses_documented_product_id_array(self):
+        def handler(request: httpx.Request) -> httpx.Response:
+            self.assertEqual(request.url.path, "/v1/product/archive")
+            self.assertEqual(json.loads(request.content), {"product_id": [6179582062, 6179582066]})
+            return httpx.Response(200, json={"result": True})
+        with OzonSellerClient(client_id="id", api_key="key", transport=httpx.MockTransport(handler)) as client:
+            response = client.archive_products(product_ids=[6179582066, 6179582062])
+        self.assertEqual(response, {"result": True})
+
     def test_error_statuses_are_classified(self):
         for status_code, error_type in ((401, OzonAuthenticationError), (429, OzonRateLimitError), (500, OzonServerError)):
             with self.subTest(status_code=status_code):

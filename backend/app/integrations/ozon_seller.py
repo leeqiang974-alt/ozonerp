@@ -224,6 +224,15 @@ class OzonSellerClient:
             raise ValueError("task_id is required")
         return self._post("/v1/product/import/info", {"task_id": task_id.strip()})
 
+    def archive_products(self, *, product_ids: list[int]) -> dict[str, Any]:
+        """Archive existing Ozon products via the documented /v1/product/archive endpoint."""
+        normalized = [int(product_id) for product_id in product_ids if int(product_id) > 0]
+        if not normalized:
+            raise ValueError("at least one product ID is required")
+        if len(normalized) > 100:
+            raise ValueError("at most 100 product IDs can be archived per request")
+        return self._post("/v1/product/archive", {"product_id": normalized})
+
     def get_product_upload_quota(self) -> dict[str, Any]:
         """Read product create/update limits from the official v4 endpoint."""
         return self._post("/v4/product/info/limit", {})

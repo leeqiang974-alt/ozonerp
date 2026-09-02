@@ -177,6 +177,41 @@ def _title_quality_issues(title: str) -> list[str]:
     return issues
 
 
+_PROHIBITED_LGBT_SYMBOL_RE = re.compile(
+    r"(?:\b(?:lgbtq?\+?|lgbt|pride|trans(?:gender)?|trans\s+rights|"
+    r"gay\s+rights|lesbian|non[-\s]?binary)\b|"
+    r"лгбт|прайд|транс(?:гендер|\s+прав|\b)|"
+    r"радужн\w*|rainbow|彩虹|跨性别|性少数|非二元)",
+    re.IGNORECASE,
+)
+
+
+def _prohibited_lgbt_symbol_issues(draft: ListingDraftRecord) -> list[dict[str, str]]:
+    """Hard-stop platform-prohibited LGBT/political-symbol promotion on every text surface.
+
+    This does not attempt to rewrite a prohibited product into a different
+    product. A match requires manual removal/archive because images may carry
+    the same symbol even when text is later edited.
+    """
+    surfaces: list[tuple[str, str]] = [
+        ("title", draft.title or ""),
+        ("description", draft.description or ""),
+    ]
+    for attribute in draft.attribute_values:
+        if attribute.value_text:
+            surfaces.append((f"attribute:{attribute.attribute_id}", attribute.value_text))
+    findings: list[dict[str, str]] = []
+    for field, value in surfaces:
+        match = _PROHIBITED_LGBT_SYMBOL_RE.search(str(value))
+        if match:
+            findings.append({
+                "error_code": "prohibited_lgbt_symbolism",
+                "error_field": field,
+                "description": f"命中平台禁止的 LGBT/非传统性别关系宣传线索：{match.group(0)}；必须移除对应内容和图片，已创建商品须归档",
+            })
+    return findings
+
+
 def _clean_vulgar_text(draft: ListingDraftRecord) -> list[str]:
     """清理文本字段中的粗俗/冒犯词汇。"""
     fixed = []
@@ -478,6 +513,12 @@ def run_quality_preflight(
             "error_field": "title",
             "description": issue,
         })
+
+    # Platform moderation forbids this product category outright. It is a
+    # hard stop, not an auto-fix: changing only text cannot make symbolic
+    # imagery safe, so the operator must remove/replace all related media or
+    # archive an already-created product.
+    issues_remaining.extend(_prohibited_lgbt_symbol_issues(draft))
 
     # 2. 如果有修改，保存草稿更新时间
     if any_fixed:

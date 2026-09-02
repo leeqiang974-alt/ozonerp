@@ -1,7 +1,7 @@
 ﻿/* v4 - combobox + tree browser with search + match history */
 "use strict";
 const API_BASE = window.ERP_API_BASE || ((location.hostname === "127.0.0.1" || location.hostname === "localhost") ? "http://127.0.0.1:8000" : "");
-const state = { shopId: null, categoryId: null, typeId: null, attributes: [], attributeOptionsCache: {}, attrValues: {}, attributeLoadToken: 0, images: [], variants: [], variantDimensions: [], sourceProduct: null, sourceSkuImageUrls: new Set(), draftId: null, isSubmitted: false, lastImportTaskId: null, editorDirty: false, editorQueue: [], categorySearchTimer: null, dictSearchTimers: {}, richContentCompact: null, richContentAuto: false, contentGenerationPromise: null, selectedImages: new Set(), translatedImageCache: {}, listingTemplates: [], learningAttributeIds: new Set(), aiImageJob: null, selectedAiImages: new Set(), selectedAiJobId: null, skuImageUrls: new Set(), watermark: { enabled: false, image_data_url: "", position: "br", scale: 1, opacity: 0.65 } };
+const state = { shopId: null, categoryId: null, typeId: null, attributes: [], attributeOptionsCache: {}, attrValues: {}, attributeLoadToken: 0, images: [], variants: [], variantDimensions: [], sourceProduct: null, sourceSkuImageUrls: new Set(), draftId: null, isSubmitted: false, lastImportTaskId: null, editorDirty: false, editorQueue: [], categorySearchTimer: null, dictSearchTimers: {}, richContentCompact: null, richContentAuto: false, contentGenerationPromise: null, selectedImages: new Set(), translatedImageCache: {}, listingTemplates: [], learningAttributeIds: new Set(), aiImageJob: null, selectedAiImages: new Set(), selectedAiJobId: null, aiCreativeGroupKey: "__product__", skuImageUrls: new Set(), watermark: { enabled: false, image_data_url: "", position: "br", scale: 1, opacity: 0.65 } };
 
 function skuImageUrlSet() {
   const urls = new Set(state.sourceSkuImageUrls || []);
@@ -1796,8 +1796,52 @@ const AI_IMAGE_DEFAULT_SLOTS = [
   {slot:"dimensions",title:"尺寸规格"},
   {slot:"details",title:"结构细节"},
   {slot:"steps",title:"使用步骤"},
-  {slot:"lifestyle",title:"场景用途"}
+  {slot:"lifestyle",title:"场景用途"},
+  {slot:"scene_home",title:"居家场景"},
+  {slot:"scene_entry",title:"玄关场景"},
+  {slot:"scene_gift",title:"礼赠场景"}
 ];
+
+function creativeGroupForVariant(variant) {
+  const values = variant?.variant_values || {};
+  const dimension = (state.variantDimensions || []).find(attr => {
+    const name = String(attr?.name || "").toLowerCase();
+    return name && !/(尺寸|尺码|大小|size|dimension|规格)/.test(name);
+  });
+  const name = String(dimension?.name || "款式");
+  let value = String(values[name] || "").trim();
+  if (!value) {
+    const parsed = parseSourceSkuSpec(variant?.spec_name || "");
+    const entry = parsed.find(item => !/(尺寸|尺码|大小|size|dimension|规格)/.test(String(item.attributeName || item.name || "").toLowerCase()));
+    value = String(entry?.attributeValue || entry?.value || "").trim();
+  }
+  if (!value) value = String(variant?.seller_sku || "未分组");
+  return { key: `${name}:${value}`, label: value };
+}
+
+function variantCreativeGroups() {
+  const groups = new Map();
+  state.variants.forEach((variant, index) => {
+    const group = creativeGroupForVariant(variant);
+    const existing = groups.get(group.key) || { ...group, indexes: [], image_url: "" };
+    existing.indexes.push(index);
+    if (!existing.image_url) existing.image_url = variant.image_url || "";
+    groups.set(group.key, existing);
+  });
+  return [...groups.values()];
+}
+
+function syncAiCreativeGroupPicker() {
+  const picker = $("#le-ai-creative-group");
+  if (!picker) return;
+  const groups = variantCreativeGroups();
+  if (groups.length > 1 && !groups.some(group => group.key === state.aiCreativeGroupKey)) state.aiCreativeGroupKey = groups[0].key;
+  if (groups.length <= 1) state.aiCreativeGroupKey = groups[0]?.key || "__product__";
+  picker.innerHTML = groups.length
+    ? groups.map(group => `<option value="${esc(group.key)}">${esc(group.label)}（${group.indexes.length} 个尺寸 SKU）</option>`).join("")
+    : '<option value="__product__">当前商品</option>';
+  picker.value = state.aiCreativeGroupKey;
+}
 
 function renderEmptyAiImageSlots(grid) {
   grid.innerHTML = AI_IMAGE_DEFAULT_SLOTS.map(slot => `<div class="le-ai-image-card le-ai-slot-placeholder state-not_started"><div class="le-ai-slot-empty"><b>○</b></div><span>${esc(slot.title)}</span><small class="le-ai-slot-state">未开始</small><button type="button" class="le-ai-slot-retry" data-ai-retry-slot="${esc(slot.slot)}">生成此图</button></div>`).join("");
@@ -1818,7 +1862,7 @@ function renderAiImageJob() {
   const grid = $("#le-ai-image-grid");
   const applyBtn = $("#le-ai-apply-images");
   const selectAll = $("#le-ai-select-all");
-  if (!job || job.status === "not_started") { status.textContent = "尚未生成"; analysis.textContent = "AI会读取采集图库和SKU信息并生成俄文套图。生成结果先进入候选区；部分失败时，已生成的图片仍可选择使用。"; renderEmptyAiImageSlots(grid); applyBtn.disabled = true; if (selectAll) { selectAll.checked = false; selectAll.indeterminate = false; selectAll.disabled = true; } return; }
+  if (!job || job.status === "not_started") { status.textContent = "尚未生成"; analysis.textContent = "每个款式使用自己的 SKU 图作为唯一参考生成 8 张候选图；结果只应用到该款式的尺寸 SKU，不会混入公共详情图库或其他款式。"; renderEmptyAiImageSlots(grid); applyBtn.disabled = true; if (selectAll) { selectAll.checked = false; selectAll.indeterminate = false; selectAll.disabled = true; } return; }
   const labels = { queued:"已排队", analyzing:"分析商品图库中", generating:"生成套图中", interrupted:"已中断 · 未自动重试", ready:"生成完成 · 等待选择", applied:"已应用到草稿", failed:"生成结束 · 有失败项" };
   status.textContent = labels[job.status] || job.status;
   const a = job.analysis || {};
@@ -1852,8 +1896,8 @@ function renderAiImageJob() {
   else if (job.status === "generating") guidance = "任务仍在运行，请等待；各图片会按顺序更新状态。";
   else if (job.status === "interrupted") guidance = images.length ? "任务已中断且不会自动重试；可先使用已生成图片，核对供应商明细后再开启新批次。" : "任务已中断且不会自动重试；请先核对供应商明细，再决定是否开启新批次。";
   else if ((job.status === "failed" || job.status === "ready") && images.length < slots.length) guidance = `本次已结束，成功 ${images.length} 张、失败 ${Math.max(0, slots.length-images.length)} 张；可直接使用成功图片。`;
-  else if (job.status === "ready") guidance = "五张均已完成，可选择后应用到产品图库。";
-  else if (job.status === "applied") guidance = "所选图片已持久化到草稿。";
+  else if (job.status === "ready") guidance = "八张均已完成，可选择后应用到当前款式的 SKU 图片库。";
+  else if (job.status === "applied") guidance = "所选图片已持久化到当前款式的 SKU 图片库。";
   const error = job.error_message ? `<span class="le-ai-image-error">${esc(job.error_message)}</span>` : "";
   const runInfo = currentRun ? `　<b>本次运行：</b>${esc(currentRun.run_id.slice(-8))}　<b>供应商请求：</b>${providerCalls.length}　<b>已回包：</b>${returnedCalls.length}` : "";
   analysis.innerHTML = `${error}<span class="le-ai-image-progress">已生成 ${images.length} 张，可选 ${state.selectedAiImages.size} 张</span>${runInfo}<div class="le-ai-image-guidance">${esc(guidance)}</div>　<b>识别商品：</b>${esc(sold)}　<b>SKU策略：</b>${esc(sku)}　<b>参考图：</b>${(job.reference_images || []).length}张${a.manual_review_required ? '<span class="le-ai-image-warning">　需要人工注意SKU/事实冲突</span>' : ''}`;
@@ -1995,7 +2039,7 @@ window.zoomAiImage = function(index) { const item=state.aiImageJob?.generated_im
 async function loadAiImageJob() {
   state.aiImageJob=null; state.selectedAiImages.clear(); state.selectedAiJobId=null; renderAiImageJob();
   if(!state.shopId || !state.sourceProduct?.id)return;
-  try { state.aiImageJob=await api("GET",`/api/v1/shops/${state.shopId}/ai-images/source-products/${state.sourceProduct.id}`); renderAiImageJob(); } catch(e) { console.warn("AI image job load failed",e); }
+  try { state.aiImageJob=await api("GET",`/api/v1/shops/${state.shopId}/ai-images/source-products/${state.sourceProduct.id}?creative_group_key=${encodeURIComponent(state.aiCreativeGroupKey || "__product__")}`); renderAiImageJob(); } catch(e) { console.warn("AI image job load failed",e); }
 }
 
 async function generateAiImages(requestedSlots = null) {
@@ -2008,12 +2052,12 @@ async function generateAiImages(requestedSlots = null) {
   const btn=$("#le-ai-generate-images"); btn.disabled=true; btn.textContent="分析并生成中..."; toast(`正在分析图库并生成${slotTitle}，请勿关闭页面`,"");
   try {
     state.selectedAiImages.clear();
-    state.aiImageJob=await api("POST",`/api/v1/shops/${state.shopId}/ai-images/generate`,{source_product_id:sourceId,listing_draft_id:state.draftId||null,slots});
+    state.aiImageJob=await api("POST",`/api/v1/shops/${state.shopId}/ai-images/generate`,{source_product_id:sourceId,listing_draft_id:state.draftId||null,creative_group_key:state.aiCreativeGroupKey || "__product__",slots});
     renderAiImageJob(); toast(`${slotTitle}任务已提交，可继续编辑其他字段`, "success");
     while (["queued","analyzing","generating"].includes(state.aiImageJob?.status)) {
       await new Promise(resolve=>setTimeout(resolve,3000));
       if(state.sourceProduct?.id!==sourceId)return;
-      state.aiImageJob=await api("GET",`/api/v1/shops/${state.shopId}/ai-images/source-products/${sourceId}`);
+      state.aiImageJob=await api("GET",`/api/v1/shops/${state.shopId}/ai-images/source-products/${sourceId}?creative_group_key=${encodeURIComponent(state.aiCreativeGroupKey || "__product__")}`);
       renderAiImageJob();
     }
     if(state.aiImageJob?.status==="ready")toast("AI套图已生成，请点击图片选择后使用","success");
@@ -2026,27 +2070,30 @@ async function generateAiImages(requestedSlots = null) {
 async function applyAiImages() {
   const selected=(state.aiImageJob.generated_images||[]).map(x=>x.url).filter(url=>state.selectedAiImages.has(url));
   if(!selected.length){toast("请至少选择一张图片","error");return;}
-  // The backend merges selected AI slots ahead of the persisted gallery. The
-  // browser also keeps any newly added unsaved URLs; the normal Save button
-  // persists those UI-only additions.
-  const merged=[...selected,...state.images.filter(url=>!selected.includes(url))];
-  if(!window.confirm(`将 ${selected.length} 张AI图片加入产品图片库，并将第一张作为主图。现有图片保留在后面。确认继续？`))return;
+  const targetGroup = (variantCreativeGroups()).find(group => group.key === state.aiCreativeGroupKey);
+  const targetIndexes = targetGroup?.indexes || state.variants.map((_, index) => index);
+  const targetSkus = targetIndexes.map(index => state.variants[index]?.seller_sku).filter(Boolean);
+  if(!targetSkus.length){toast("当前款式没有可应用的 SKU","error");return;}
+  if(!window.confirm(`将 ${selected.length} 张AI图片应用到“${targetGroup?.label || "当前款式"}”的 ${targetSkus.length} 个尺寸 SKU。不会修改公共详情图库或其他款式。确认继续？`))return;
   const btn=$("#le-ai-apply-images");btn.disabled=true;
   try {
     // Applying images is an explicit persistence action.  If this is still a
     // new editor session, first save the complete current form so the selected
     // images cannot disappear on refresh or navigation.
-    state.images=merged;
-    if(state.variants.length===1) state.variants[0].image_url=selected[0];
-    else state.variants.forEach(v=>{ if(!v.image_url) v.image_url=selected[0]; });
+    targetIndexes.forEach(index=>{
+      const variant=state.variants[index];
+      const prior=Array.isArray(variant.image_urls) ? variant.image_urls : (variant.image_url ? [variant.image_url] : []);
+      variant.image_urls=[...selected,...prior.filter(url=>!selected.includes(url))].slice(0,15);
+      variant.image_url=selected[0];
+    });
     onImagesChanged(); renderVariantTable();
     if(!state.draftId){
       const saved=await saveDraft();
       if(!saved) throw new Error("自动保存草稿失败，套图尚未应用");
     }
-    state.aiImageJob=await api("POST",`/api/v1/shops/${state.shopId}/ai-images/jobs/${state.aiImageJob.id}/apply`,{listing_draft_id:state.draftId,selected_urls:selected,confirm_replace:true});
+    state.aiImageJob=await api("POST",`/api/v1/shops/${state.shopId}/ai-images/jobs/${state.aiImageJob.id}/apply`,{listing_draft_id:state.draftId,selected_urls:selected,variant_skus:targetSkus,confirm_replace:true});
     renderAiImageJob();
-    toast("AI图片已加入产品图片库并保存到草稿","success");
+    toast("AI图片已写入当前款式的 SKU 图片库，公共详情图库未改动","success");
   }
   catch(e){toast("应用套图失败："+e.message,"error");}
   finally{btn.disabled=false;}
@@ -2179,6 +2226,10 @@ function normalizeLoadedVariantValues(values, sellerSku = "") {
 function renderVariantTable() {
   const tb = $("#le-variant-rows");
   const variantAttrs = state.variantDimensions || [];
+  const creativeGroups = variantCreativeGroups();
+  const groupByIndex = new Map();
+  creativeGroups.forEach(group => group.indexes.forEach((index, position) => groupByIndex.set(index, { group, position })));
+  syncAiCreativeGroupPicker();
 
   const dimCols = variantAttrs.map(a => {
     const isColorDim = isColorVariantAttribute(a);
@@ -2197,6 +2248,8 @@ function renderVariantTable() {
     const copyLink = (field) => `<a href="javascript:void(0)" onclick="copyFirstRowField('${field}')" style="font-size:10px;color:#999;text-decoration:none;display:block;margin-top:2px" title="复制首行到此列">同首行</a>`;
     thead.innerHTML = `<tr>
       <th style="width:30px"><input type="checkbox" id="le-variant-select-all" /></th>
+      <th style="width:82px">款式图<br><small>独立素材</small></th>
+      <th style="min-width:116px">款式<br><small>合并同款尺寸</small></th>
       <th style="width:60px">颜色样本</th>
       <th style="width:60px">产品图</th>
       ${dimCols}
@@ -2246,8 +2299,11 @@ function renderVariantTable() {
     // SKU's dedicated first image plus every public product image.
     const imgCount = variantProductImages(i).length;
 
+    const groupEntry = groupByIndex.get(i);
+    const groupCells = groupEntry?.position === 0 ? `<td rowspan="${groupEntry.group.indexes.length}" class="le-variant-group-image"><img class="le-variant-thumb" src="${esc(groupEntry.group.image_url || skuImg)}" loading="lazy" referrerpolicy="no-referrer" onerror="this.style.opacity=0.3" /><button type="button" class="le-variant-group-ai" data-ai-style-key="${esc(groupEntry.group.key)}">AI 作图</button></td><td rowspan="${groupEntry.group.indexes.length}" class="le-variant-group-name"><strong>${esc(groupEntry.group.label)}</strong><small>${groupEntry.group.indexes.length} 个尺寸 SKU</small></td>` : "";
     return `<tr data-row-idx="${i}">
       <td><input type="checkbox" class="le-variant-row-check" data-idx="${i}" /></td>
+      ${groupCells}
       <td><img class="le-variant-thumb le-color-thumb" src="${esc(colorImg)}" loading="lazy" referrerpolicy="no-referrer" onerror="this.style.opacity=0.3" data-click="color-sample" data-idx="${i}" title="点击更换" style="cursor:pointer" /></td>
       <td style="position:relative"><img class="le-variant-thumb" src="${esc(skuImg)}" loading="lazy" referrerpolicy="no-referrer" onerror="this.style.opacity=0.3" data-click="product-img" data-idx="${i}" title="点击选择图库" style="cursor:pointer" /><span class="le-img-badge">${imgCount}</span></td>
       ${dimInputs}
@@ -2317,6 +2373,12 @@ function renderVariantTable() {
   $$("#le-variant-rows img[data-click]").forEach(img => {
     img.addEventListener("click", () => openImageGallery(parseInt(img.dataset.idx), img.dataset.click));
   });
+  $$("[data-ai-style-key]").forEach(button => button.addEventListener("click", async () => {
+    state.aiCreativeGroupKey = button.dataset.aiStyleKey;
+    syncAiCreativeGroupPicker();
+    document.querySelector("#le-ai-image-panel")?.scrollIntoView({ behavior: "smooth", block: "center" });
+    await loadAiImageJob();
+  }));
 
 }
 
@@ -3808,6 +3870,7 @@ document.addEventListener("DOMContentLoaded", async () => {
   $("#le-translate-images").addEventListener("click", translateSelectedImages);
   $("#le-ai-generate-images").addEventListener("click", generateAiImages);
   $("#le-ai-apply-images").addEventListener("click", applyAiImages);
+  $("#le-ai-creative-group")?.addEventListener("change", async event => { state.aiCreativeGroupKey = event.target.value || "__product__"; await loadAiImageJob(); });
   $("#le-add-variant-row").addEventListener("click", addVariantRow);
   $("#le-source-select").addEventListener("change", (e) => loadSourceProductDetail(e.target.value));
   $("#le-save-template-btn").addEventListener("click", saveListingTemplate);

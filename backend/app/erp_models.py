@@ -838,12 +838,16 @@ class BulkListingTemplateRecord(Base):
 
 
 class VisualImageJobRecord(Base):
-    """Auditable AI image-set draft for one collected product and shop."""
+    """Auditable AI image-set draft for one collected product/style group and shop."""
     __tablename__ = "visual_image_jobs"
-    __table_args__ = (UniqueConstraint("shop_id", "source_product_id", name="uq_visual_image_job_product"),)
+    __table_args__ = (UniqueConstraint("shop_id", "source_product_id", "creative_group_key", name="uq_visual_image_job_product_group"),)
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
     shop_id: Mapped[int] = mapped_column(ForeignKey("shops.id", ondelete="RESTRICT"), index=True)
     source_product_id: Mapped[int] = mapped_column(ForeignKey("source_products.id", ondelete="CASCADE"), index=True)
+    # ``__product__`` preserves historical one-style jobs.  Multi-style
+    # products receive one independent job per source style, never a shared
+    # image set that can leak into another style's SKU selection.
+    creative_group_key: Mapped[str] = mapped_column(String(500), default="__product__", server_default="__product__", index=True)
     listing_draft_id: Mapped[int | None] = mapped_column(ForeignKey("listing_drafts.id", ondelete="SET NULL"), nullable=True, index=True)
     status: Mapped[str] = mapped_column(String(32), default="pending", index=True)
     analysis_json: Mapped[str] = mapped_column(Text, default="{}")

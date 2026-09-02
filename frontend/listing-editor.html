@@ -163,7 +163,8 @@
           <button class="le-btn le-btn-sm" id="le-add-image">添加</button>
           <button class="le-btn le-btn-sm" id="le-import-source-images">从采集导入</button>
           <button class="le-btn le-btn-sm" id="le-translate-images" style="margin-left:auto;background:#ff6a00;color:#fff;border-color:#ff6a00">翻译图片</button>
-          <select class="le-ai-generate-mode" id="le-ai-generate-mode" aria-label="AI 生图范围"><option value="all">生成全套（5张）</option><option value="hero">只生成主图</option></select>
+          <label class="le-ai-style-picker">款式 <select id="le-ai-creative-group" aria-label="AI 生图款式"><option value="__product__">当前商品</option></select></label>
+          <select class="le-ai-generate-mode" id="le-ai-generate-mode" aria-label="AI 生图范围"><option value="all">生成全套（8张）</option><option value="hero">只生成主图</option></select>
           <button class="le-btn le-btn-sm le-ai-image-button" id="le-ai-generate-images">✨ 开始生图</button>
         </div>
         <small class="le-hint" style="margin-bottom:10px">推荐纵横比 3:4，最低 200×200，最多 50 张</small>
@@ -177,8 +178,8 @@
           </div>
         </div>
         <div class="le-ai-image-panel" id="le-ai-image-panel">
-          <div class="le-ai-image-head"><div><strong>AI Ozon 套图</strong><small id="le-ai-image-status">尚未生成</small></div><div class="le-ai-image-actions"><label class="le-ai-select-all"><input type="checkbox" id="le-ai-select-all" disabled /> 全选</label><button class="le-btn le-btn-sm" id="le-ai-apply-images" disabled>使用所选套图</button></div></div>
-          <div class="le-ai-image-analysis" id="le-ai-image-analysis">AI会读取采集图库和SKU信息并生成俄文套图。生成结果先进入候选区；部分失败时，已生成的图片仍可选择使用。</div>
+          <div class="le-ai-image-head"><div><strong>AI 款式套图</strong><small id="le-ai-image-status">尚未生成</small></div><div class="le-ai-image-actions"><label class="le-ai-select-all"><input type="checkbox" id="le-ai-select-all" disabled /> 全选</label><button class="le-btn le-btn-sm" id="le-ai-apply-images" disabled>应用到该款式 SKU</button></div></div>
+          <div class="le-ai-image-analysis" id="le-ai-image-analysis">每个款式使用自己的 SKU 图作为唯一生图参考。八张候选图只会应用到该款式下的尺寸 SKU，不会混入公共详情图库或其他款式。</div>
           <div class="le-ai-image-grid" id="le-ai-image-grid"></div>
         </div>
       </section>

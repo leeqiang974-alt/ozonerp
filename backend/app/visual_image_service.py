@@ -18,6 +18,11 @@ ROOT = Path(__file__).resolve().parents[2]
 OUTPUT_DIR = ROOT / "frontend" / "generated" / "ai-images"
 PUBLIC_PREFIX = os.getenv("GENERATED_IMAGE_PUBLIC_BASE", "http://127.0.0.1:5500/generated/ai-images").rstrip("/")
 STYLE_LOCK = "premium Ozon ecommerce system; warm off-white #F7F2EA, deep charcoal text, restrained metallic-gold accents, modern geometric sans-serif, thin-line icons, neutral-warm studio light, generous whitespace"
+PRODUCT_GROUP_KEY = "__product__"
+AI_IMAGE_SLOTS = [
+    "hero", "dimensions", "details", "steps", "lifestyle",
+    "scene_home", "scene_entry", "scene_gift",
+]
 
 
 def loads(value: str | None, fallback: Any) -> Any:
@@ -52,7 +57,7 @@ def _attempt_entry(history: list[dict[str, Any]], run_id: str, slot: str) -> dic
 def _new_run(db: Session, job: VisualImageJobRecord, requested_slots: list[str] | None = None) -> tuple[str, list[dict[str, Any]]]:
     run_id = uuid.uuid4().hex
     history = _history(job)
-    history.append({"kind": "run", "run_id": run_id, "state": "queued", "created_at": _timestamp(), "requested_slots": requested_slots or ["hero", "dimensions", "details", "steps", "lifestyle"]})
+    history.append({"kind": "run", "run_id": run_id, "state": "queued", "created_at": _timestamp(), "creative_group_key": job.creative_group_key, "requested_slots": requested_slots or AI_IMAGE_SLOTS})
     job.current_run_id = run_id
     _save_history(db, job, history)
     return run_id, history
@@ -154,16 +159,53 @@ def chat_json(messages: list[dict[str, Any]]) -> tuple[dict[str, Any], dict[str,
     raise RuntimeError(f"Terra图片分析失败：{last[:500]}")
 
 
-def source_bundle(db: Session, shop_id: int, source_id: int):
+def _source_variant_group(variant: SourceVariantRecord) -> tuple[str, str]:
+    """Return a stable style key/label without inventing a cartesian SKU grid."""
+    raw = loads(variant.raw_json, {})
+    structured = raw.get("specs") or raw.get("skuSpecs") or raw.get("spec") or []
+    if isinstance(structured, str):
+        structured = loads(structured, [])
+    if isinstance(structured, list):
+        for item in structured:
+            if not isinstance(item, dict):
+                continue
+            name = str(item.get("attributeName") or item.get("name") or "").strip()
+            value = str(item.get("attributeValue") or item.get("value") or "").strip()
+            lower = name.lower()
+            if value and not any(token in lower for token in ("尺寸", "尺码", "大小", "size", "dimension", "规格")):
+                return (f"{name}:{value}", value)
+    spec = str(variant.spec_name or "").strip()
+    try:
+        parsed = loads(spec, [])
+        if isinstance(parsed, list):
+            for item in parsed:
+                if not isinstance(item, dict):
+                    continue
+                name = str(item.get("attributeName") or item.get("name") or "").strip()
+                value = str(item.get("attributeValue") or item.get("value") or "").strip()
+                lower = name.lower()
+                if value and not any(token in lower for token in ("尺寸", "尺码", "大小", "size", "dimension", "规格")):
+                    return (f"{name}:{value}", value)
+    except Exception:
+        pass
+    first = re.split(r"[|/\\,，;；]\s*|\s+-\s+", spec)[0].strip()
+    return (f"spec:{first}" if first else PRODUCT_GROUP_KEY, first or "全部款式")
+
+
+def source_bundle(db: Session, shop_id: int, source_id: int, creative_group_key: str = PRODUCT_GROUP_KEY):
     product = db.scalar(select(SourceProductRecord).join(SourceProductShopRecord, SourceProductShopRecord.source_product_id == SourceProductRecord.id).where(SourceProductRecord.id == source_id, SourceProductShopRecord.shop_id == shop_id, SourceProductShopRecord.is_deleted.is_(False)))
     if not product: raise ValueError("采集商品不存在或不属于当前店铺")
     variants = list(db.scalars(select(SourceVariantRecord).where(SourceVariantRecord.source_product_id == source_id).order_by(SourceVariantRecord.id)))
+    if creative_group_key != PRODUCT_GROUP_KEY:
+        variants = [variant for variant in variants if _source_variant_group(variant)[0] == creative_group_key]
+        if not variants:
+            raise ValueError("所选款式不再属于当前采集商品，请刷新变体后重试")
     media = list(db.scalars(select(SourceMediaRecord).where(SourceMediaRecord.source_product_id == source_id).order_by(SourceMediaRecord.sort_order, SourceMediaRecord.id)))
     return product, variants, media
 
 
-def analyze(db: Session, shop_id: int, source_id: int):
-    product, variants, media = source_bundle(db, shop_id, source_id)
+def analyze(db: Session, shop_id: int, source_id: int, creative_group_key: str = PRODUCT_GROUP_KEY):
+    product, variants, media = source_bundle(db, shop_id, source_id, creative_group_key)
     urls: list[str] = []
     for url in [product.main_image_url, *[v.image_url for v in variants], *[m.url for m in media if m.media_type == "image"]]:
         if url and url not in urls: urls.append(url)
@@ -183,21 +225,26 @@ def analyze(db: Session, shop_id: int, source_id: int):
     # Terra may inspect a larger source gallery, but paid Image 2 editing is
     # deliberately single-reference: a single verified product image is more
     # deterministic than mixing product, dimension and promotional assets.
-    refs = [u for u in (result.get("reference_urls") or []) if u in urls][:1] or urls[:1]
+    style_urls = [v.image_url for v in variants if v.image_url in urls]
+    refs = style_urls[:1] or [u for u in (result.get("reference_urls") or []) if u in urls][:1] or urls[:1]
     return result, refs, usage
 
 
-def plan(product: SourceProductRecord, analysis: dict[str, Any]) -> list[dict[str, str]]:
+def plan(product: SourceProductRecord, analysis: dict[str, Any], creative_group_label: str = "") -> list[dict[str, str]]:
     facts = json.dumps(analysis.get("product_truth") or {}, ensure_ascii=False)
     dims = json.dumps(analysis.get("dimensions") or {}, ensure_ascii=False)
     excluded = json.dumps(analysis.get("not_included") or [], ensure_ascii=False)
-    common = f"Campaign Style Lock: {STYLE_LOCK}. PRODUCT TRUTH LOCK: sold product {analysis.get('sold_product') or product.title}; visible facts {facts}; not included {excluded}. Preserve exact identity, quantity, color, structure and visible hardware. Russian Ozon ecommerce image, vertical 3:4, crisp short Russian text. No Chinese, English, price, watermark, QR, fake certification or invented specifications."
+    group_lock = f" STYLE VARIANT LOCK: this is only style '{creative_group_label}'. Never use another style, pattern, colourway or SKU image." if creative_group_label else ""
+    common = f"Campaign Style Lock: {STYLE_LOCK}. PRODUCT TRUTH LOCK: sold product {analysis.get('sold_product') or product.title}; visible facts {facts}; not included {excluded}.{group_lock} Preserve exact identity, quantity, color, structure and visible hardware. Russian Ozon ecommerce image, vertical 3:4, crisp short Russian text. No Chinese, English, price, watermark, QR, fake certification or invented specifications."
     return [
         {"slot":"hero","title":"销售首图","prompt":common+" Premium hero infographic, product 38%, concise Russian headline and exactly three evidence-backed labels."},
         {"slot":"dimensions","title":"尺寸规格","prompt":common+f" E-commerce dimension infographic, top-down. Only verified dimensions: {dims}. If none, show structure without numbers."},
         {"slot":"details","title":"结构细节","prompt":common+" E-commerce detail infographic with one full product and two macro callouts of real visible structure/material."},
         {"slot":"steps","title":"使用步骤","prompt":common+" E-commerce three-step usage infographic based only on evidenced use; never imply tools are included."},
         {"slot":"lifestyle","title":"场景用途","prompt":common+" Premium lifestyle infographic with three believable uses, clearly labeled as examples, not package contents."},
+        {"slot":"scene_home","title":"居家场景","prompt":common+" Premium believable home scene. Product is clearly visible and remains the exact selected style; no other styles in frame."},
+        {"slot":"scene_entry","title":"玄关场景","prompt":common+" Premium believable entryway scene. Product is clearly visible and remains the exact selected style; no other styles in frame."},
+        {"slot":"scene_gift","title":"礼赠场景","prompt":common+" Premium believable gift or seasonal scene only when supported by product truth; otherwise use a neutral lifestyle scene. Preserve the exact selected style."},
     ]
 
 
@@ -314,20 +361,21 @@ def _download_generated_result(url: str, path: Path, *, max_seconds: float = 150
 
 def serialize(job: VisualImageJobRecord | None) -> dict[str, Any]:
     if not job: return {"status":"not_started","generated_images":[]}
-    return {"id":job.id,"shop_id":job.shop_id,"source_product_id":job.source_product_id,"listing_draft_id":job.listing_draft_id,"status":job.status,"analysis":loads(job.analysis_json,{}),"plan":loads(job.plan_json,[]),"generated_images":loads(job.generated_images_json,[]),"selected_images":loads(job.selected_images_json,[]),"reference_images":loads(job.reference_images_json,[]),"error_message":job.error_message,"llm_model":job.llm_model,"image_model":job.image_model,"usage":loads(job.usage_json,{}),"attempt_history":_history(job),"current_run_id":job.current_run_id,"applied_by":job.applied_by,"applied_at":job.applied_at}
+    return {"id":job.id,"shop_id":job.shop_id,"source_product_id":job.source_product_id,"creative_group_key":job.creative_group_key,"listing_draft_id":job.listing_draft_id,"status":job.status,"analysis":loads(job.analysis_json,{}),"plan":loads(job.plan_json,[]),"generated_images":loads(job.generated_images_json,[]),"selected_images":loads(job.selected_images_json,[]),"reference_images":loads(job.reference_images_json,[]),"error_message":job.error_message,"llm_model":job.llm_model,"image_model":job.image_model,"usage":loads(job.usage_json,{}),"attempt_history":_history(job),"current_run_id":job.current_run_id,"applied_by":job.applied_by,"applied_at":job.applied_at}
 
 
-def generate_set(db: Session, shop_id: int, source_id: int, draft_id: int | None = None, requested_slots: list[str] | None = None):
-    product, _, _ = source_bundle(db, shop_id, source_id)
-    job = db.scalar(select(VisualImageJobRecord).where(VisualImageJobRecord.shop_id==shop_id,VisualImageJobRecord.source_product_id==source_id))
-    if not job: job=VisualImageJobRecord(shop_id=shop_id,source_product_id=source_id); db.add(job); db.flush()
+def generate_set(db: Session, shop_id: int, source_id: int, draft_id: int | None = None, requested_slots: list[str] | None = None, creative_group_key: str = PRODUCT_GROUP_KEY):
+    product, grouped_variants, _ = source_bundle(db, shop_id, source_id, creative_group_key)
+    group_label = _source_variant_group(grouped_variants[0])[1] if creative_group_key != PRODUCT_GROUP_KEY and grouped_variants else ""
+    job = db.scalar(select(VisualImageJobRecord).where(VisualImageJobRecord.shop_id==shop_id,VisualImageJobRecord.source_product_id==source_id,VisualImageJobRecord.creative_group_key==creative_group_key))
+    if not job: job=VisualImageJobRecord(shop_id=shop_id,source_product_id=source_id,creative_group_key=creative_group_key); db.add(job); db.flush()
     job.listing_draft_id=draft_id or job.listing_draft_id; job.status="analyzing"; job.error_message=None; db.commit()
     run_id = job.current_run_id
     if not run_id:
         run_id, _ = _new_run(db, job)
     _update_run(db, job, run_id, "analyzing", started_at=_timestamp())
     try:
-        analysis, refs, usage = analyze(db,shop_id,source_id); image_plan=plan(product,analysis)
+        analysis, refs, usage = analyze(db,shop_id,source_id,creative_group_key); image_plan=plan(product,analysis,group_label)
         if requested_slots:
             requested = set(requested_slots)
             image_plan = [item for item in image_plan if item.get("slot") in requested]
@@ -402,12 +450,13 @@ def generate_set(db: Session, shop_id: int, source_id: int, draft_id: int | None
         db.commit(); raise
 
 
-def queue_set(db: Session, shop_id: int, source_id: int, draft_id: int | None = None, requested_slots: list[str] | None = None):
+def queue_set(db: Session, shop_id: int, source_id: int, draft_id: int | None = None, requested_slots: list[str] | None = None, creative_group_key: str = PRODUCT_GROUP_KEY):
     """Create/reset a visible job before handing paid work to a background worker."""
-    source_bundle(db, shop_id, source_id)
+    source_bundle(db, shop_id, source_id, creative_group_key)
     job = db.scalar(select(VisualImageJobRecord).where(
         VisualImageJobRecord.shop_id == shop_id,
         VisualImageJobRecord.source_product_id == source_id,
+        VisualImageJobRecord.creative_group_key == creative_group_key,
     ))
     if job and job.status in {"queued", "analyzing", "generating"}:
         updated = job.updated_at
@@ -416,7 +465,7 @@ def queue_set(db: Session, shop_id: int, source_id: int, draft_id: int | None = 
         if updated and (datetime.now(timezone.utc) - updated).total_seconds() < 900:
             return job, False
     if not job:
-        job = VisualImageJobRecord(shop_id=shop_id, source_product_id=source_id)
+        job = VisualImageJobRecord(shop_id=shop_id, source_product_id=source_id, creative_group_key=creative_group_key)
         db.add(job)
     job.listing_draft_id = draft_id or job.listing_draft_id
     job.status = "queued"
@@ -435,43 +484,37 @@ def queue_set(db: Session, shop_id: int, source_id: int, draft_id: int | None = 
     return job, True
 
 
-def run_queued_set(shop_id: int, source_id: int, draft_id: int | None = None, requested_slots: list[str] | None = None) -> None:
+def run_queued_set(shop_id: int, source_id: int, draft_id: int | None = None, requested_slots: list[str] | None = None, creative_group_key: str = PRODUCT_GROUP_KEY) -> None:
     """BackgroundTasks entry point; owns its database session."""
     with SessionLocal() as db:
         try:
-            generate_set(db, shop_id, source_id, draft_id, requested_slots)
+            generate_set(db, shop_id, source_id, draft_id, requested_slots, creative_group_key)
         except Exception:
             # generate_set persists the failure details for polling clients.
             return
 
 
-def apply_set(db: Session, job: VisualImageJobRecord, draft: ListingDraftRecord, urls: list[str], actor: str):
+def apply_set(db: Session, job: VisualImageJobRecord, draft: ListingDraftRecord, urls: list[str], actor: str, variant_skus: list[str] | None = None):
     generated=loads(job.generated_images_json,[])
     generated_urls={x.get("url") for x in generated if x.get("url")}
-    existing=list(draft.images or [])
-    allowed=generated_urls | set(existing)
-    unknown=[u for u in urls if u not in allowed]
-    if unknown: raise ValueError("所选图片不属于当前AI任务或草稿图库")
-    requested=[u for u in urls if u in generated_urls]
-    # The apply request carries the selected AI slots.  Merge them ahead of the
-    # already-persisted gallery so applying a partial run never deletes source
-    # images; the next normal Save persists any additional unsaved UI images.
-    selected=[*requested,*[u for u in existing if u not in requested]]
+    unknown=[u for u in urls if u not in generated_urls]
+    if unknown: raise ValueError("所选图片不属于当前AI任务")
+    selected=list(dict.fromkeys(urls))
     if not selected: raise ValueError("至少选择一张AI图片")
     # The operator's selected order is authoritative.  A partial run may not
     # have produced the planned hero slot; its first selected image becomes the
     # SKU primary image so the usable results are not discarded.
-    before={"images":draft.images,"variant_images":{v.seller_sku:v.image_url for v in draft.variants}}; hero=selected[0]
-    draft.primary_image_url=hero; draft.images_json=json.dumps(selected,ensure_ascii=False)
-    if len(draft.variants) == 1:
-        draft.variants[0].image_url = hero
-    else:
-        # Preserve existing per-SKU primaries for multi-variant products.  Only
-        # an empty SKU image falls back to the first selected AI image.
-        for variant in draft.variants:
-            if not variant.image_url: variant.image_url = hero
-    selected_generated = [url for url in selected if url in {x.get("url") for x in generated}]
-    job.listing_draft_id=draft.id; job.selected_images_json=json.dumps(selected_generated,ensure_ascii=False); job.status="applied"; job.applied_by=actor; job.applied_at=datetime.now(timezone.utc)
+    wanted={str(sku).strip() for sku in (variant_skus or []) if str(sku).strip()}
+    targets=[variant for variant in draft.variants if variant.seller_sku in wanted] if wanted else list(draft.variants)
+    if not targets: raise ValueError("没有找到要应用该款式套图的 SKU")
+    before={"public_images":draft.images,"variant_images":{v.seller_sku:v.image_url for v in draft.variants},"variant_image_sets":{v.seller_sku:v.image_urls for v in draft.variants},"target_skus":[v.seller_sku for v in targets]}; hero=selected[0]
+    # Never add a style's generated images to the public product gallery.  The
+    # selected eight images belong only to the SKUs of this creative group.
+    for variant in targets:
+        prior=variant.image_urls if variant.image_urls is not None else ([variant.image_url] if variant.image_url else [])
+        variant.image_urls=[*selected,*[url for url in prior if url not in selected]][:15]
+        variant.image_url=hero
+    job.listing_draft_id=draft.id; job.selected_images_json=json.dumps(selected,ensure_ascii=False); job.status="applied"; job.applied_by=actor; job.applied_at=datetime.now(timezone.utc)
     evidence={"analysis":loads(job.analysis_json,{}),"plan":loads(job.plan_json,[]),"references":loads(job.reference_images_json,[]),"generated":loads(job.generated_images_json,[]),"llm_model":job.llm_model,"image_model":job.image_model,"usage":loads(job.usage_json,{})}
-    db.add(AuditEventRecord(shop_id=job.shop_id,actor_id=actor,action="ai_visual_set_applied",entity_type="listing_draft",entity_id=str(draft.id),details_json=json.dumps({"job_id":job.id,"before":before,"after":{"images":selected,"sku_primary":hero},"generation_evidence":evidence},ensure_ascii=False)))
+    db.add(AuditEventRecord(shop_id=job.shop_id,actor_id=actor,action="ai_visual_style_set_applied",entity_type="listing_draft",entity_id=str(draft.id),details_json=json.dumps({"job_id":job.id,"creative_group_key":job.creative_group_key,"before":before,"after":{"public_images":draft.images,"target_skus":[v.seller_sku for v in targets],"sku_primary":hero},"generation_evidence":evidence},ensure_ascii=False)))
     db.commit(); db.refresh(job); return job

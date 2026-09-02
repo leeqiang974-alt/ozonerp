@@ -10,10 +10,11 @@ from app.erp_models import (
     ListingDraftRecord,
     ListingVariantRecord,
     SourceProductRecord,
+    SourceVariantRecord,
     VisualImageJobRecord,
 )
 from app.models import Shop
-from app.visual_image_service import _validate_public_image_url, apply_set, queue_set, reconcile_interrupted_jobs, serialize
+from app.visual_image_service import _source_variant_group, _validate_public_image_url, apply_set, plan, queue_set, reconcile_interrupted_jobs, serialize
 from app.visual_image_service import image_config
 
 
@@ -57,7 +58,7 @@ def _records(db: Session):
     return shop, draft, job
 
 
-def test_apply_set_replaces_gallery_and_all_sku_primary_images_with_audit() -> None:
+def test_apply_set_only_updates_the_selected_style_skus_and_keeps_public_gallery() -> None:
     engine = create_engine("sqlite://")
     Base.metadata.create_all(engine)
     with Session(engine) as db:
@@ -69,14 +70,18 @@ def test_apply_set_replaces_gallery_and_all_sku_primary_images_with_audit() -> N
             draft,
             ["https://ai.test/hero.png", "https://ai.test/details.png"],
             "image-reviewer",
+            ["AI-DRAFT-1-WHITE"],
         )
 
-        assert draft.images == ["https://ai.test/hero.png", "https://ai.test/details.png", "https://old.test/main.jpg", "https://old.test/detail.jpg"]
-        assert draft.primary_image_url == "https://ai.test/hero.png"
-        assert {variant.image_url for variant in draft.variants} == {"https://old.test/white.jpg", "https://old.test/pink.jpg"}
+        assert draft.images == ["https://old.test/main.jpg", "https://old.test/detail.jpg"]
+        assert draft.primary_image_url == "https://old.test/main.jpg"
+        white, pink = draft.variants
+        assert white.image_url == "https://ai.test/hero.png"
+        assert white.image_urls == ["https://ai.test/hero.png", "https://ai.test/details.png", "https://old.test/white.jpg"]
+        assert pink.image_url == "https://old.test/pink.jpg" and pink.image_urls is None
         assert result.status == "applied" and result.applied_by == "image-reviewer"
         event = db.scalar(select(AuditEventRecord).where(AuditEventRecord.shop_id == shop.id))
-        assert event is not None and event.action == "ai_visual_set_applied"
+        assert event is not None and event.action == "ai_visual_style_set_applied"
         details = json.loads(event.details_json)
         assert details["before"]["variant_images"]["AI-DRAFT-1-PINK"] == "https://old.test/pink.jpg"
 
@@ -97,9 +102,10 @@ def test_apply_set_allows_a_partial_run_without_the_planned_hero() -> None:
     with Session(engine) as db:
         _, draft, job = _records(db)
         job.status = "failed"
-        apply_set(db, job, draft, ["https://ai.test/details.png"], "reviewer")
-        assert draft.primary_image_url == "https://ai.test/details.png"
-        assert draft.images[0] == "https://ai.test/details.png"
+        apply_set(db, job, draft, ["https://ai.test/details.png"], "reviewer", ["AI-DRAFT-1-PINK"])
+        assert draft.primary_image_url == "https://old.test/main.jpg"
+        assert draft.images[0] == "https://old.test/main.jpg"
+        assert draft.variants[1].image_url == "https://ai.test/details.png"
 
 
 def test_serialize_empty_job_is_safe_for_first_page_load() -> None:
@@ -130,6 +136,19 @@ def test_generation_reference_policy_is_single_reference() -> None:
     source = inspect.getsource(visual_image_service.generate_one)
     assert "refs[0]" in source
     assert "refs[:2]" not in source
+
+
+def test_style_group_prefers_structured_non_size_axis_and_plan_has_eight_slots() -> None:
+    variant = SourceVariantRecord(
+        source_sku="MAT-1-80",
+        spec_name='[{"attributeName":"款式","attributeValue":"多肉趣集"},{"attributeName":"尺寸","attributeValue":"80*100"}]',
+        raw_json="{}",
+    )
+    assert _source_variant_group(variant) == ("款式:多肉趣集", "多肉趣集")
+    product = SourceProductRecord(shop_id=1, source_product_id="style-plan", title="门垫")
+    assert [item["slot"] for item in plan(product, {}, "多肉趣集")] == [
+        "hero", "dimensions", "details", "steps", "lifestyle", "scene_home", "scene_entry", "scene_gift",
+    ]
 
 
 def test_generated_result_download_has_idle_total_and_size_guards() -> None:

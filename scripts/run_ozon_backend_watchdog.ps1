@@ -22,6 +22,10 @@ New-Item -ItemType Directory -Force -Path $logDir | Out-Null
 # Operators opt in through the scheduled-task argument only after a read-only
 # verification has completed.
 $env:OZON_ENABLE_BACKGROUND_WRITES = $EnableBackgroundWrites
+# The process runs from backend/ below, so a relative secret path would create
+# or read backend/.local-secrets instead of the project-wide key used by the
+# migrated PostgreSQL credentials.
+$env:ERP_LOCAL_SECRET_KEY_PATH = Join-Path $ProjectRoot '.local-secrets\credential-fernet.key'
 
 # Keep the API independent from an interactive terminal. If uvicorn exits,
 # record the exit and restart after a short backoff. A restart never submits

@@ -35,3 +35,8 @@ Thumbs.db
 
 # One-time local database migration archives and restore logs.
 /migration-in/
+
+# Runtime logs are local operational evidence, never source files.
+/logs/
+/backend/logs/
+/frontend/logs/

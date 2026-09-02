@@ -2446,7 +2446,8 @@ def read_ozon_product_statuses(
     from .sync_service import _credentials
     from .integrations.ozon_seller import OzonSellerClient
 
-    _get_shop_or_404(db, shop_id)
+    if db.get(Shop, shop_id) is None:
+        raise HTTPException(status_code=404, detail="店铺不存在")
     product_ids = sorted(set(int(product_id) for product_id in payload.product_ids if int(product_id) > 0))
     client_id, api_key = _credentials(db, shop_id)
     with OzonSellerClient(client_id=client_id, api_key=api_key) as client:

@@ -13,7 +13,7 @@ const pollWorkerButton = document.querySelector("#pollWorkerButton");
 const skuList = document.querySelector("#skuList");
 const skuToggleButton = document.querySelector("#skuToggleButton");
 const shopScanButton = document.querySelector("#shopScanButton");
-const EXPECTED_CONTENT_VERSION = "0.7.10";
+const EXPECTED_CONTENT_VERSION = "0.7.11";
 let pendingPayload = null;
 let skuVariants = [];
 let selectedSkuKeys = new Set();
@@ -92,7 +92,7 @@ async function startShopScan() {
 async function collectCurrentProduct() {
   button.disabled = true;
   button.textContent = pendingPayload ? "补齐后入箱..." : "采集中...";
-  setStatus(pendingPayload ? "正在补齐尺重并发送到 ERP..." : "正在读取当前 1688 页面...");
+  setStatus(pendingPayload ? "正在补齐尺重并发送到 ERP..." : "正在识别当前商品页面...");
 
   try {
     const tab = await activeTab();
@@ -101,8 +101,10 @@ async function collectCurrentProduct() {
     if (!isOzon && !is1688) throw new Error("请先打开 Ozon 或 1688 商品详情页，再点击采集。");
     await ensureContentScript(tab.id);
     if (isOzon) {
+      setStatus("正在读取 Ozon 商品、SKU 和图片...");
       const ozonResult = await chrome.tabs.sendMessage(tab.id, { type: "COLLECT_OZON_PRODUCT_DETAIL" });
       if (!ozonResult?.ok) throw new Error(ozonResult?.error || "Ozon 商品采集失败");
+      setStatus("已读取 Ozon 页面，正在发送到笔记本 ERP...");
       const result = await erpRequest("/api/ozon-learning/extension/detail-result", {
         method: "POST",
         body: { storeId: storeSelect.value, payload: ozonResult.payload || {} },

@@ -3,7 +3,7 @@ let floatingState = { minimized: false, selectedSkuKeys: new Set(), allSelected:
 const SHOP_SCAN_STORAGE_KEY = "ozonErp1688ShopScan";
 // Must change with every collector behaviour change. popup.js uses this
 // handshake to force-replace stale content scripts already living in a tab.
-const COLLECTOR_VERSION = "0.7.10";
+const COLLECTOR_VERSION = "0.7.11";
 let extensionContextAvailable = true;
 
 function getExtensionRuntime() {
@@ -2348,18 +2348,6 @@ async function fetchOzonPageJson(productUrl, endpoint = "composer", timeoutMs = 
   }
 }
 
-async function mapOzonWithConcurrency(items, mapper, limit = 3) {
-  const results = new Array(items.length);
-  let cursor = 0;
-  await Promise.all(Array.from({ length: Math.min(limit, items.length) }, async () => {
-    while (cursor < items.length) {
-      const index = cursor++;
-      results[index] = await mapper(items[index], index);
-    }
-  }));
-  return results;
-}
-
 function ozonStructuredTitle(payload) {
   try {
     const script = payload?.seo?.script?.[0]?.innerHTML;
@@ -2376,30 +2364,29 @@ async function collectOzonDetail() {
   const primaryGallery = findOzonWidget(primaryStates, "webGallery");
   const primaryImages = ozonWidgetImages(primaryGallery);
   const primaryAspects = ozonAspectVariants(primaryStates, location.href);
-  const candidateUrls = dedupe([
-    location.href,
-    ...primaryAspects.map((item) => item.url),
-  ].filter(Boolean)).slice(0, 24);
-  const captures = await mapOzonWithConcurrency(candidateUrls, async (url) => {
-    const payload = url === location.href ? primaryPayload : await fetchOzonPageJson(url);
-    if (!payload) return null;
-    const states = parseOzonWidgetStates(payload);
-    const gallery = findOzonWidget(states, "webGallery");
-    const gallerySku = String(gallery?.sku || "").trim();
-    const linked = ozonAspectVariants(states, url);
-    const variant = linked.find((item) => item.skuId === gallerySku) || linked[0] || { skuId: ozonProductIdFromUrl(url), properties: [], url, price: "", image: "" };
-    const images = ozonWidgetImages(gallery);
-    const productId = ozonProductIdFromUrl(url) || variant.skuId;
-    return {
-      skuId: variant.skuId || productId,
-      spec: variant.properties.map((item) => `${item.name}: ${item.value}`).join(" / ") || cleanText(gallery?.title || `Ozon ${productId}`),
-      image: normalizeOzonImageUrl(variant.image || images[0] || ""),
-      imageUrls: images,
-      styleId: productId,
-      styleLabel: variant.properties[0]?.value || cleanText(gallery?.title || ""),
-      rubPrice: variant.price || ozonWidgetPrice(findOzonWidget(states, "webPrice")),
-    };
-  }, 6);
+  // Do not make first-time collection depend on opening every variation URL.
+  // Ozon's current page already provides all selectable SKU values and their
+  // cover images in webAspects.  A slow or blocked linked page must not stop
+  // the current product from reaching the ERP.
+  const currentProductId = ozonProductIdFromUrl(location.href);
+  const captures = primaryAspects.map((variant) => ({
+    skuId: variant.skuId || currentProductId,
+    spec: variant.properties.map((item) => `${item.name}: ${item.value}`).join(" / ") || cleanText(primaryGallery?.title || `Ozon ${currentProductId}`),
+    image: normalizeOzonImageUrl(variant.image || primaryImages[0] || ""),
+    imageUrls: variant.image ? [normalizeOzonImageUrl(variant.image)] : primaryImages,
+    styleId: variant.skuId || currentProductId,
+    styleLabel: variant.properties[0]?.value || cleanText(primaryGallery?.title || ""),
+  }));
+  if (!captures.length && currentProductId) {
+    captures.push({
+      skuId: currentProductId,
+      spec: cleanText(primaryGallery?.title || `Ozon ${currentProductId}`),
+      image: primaryImages[0] || "",
+      imageUrls: primaryImages,
+      styleId: currentProductId,
+      styleLabel: cleanText(primaryGallery?.title || ""),
+    });
+  }
   const variants = [];
   const variantGroups = [];
   const seenSku = new Set();

@@ -1,7 +1,9 @@
 ﻿let pageContext = null;
 let floatingState = { minimized: false, selectedSkuKeys: new Set(), allSelected: true };
 const SHOP_SCAN_STORAGE_KEY = "ozonErp1688ShopScan";
-const COLLECTOR_VERSION = "0.6.5";
+// Must change with every collector behaviour change. popup.js uses this
+// handshake to force-replace stale content scripts already living in a tab.
+const COLLECTOR_VERSION = "0.7.7";
 let extensionContextAvailable = true;
 
 function getExtensionRuntime() {

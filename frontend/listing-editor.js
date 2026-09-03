@@ -1712,7 +1712,9 @@ async function autoPopulateVariantsFromSource(placeholderVariant = null) {
       const matched = structured.find(x => {
         const n = String(x.attributeName || x.name || "").toLowerCase();
         const target = String(attr.name || "").toLowerCase();
-        return n && (n === target || (n.includes("颜色") && (target.includes("цвет") || target.includes("color") || target.includes("颜色"))));
+        return n && (n === target
+          || (n.includes("颜色") && (target.includes("цвет") || target.includes("color") || target.includes("颜色")))
+          || (SIZE_VARIANT_NAME_RE.test(n) && SIZE_VARIANT_NAME_RE.test(target)));
       });
       if (matched) variantValues[attr.name] = String(matched.attributeValue || matched.value || "");
       else if (isColorNameVariantAttribute(attr)) variantValues[attr.name] = sourceVariantLabel;
@@ -2014,7 +2016,9 @@ function backfillVariantValuesFromSource() {
       const matched = structured.find(item => {
         const sourceName = String(item.attributeName || item.name || "").toLowerCase();
         const target = String(attr.name || "").toLowerCase();
-        return sourceName && (sourceName === target || (sourceName.includes("颜色") && (target.includes("颜色") || target.includes("цвет") || target.includes("color"))));
+        return sourceName && (sourceName === target
+          || (sourceName.includes("颜色") && (target.includes("颜色") || target.includes("цвет") || target.includes("color")))
+          || (SIZE_VARIANT_NAME_RE.test(sourceName) && SIZE_VARIANT_NAME_RE.test(target)));
       });
       const value = matched
         ? String(matched.attributeValue || matched.value || "").trim()
@@ -2040,6 +2044,15 @@ function parseSourceSkuSpec(specName) {
     const parsed = JSON.parse(text);
     if (Array.isArray(parsed)) return parsed.filter(item => item && typeof item === "object");
   } catch (_) { /* fall through to the common Python-style snapshot */ }
+  // Ozon public collection uses a deliberately readable format such as
+  // "颜色: 生机绿意 / 尺寸: 80×100".  Treat it as structured evidence so
+  // the editor maps color and size to their own Ozon dimensions instead of
+  // falling back to positional values (which merges different style groups).
+  const readablePairs = text.split(/\s*\/\s*/).map(part => {
+    const match = part.match(/^\s*([^:：]+?)\s*[:：]\s*(.+?)\s*$/);
+    return match ? { attributeName: match[1].trim(), attributeValue: match[2].trim() } : null;
+  }).filter(Boolean);
+  if (readablePairs.length) return readablePairs;
   const rows = [];
   const blocks = text.match(/\{[^{}]*\}/g) || [];
   for (const block of blocks) {
@@ -2209,21 +2222,28 @@ function renderColorSamples() {
 
   if (!colorAttr) { container.style.display = "none"; return; }
 
-  container.innerHTML = state.variants.map((v, i) => {
-    const colorName = v.variant_values?.[colorAttr.name] || "";
+  // One sample represents one style/color group, never every size SKU.
+  container.innerHTML = variantCreativeGroups().map(group => {
+    const i = group.indexes[0];
+    const v = state.variants[i] || {};
+    const colorName = group.label || v.variant_values?.[colorAttr.name] || "";
+    const image = group.image_url || v.image_url || state.images[0] || "";
     return `<div class="le-color-sample" data-idx="${i}">
       <input type="checkbox" checked data-sample-idx="${i}" />
-      <img src="${esc(v.image_url || state.images[0] || "")}" loading="lazy" referrerpolicy="no-referrer" onerror="this.style.opacity=0.3" onclick="event.stopPropagation(); zoomVariantImage(${i})" title="点击查看大图" style="cursor:zoom-in" />
+      <img src="${esc(image)}" loading="lazy" referrerpolicy="no-referrer" onerror="this.style.opacity=0.3" onclick="event.stopPropagation(); zoomVariantImage(${i})" title="点击查看该款式图片" style="cursor:zoom-in" />
       <small>${esc(colorName)}</small>
-      <button type="button" class="le-btn le-btn-sm" onclick="event.stopPropagation(); translateVariantImage(${i})" title="翻译此 SKU 图并回填" style="padding:1px 8px;margin-top:3px">翻译</button>
+      <button type="button" class="le-btn le-btn-sm" onclick="event.stopPropagation(); translateVariantImage(${i})" title="翻译此款式图片并回填" style="padding:1px 8px;margin-top:3px">翻译</button>
     </div>`;
   }).join("");
 
   $$("#le-variant-color-samples input[data-sample-idx]").forEach(cb => {
     cb.addEventListener("change", () => {
       const idx = parseInt(cb.dataset.sampleIdx);
-      const row = $(`#le-variant-rows tr[data-row-idx="${idx}"]`);
-      if (row) row.style.opacity = cb.checked ? "1" : "0.4";
+      const group = creativeGroupAtIndex(idx);
+      (group?.indexes || [idx]).forEach(rowIndex => {
+        const row = $(`#le-variant-rows tr[data-row-idx="${rowIndex}"]`);
+        if (row) row.style.opacity = cb.checked ? "1" : "0.4";
+      });
     });
   });
 }

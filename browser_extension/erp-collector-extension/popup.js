@@ -13,7 +13,7 @@ const pollWorkerButton = document.querySelector("#pollWorkerButton");
 const skuList = document.querySelector("#skuList");
 const skuToggleButton = document.querySelector("#skuToggleButton");
 const shopScanButton = document.querySelector("#shopScanButton");
-const EXPECTED_CONTENT_VERSION = "0.6.5";
+const EXPECTED_CONTENT_VERSION = "0.7.13";
 let pendingPayload = null;
 let skuVariants = [];
 let selectedSkuKeys = new Set();
@@ -39,20 +39,37 @@ async function activeTab() {
 async function ensureContentScript(tabId) {
   try {
     const pong = await chrome.tabs.sendMessage(tabId, { type: "PING_1688_COLLECTOR_061" });
-    if (pong?.version !== EXPECTED_CONTENT_VERSION) throw new Error("旧页面脚本");
+    if (pong?.version === EXPECTED_CONTENT_VERSION) return;
   } catch {
-    await chrome.scripting.executeScript({
-      target: { tabId },
-      func: () => {
-        document.querySelector("#ozon-erp-1688-floating")?.remove();
-        delete document.documentElement.dataset.ozonErp1688Injected;
-      },
-    });
-    await chrome.scripting.executeScript({
-      target: { tabId },
-      files: ["content.js"],
-    });
+    // Fall through to a full page reload below. Re-injecting a content script
+    // into an already open tab leaves the old chrome.runtime.onMessage listener
+    // alive, so it may win the reply race and return an obsolete payload.
   }
+  // A browser refresh destroys all old content-script listeners. This is the
+  // only reliable upgrade boundary for an unpacked MV3 extension on an already
+  // open Ozon/1688 detail page.
+  await chrome.tabs.reload(tabId);
+  await waitForTabComplete(tabId);
+  const refreshed = await chrome.tabs.sendMessage(tabId, { type: "PING_1688_COLLECTOR_061" });
+  if (refreshed?.version !== EXPECTED_CONTENT_VERSION) {
+    throw new Error("采集脚本未完成更新，请在 chrome://extensions 重新加载扩展后再试");
+  }
+}
+
+function waitForTabComplete(tabId, timeoutMs = 30000) {
+  return new Promise((resolve, reject) => {
+    const timer = setTimeout(() => finish(new Error("页面刷新超时，请待页面加载完成后重试")), timeoutMs);
+    function finish(error) {
+      clearTimeout(timer);
+      chrome.tabs.onUpdated.removeListener(listener);
+      if (error) reject(error);
+      else resolve();
+    }
+    function listener(updatedTabId, info) {
+      if (updatedTabId === tabId && info.status === "complete") finish();
+    }
+    chrome.tabs.onUpdated.addListener(listener);
+  });
 }
 
 async function startShopScan() {
@@ -75,7 +92,7 @@ async function startShopScan() {
 async function collectCurrentProduct() {
   button.disabled = true;
   button.textContent = pendingPayload ? "补齐后入箱..." : "采集中...";
-  setStatus(pendingPayload ? "正在补齐尺重并发送到 ERP..." : "正在读取当前 1688 页面...");
+  setStatus(pendingPayload ? "正在补齐尺重并发送到 ERP..." : "正在识别当前商品页面...");
 
   try {
     const tab = await activeTab();
@@ -84,8 +101,10 @@ async function collectCurrentProduct() {
     if (!isOzon && !is1688) throw new Error("请先打开 Ozon 或 1688 商品详情页，再点击采集。");
     await ensureContentScript(tab.id);
     if (isOzon) {
+      setStatus("正在读取 Ozon 商品、SKU 和图片...");
       const ozonResult = await chrome.tabs.sendMessage(tab.id, { type: "COLLECT_OZON_PRODUCT_DETAIL" });
       if (!ozonResult?.ok) throw new Error(ozonResult?.error || "Ozon 商品采集失败");
+      setStatus("已读取 Ozon 页面，正在发送到笔记本 ERP...");
       const result = await erpRequest("/api/ozon-learning/extension/detail-result", {
         method: "POST",
         body: { storeId: storeSelect.value, payload: ozonResult.payload || {} },

@@ -1,7 +1,9 @@
 ﻿let pageContext = null;
 let floatingState = { minimized: false, selectedSkuKeys: new Set(), allSelected: true };
 const SHOP_SCAN_STORAGE_KEY = "ozonErp1688ShopScan";
-const COLLECTOR_VERSION = "0.6.5";
+// Must change with every collector behaviour change. popup.js uses this
+// handshake to force-replace stale content scripts already living in a tab.
+const COLLECTOR_VERSION = "0.7.13";
 let extensionContextAvailable = true;
 
 function getExtensionRuntime() {
@@ -331,7 +333,7 @@ async function importProductToErp(productData) {
 
 async function importCurrentOzonDetailToErp() {
   if (pageNeedsOzonHumanCheck()) return { error: "当前 Ozon 页面需要登录或人工验证，请完成后再采集" };
-  const payload = collectOzonDetail();
+  const payload = await collectOzonDetail();
   if (!payload.title) return { error: "商品标题尚未加载完成，请等待页面加载后重试" };
   try {
     const { storeId, baseUrl } = await getActiveStoreId();
@@ -1846,8 +1848,12 @@ function normalizeOzonUrl(value = "") {
 }
 
 function normalizeOzonImageUrl(value = "") {
+  const raw = String(value || "").trim();
+  // URL("", base) resolves to the Ozon homepage. That is not an image and
+  // previously leaked into a SKU row as https://www.ozon.ru/.
+  if (!raw) return "";
   try {
-    const url = new URL(String(value || "").replace(/^\/\//, "https://"), "https://www.ozon.ru");
+    const url = new URL(raw.replace(/^\/\//, "https://"), "https://www.ozon.ru");
     if (!/(^|\.)ozon\.ru$/i.test(url.hostname) && !/(^|\.)ozonusercontent\.com$/i.test(url.hostname)) return "";
     url.hash = "";
     return url.toString();
@@ -2086,7 +2092,37 @@ async function extractOzonSearchItemsWithScroll(maxProducts = 30) {
   return items.slice(0, target);
 }
 
-function collectOzonDetail() {
+function collectOzonPublicVariants(primaryTitle, primaryImage) {
+  const currentUrl = new URL(location.href);
+  const currentId = ozonProductIdFromUrl(currentUrl.href);
+  const variants = [];
+  const seen = new Set();
+  const add = (url, label, image = "") => {
+    const productId = ozonProductIdFromUrl(url);
+    if (!productId || seen.has(productId)) return;
+    seen.add(productId);
+    variants.push({
+      skuId: productId,
+      // This is public Ozon reference data. Its RUB price intentionally stays
+      // out of skuVariants.price, which the ERP treats as a CNY source cost.
+      spec: cleanText(label || `Ozon ${productId}`),
+      image: normalizeOzonImageUrl(image) || "",
+    });
+  };
+  add(currentUrl.href, primaryTitle, primaryImage);
+  // Ozon renders sibling color/size choices as product links with from_sku.
+  // Restrict to those explicit variation links so recommendations never become
+  // fake SKU rows in the ERP.
+  for (const link of document.querySelectorAll('a[href*="/product/"][href*="from_sku="]')) {
+    const href = link.href || link.getAttribute("href") || "";
+    const label = link.getAttribute("title") || cleanText(link.innerText) || cleanText(link.querySelector("img")?.alt || "");
+    const image = link.querySelector("img")?.currentSrc || link.querySelector("img")?.src || "";
+    add(href, label, image);
+  }
+  return variants;
+}
+
+function collectOzonDomFallback() {
   const title = cleanText(document.querySelector("h1")?.innerText || document.title.replace(/\s+\|.*$/, ""));
   // Prefer the visible product gallery.  document.images also contains site
   // banners and recommendation cards, which are only a fallback after the
@@ -2102,6 +2138,14 @@ function collectOzonDetail() {
   const priceEl = document.querySelector("[data-widget='webPrice'] span, .pdp-block__price .tsHeadline500Medium, [class*='price'] [class*='value']");
   if (priceEl) {
     price = parseRubPrice(priceEl.innerText);
+  }
+  // New Ozon product pages frequently render the actual price as a button.
+  // Use a strict ₽ candidate fallback, never an arbitrary number on the page.
+  if (!price) {
+    const priceText = [...document.querySelectorAll("button, [data-widget*='price' i], [class*='price' i]")]
+      .map(node => cleanText(node.innerText || ""))
+      .find(text => /\d[\d\s.,]*₽/.test(text));
+    price = parseRubPrice(priceText || "");
   }
 
   // 提取属性 - 多种选择器
@@ -2166,6 +2210,13 @@ function collectOzonDetail() {
     const m = reviewEl.innerText.match(/\d+/);
     if (m) reviewCount = m[0];
   }
+  if (!rating || !reviewCount) {
+    const ratingMatch = (document.body?.innerText || "").match(/(\d[,.]\d)\s*[•·]\s*([\d\s]+)\s*(?:отзыв|review)/i);
+    if (ratingMatch) {
+      if (!rating) rating = ratingMatch[1].replace(",", ".");
+      if (!reviewCount) reviewCount = ratingMatch[2].replace(/\s/g, "");
+    }
+  }
 
   return {
     url: location.href,
@@ -2176,6 +2227,10 @@ function collectOzonDetail() {
     reviewCount,
     image: images[0] || "",
     images,
+    // A complete public-page re-capture is allowed to replace an earlier
+    // blind-DOM snapshot, removing stale banners and blank pseudo-image URLs.
+    mediaComplete: images.length > 0,
+    skuVariants: collectOzonPublicVariants(title, images[0] || ""),
     category: breadcrumbs.join(" > "),
     packageInfo: extractOzonPackageHint(document.body?.innerText || ""),
     salesHint: extractOzonSalesHint(document.body?.innerText || ""),
@@ -2185,10 +2240,240 @@ function collectOzonDetail() {
   };
 }
 
+function parseOzonWidgetStates(payload = {}) {
+  const states = payload && typeof payload.widgetStates === "object" ? payload.widgetStates : {};
+  return Object.entries(states).map(([key, value]) => {
+    if (value && typeof value === "object") return { key, value };
+    try { return { key, value: JSON.parse(String(value || "")) }; } catch { return { key, value: null }; }
+  }).filter((entry) => entry.value && typeof entry.value === "object");
+}
+
+function findOzonWidget(states, name) {
+  return states.find((entry) => entry.key.toLowerCase().includes(name.toLowerCase()))?.value || null;
+}
+
+function ozonWidgetImages(gallery) {
+  return dedupe((Array.isArray(gallery?.images) ? gallery.images : [])
+    .map((item) => normalizeOzonImageUrl(item?.src || item?.url || item?.image?.src || ""))
+    .filter(isOzonProductImageUrl));
+}
+
+function ozonWidgetPrice(priceWidget, fallback = "") {
+  const candidate = priceWidget?.cardPrice || priceWidget?.price || priceWidget?.marketingPrice || fallback;
+  return parseRubPrice(typeof candidate === "object" ? candidate?.value || candidate?.price || "" : candidate);
+}
+
+function ozonStructuredAttributes(states) {
+  const result = [];
+  for (const { key, value } of states) {
+    if (!/webcharacteristics|characteristics/i.test(key) || !Array.isArray(value?.characteristics)) continue;
+    for (const section of value.characteristics) {
+      for (const block of [section?.short, section?.long]) {
+        if (!Array.isArray(block)) continue;
+        for (const row of block) {
+          const name = cleanText(row?.name || row?.title || "");
+          const valueText = cleanText((row?.values || []).map((item) => item?.text || item?.value || "").filter(Boolean).join(", "));
+          if (name && valueText) result.push({ name, value: valueText });
+        }
+      }
+    }
+  }
+  return dedupeBy(result, (item) => `${item.name}:${item.value}`);
+}
+
+function ozonStructuredDescription(states) {
+  const text = [];
+  const images = [];
+  let richContent = null;
+  for (const { key, value } of states) {
+    if (!/webdescription|description/i.test(key)) continue;
+    if (value?.richAnnotation) text.push(String(value.richAnnotation));
+    const content = value?.richAnnotationJson?.content;
+    if (Array.isArray(content)) {
+      richContent ||= value.richAnnotationJson;
+      for (const section of content) for (const block of (section?.blocks || [])) {
+        const image = normalizeOzonImageUrl(block?.img?.src || "");
+        if (isOzonProductImageUrl(image)) images.push(image);
+        const blockText = cleanText(block?.text || block?.content || "");
+        if (blockText) text.push(blockText);
+      }
+    }
+  }
+  return { description: cleanText(text.join("\n")), detailImages: dedupe(images), richContent };
+}
+
+function ozonAspectVariants(states, currentUrl) {
+  const aspects = findOzonWidget(states, "webAspects")?.aspects || [];
+  const rows = new Map();
+  for (const aspect of aspects) {
+    const name = cleanText(aspect?.descriptionRs?.[0]?.content || aspect?.name || "").replace(/:\s*$/, "");
+    for (const variant of (aspect?.variants || [])) {
+      const skuId = String(variant?.sku || variant?.data?.sku || "").trim();
+      if (!skuId) continue;
+      const current = rows.get(skuId) || { skuId, properties: [], url: "", price: "", image: "" };
+      const value = cleanText(variant?.data?.searchableText || variant?.data?.title || variant?.title || "");
+      if (name && value && !current.properties.some((item) => item.name === name && item.value === value)) current.properties.push({ name, value });
+      current.url = normalizeOzonUrl(variant?.link || currentUrl) || current.url;
+      current.price = ozonWidgetPrice(null, variant?.data?.price || current.price);
+      current.image = normalizeOzonImageUrl(variant?.data?.coverImage || current.image);
+      rows.set(skuId, current);
+    }
+  }
+  return [...rows.values()];
+}
+
+function ozonAspectOptions(states) {
+  const aspects = findOzonWidget(states, "webAspects")?.aspects || [];
+  return aspects.map((aspect, index) => {
+    const name = cleanText(aspect?.descriptionRs?.[0]?.content || aspect?.name || `属性${index + 1}`).replace(/:\s*$/, "");
+    const options = (aspect?.variants || []).map((variant, optionIndex) => ({
+      skuId: String(variant?.sku || variant?.data?.sku || variant?.data?.skuId || "").trim(),
+      value: cleanText(variant?.data?.searchableText || variant?.data?.title || variant?.title || ""),
+      url: normalizeOzonUrl(variant?.link || ""),
+      image: normalizeOzonImageUrl(variant?.data?.coverImage || variant?.data?.image || ""),
+      index: optionIndex,
+    })).filter(option => option.value || option.skuId || option.url);
+    return { name, options };
+  }).filter(aspect => aspect.options.length);
+}
+
+function isOzonStyleAspect(aspect) {
+  const name = String(aspect?.name || "");
+  return aspect?.options?.some(option => option.image) || /(颜色|花色|图案|款式|color|цвет|style|model)/i.test(name);
+}
+
+function isOzonSizeAspect(aspect) {
+  return /(尺寸|尺码|大小|长[度]?|宽[度]?|size|dimension|length|width|размер|длин|ширин)/i.test(String(aspect?.name || ""));
+}
+
+function buildOzonStyleSizeRows(style, states, fallbackImages = []) {
+  const aspects = ozonAspectOptions(states);
+  const sizeAspect = aspects.find(aspect => isOzonSizeAspect(aspect) && aspect.name !== style.name);
+  const sizes = sizeAspect?.options || [];
+  const gallery = findOzonWidget(states, "webGallery");
+  const images = ozonWidgetImages(gallery).length ? ozonWidgetImages(gallery) : fallbackImages;
+  const styleId = `${style.name}:${style.value || style.skuId || style.index}`;
+  const styleImage = style.image || images[0] || "";
+  const toRow = (size, index) => ({
+    skuId: String(size?.skuId || `${styleId}:${index + 1}`),
+    spec: `${style.name}: ${style.value}${size?.value ? ` / ${sizeAspect.name}: ${size.value}` : ""}`,
+    image: styleImage,
+    imageUrls: images.length ? images : (styleImage ? [styleImage] : []),
+    styleId,
+    styleLabel: style.value || style.name,
+  });
+  return sizes.length ? sizes.map(toRow) : [toRow(null, 0)];
+}
+
+async function fetchOzonPageJson(productUrl, endpoint = "composer", timeoutMs = 7000) {
+  const target = new URL(productUrl, location.origin);
+  if (!/(^|\.)ozon\.ru$/i.test(target.hostname)) return null;
+  const apiPath = endpoint === "entrypoint" ? "/api/entrypoint-api.bx/page/json/v2" : "/api/composer-api.bx/page/json/v2";
+  const api = new URL(apiPath, target.origin);
+  let pagePath = `${target.pathname}${target.search || ""}`;
+  if (endpoint === "entrypoint") {
+    pagePath = `${target.pathname}?layout_container=pdpPage2column&layout_page_index=2&oos_search=false`;
+  }
+  api.searchParams.set("url", pagePath);
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), timeoutMs);
+  try {
+    const response = await fetch(api.toString(), {
+      credentials: "include",
+      headers: { Accept: "application/json" },
+      signal: controller.signal,
+    });
+    return response.ok ? await response.json() : null;
+  } catch {
+    return null;
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+function ozonStructuredTitle(payload) {
+  try {
+    const script = payload?.seo?.script?.[0]?.innerHTML;
+    const data = script ? JSON.parse(script) : {};
+    return cleanText(data?.name || data?.title || "");
+  } catch { return ""; }
+}
+
+async function collectOzonDetail() {
+  const fallback = collectOzonDomFallback();
+  const primaryPayload = await fetchOzonPageJson(location.href);
+  if (!primaryPayload) return { ...fallback, parseIssues: ["未获取到 Ozon 结构化页面数据，已使用页面可见内容"] };
+  const primaryStates = parseOzonWidgetStates(primaryPayload);
+  const primaryGallery = findOzonWidget(primaryStates, "webGallery");
+  const primaryImages = ozonWidgetImages(primaryGallery);
+  const primaryAspects = ozonAspectVariants(primaryStates, location.href);
+  // The first aspect with thumbnail evidence is the style/color dimension.
+  // Fetch only one page per style (four here), never every SKU combination.
+  const primaryAspectOptions = ozonAspectOptions(primaryStates);
+  const styleAspect = primaryAspectOptions.find(isOzonStyleAspect);
+  const styleOptions = (styleAspect?.options || []).slice(0, 12).map(option => ({ ...option, name: styleAspect.name }));
+  const currentProductId = ozonProductIdFromUrl(location.href);
+  const captures = [];
+  for (const style of styleOptions) {
+    const stylePayload = style.url && style.url !== location.href ? await fetchOzonPageJson(style.url) : primaryPayload;
+    const styleStates = parseOzonWidgetStates(stylePayload || primaryPayload);
+    captures.push(...buildOzonStyleSizeRows(style, styleStates, primaryImages));
+  }
+  if (!captures.length && currentProductId) {
+    captures.push({ skuId: currentProductId, spec: cleanText(primaryGallery?.title || `Ozon ${currentProductId}`), image: primaryImages[0] || "", imageUrls: primaryImages, styleId: currentProductId, styleLabel: cleanText(primaryGallery?.title || "") });
+  }
+  const variants = [];
+  const variantGroups = [];
+  const seenSku = new Set();
+  for (const row of captures.filter(Boolean)) {
+    if (!row.skuId || seenSku.has(row.skuId)) continue;
+    seenSku.add(row.skuId);
+    variants.push({ skuId: row.skuId, spec: row.spec, image: row.image, styleId: row.styleId, styleLabel: row.styleLabel, imageUrls: row.imageUrls });
+    const group = variantGroups.find(item => item.styleId === row.styleId);
+    if (group) group.skuIds.push(row.skuId);
+    else variantGroups.push({ styleId: row.styleId, styleLabel: row.styleLabel, skuIds: [row.skuId], imageUrls: row.imageUrls });
+  }
+  const detailPayload = await fetchOzonPageJson(location.href, "entrypoint");
+  const detailStates = parseOzonWidgetStates(detailPayload || {});
+  const structuredDescription = ozonStructuredDescription(detailStates);
+  const structuredAttributes = ozonStructuredAttributes(detailStates);
+  const title = ozonStructuredTitle(primaryPayload) || fallback.title;
+  const price = ozonWidgetPrice(findOzonWidget(primaryStates, "webPrice"), fallback.price);
+  const images = primaryImages.length ? primaryImages : fallback.images;
+  return {
+    ...fallback,
+    title,
+    price,
+    image: images[0] || "",
+    images,
+    mediaComplete: images.length > 0,
+    skuVariants: variants.length ? variants : fallback.skuVariants,
+    variantGroups,
+    detailImages: structuredDescription.detailImages,
+    richContent: structuredDescription.richContent,
+    attributes: structuredAttributes.length ? structuredAttributes : fallback.attributes,
+    description: structuredDescription.description || fallback.description,
+    captureSource: "ozon_page_json_v2",
+    parseIssues: variants.length ? [] : ["结构化页面数据未返回可识别变体，已保留页面变体回退"],
+  };
+}
+
 async function sendToErp(payload) {
   return erpRequest("/api/1688/capture", {
     method: "POST",
     body: payload,
+  });
+}
+
+if (window.__OZON_ERP_COLLECTOR_TEST__) {
+  Object.assign(window.__OZON_ERP_COLLECTOR_TEST__, {
+    parseOzonWidgetStates,
+    ozonAspectVariants,
+    ozonAspectOptions,
+    buildOzonStyleSizeRows,
+    ozonWidgetImages,
+    ozonStructuredAttributes,
+    ozonStructuredDescription,
   });
 }
 
@@ -2251,7 +2536,7 @@ getExtensionRuntime()?.onMessage?.addListener?.((message, _sender, sendResponse)
     (async () => {
       try {
         if (!isOzonPage()) throw new Error("当前不是 Ozon 页面。");
-        sendResponse({ ok: true, payload: collectOzonDetail(), needsHuman: pageNeedsOzonHumanCheck() });
+        sendResponse({ ok: true, payload: await collectOzonDetail(), needsHuman: pageNeedsOzonHumanCheck() });
       } catch (error) {
         sendResponse({ ok: false, error: error.message, needsHuman: pageNeedsOzonHumanCheck() });
       }

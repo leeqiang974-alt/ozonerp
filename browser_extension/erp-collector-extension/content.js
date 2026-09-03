@@ -3,7 +3,7 @@ let floatingState = { minimized: false, selectedSkuKeys: new Set(), allSelected:
 const SHOP_SCAN_STORAGE_KEY = "ozonErp1688ShopScan";
 // Must change with every collector behaviour change. popup.js uses this
 // handshake to force-replace stale content scripts already living in a tab.
-const COLLECTOR_VERSION = "0.7.9";
+const COLLECTOR_VERSION = "0.7.10";
 let extensionContextAvailable = true;
 
 function getExtensionRuntime() {
@@ -2322,7 +2322,7 @@ function ozonAspectVariants(states, currentUrl) {
   return [...rows.values()];
 }
 
-async function fetchOzonPageJson(productUrl, endpoint = "composer") {
+async function fetchOzonPageJson(productUrl, endpoint = "composer", timeoutMs = 7000) {
   const target = new URL(productUrl, location.origin);
   if (!/(^|\.)ozon\.ru$/i.test(target.hostname)) return null;
   const apiPath = endpoint === "entrypoint" ? "/api/entrypoint-api.bx/page/json/v2" : "/api/composer-api.bx/page/json/v2";
@@ -2332,11 +2332,19 @@ async function fetchOzonPageJson(productUrl, endpoint = "composer") {
     pagePath = `${target.pathname}?layout_container=pdpPage2column&layout_page_index=2&oos_search=false`;
   }
   api.searchParams.set("url", pagePath);
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), timeoutMs);
   try {
-    const response = await fetch(api.toString(), { credentials: "include", headers: { Accept: "application/json" } });
+    const response = await fetch(api.toString(), {
+      credentials: "include",
+      headers: { Accept: "application/json" },
+      signal: controller.signal,
+    });
     return response.ok ? await response.json() : null;
   } catch {
     return null;
+  } finally {
+    clearTimeout(timer);
   }
 }
 
@@ -2371,7 +2379,7 @@ async function collectOzonDetail() {
   const candidateUrls = dedupe([
     location.href,
     ...primaryAspects.map((item) => item.url),
-  ].filter(Boolean)).slice(0, 40);
+  ].filter(Boolean)).slice(0, 24);
   const captures = await mapOzonWithConcurrency(candidateUrls, async (url) => {
     const payload = url === location.href ? primaryPayload : await fetchOzonPageJson(url);
     if (!payload) return null;
@@ -2391,7 +2399,7 @@ async function collectOzonDetail() {
       styleLabel: variant.properties[0]?.value || cleanText(gallery?.title || ""),
       rubPrice: variant.price || ozonWidgetPrice(findOzonWidget(states, "webPrice")),
     };
-  });
+  }, 6);
   const variants = [];
   const variantGroups = [];
   const seenSku = new Set();

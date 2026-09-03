@@ -31,7 +31,13 @@ function variantProductImages(variantIdx) {
     return [...new Set(variant.image_urls.map(url => String(url || "").trim()).filter(Boolean))];
   }
   const skuUrl = String(variant.image_url || "").trim();
-  return [...new Set([skuUrl, ...publicGalleryImages()].filter(Boolean))];
+  // Product image per SKU: Ozon distinguishes a colour/SKU image from the
+  // public gallery precisely because each SKU's picture is unique (e.g. 10
+  // sizes => 10 annotated photos). Appending the shared public gallery here
+  // made every SKU show the same ~13 images, which loses SKU distinction.
+  // Show the SKU's own image; the public gallery lives in the product-level
+  // image library (step 6), not on every variant row.
+  return skuUrl ? [skuUrl] : publicGalleryImages();
 }
 
 function variantImageChoices(variantIdx) {
@@ -2709,6 +2715,15 @@ function normalizeColorToken(value) {
 
 function colorFamily(value) {
   const token = normalizeColorToken(value);
+  // Compound colour words win first: 粉红→pink, 紫红→purple, 墨绿→green.
+  // Without this a bare /红/ matched 粉红 before /粉/, mis-routing 深粉红色
+  // into the red family and producing wrong colour suggestions.
+  const compound = [
+    [/粉红|桃红|玫红/, "pink"], [/紫红/, "purple"], [/橘红|橙红/, "orange"],
+    [/枣红|砖红|朱红|绛红/, "red"], [/藏青|宝蓝|藏蓝|湖蓝/, "blue"],
+    [/墨绿|草绿|军绿|豆绿|蓝绿|祖母绿/, "green"],
+  ];
+  for (const [re, fam] of compound) if (re.test(token)) return fam;
   const families = [
     ["black", /黑|black|черн/], ["white", /白|white|бел/],
     ["beige", /米|beige|беж|крем|ivory|象牙/], ["green", /绿|green|зел/],
@@ -2734,27 +2749,77 @@ function scoreColorMatch(source, option) {
   return shared / Math.max(left.length, right.length);
 }
 
+// --- Ozon colour dictionary matching (keyword fuzzy + multi-select + uniqueness) ---
+function splitColorSegments(value) {
+  return String(value || "").split(/[,，、+＋;；/]/).map(s => s.trim()).filter(Boolean);
+}
+// Strip leading modifiers so 现代黑→黑, 高亮紫→紫, 深粉红色→粉红色.
+const COLOR_MODIFIER_RE = /^(深|浅|亮|暗|高亮|哑光|亚光|磨砂|金属|纯|新|老|现代|复古|简约|经典|亮面|雾面|柔和|淡|鲜|正|荧光|珠光|渐变|冰|暖|冷|烟灰|奶酪|橡皮|象牙|糖果|莫兰迪)+/;
+function stripColorModifiers(value) {
+  return String(value || "").trim().replace(COLOR_MODIFIER_RE, "");
+}
+function coreColorWords(segment) {
+  const core = stripColorModifiers(segment);
+  const norm = normalizeColorToken(core);
+  if (!norm) return [];
+  const words = core.match(/(黑|白|米|绿|红|蓝|黄|棕|褐|灰|粉|紫|橙|金|银|青|卡其|酒红|藏青|橄榄|柠檬|天蓝|翡翠|玫红|砖红|咖啡|可可|薄荷|湖蓝|藏蓝|宝蓝|肤色|肉色|杏|香槟|祖母绿|朱红|绛红|驼色|燕麦|军绿|墨绿|草绿|豆绿|蓝绿|靛)/g) || [];
+  const uniq = [...new Set(words.map(w => w))];
+  return uniq.length ? uniq : [core];
+}
+function bestOptionForSegment(segment, options, usedValues, single) {
+  const avail = options.filter(o => !(single && usedValues.has(o.value)));
+  const words = coreColorWords(segment);
+  let best = null;
+  let bestScore = 0;
+  for (const opt of avail) {
+    const o = normalizeColorToken(opt.value);
+    if (!o) continue;
+    let s = scoreColorMatch(segment, opt.value);
+    const literal = words.some(w => o.includes(normalizeColorToken(w)) || normalizeColorToken(w).includes(o));
+    if (literal) s = Math.max(s, 0.95);
+    if (s > bestScore) { bestScore = s; best = opt; }
+  }
+  if (!best) return null;
+  const b = normalizeColorToken(best.value);
+  const literal = words.some(w => b.includes(normalizeColorToken(w)) || normalizeColorToken(w).includes(b));
+  const family = words.some(w => colorFamily(w) && colorFamily(w) === colorFamily(best.value));
+  if (literal || family || bestScore >= 0.96) return best;
+  return null;
+}
+function matchVariantColor(sourceColor, options, usedValues, single, multi) {
+  const chosen = [];
+  for (const seg of splitColorSegments(sourceColor)) {
+    if (!multi && chosen.length) break;
+    const opt = bestOptionForSegment(seg, options, usedValues, single);
+    if (!opt) continue;
+    chosen.push(opt);
+    usedValues.add(opt.value);
+  }
+  return chosen;
+}
 async function autoMatchVariantColors() {
   const colorAttr = (state.variantDimensions || []).find(isColorVariantAttribute);
   if (!colorAttr || !state.variants?.length || !colorAttr.dictionary_id) return false;
   const options = (await ensureColorOptions(colorAttr)).filter(option => option?.id && !String(option.id).startsWith("manual:"));
   if (!options.length) return false;
+  // Only one variant dimension (colour alone) → different SKUs must not pick
+  // the same dictionary colour. With two dimensions (colour × qty/size) the
+  // colour may repeat because the second dimension tells the SKUs apart.
+  const singleDim = (state.variantDimensions || []).length === 1;
+  const multi = Boolean(colorAttr.is_collection);
+  const usedValues = new Set();
   let matched = 0;
   for (const variant of state.variants) {
     let current = variant.variant_values?.[colorAttr.name];
     if (!current) current = sourceColorForVariant(variant, colorAttr);
     if (!current) continue;
-    const candidate = options
-      .map(option => ({ option, score: scoreColorMatch(current, option.value) }))
-      .sort((left, right) => right.score - left.score)[0];
-    // Only auto-apply deterministic/same-family matches. Ambiguous values
-    // remain text-only and require an operator choice in the dropdown.
-    if (!candidate || candidate.score < 0.94) continue;
+    const chosen = matchVariantColor(current, options, usedValues, singleDim, multi);
+    if (!chosen.length) continue;
     variant.variant_values = variant.variant_values || {};
     variant.variant_value_ids = variant.variant_value_ids || {};
-    variant.variant_values[colorAttr.name] = candidate.option.value;
-    variant.variant_value_ids[colorAttr.name] = [String(candidate.option.id)];
-    variant.color_match_note = `自动匹配：${current} → ${candidate.option.value}`;
+    variant.variant_values[colorAttr.name] = chosen.map(o => o.value).join(", ");
+    variant.variant_value_ids[colorAttr.name] = chosen.map(o => String(o.id));
+    variant.color_match_note = `自动匹配：${current} → ${chosen.map(o => o.value).join(" + ")}`;
     matched += 1;
   }
   return matched > 0;

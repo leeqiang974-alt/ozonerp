@@ -1846,8 +1846,12 @@ function normalizeOzonUrl(value = "") {
 }
 
 function normalizeOzonImageUrl(value = "") {
+  const raw = String(value || "").trim();
+  // URL("", base) resolves to the Ozon homepage. That is not an image and
+  // previously leaked into a SKU row as https://www.ozon.ru/.
+  if (!raw) return "";
   try {
-    const url = new URL(String(value || "").replace(/^\/\//, "https://"), "https://www.ozon.ru");
+    const url = new URL(raw.replace(/^\/\//, "https://"), "https://www.ozon.ru");
     if (!/(^|\.)ozon\.ru$/i.test(url.hostname) && !/(^|\.)ozonusercontent\.com$/i.test(url.hostname)) return "";
     url.hash = "";
     return url.toString();
@@ -2221,6 +2225,9 @@ function collectOzonDetail() {
     reviewCount,
     image: images[0] || "",
     images,
+    // A complete public-page re-capture is allowed to replace an earlier
+    // blind-DOM snapshot, removing stale banners and blank pseudo-image URLs.
+    mediaComplete: images.length > 0,
     skuVariants: collectOzonPublicVariants(title, images[0] || ""),
     category: breadcrumbs.join(" > "),
     packageInfo: extractOzonPackageHint(document.body?.innerText || ""),

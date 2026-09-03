@@ -2443,15 +2443,11 @@ async function collectOzonDetail() {
   const primaryAspectOptions = ozonAspectOptions(primaryStates);
   const styleAspect = primaryAspectOptions.find(isOzonStyleAspect);
   const styleDimName = styleAspect?.name || "";
-  // One style (e.g. a floor-mat colour) may cover many size SKUs that all share
-  // the same style image and product images.  Editing SKU/product images per SKU
-  // is tedious and redundant, so every SKU under a style reuses the style's
-  // representative image instead of a per-SKU thumbnail that Ozon may or may
-  // not keep distinct for the same style.
-  const styleImageMap = new Map();
-  (styleAspect?.options || []).forEach((option) => {
-    if (option.value && option.image && !styleImageMap.has(option.value)) styleImageMap.set(option.value, option.image);
-  });
+  // Every SKU keeps its own image. Ozon distinguishes the colour image from the
+  // product cover precisely because one SKU's picture is unique — e.g. a silicone
+  // plate in 10 sizes has 10 annotated photos (one per size) as product covers.
+  // Reusing a style image across the SKUs under it would defeat telling SKUs
+  // apart by picture, so each SKU row carries its own image (one SKU per row).
   const aspectDimNames = primaryAspectOptions.map((item) => item.name);
   const currentProductId = ozonProductIdFromUrl(location.href);
   const variants = [];
@@ -2479,10 +2475,10 @@ async function collectOzonDetail() {
     variants.push({
       skuId: row.skuId,
       spec,
-      image: styleImageMap.get(styleValue) || row.image || primaryImages[0] || "",
+      image: row.image || primaryImages[0] || "",
       styleId,
       styleLabel,
-      imageUrls: primaryImages.length ? primaryImages : ([styleImageMap.get(styleValue) || row.image].filter(Boolean)),
+      imageUrls: primaryImages.length ? primaryImages : (row.image ? [row.image] : []),
       priceRub: row.price || "",
     });
     const group = variantGroups.find((item) => item.styleId === styleId);

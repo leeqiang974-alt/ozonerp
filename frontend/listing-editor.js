@@ -2209,21 +2209,28 @@ function renderColorSamples() {
 
   if (!colorAttr) { container.style.display = "none"; return; }
 
-  container.innerHTML = state.variants.map((v, i) => {
-    const colorName = v.variant_values?.[colorAttr.name] || "";
+  // One sample represents one style/color group, never every size SKU.
+  container.innerHTML = variantCreativeGroups().map(group => {
+    const i = group.indexes[0];
+    const v = state.variants[i] || {};
+    const colorName = group.label || v.variant_values?.[colorAttr.name] || "";
+    const image = group.image_url || v.image_url || state.images[0] || "";
     return `<div class="le-color-sample" data-idx="${i}">
       <input type="checkbox" checked data-sample-idx="${i}" />
-      <img src="${esc(v.image_url || state.images[0] || "")}" loading="lazy" referrerpolicy="no-referrer" onerror="this.style.opacity=0.3" onclick="event.stopPropagation(); zoomVariantImage(${i})" title="点击查看大图" style="cursor:zoom-in" />
+      <img src="${esc(image)}" loading="lazy" referrerpolicy="no-referrer" onerror="this.style.opacity=0.3" onclick="event.stopPropagation(); zoomVariantImage(${i})" title="点击查看该款式图片" style="cursor:zoom-in" />
       <small>${esc(colorName)}</small>
-      <button type="button" class="le-btn le-btn-sm" onclick="event.stopPropagation(); translateVariantImage(${i})" title="翻译此 SKU 图并回填" style="padding:1px 8px;margin-top:3px">翻译</button>
+      <button type="button" class="le-btn le-btn-sm" onclick="event.stopPropagation(); translateVariantImage(${i})" title="翻译此款式图片并回填" style="padding:1px 8px;margin-top:3px">翻译</button>
     </div>`;
   }).join("");
 
   $$("#le-variant-color-samples input[data-sample-idx]").forEach(cb => {
     cb.addEventListener("change", () => {
       const idx = parseInt(cb.dataset.sampleIdx);
-      const row = $(`#le-variant-rows tr[data-row-idx="${idx}"]`);
-      if (row) row.style.opacity = cb.checked ? "1" : "0.4";
+      const group = creativeGroupAtIndex(idx);
+      (group?.indexes || [idx]).forEach(rowIndex => {
+        const row = $(`#le-variant-rows tr[data-row-idx="${rowIndex}"]`);
+        if (row) row.style.opacity = cb.checked ? "1" : "0.4";
+      });
     });
   });
 }

@@ -42,4 +42,18 @@ assert.deepEqual(
   JSON.parse(JSON.stringify(hooks.ozonStructuredAttributes(states))),
   [{ name: "Материал", value: "Полиэстер" }],
 );
+const matrixStates = hooks.parseOzonWidgetStates({ widgetStates: {
+  "webGallery-1": JSON.stringify({ images: [{ src: "https://cdn1.ozonusercontent.com/s3/multimedia-a/green.jpg" }] }),
+  "webAspects-1": JSON.stringify({ aspects: [
+    { descriptionRs: [{ content: "颜色:" }], variants: [{ sku: "green", link: "/product/demo-green-1/", data: { searchableText: "生机绿意", coverImage: "https://cdn1.ozonusercontent.com/s3/multimedia-a/green.jpg" } }] },
+    { descriptionRs: [{ content: "尺寸:" }], variants: [
+      { sku: "green-55", data: { searchableText: "55 cm" } }, { sku: "green-70", data: { searchableText: "70 cm" } },
+    ] },
+  ] }),
+} });
+const style = hooks.ozonAspectOptions(matrixStates)[0];
+assert.deepEqual(JSON.parse(JSON.stringify(hooks.buildOzonStyleSizeRows({ ...style.options[0], name: style.name }, matrixStates))), [
+  { skuId: "green-55", spec: "颜色: 生机绿意 / 尺寸: 55 cm", image: "https://cdn1.ozonusercontent.com/s3/multimedia-a/green.jpg", imageUrls: ["https://cdn1.ozonusercontent.com/s3/multimedia-a/green.jpg"], styleId: "颜色:生机绿意", styleLabel: "生机绿意" },
+  { skuId: "green-70", spec: "颜色: 生机绿意 / 尺寸: 70 cm", image: "https://cdn1.ozonusercontent.com/s3/multimedia-a/green.jpg", imageUrls: ["https://cdn1.ozonusercontent.com/s3/multimedia-a/green.jpg"], styleId: "颜色:生机绿意", styleLabel: "生机绿意" },
+]);
 console.log("ozon structured public-page parser tests passed");

@@ -1600,7 +1600,33 @@ function identifyVariantAttributes() {
   // Initialize selected set if not yet set
   if (!state._selectedAspects) {
     state._selectedAspects = new Set();
-    aspectAttrs.forEach(a => { if (isColorLike(a)) state._selectedAspects.add(String(a.id)); });
+    aspectAttrs.forEach(a => { if (isColorLike(a) && !isColorNameVariantAttribute(a)) state._selectedAspects.add(String(a.id)); });
+    // Ozon captures carry every real variant dimension in their SKU spec
+    // (e.g. "颜色: 米色, 紫红色 / 每包数量,pcs: 2"). Auto-select any aspect
+    // whose name matches a dimension present in the captured spec, so the
+    // variant table opens with the true Ozon dimensions (colour x qty)
+    // instead of colour alone; an operator can still uncheck them.
+    const sourceDims = new Set();
+    (state.sourceProduct?.variants || []).forEach(sv => {
+      parseSourceSkuSpec(sv.spec_name || "").forEach(item => {
+        const n = String(item.attributeName || item.name || "").trim().toLowerCase();
+        if (n) sourceDims.add(n);
+      });
+    });
+    if (sourceDims.size) {
+      aspectAttrs.forEach(a => {
+        if (isColorNameVariantAttribute(a)) return; // free-text colour-name column stays manual
+        const target = String(a.name || "").trim().toLowerCase();
+        if (!target) return;
+        if (sourceDims.has(target)) { state._selectedAspects.add(String(a.id)); return; }
+        const colorFuzzy = [...sourceDims].some(d =>
+          (target.includes("颜色") || target.includes("цвет") || target.includes("color"))
+          && (d.includes("颜色") || d.includes("цвет") || d.includes("color")));
+        const sizeFuzzy = !(target.includes("颜色") || target.includes("цвет") || target.includes("color"))
+          && [...sourceDims].some(d => SIZE_VARIANT_NAME_RE.test(target) && SIZE_VARIANT_NAME_RE.test(d));
+        if (colorFuzzy || sizeFuzzy) state._selectedAspects.add(String(a.id));
+      });
+    }
   }
 
   // Build checkbox UI
@@ -1662,7 +1688,13 @@ function updateVariantDimensions() {
 async function autoPopulateVariantsFromSource(placeholderVariant = null) {
   if (!state.sourceProduct || !state.sourceProduct.variants) return;
   const allSourceVariants = state.sourceProduct.variants;
+  // Ozon public pages never expose stock, so the captured value is 'unknown',
+  // never a real 'out of stock'. Filtering it out emptied the whole variant
+  // table for every Ozon capture. For Ozon sources keep every SKU regardless
+  // of the (unknown/zero) stock value; 1688 sources keep the stock>0 rule.
+  const isOzonSource = String(state.sourceProduct.source_platform || "").includes("ozon");
   const sourceVariants = allSourceVariants.filter(sv => {
+    if (isOzonSource) return true;
     if (sv.stock === null || sv.stock === undefined || sv.stock === "") return true;
     const stock = Number(sv.stock);
     return !Number.isFinite(stock) || stock > 0;

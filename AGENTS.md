@@ -69,6 +69,12 @@
 - 采集前握手版本不一致时，扩展必须刷新当前详情页、等待加载完成、再校验内容脚本版本后才允许采集。每次改变解析行为必须同步提高内容脚本握手版本、popup 期望版本与 manifest 版本。
 - 验证：对已经打开的商品页完成扩展重新加载后，首次采集应自动刷新一次；ERP 回读必须确认标题、非营销图库 URL、价格/评分和变体来自本次 payload，不能只以 popup 的“已更新”提示判定成功。
 
+## Ozon 公共商品页采集规则
+
+- Ozon 公共商品详情优先使用同源只读页面 JSON：`composer-api.bx/page/json/v2` 读取 `webGallery`、`webAspects`、`webPrice`；`entrypoint-api.bx/page/json/v2` 读取 `webCharacteristics`、`webDescription` 与富内容。页面可见 DOM 只能作为结构化数据不可得时的回退。
+- 必须按 `webAspects` 的变体链接读取各款式 SKU；款式图库保存在 `variant_groups`，描述区图片保存在 `detail_images`，两者不得混入公共产品图库，也不得把 RUB 价格写为 CNY 采购价。
+- 禁止读取 Ozon Seller Cookie、调用 Seller 写接口或使用任何伪造/拦截 Ozon 卖家后台响应的逻辑；该采集器只读公共商品页并回传 ERP。
+
 ## 自我改进规则 (Self-Improving Rules)
 
 ### 规则 24：快速审核图片翻译必须验证草稿路由闭环

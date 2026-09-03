@@ -182,6 +182,17 @@ def translate_capture(payload: dict[str, Any], shop_id: int, *, source_platform:
         extra["source_description"] = str(payload["description"]).strip()[:10000]
     if payload.get("sources"):
         extra["sources"] = payload["sources"]
+    # Public Ozon captures preserve their per-style galleries separately from
+    # the product gallery. This is source evidence for the editor; it must not
+    # be flattened into media or silently become every SKU's image set.
+    if isinstance(payload.get("variantGroups"), list):
+        extra["variant_groups"] = payload["variantGroups"]
+    if isinstance(payload.get("detailImages"), list):
+        extra["detail_images"] = payload["detailImages"]
+    if payload.get("richContent") is not None:
+        extra["rich_content"] = payload["richContent"]
+    if isinstance(payload.get("parseIssues"), list):
+        extra["parse_issues"] = payload["parseIssues"]
     if payload.get("shangpinbang"):
         extra["shangpinbang"] = payload["shangpinbang"]
     if payload.get("price") is not None:

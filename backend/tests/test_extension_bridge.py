@@ -7,6 +7,14 @@ def test_sku_images_do_not_enter_public_source_gallery():
         "title": "测试商品",
         "images": ["https://img.example/main.jpg"],
         "detailImages": ["https://img.example/detail.jpg"],
+        "variantGroups": [{
+            "styleId": "brown",
+            "styleLabel": "棕色叶子",
+            "skuIds": ["red", "blue"],
+            "imageUrls": ["https://img.example/style-brown.jpg"],
+        }],
+        "richContent": {"content": []},
+        "parseIssues": [],
         "skuVariants": [
             {"skuId": "red", "spec": "红色", "image": "https://img.example/red.jpg"},
             {"skuId": "blue", "spec": "蓝色", "image": "https://img.example/blue.jpg"},
@@ -21,3 +29,5 @@ def test_sku_images_do_not_enter_public_source_gallery():
         "https://img.example/red.jpg",
         "https://img.example/blue.jpg",
     ]
+    assert translated["variant_groups"][0]["imageUrls"] == ["https://img.example/style-brown.jpg"]
+    assert translated["rich_content"] == {"content": []}

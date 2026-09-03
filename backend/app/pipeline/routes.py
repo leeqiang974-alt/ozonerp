@@ -9,7 +9,7 @@ from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
 from ..database import get_db
-from ..erp_models import AutomationCandidateRecord, AutomationRunRecord, AutomationTaskRecord, ListingDraftRecord, SourceProductRecord
+from ..erp_models import AutomationCandidateRecord, AutomationRunRecord, AutomationTaskRecord, ListingDraftRecord, OzonMarketSnapshotRecord, SourceProductRecord
 from ..models import Shop
 from . import (
     attribute_mapping,
@@ -435,6 +435,62 @@ def ext_ozon_capture(payload: dict, db: Session = Depends(get_db)):
         return extension_bridge.ingest_ozon_capture(db, shop_id, snapshot)
     except ValueError as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from exc
+
+
+@ext_router.post("/ozon/market-snapshots")
+def ext_ozon_market_snapshot(payload: dict, db: Session = Depends(get_db)):
+    """Store one user-triggered, read-only snapshot of the visible Ozon analytics table."""
+    store_id = str(payload.get("storeId") or "").strip()
+    snapshot = payload.get("snapshot") or {}
+    if not store_id.isdigit():
+        raise HTTPException(status_code=422, detail="storeId is required")
+    shop_id = int(store_id)
+    if db.get(Shop, shop_id) is None:
+        raise HTTPException(status_code=404, detail="shop not found")
+    rows = snapshot.get("rows")
+    if not isinstance(rows, list) or not rows:
+        raise HTTPException(status_code=422, detail="当前可见表格没有可采集商品")
+    if len(rows) > 500:
+        raise HTTPException(status_code=422, detail="单次最多采集 500 行")
+    source_url = str(snapshot.get("sourceUrl") or "")[:2000]
+    if not source_url.startswith("https://seller.ozon.ru/"):
+        raise HTTPException(status_code=422, detail="只接受 Ozon Seller 官方分析页快照")
+    from datetime import datetime, timezone
+    captured_at = datetime.now(timezone.utc)
+    try:
+        value = str(snapshot.get("capturedAt") or "").replace("Z", "+00:00")
+        if value:
+            captured_at = datetime.fromisoformat(value)
+    except ValueError:
+        pass
+    record = OzonMarketSnapshotRecord(
+        shop_id=shop_id,
+        source_page=str(snapshot.get("sourcePage") or "products_on_ozon")[:64],
+        period_days=snapshot.get("periodDays") if snapshot.get("periodDays") in (7, 28) else None,
+        category_filter=str(snapshot.get("categoryFilter") or "")[:500] or None,
+        row_count=len(rows), source_url=source_url,
+        capture_method=str(snapshot.get("captureMethod") or "visible_dom")[:32],
+        raw_json=json.dumps(snapshot, ensure_ascii=False), captured_at=captured_at,
+    )
+    db.add(record)
+    db.commit()
+    db.refresh(record)
+    return {"ok": True, "snapshotId": record.id, "imported": len(rows), "capturedAt": record.captured_at}
+
+
+@ext_router.get("/ozon/market-snapshots/latest")
+def ext_latest_ozon_market_snapshot(storeId: int, db: Session = Depends(get_db)):
+    if db.get(Shop, storeId) is None:
+        raise HTTPException(status_code=404, detail="shop not found")
+    record = db.scalar(select(OzonMarketSnapshotRecord).where(
+        OzonMarketSnapshotRecord.shop_id == storeId,
+    ).order_by(OzonMarketSnapshotRecord.id.desc()).limit(1))
+    if record is None:
+        return {"snapshot": None}
+    return {
+        "snapshotId": record.id, "shopId": record.shop_id, "rowCount": record.row_count,
+        "capturedAt": record.captured_at, "snapshot": json.loads(record.raw_json),
+    }
 
 
 @ext_router.post("/1688/shop-scan/check")

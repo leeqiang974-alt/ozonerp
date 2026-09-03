@@ -441,6 +441,24 @@ class SourceProductRecord(Base):
     media: Mapped[list["SourceMediaRecord"]] = relationship(back_populates="source_product", cascade="all, delete-orphan")
 
 
+class OzonMarketSnapshotRecord(Base):
+    """Immutable evidence captured from the seller's visible market analytics table."""
+
+    __tablename__ = "ozon_market_snapshots"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    shop_id: Mapped[int] = mapped_column(ForeignKey("shops.id", ondelete="RESTRICT"), index=True)
+    source_page: Mapped[str] = mapped_column(String(64), default="products_on_ozon", index=True)
+    period_days: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    category_filter: Mapped[str | None] = mapped_column(String(500), nullable=True)
+    row_count: Mapped[int] = mapped_column(Integer, default=0)
+    source_url: Mapped[str] = mapped_column(String(2000))
+    capture_method: Mapped[str] = mapped_column(String(32), default="visible_dom")
+    raw_json: Mapped[str] = mapped_column(Text)
+    captured_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+
+
 class SourceProductShopRecord(Base):
     """A shop opted into using a shared strong-identity source snapshot."""
 

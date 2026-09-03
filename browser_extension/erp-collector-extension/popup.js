@@ -13,7 +13,7 @@ const pollWorkerButton = document.querySelector("#pollWorkerButton");
 const skuList = document.querySelector("#skuList");
 const skuToggleButton = document.querySelector("#skuToggleButton");
 const shopScanButton = document.querySelector("#shopScanButton");
-const EXPECTED_CONTENT_VERSION = "0.7.7";
+const EXPECTED_CONTENT_VERSION = "0.7.8";
 let pendingPayload = null;
 let skuVariants = [];
 let selectedSkuKeys = new Set();
@@ -39,20 +39,37 @@ async function activeTab() {
 async function ensureContentScript(tabId) {
   try {
     const pong = await chrome.tabs.sendMessage(tabId, { type: "PING_1688_COLLECTOR_061" });
-    if (pong?.version !== EXPECTED_CONTENT_VERSION) throw new Error("旧页面脚本");
+    if (pong?.version === EXPECTED_CONTENT_VERSION) return;
   } catch {
-    await chrome.scripting.executeScript({
-      target: { tabId },
-      func: () => {
-        document.querySelector("#ozon-erp-1688-floating")?.remove();
-        delete document.documentElement.dataset.ozonErp1688Injected;
-      },
-    });
-    await chrome.scripting.executeScript({
-      target: { tabId },
-      files: ["content.js"],
-    });
+    // Fall through to a full page reload below. Re-injecting a content script
+    // into an already open tab leaves the old chrome.runtime.onMessage listener
+    // alive, so it may win the reply race and return an obsolete payload.
   }
+  // A browser refresh destroys all old content-script listeners. This is the
+  // only reliable upgrade boundary for an unpacked MV3 extension on an already
+  // open Ozon/1688 detail page.
+  await chrome.tabs.reload(tabId);
+  await waitForTabComplete(tabId);
+  const refreshed = await chrome.tabs.sendMessage(tabId, { type: "PING_1688_COLLECTOR_061" });
+  if (refreshed?.version !== EXPECTED_CONTENT_VERSION) {
+    throw new Error("采集脚本未完成更新，请在 chrome://extensions 重新加载扩展后再试");
+  }
+}
+
+function waitForTabComplete(tabId, timeoutMs = 30000) {
+  return new Promise((resolve, reject) => {
+    const timer = setTimeout(() => finish(new Error("页面刷新超时，请待页面加载完成后重试")), timeoutMs);
+    function finish(error) {
+      clearTimeout(timer);
+      chrome.tabs.onUpdated.removeListener(listener);
+      if (error) reject(error);
+      else resolve();
+    }
+    function listener(updatedTabId, info) {
+      if (updatedTabId === tabId && info.status === "complete") finish();
+    }
+    chrome.tabs.onUpdated.addListener(listener);
+  });
 }
 
 async function startShopScan() {

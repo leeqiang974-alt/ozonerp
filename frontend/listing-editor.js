@@ -1804,7 +1804,7 @@ const AI_IMAGE_DEFAULT_SLOTS = [
   {slot:"scene_gift",title:"礼赠场景"}
 ];
 
-const SIZE_VARIANT_NAME_RE = /(尺寸|尺码|大小|size|dimension|规格|length|width|height|длин|ширин|размер)/i;
+const SIZE_VARIANT_NAME_RE = /(尺寸|尺码|大小|size|dimension|规格|length|width|height|длин|ширин|размер|数量|每包|колич|qty|quantity)/i;
 const STYLE_VARIANT_NAME_RE = /(款式|花色|图案|颜色|color|цвет|style|model|модель)/i;
 
 function sourceVariantForEditorVariant(variant) {

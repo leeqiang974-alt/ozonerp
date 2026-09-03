@@ -3,7 +3,7 @@ let floatingState = { minimized: false, selectedSkuKeys: new Set(), allSelected:
 const SHOP_SCAN_STORAGE_KEY = "ozonErp1688ShopScan";
 // Must change with every collector behaviour change. popup.js uses this
 // handshake to force-replace stale content scripts already living in a tab.
-const COLLECTOR_VERSION = "0.7.13";
+const COLLECTOR_VERSION = "0.7.15";
 let extensionContextAvailable = true;
 
 function getExtensionRuntime() {
@@ -1854,7 +1854,7 @@ function normalizeOzonImageUrl(value = "") {
   if (!raw) return "";
   try {
     const url = new URL(raw.replace(/^\/\//, "https://"), "https://www.ozon.ru");
-    if (!/(^|\.)ozon\.ru$/i.test(url.hostname) && !/(^|\.)ozonusercontent\.com$/i.test(url.hostname)) return "";
+    if (!/(^|\.)ozon\.ru$/i.test(url.hostname) && !/(^|\.)ozonusercontent\.com$/i.test(url.hostname) && !/(^|\.)ozonstatic\.cn$/i.test(url.hostname)) return "";
     url.hash = "";
     return url.toString();
   } catch {
@@ -1867,7 +1867,14 @@ function isOzonProductImageUrl(value = "") {
   if (!url) return false;
   // Public product pages include global promotion banners in document.images.
   // Those are page chrome, never product media, and must not become a main image.
-  return !/\/marketing-api\/banners?\//i.test(new URL(url).pathname);
+  return !/\/marketing-api\/+banners?\//i.test(new URL(url).pathname);
+}
+
+// Ozon CDN serves variant thumbnails as /s3/.../wc140/<file> (~140px). The
+// same file without the wc<n> segment is the full-resolution original, which
+// is far more useful as a SKU image. Safe no-op for URLs without a wc<n> part.
+function upgradeOzonThumbUrl(value = "") {
+  return String(value || "").replace(/\/wc\d+\//i, "/");
 }
 
 function parseRubPrice(text = "") {
@@ -2302,6 +2309,21 @@ function ozonStructuredDescription(states) {
   return { description: cleanText(text.join("\n")), detailImages: dedupe(images), richContent };
 }
 
+function ozonStructuredSeller(states) {
+  const candidates = ["webCurrentSeller", "webSellerInfo"].flatMap((widgetName) =>
+    states.filter((entry) => entry.key.toLowerCase().includes(widgetName.toLowerCase())).map((entry) => entry.value)
+  );
+  for (const seller of candidates) {
+    const source = seller?.seller || seller?.data?.seller || seller?.data || seller || {};
+    const sellerId = String(source?.id || source?.sellerId || source?.seller_id || "").trim();
+    const sellerName = cleanText(source?.name || source?.sellerName || source?.title || "");
+    const sellerLink = String(source?.link || source?.url || source?.sellerUrl || "").trim();
+    const sellerUrl = sellerLink ? normalizeOzonUrl(sellerLink) : "";
+    if (sellerId || sellerName || sellerUrl) return { sellerId, sellerName, sellerUrl };
+  }
+  return { sellerId: "", sellerName: "", sellerUrl: "" };
+}
+
 function ozonAspectVariants(states, currentUrl) {
   const aspects = findOzonWidget(states, "webAspects")?.aspects || [];
   const rows = new Map();
@@ -2310,12 +2332,13 @@ function ozonAspectVariants(states, currentUrl) {
     for (const variant of (aspect?.variants || [])) {
       const skuId = String(variant?.sku || variant?.data?.sku || "").trim();
       if (!skuId) continue;
-      const current = rows.get(skuId) || { skuId, properties: [], url: "", price: "", image: "" };
+      const current = rows.get(skuId) || { skuId, properties: [], url: "", price: "", image: "", title: "" };
       const value = cleanText(variant?.data?.searchableText || variant?.data?.title || variant?.title || "");
       if (name && value && !current.properties.some((item) => item.name === name && item.value === value)) current.properties.push({ name, value });
+      current.title = cleanText(variant?.data?.title || variant?.title || current.title);
       current.url = normalizeOzonUrl(variant?.link || currentUrl) || current.url;
       current.price = ozonWidgetPrice(null, variant?.data?.price || current.price);
-      current.image = normalizeOzonImageUrl(variant?.data?.coverImage || current.image);
+      current.image = normalizeOzonImageUrl(upgradeOzonThumbUrl(variant?.data?.coverImage || current.image));
       rows.set(skuId, current);
     }
   }
@@ -2331,6 +2354,7 @@ function ozonAspectOptions(states) {
       value: cleanText(variant?.data?.searchableText || variant?.data?.title || variant?.title || ""),
       url: normalizeOzonUrl(variant?.link || ""),
       image: normalizeOzonImageUrl(variant?.data?.coverImage || variant?.data?.image || ""),
+      priceRub: ozonWidgetPrice(null, variant?.data?.price || ""),
       index: optionIndex,
     })).filter(option => option.value || option.skuId || option.url);
     return { name, options };
@@ -2355,12 +2379,15 @@ function buildOzonStyleSizeRows(style, states, fallbackImages = []) {
   const styleId = `${style.name}:${style.value || style.skuId || style.index}`;
   const styleImage = style.image || images[0] || "";
   const toRow = (size, index) => ({
-    skuId: String(size?.skuId || `${styleId}:${index + 1}`),
+    skuId: String(size?.skuId || style.skuId || `${styleId}:${index + 1}`),
     spec: `${style.name}: ${style.value}${size?.value ? ` / ${sizeAspect.name}: ${size.value}` : ""}`,
     image: styleImage,
     imageUrls: images.length ? images : (styleImage ? [styleImage] : []),
     styleId,
     styleLabel: style.value || style.name,
+    // A style option price is evidence only for that style SKU, not for every
+    // size underneath it. Size rows receive a price only from their own option.
+    priceRub: size ? (size.priceRub || "") : (style.priceRub || ""),
   });
   return sizes.length ? sizes.map(toRow) : [toRow(null, 0)];
 }
@@ -2407,36 +2434,61 @@ async function collectOzonDetail() {
   const primaryGallery = findOzonWidget(primaryStates, "webGallery");
   const primaryImages = ozonWidgetImages(primaryGallery);
   const primaryAspects = ozonAspectVariants(primaryStates, location.href);
-  // The first aspect with thumbnail evidence is the style/color dimension.
-  // Fetch only one page per style (four here), never every SKU combination.
+  // Ozon variants arrive as independent aspect dimensions (colour × quantity,
+  // colour × size, or more), and every SKU is a real combination that carries
+  // its own thumbnail in webAspects. Merge every aspect value per SKU so a
+  // capture always knows all of its dimensions — the old style×size model
+  // silently dropped the "每包数量/Qty" dimension and reused the style
+  // thumbnail for every SKU underneath it. This model works for any category.
   const primaryAspectOptions = ozonAspectOptions(primaryStates);
   const styleAspect = primaryAspectOptions.find(isOzonStyleAspect);
-  const styleOptions = (styleAspect?.options || []).slice(0, 12).map(option => ({ ...option, name: styleAspect.name }));
+  const styleDimName = styleAspect?.name || "";
+  const aspectDimNames = primaryAspectOptions.map((item) => item.name);
   const currentProductId = ozonProductIdFromUrl(location.href);
-  const captures = [];
-  for (const style of styleOptions) {
-    const stylePayload = style.url && style.url !== location.href ? await fetchOzonPageJson(style.url) : primaryPayload;
-    const styleStates = parseOzonWidgetStates(stylePayload || primaryPayload);
-    captures.push(...buildOzonStyleSizeRows(style, styleStates, primaryImages));
-  }
-  if (!captures.length && currentProductId) {
-    captures.push({ skuId: currentProductId, spec: cleanText(primaryGallery?.title || `Ozon ${currentProductId}`), image: primaryImages[0] || "", imageUrls: primaryImages, styleId: currentProductId, styleLabel: cleanText(primaryGallery?.title || "") });
-  }
   const variants = [];
   const variantGroups = [];
   const seenSku = new Set();
-  for (const row of captures.filter(Boolean)) {
+  for (const row of primaryAspects) {
     if (!row.skuId || seenSku.has(row.skuId)) continue;
     seenSku.add(row.skuId);
-    variants.push({ skuId: row.skuId, spec: row.spec, image: row.image, styleId: row.styleId, styleLabel: row.styleLabel, imageUrls: row.imageUrls });
-    const group = variantGroups.find(item => item.styleId === row.styleId);
+    const properties = [...(row.properties || [])];
+    // Ozon does not list every combination under every aspect: a colour SKU
+    // may appear only in the colour aspect while its quantity is encoded in
+    // the variant title ("烹饪铲, 1 个"). Backfill a missing dimension from
+    // that title so every SKU knows all of its variant values.
+    for (const dimName of aspectDimNames) {
+      if (properties.some((item) => item.name === dimName)) continue;
+      if (!/数量|колич|qty|quantity|шт|pcs/i.test(dimName)) continue;
+      const qtyMatch = String(row.title || "").match(/(\d+)\s*(?:个|шт\.?|pcs)/i);
+      if (qtyMatch) properties.push({ name: dimName, value: qtyMatch[1] });
+    }
+    const spec = properties.map((item) => `${item.name}: ${item.value}`).join(" / ");
+    const styleProp = styleDimName ? properties.find((item) => item.name === styleDimName) : null;
+    const styleValue = styleProp?.value || properties[0]?.value || "";
+    const styleId = styleDimName ? `${styleDimName}:${styleValue}` : (styleValue ? `款式:${styleValue}` : row.skuId);
+    const styleLabel = styleValue || styleDimName || "款式";
+    variants.push({
+      skuId: row.skuId,
+      spec,
+      image: row.image || primaryImages[0] || "",
+      styleId,
+      styleLabel,
+      imageUrls: primaryImages.length ? primaryImages : (row.image ? [row.image] : []),
+      priceRub: row.price || "",
+    });
+    const group = variantGroups.find((item) => item.styleId === styleId);
     if (group) group.skuIds.push(row.skuId);
-    else variantGroups.push({ styleId: row.styleId, styleLabel: row.styleLabel, skuIds: [row.skuId], imageUrls: row.imageUrls });
+    else variantGroups.push({ styleId, styleLabel, skuIds: [row.skuId], imageUrls: [row.image].filter(Boolean) });
+  }
+  if (!variants.length && currentProductId) {
+    variants.push({ skuId: currentProductId, spec: cleanText(primaryGallery?.title || `Ozon ${currentProductId}`), image: primaryImages[0] || "", styleId: currentProductId, styleLabel: cleanText(primaryGallery?.title || ""), imageUrls: primaryImages });
+    variantGroups.push({ styleId: currentProductId, styleLabel: cleanText(primaryGallery?.title || ""), skuIds: [currentProductId], imageUrls: primaryImages });
   }
   const detailPayload = await fetchOzonPageJson(location.href, "entrypoint");
   const detailStates = parseOzonWidgetStates(detailPayload || {});
   const structuredDescription = ozonStructuredDescription(detailStates);
   const structuredAttributes = ozonStructuredAttributes(detailStates);
+  const seller = ozonStructuredSeller([...primaryStates, ...detailStates]);
   const title = ozonStructuredTitle(primaryPayload) || fallback.title;
   const price = ozonWidgetPrice(findOzonWidget(primaryStates, "webPrice"), fallback.price);
   const images = primaryImages.length ? primaryImages : fallback.images;
@@ -2453,6 +2505,7 @@ async function collectOzonDetail() {
     richContent: structuredDescription.richContent,
     attributes: structuredAttributes.length ? structuredAttributes : fallback.attributes,
     description: structuredDescription.description || fallback.description,
+    ...seller,
     captureSource: "ozon_page_json_v2",
     parseIssues: variants.length ? [] : ["结构化页面数据未返回可识别变体，已保留页面变体回退"],
   };
@@ -2474,6 +2527,7 @@ if (window.__OZON_ERP_COLLECTOR_TEST__) {
     ozonWidgetImages,
     ozonStructuredAttributes,
     ozonStructuredDescription,
+    ozonStructuredSeller,
   });
 }
 

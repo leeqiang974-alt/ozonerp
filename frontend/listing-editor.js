@@ -1532,7 +1532,7 @@ function renderImages() {
   $("#le-image-count").textContent = (images.length || skuCount)
     ? `(${images.length} 张公共产品图${skuCount ? ` + ${skuCount} 张SKU图` : ""})` : "";
   const skuHtml = skuGroups.length
-    ? `<div style="margin-top:14px;border-top:1px dashed #d0d0d0;padding-top:10px"><div style="font-size:12px;color:#888;margin-bottom:8px">SKU 图集（按变体归属，同时在变体表“产品图”列展示）</div>${skuGroups.map(grp => `<div style="margin-bottom:10px"><div style="font-size:12px;font-weight:600;color:#444;margin-bottom:4px">${esc(grp.skuName)} (${grp.urls.length})</div><div style="display:flex;flex-wrap:wrap;gap:6px">${grp.urls.map(u => `<img src="${esc(u)}" loading="lazy" referrerpolicy="no-referrer" alt="${esc(grp.skuName)}" style="width:72px;height:72px;object-fit:cover;border-radius:4px;border:1px solid #eee" />`).join("")}</div></div>`).join("")}</div>`
+    ? `<div style="margin-top:14px;border-top:1px dashed #d0d0d0;padding-top:10px"><div style="font-size:12px;color:#888;margin-bottom:8px">SKU 图集（按变体归属，同时在变体表“产品图”列展示，共 ${skuCount} 张）</div>${skuGroups.map(grp => `<div style="margin-bottom:14px"><div style="font-size:12px;font-weight:600;color:#444;margin-bottom:6px">${esc(grp.skuName)} (${grp.urls.length})</div><div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(120px,1fr));gap:8px">${grp.urls.map(u => `<div style="position:relative;aspect-ratio:1;border:1px solid #e2e2e2;border-radius:5px;overflow:hidden;background:#f7f7f7;cursor:pointer" onclick="zoomSkuImage('${esc(u)}')" title="查看大图"><img src="${esc(u)}" loading="lazy" referrerpolicy="no-referrer" style="width:100%;height:100%;object-fit:cover" /><div style="position:absolute;bottom:0;left:0;right:0;background:rgba(0,0,0,.55);color:#fff;font-size:10px;padding:2px 4px;text-align:center;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">${esc(grp.skuName)}</div></div>`).join("")}</div></div>`).join("")}</div>`
     : "";
   g.innerHTML = images.map((url, i) => {
     const selected = state.selectedImages.has(i);
@@ -1582,6 +1582,21 @@ window.zoomImage = function(index) {
     else if (event.key === "Escape") dialog.close();
   };
   show();
+  dialog.showModal();
+  dialog.focus();
+};
+
+window.zoomSkuImage = function(url) {
+  if (!url) return;
+  let dialog = $("#le-sku-image-viewer");
+  if (!dialog) {
+    document.body.insertAdjacentHTML("beforeend", '<dialog id="le-sku-image-viewer" style="padding:0;border:none;border-radius:8px;background:#fff;max-width:90vw"><div style="display:flex;justify-content:space-between;align-items:center;padding:8px 12px;border-bottom:1px solid #eee"><strong>SKU 图</strong><button type="button" id="le-sku-image-close" style="border:none;background:none;font-size:18px;cursor:pointer;color:#888" aria-label="关闭">\u00d7</button></div><img id="le-sku-image-large" alt="SKU 图" referrerpolicy="no-referrer" style="display:block;max-width:100%;max-height:80vh;margin:0 auto" /></dialog>');
+    dialog = $("#le-sku-image-viewer");
+    $("#le-sku-image-close").onclick = () => dialog.close();
+    dialog.addEventListener("click", event => { if (event.target === dialog) dialog.close(); });
+    dialog.onkeydown = event => { if (event.key === "Escape") dialog.close(); };
+  }
+  $("#le-sku-image-large").src = url;
   dialog.showModal();
   dialog.focus();
 };

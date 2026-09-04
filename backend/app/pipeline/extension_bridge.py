@@ -34,6 +34,25 @@ def _media_proxy_url(url: str) -> str:
     return MEDIA_PROXY_BASE + quote(value, safe="")
 
 
+def _clean_optional(value: Any, limit: int | None = None) -> str | None:
+    """Normalize JSON nulls without persisting the literal string "None"."""
+    if value is None:
+        return None
+    text = str(value).strip()
+    if not text or text.lower() in {"none", "null", "undefined"}:
+        return None
+    return text[:limit] if limit else text
+
+
+def _is_ozon_public_image(url: str) -> bool:
+    value = _clean_optional(url)
+    if not value or not value.lower().startswith(("http://", "https://")):
+        return False
+    # Public page captures must never promote Ozon site marketing banners to
+    # product media, including URLs containing a doubled slash before banners.
+    return not re.search(r"/marketing-api/+banners?/", value, re.IGNORECASE)
+
+
 def translate_capture(payload: dict[str, Any], shop_id: int, *, source_platform: str = "1688") -> dict[str, Any]:
     """Convert an extension capture payload to the pipeline ingest format."""
     offer_id = str(payload.get("offerId") or payload.get("source_product_id") or payload.get("productId") or payload.get("sku") or "").strip()
@@ -45,7 +64,7 @@ def translate_capture(payload: dict[str, Any], shop_id: int, *, source_platform:
         # Ozon: /product/name-123456789/ or /product/123456789/
         match = (
             re.search(r"/offer/(\d+)", url)
-            or re.search(r"/product/[^/]*?-(\d+)/?", url)
+            or re.search(r"/product/(?:[^/]+-)?(\d{5,})/?$", url)
             or re.search(r"/product/(\d+)/", url)
             or re.search(r"/product/[^/]+/(\d+)", url)
         )
@@ -81,17 +100,19 @@ def translate_capture(payload: dict[str, Any], shop_id: int, *, source_platform:
     # Use supplier as brand fallback
     if not brand:
         brand = str(payload.get("supplier") or "").strip() or None
-    source_shop_name = str(payload.get("sourceShopName") or payload.get("supplier") or "").strip()[:300] or None
-    source_shop_key = str(payload.get("sourceShopKey") or "").strip()[:180] or None
+    source_shop_name = _clean_optional(payload.get("sourceShopName") or payload.get("supplier"), 300)
+    source_shop_key = _clean_optional(payload.get("sourceShopKey"), 180)
     # Images
     raw_images = payload.get("images") or []
     if isinstance(raw_images, list):
         image_urls = [str(url).strip() for url in raw_images if str(url).strip()]
     else:
         image_urls = []
+    if source_platform == "ozon_public":
+        image_urls = [url for url in image_urls if _is_ozon_public_image(url)]
     # Ozon capture sends a single primary image as "image"
-    single_image = str(payload.get("image") or "").strip()
-    if single_image and single_image not in image_urls:
+    single_image = _clean_optional(payload.get("image")) or ""
+    if single_image and (source_platform != "ozon_public" or _is_ozon_public_image(single_image)) and single_image not in image_urls:
         image_urls.insert(0, single_image)
     main_image = image_urls[0] if image_urls else None
     # Media
@@ -137,7 +158,11 @@ def translate_capture(payload: dict[str, Any], shop_id: int, *, source_platform:
                 continue
             source_sku = str(sv.get("skuId") or sv.get("spec") or f"var{i}").strip()
             spec_name = str(sv.get("spec") or sv.get("specName") or source_sku).strip()
-            price = sv.get("price")
+            # Ozon public-page prices are RUB evidence, never CNY procurement
+            # cost. Accept legacy `price` captures as RUB while the extension's
+            # explicit contract uses `priceRub`.
+            price = None if source_platform == "ozon_public" else sv.get("price")
+            price_rub = sv.get("priceRub") if sv.get("priceRub") is not None else (sv.get("price") if source_platform == "ozon_public" else None)
             try:
                 price_decimal = float(price) if price is not None else None
             except (TypeError, ValueError):
@@ -148,6 +173,11 @@ def translate_capture(payload: dict[str, Any], shop_id: int, *, source_platform:
             except (TypeError, ValueError):
                 stock_int = 0
             image_url = str(sv.get("image") or sv.get("skuImageUrl") or sv.get("sku_image_url") or "").strip() or None
+            image_urls = []
+            if isinstance(sv.get("imageUrls"), list):
+                image_urls = [str(u).strip() for u in sv["imageUrls"] if str(u).strip()]
+                if source_platform == "ozon_public":
+                    image_urls = [u for u in image_urls if _is_ozon_public_image(u)]
             # Preserve per-SKU weight/dimensions from extension
             sku_pkg = {}
             for dim_key in ("weightG", "lengthMm", "widthMm", "heightMm"):
@@ -158,8 +188,10 @@ def translate_capture(payload: dict[str, Any], shop_id: int, *, source_platform:
                 "source_sku": source_sku,
                 "spec_name": spec_name,
                 "price_cny": price_decimal,
+                "price_rub": price_rub,
                 "stock": stock_int,
                 "image_url": image_url,
+                "image_urls": image_urls,
                 **sku_pkg,
             })
     if not variants_list:

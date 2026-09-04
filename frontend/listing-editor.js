@@ -1,6 +1,6 @@
 ﻿/* v4 - combobox + tree browser with search + match history */
 "use strict";
-const API_BASE = window.ERP_API_BASE || ((location.hostname === "127.0.0.1" || location.hostname === "localhost") ? "http://127.0.0.1:8000" : "");
+const API_BASE = window.ERP_API_BASE || `http://${location.hostname || "127.0.0.1"}:8000`;
 const state = { shopId: null, categoryId: null, typeId: null, attributes: [], attributeOptionsCache: {}, attrValues: {}, attributeLoadToken: 0, images: [], variants: [], variantDimensions: [], sourceProduct: null, sourceSkuImageUrls: new Set(), draftId: null, isSubmitted: false, lastImportTaskId: null, editorDirty: false, editorQueue: [], categorySearchTimer: null, dictSearchTimers: {}, richContentCompact: null, richContentAuto: false, contentGenerationPromise: null, selectedImages: new Set(), translatedImageCache: {}, listingTemplates: [], learningAttributeIds: new Set(), aiImageJob: null, selectedAiImages: new Set(), selectedAiJobId: null, aiCreativeGroupKey: "__product__", skuImageUrls: new Set(), watermark: { enabled: false, image_data_url: "", position: "br", scale: 1, opacity: 0.65 } };
 
 function skuImageUrlSet() {
@@ -132,11 +132,15 @@ function normalizeOfferId(value) {
 }
 
 async function loadShops() {
-  const shops = await api("GET", "/api/v1/shops");
-  const sel = $("#le-shop-select");
-  sel.innerHTML = '<option value="">选择店铺</option>' + shops.map((s) => `<option value="${s.id}">${esc(s.name)}</option>`).join("");
-  const urlShop = new URLSearchParams(location.search).get("shop");
-  if (urlShop && shops.some((s) => String(s.id) === urlShop)) sel.value = urlShop;
+  try {
+    const shops = await api("GET", "/api/v1/shops");
+    const sel = $("#le-shop-select");
+    sel.innerHTML = '<option value="">选择店铺</option>' + shops.map((s) => `<option value="${s.id}">${esc(s.name)}</option>`).join("");
+    const urlShop = new URLSearchParams(location.search).get("shop");
+    if (urlShop && shops.some((s) => String(s.id) === urlShop)) sel.value = urlShop;
+  } catch (e) {
+    toast(`店铺加载失败：${e.message}`, "error");
+  }
 }
 
 function renderListingTemplates() {
@@ -3348,9 +3352,11 @@ async function loadSourceProductsList() {
     state.editorQueue = products;
     $("#le-source-select").innerHTML = '<option value="">选择采集商品...</option>' + products.map(p => `<option value="${p.id}">[${p.source_platform}] ${esc(p.title)}</option>`).join("");
     renderEditorQueue();
+    toast(`已刷新商品列表（${products.length} 个）`, "success");
   } catch (error) {
     const list = $("#le-queue-list");
     if (list) list.innerHTML = `<p class="le-placeholder">商品列表读取失败：${esc(error.message)}</p>`;
+    toast(`商品列表读取失败：${error.message}`, "error");
   }
 }
 async function loadSourceProductDetail(spId, skipAI) {

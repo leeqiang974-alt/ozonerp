@@ -1,7 +1,7 @@
-﻿{
+{
   "manifest_version": 3,
   "name": "Ozon ERP 统一采集助手",
-  "version": "0.7.15",
+  "version": "0.7.16",
   "description": "统一采集 1688、Ozon 与 Amazon 商品，并发送到对应 ERP。",
   "action": {
     "default_title": "Ozon ERP 统一采集助手",
@@ -19,7 +19,13 @@
     "48": "icons/icon48.png",
     "128": "icons/icon128.png"
   },
-  "permissions": ["activeTab", "alarms", "scripting", "storage", "tabs"],
+  "permissions": [
+    "activeTab",
+    "alarms",
+    "scripting",
+    "storage",
+    "tabs"
+  ],
   "background": {
     "service_worker": "background.js"
   },
@@ -38,36 +44,78 @@
     "https://*.amazon.it/*",
     "https://*.amazon.es/*",
     "https://ml-erp.woxq.cn/*",
-    "http://192.168.0.147:8000/*", "http://localhost:8000/*", "http://127.0.0.1:8000/*",
+    "http://192.168.0.147:8000/*",
+    "http://localhost:8000/*",
+    "http://127.0.0.1:8000/*",
     "http://127.0.0.1:5000/*"
   ],
   "web_accessible_resources": [
     {
-      "resources": ["injected.js"],
-      "matches": ["https://*.1688.com/*", "https://login.taobao.com/*", "https://*.ozon.ru/*", "https://seller.ozon.ru/*", "https://*.amazon.com/*", "https://*.amazon.com.mx/*", "https://*.amazon.ca/*", "https://*.amazon.co.uk/*", "https://*.amazon.de/*", "https://*.amazon.fr/*", "https://*.amazon.it/*", "https://*.amazon.es/*"]
+      "resources": [
+        "injected.js"
+      ],
+      "matches": [
+        "https://*.1688.com/*",
+        "https://login.taobao.com/*",
+        "https://*.ozon.ru/*",
+        "https://seller.ozon.ru/*",
+        "https://*.amazon.com/*",
+        "https://*.amazon.com.mx/*",
+        "https://*.amazon.ca/*",
+        "https://*.amazon.co.uk/*",
+        "https://*.amazon.de/*",
+        "https://*.amazon.fr/*",
+        "https://*.amazon.it/*",
+        "https://*.amazon.es/*"
+      ]
     }
   ],
   "content_scripts": [
     {
-      "matches": ["https://ml-erp.woxq.cn/*"],
-      "js": ["meli-bridge.js"],
+      "matches": [
+        "https://ml-erp.woxq.cn/*"
+      ],
+      "js": [
+        "meli-bridge.js"
+      ],
       "run_at": "document_idle"
     },
     {
-      "matches": ["https://*.amazon.com/*", "https://*.amazon.com.mx/*", "https://*.amazon.ca/*", "https://*.amazon.co.uk/*", "https://*.amazon.de/*", "https://*.amazon.fr/*", "https://*.amazon.it/*", "https://*.amazon.es/*"],
-      "js": ["amazon-content.js"],
+      "matches": [
+        "https://*.amazon.com/*",
+        "https://*.amazon.com.mx/*",
+        "https://*.amazon.ca/*",
+        "https://*.amazon.co.uk/*",
+        "https://*.amazon.de/*",
+        "https://*.amazon.fr/*",
+        "https://*.amazon.it/*",
+        "https://*.amazon.es/*"
+      ],
+      "js": [
+        "amazon-content.js"
+      ],
       "run_at": "document_idle"
     },
     {
-      "matches": ["https://*.1688.com/*"],
-      "js": ["early-inject.js"],
+      "matches": [
+        "https://*.1688.com/*"
+      ],
+      "js": [
+        "early-inject.js"
+      ],
       "run_at": "document_start"
     },
     {
-      "matches": ["https://*.1688.com/*", "https://login.taobao.com/*", "https://*.ozon.ru/*", "https://seller.ozon.ru/*"],
-      "js": ["content.js"],
+      "matches": [
+        "https://*.1688.com/*",
+        "https://login.taobao.com/*",
+        "https://*.ozon.ru/*",
+        "https://seller.ozon.ru/*"
+      ],
+      "js": [
+        "content.js"
+      ],
       "run_at": "document_idle"
     }
   ]
 }
-

@@ -2552,6 +2552,7 @@ async function collectOzonDetail() {
     image: images[0] || "",
     images,
     mediaComplete: images.length > 0,
+    source_product_id: currentProductId,
     video: primaryVideo,
     skuVariants: variants.length ? variants : fallback.skuVariants,
     variantGroups,

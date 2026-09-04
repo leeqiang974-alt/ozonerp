@@ -15,7 +15,7 @@ from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse
 from urllib.parse import parse_qs, unquote, urlparse
 from pydantic import BaseModel, Field
 from fastapi.middleware.cors import CORSMiddleware
-from sqlalchemy import select, or_, func
+from sqlalchemy import select, or_, func, text
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
@@ -287,7 +287,13 @@ app.include_router(visual_image_router)
 
 @app.get("/health")
 def health() -> dict[str, str]:
-    return {"status": "ok"}
+    """Report readiness, including the database used by all ERP workflows."""
+    try:
+        with engine.connect() as connection:
+            connection.execute(text("SELECT 1"))
+    except Exception as exc:
+        raise HTTPException(status_code=503, detail="database unavailable") from exc
+    return {"status": "ok", "database": "ok"}
 
 
 @app.get("/api/v1/operation-logs")
@@ -4754,6 +4760,7 @@ def ensure_source_product_draft(shop_id: int, sp_id: int, db: Session = Depends(
                 "height_mm": float(v.height_mm) if v.height_mm is not None else None,
                 "stock": v.stock,
                 "image_url": v.image_url,
+                "image_urls": v.image_urls,
                 "variant_values": v.variant_values_json or "",
             })
         return {
@@ -4793,6 +4800,11 @@ def ensure_source_product_draft(shop_id: int, sp_id: int, db: Session = Depends(
     )
     for index, variant in enumerate(variants):
         raw = json.loads(variant.raw_json or "{}") if variant.raw_json else {}
+        raw_imgs = raw.get("image_urls") or raw.get("imageUrls") or []
+        if isinstance(raw_imgs, list):
+            raw_imgs = [str(u).strip() for u in raw_imgs if str(u).strip()]
+        else:
+            raw_imgs = []
         def dimension(name: str):
             value = raw.get(name)
             try:
@@ -4809,6 +4821,7 @@ def ensure_source_product_draft(shop_id: int, sp_id: int, db: Session = Depends(
             height_mm=dimension("heightMm"),
             stock=variant.stock,
             image_url=variant.image_url,
+            image_urls_json=json.dumps(raw_imgs, ensure_ascii=False) if raw_imgs else None,
             variant_values_json=variant.spec_name,
         ))
     db.add(draft)

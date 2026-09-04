@@ -14,6 +14,13 @@ from pathlib import Path
 from typing import Any
 from urllib.parse import urlparse
 
+import pytesseract
+from PIL import Image
+
+# 显式指定 Tesseract 可执行文件路径（PATH 中可能没有）
+_TESSERACT_CMD = r"C:\Program Files\Tesseract-OCR\tesseract.exe"
+_OCR_LANG = "chi_sim+eng+rus"
+
 
 _HAN_RE = re.compile(r"[\u4e00-\u9fff]")
 _MEASURE_RE = re.compile(
@@ -63,12 +70,15 @@ def exclusion_reasons_for_ocr_text(
     return reasons
 
 
-async def _recognize_url(url: str) -> str:
-    from winrt.windows.globalization import Language
-    from winrt.windows.graphics.imaging import BitmapDecoder
-    from winrt.windows.media.ocr import OcrEngine
-    from winrt.windows.storage import FileAccessMode, StorageFile
+def _run_tesseract(image_path: Path) -> str:
+    """Run Tesseract synchronously (chi_sim + eng + rus)."""
+    pytesseract.pytesseract.tesseract_cmd = _TESSERACT_CMD
+    with Image.open(image_path) as img:
+        text = pytesseract.image_to_string(img, lang=_OCR_LANG)
+    return (text or "").strip()
 
+
+async def _recognize_url(url: str) -> str:
     suffix = Path(urlparse(url).path).suffix.lower()
     if suffix not in {".jpg", ".jpeg", ".png", ".bmp", ".gif", ".tif", ".tiff"}:
         suffix = ".jpg"
@@ -77,25 +87,13 @@ async def _recognize_url(url: str) -> str:
         request = urllib.request.Request(url, headers={"User-Agent": "Mozilla/5.0"})
         with urllib.request.urlopen(request, timeout=20) as response:
             path.write_bytes(response.read())
-        storage_file = await StorageFile.get_file_from_path_async(str(path.resolve()))
-        stream = await storage_file.open_async(FileAccessMode.READ)
-        decoder = await BitmapDecoder.create_async(stream)
-        bitmap = await decoder.get_software_bitmap_async()
-        recognised: list[str] = []
-        # The former Chinese-only engine could not see English/Russian policy
-        # text such as “trans rights”. Missing language packs are tolerated so
-        # ordinary collection still works on a minimal Windows installation.
-        for language_tag in ("zh-Hans-CN", "zh-CN", "en-US", "en-GB", "ru-RU"):
-            engine = OcrEngine.try_create_from_language(Language(language_tag))
-            if engine is None:
-                continue
-            result = await engine.recognize_async(bitmap)
-            value = (result.text or "").strip()
-            if value and value not in recognised:
-                recognised.append(value)
-        if not recognised:
-            raise RuntimeError("Windows 本地 OCR 语言包不可用")
-        return "\n".join(recognised)
+        try:
+            text = await asyncio.to_thread(_run_tesseract, path)
+        except Exception as exc:
+            raise RuntimeError(f"Tesseract OCR 识别失败: {exc}") from exc
+        if not text:
+            raise RuntimeError("Tesseract OCR 未识别到文字")
+        return text
 
 
 def filter_chinese_measure_images(media: list[dict[str, Any]]) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:

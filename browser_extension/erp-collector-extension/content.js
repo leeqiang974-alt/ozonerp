@@ -3,7 +3,7 @@ let floatingState = { minimized: false, selectedSkuKeys: new Set(), allSelected:
 const SHOP_SCAN_STORAGE_KEY = "ozonErp1688ShopScan";
 // Must change with every collector behaviour change. popup.js uses this
 // handshake to force-replace stale content scripts already living in a tab.
-const COLLECTOR_VERSION = "0.7.16";
+const COLLECTOR_VERSION = "0.7.17";
 let extensionContextAvailable = true;
 
 function getExtensionRuntime() {
@@ -1883,7 +1883,8 @@ function parseRubPrice(text = "") {
 }
 
 function ozonProductIdFromUrl(url = "") {
-  return String(url || "").match(/-(\d+)\/?\??/)?.[1] || String(url || "").match(/\/product\/[^/]+\/(\d+)/)?.[1] || "";
+  return String(url || "").match(/\/product\/(?:[^/]+-)?(\d{5,})(?:\/|\?|$)/)?.[1]
+    || String(url || "").match(/\/product\/[^/]+\/(\d+)/)?.[1] || "";
 }
 
 function extractOzonCardFromLink(link, index) {

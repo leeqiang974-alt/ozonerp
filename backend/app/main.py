@@ -4738,6 +4738,31 @@ def ensure_source_product_draft(shop_id: int, sp_id: int, db: Session = Depends(
         ListingDraftRecord.source_product_id == sp_id,
     ))
     if existing is not None:
+        # Backfill per-SKU galleries from the source snapshot when the draft was
+        # created before galleries existed. Only fills empty image_urls and never
+        # overwrites an operator's existing selections.
+        if existing.variants:
+            src_variants = list(db.scalars(select(SourceVariantRecord).where(
+                SourceVariantRecord.source_product_id == sp_id)))
+            src_by_sku = {str(sv.source_sku).strip(): sv for sv in src_variants if sv.source_sku}
+            draft_prefix = f"{normalize_offer_id(existing.offer_id)}-"
+            for v in existing.variants:
+                if v.image_urls:
+                    continue
+                sku = normalize_offer_id(v.seller_sku).removeprefix(draft_prefix)
+                sv = src_by_sku.get(sku)
+                if sv is None:
+                    continue
+                try:
+                    raw = json.loads(sv.raw_json or "{}") if sv.raw_json else {}
+                except Exception:
+                    raw = {}
+                imgs = raw.get("image_urls") or raw.get("imageUrls") or []
+                if isinstance(imgs, list):
+                    imgs = [str(u).strip() for u in imgs if str(u).strip()]
+                if imgs:
+                    v.image_urls_json = json.dumps(imgs, ensure_ascii=False)
+            db.commit()
         try:
             match_resp = ai_match_category(
                 shop_id=shop_id,

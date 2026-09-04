@@ -85,7 +85,7 @@ async def _recognize_url(url: str) -> str:
         # The former Chinese-only engine could not see English/Russian policy
         # text such as “trans rights”. Missing language packs are tolerated so
         # ordinary collection still works on a minimal Windows installation.
-        for language_tag in ("zh-Hans-CN", "en-US", "ru-RU"):
+        for language_tag in ("zh-Hans-CN", "zh-CN", "en-US", "en-GB", "ru-RU"):
             engine = OcrEngine.try_create_from_language(Language(language_tag))
             if engine is None:
                 continue

@@ -2426,6 +2426,35 @@ function ozonStructuredTitle(payload) {
   } catch { return ""; }
 }
 
+function ozonVideoFromStates(states) {
+  // Ozon stores the product video(s) in the gallery widget (main `videos`
+  // array) and customer-review videos in webListPhotos mediaContent. Prefer
+  // the pdp video; fall back to a review video only if no pdp video exists.
+  const gallery = findOzonWidget(states, "webGallery");
+  const galleryVideos = Array.isArray(gallery?.videos) ? gallery.videos : [];
+  const pdpVideo = galleryVideos.find((item) => /\.(mp4|m3u8)([?#]|$)/i.test(String(item?.url || "")));
+  if (pdpVideo?.url) {
+    return {
+      url: pdpVideo.url,
+      coverUrl: pdpVideo.coverUrl || "",
+      title: pdpVideo.name || "",
+      videoId: String(pdpVideo?.trackingInfo?.video_view_start?.key || "").slice(0, 200),
+    };
+  }
+  const listPhotos = findOzonWidget(states, "webListPhotos");
+  const mediaContent = Array.isArray(listPhotos?.mediaContent) ? listPhotos.mediaContent : [];
+  const reviewVideo = mediaContent.find((item) => item?.type === "VIDEO" && /\.(mp4|m3u8)([?#]|$)/i.test(String(item?.videoUrl || "")));
+  if (reviewVideo?.videoUrl) {
+    return {
+      url: reviewVideo.videoUrl,
+      coverUrl: reviewVideo.previewUrl || "",
+      title: "",
+      videoId: String(reviewVideo.uuid || "").slice(0, 200),
+    };
+  }
+  return null;
+}
+
 async function collectOzonDetail() {
   const fallback = collectOzonDomFallback();
   const primaryPayload = await fetchOzonPageJson(location.href);
@@ -2450,6 +2479,24 @@ async function collectOzonDetail() {
   // apart by picture, so each SKU row carries its own image (one SKU per row).
   const aspectDimNames = primaryAspectOptions.map((item) => item.name);
   const currentProductId = ozonProductIdFromUrl(location.href);
+  const primaryVideo = ozonVideoFromStates(primaryStates);
+  // Every SKU owns its own gallery on Ozon (colour × quantity etc.). The
+  // primary composer response only carries the current SKU's image set plus a
+  // single thumbnail per variant, so fetch each remaining SKU's own composer
+  // payload to give every SKU row its real image set (one SKU per row).
+  const skuImagesBySku = new Map();
+  for (const row of primaryAspects) {
+    if (!row.skuId || row.skuId === currentProductId || !row.url || skuImagesBySku.has(row.skuId)) continue;
+    // eslint-disable-next-line no-await-in-loop
+    const payload = await fetchOzonPageJson(row.url);
+    if (!payload) continue;
+    const states = parseOzonWidgetStates(payload);
+    const gallery = findOzonWidget(states, "webGallery");
+    const images = ozonWidgetImages(gallery);
+    if (images.length) skuImagesBySku.set(row.skuId, images);
+    // eslint-disable-next-line no-await-in-loop
+    await new Promise((resolve) => setTimeout(resolve, 250));
+  }
   const variants = [];
   const variantGroups = [];
   const seenSku = new Set();
@@ -2472,13 +2519,14 @@ async function collectOzonDetail() {
     const styleValue = styleProp?.value || properties[0]?.value || "";
     const styleId = styleDimName ? `${styleDimName}:${styleValue}` : (styleValue ? `款式:${styleValue}` : row.skuId);
     const styleLabel = styleValue || styleDimName || "款式";
+    const ownImages = row.skuId === currentProductId ? primaryImages : (skuImagesBySku.get(row.skuId) || []);
     variants.push({
       skuId: row.skuId,
       spec,
-      image: row.image || primaryImages[0] || "",
+      image: ownImages[0] || row.image || primaryImages[0] || "",
       styleId,
       styleLabel,
-      imageUrls: primaryImages.length ? primaryImages : (row.image ? [row.image] : []),
+      imageUrls: ownImages.length ? ownImages : (row.image ? [row.image] : primaryImages),
       priceRub: row.price || "",
     });
     const group = variantGroups.find((item) => item.styleId === styleId);
@@ -2504,6 +2552,7 @@ async function collectOzonDetail() {
     image: images[0] || "",
     images,
     mediaComplete: images.length > 0,
+    video: primaryVideo,
     skuVariants: variants.length ? variants : fallback.skuVariants,
     variantGroups,
     detailImages: structuredDescription.detailImages,
@@ -2533,6 +2582,7 @@ if (window.__OZON_ERP_COLLECTOR_TEST__) {
     ozonStructuredAttributes,
     ozonStructuredDescription,
     ozonStructuredSeller,
+    ozonVideoFromStates,
   });
 }
 

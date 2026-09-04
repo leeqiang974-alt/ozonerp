@@ -122,11 +122,19 @@ def _keys() -> dict[str, str]:
 
 def llm_config() -> tuple[str, str, str]:
     keys = _keys()
+    agnes = (os.getenv("AGNES_API_KEY", "").strip() or keys.get("AGNES_API_KEY", "")).strip()
+    if agnes:
+        # Agnes route: OpenAI-compatible chat/completions, vision-capable.
+        return (agnes, "https://apihub.agnes-ai.com/v1", os.getenv("VISUAL_LLM_MODEL", "agnes-2.5-flash"))
     return (os.getenv("VISUAL_LLM_API_KEY", "").strip() or keys.get("LLM_API_KEY", ""), os.getenv("VISUAL_LLM_BASE_URL", "https://ai.cangyuansuanli.cn/v1").rstrip("/"), os.getenv("VISUAL_LLM_MODEL", "gpt-5.6-terra"))
 
 
 def image_config() -> tuple[str, str, str]:
     keys = _keys()
+    agnes = (os.getenv("AGNES_API_KEY", "").strip() or keys.get("AGNES_API_KEY", "")).strip()
+    if agnes:
+        # Agnes route: /v1/images/generations JSON endpoint.
+        return (agnes, "https://apihub.agnes-ai.com/v1", os.getenv("IMAGE_MODEL", "agnes-image-2.5-flash"))
     # Cangyuan's ¥0.015/image product is exposed as the exact ID gpt-image-2.
     # Normalize legacy shorthand/1K aliases so an old environment cannot route
     # ERP jobs to the cheaper 1K channel by accident.
@@ -308,7 +316,18 @@ def generate_one(
     request_meta = {"model": model, "size": "3:4", "n": 1, "reference_count": len(files), "slot": slot}
     if before_provider_request:
         before_provider_request(request_meta)
-    response = httpx.post(f"{base}/images/edits", headers={"Authorization":f"Bearer {key}"}, data={"model":model,"prompt":prompt,"n":"1","size":"3:4"}, files=files, timeout=240)
+    # Agnes exposes an OpenAI-style JSON endpoint (/v1/images/generations) with
+    # reference images passed as data URIs inside extra_body.image; Cangyuan
+    # uses the older multipart /images/edits. Route on the provider.
+    is_agnes = "agnes-ai.com" in base or str(model).startswith("agnes-")
+    if is_agnes:
+        payload: dict[str, Any] = {"model": model, "prompt": prompt, "size": "1K", "ratio": "3:4", "extra_body": {"response_format": "url"}}
+        if files:
+            _, (fname, content, mime) = files[0]
+            payload["extra_body"]["image"] = [f"data:{mime};base64,{base64.b64encode(content).decode('ascii')}"]
+        response = httpx.post(f"{base}/images/generations", headers={"Authorization": f"Bearer {key}"}, json=payload, timeout=240)
+    else:
+        response = httpx.post(f"{base}/images/edits", headers={"Authorization":f"Bearer {key}"}, data={"model":model,"prompt":prompt,"n":"1","size":"3:4"}, files=files, timeout=240)
     response_meta = {"http_status": response.status_code, "has_body": bool(response.content)}
     if after_provider_response:
         after_provider_response(response_meta)

@@ -1513,10 +1513,27 @@ function updateRichContentImages() {
   } catch (_) { /* malformed JSON – leave untouched */ }
 }
 
+function allSkuGalleryImages() {
+  const groups = [];
+  (state.variants || []).forEach((v, i) => {
+    const urls = (Array.isArray(v.image_urls) ? v.image_urls : []).map(u => String(u || "").trim()).filter(Boolean);
+    if (!urls.length) return;
+    const name = String(v.name_ru || v.seller_sku || `SKU ${i + 1}`).trim();
+    groups.push({ skuName: name, urls });
+  });
+  return groups;
+}
+
 function renderImages() {
   const g = $("#le-image-grid");
   const images = publicGalleryImages();
-  $("#le-image-count").textContent = images.length ? `(${images.length} 张公共产品图)` : "";
+  const skuGroups = allSkuGalleryImages();
+  const skuCount = skuGroups.reduce((n, e) => n + e.urls.length, 0);
+  $("#le-image-count").textContent = (images.length || skuCount)
+    ? `(${images.length} 张公共产品图${skuCount ? ` + ${skuCount} 张SKU图` : ""})` : "";
+  const skuHtml = skuGroups.length
+    ? `<div style="margin-top:14px;border-top:1px dashed #d0d0d0;padding-top:10px"><div style="font-size:12px;color:#888;margin-bottom:8px">SKU 图集（按变体归属，同时在变体表“产品图”列展示）</div>${skuGroups.map(grp => `<div style="margin-bottom:10px"><div style="font-size:12px;font-weight:600;color:#444;margin-bottom:4px">${esc(grp.skuName)} (${grp.urls.length})</div><div style="display:flex;flex-wrap:wrap;gap:6px">${grp.urls.map(u => `<img src="${esc(u)}" loading="lazy" referrerpolicy="no-referrer" alt="${esc(grp.skuName)}" style="width:72px;height:72px;object-fit:cover;border-radius:4px;border:1px solid #eee" />`).join("")}</div></div>`).join("")}</div>`
+    : "";
   g.innerHTML = images.map((url, i) => {
     const selected = state.selectedImages.has(i);
     return `<div class="le-image-card ${i === 0 ? "le-image-primary" : ""} ${selected ? "le-image-selected" : ""}" data-index="${i}" onclick="toggleImageSelect(${i})" style="cursor:pointer">
@@ -1526,7 +1543,7 @@ function renderImages() {
       ${selected ? '<div class="le-image-selected-badge">\u2713</div>' : ''}
       <div class="le-image-resolution">${i === 0 ? "主图" : ""}</div>
     </div>`;
-  }).join("");
+  }).join("") + skuHtml;
   const tBtn = $("#le-translate-images");
   if (tBtn) {
     const cnt = state.selectedImages.size;

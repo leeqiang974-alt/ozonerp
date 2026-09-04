@@ -125,7 +125,9 @@ def llm_config() -> tuple[str, str, str]:
     agnes = (os.getenv("AGNES_API_KEY", "").strip() or keys.get("AGNES_API_KEY", "")).strip()
     if agnes:
         # Agnes route: OpenAI-compatible chat/completions, vision-capable.
-        return (agnes, "https://apihub.agnes-ai.com/v1", os.getenv("VISUAL_LLM_MODEL", "agnes-2.5-flash"))
+        # Use a dedicated model var so legacy Cangyuan VISUAL_LLM_MODEL env
+        # cannot leak the wrong model name into the Agnes route.
+        return (agnes, "https://apihub.agnes-ai.com/v1", os.getenv("AGNES_VISUAL_LLM_MODEL", "agnes-2.5-flash"))
     return (os.getenv("VISUAL_LLM_API_KEY", "").strip() or keys.get("LLM_API_KEY", ""), os.getenv("VISUAL_LLM_BASE_URL", "https://ai.cangyuansuanli.cn/v1").rstrip("/"), os.getenv("VISUAL_LLM_MODEL", "gpt-5.6-terra"))
 
 
@@ -134,7 +136,9 @@ def image_config() -> tuple[str, str, str]:
     agnes = (os.getenv("AGNES_API_KEY", "").strip() or keys.get("AGNES_API_KEY", "")).strip()
     if agnes:
         # Agnes route: /v1/images/generations JSON endpoint.
-        return (agnes, "https://apihub.agnes-ai.com/v1", os.getenv("IMAGE_MODEL", "agnes-image-2.5-flash"))
+        # Dedicated model var so legacy Cangyuan IMAGE_MODEL env cannot leak
+        # the wrong model name into the Agnes route.
+        return (agnes, "https://apihub.agnes-ai.com/v1", os.getenv("AGNES_IMAGE_MODEL", "agnes-image-2.5-flash"))
     # Cangyuan's ¥0.015/image product is exposed as the exact ID gpt-image-2.
     # Normalize legacy shorthand/1K aliases so an old environment cannot route
     # ERP jobs to the cheaper 1K channel by accident.

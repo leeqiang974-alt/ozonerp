@@ -274,6 +274,19 @@ def _is_quota_error(message: object) -> bool:
     return any(marker in lowered or marker in text for marker in markers)
 
 
+def _systemic_batch_pause_reason(message: object) -> str | None:
+    """Classify configuration/provider outages that must pause, not burn rows."""
+    text = str(message or "")
+    lowered = text.lower()
+    if ("llm" in lowered or "deepseek" in lowered or "volcengine" in lowered) and any(marker in lowered for marker in (
+        "insufficient balance", "monthly usage quota", "exceeded the monthly", "http 402", "返回 402",
+    )):
+        return "LLM 服务余额或月度额度不足，批量任务已暂停；恢复服务后可继续原队列"
+    if any(marker in text for marker in ("店铺授权无法解密", "本地加密密钥")) or "invalidtoken" in lowered:
+        return "店铺授权解密配置异常，批量任务已暂停；修复加密密钥后可继续原队列"
+    return None
+
+
 def _ozon_quota_wait_is_active(updated_at: datetime | None) -> bool:
     """Ozon's daily-create counter resets at 03:00 Moscow time.
 
@@ -1324,10 +1337,6 @@ def _run_bulk_listing_pilot(batch_id: int, max_items: int, submit_after_prepare:
                 return
         item_query = select(BulkListingBatchItemRecord).where(
             BulkListingBatchItemRecord.batch_id == batch_id,
-            BulkListingBatchItemRecord.status.in_(eligible_statuses),
-            # A row with an Ozon task already represents a real external
-            # submission. It must be reconciled by task feedback, never sent
-            # again as part of a resume batch.
             BulkListingBatchItemRecord.ozon_task_id.is_(None),
         )
         # Automatic continuation must skip full shops before taking the
@@ -1337,7 +1346,30 @@ def _run_bulk_listing_pilot(batch_id: int, max_items: int, submit_after_prepare:
             item_query = item_query.where(BulkListingBatchItemRecord.assigned_shop_id.in_(eligible_shop_ids))
         if item_ids:
             item_query = item_query.where(BulkListingBatchItemRecord.id.in_(item_ids))
-        items = list(db.scalars(item_query.order_by(BulkListingBatchItemRecord.id).limit(max_items)))
+        # Queue-first selection.  Historical failed rows (older, smaller id)
+        # must not starve un-attempted queued/prepared candidates: the old
+        # single ``order_by(id)`` let every failed row claim the whole window
+        # and cycle to its retry cap before a single queued item was processed.
+        # Failed rows are only back-filled after the primary window is full,
+        # and only while attempts < 3, so rows that already hit their retry
+        # cap stop cycling forever.
+        if item_ids:
+            items = list(db.scalars(item_query.order_by(BulkListingBatchItemRecord.id).limit(max_items)))
+        elif submit_after_prepare:
+            primary = list(db.scalars(item_query.where(
+                BulkListingBatchItemRecord.status.in_(["queued", "prepared"]),
+            ).order_by(BulkListingBatchItemRecord.id).limit(max_items)))
+            if len(primary) < max_items:
+                backfill = list(db.scalars(item_query.where(
+                    BulkListingBatchItemRecord.status == "failed",
+                    BulkListingBatchItemRecord.attempts < 3,
+                ).order_by(BulkListingBatchItemRecord.id).limit(max_items - len(primary))))
+                primary.extend(backfill)
+            items = primary
+        else:
+            items = list(db.scalars(item_query.where(
+                BulkListingBatchItemRecord.status.in_(["queued"]),
+            ).order_by(BulkListingBatchItemRecord.id).limit(max_items)))
         if batch.status == "paused_quality_audit":
             # A quality pause is authoritative.  Do not turn it into a
             # resumable state merely because this worker reached its epilogue.
@@ -1551,8 +1583,13 @@ def _run_bulk_listing_pilot(batch_id: int, max_items: int, submit_after_prepare:
                 issues=[*issues,*({"field":"draft","message":message} for message in _bulk_draft_integrity_issues(db,current))]
                 ocr_failures = [row for row in ocr_evidence if row.get("error")]
                 if ocr_failures:
-                    issues = [*issues, {"code": "local_ocr_failed",
-                        "message": f"本地OCR有 {len(ocr_failures)} 张识别失败，图片已保留并转人工复核"}]
+                    # OCR engine failure (e.g. a missing Windows OCR language
+                    # pack) is NOT evidence of a violation: the images are kept
+                    # and submitted.  Only a real text match is a blocker.  An
+                    # unavailable OCR stack therefore surfaces as a review hint
+                    # instead of stalling the whole batch in needs_review.
+                    issues = [*issues, {"code": "ocr_hint", "field": "media",
+                        "message": f"本地OCR有 {len(ocr_failures)} 张识别失败，图片已保留（仅提示人工复核，不阻断提交）"}]
                 if ocr_summary:
                     db.add(AuditEventRecord(
                         shop_id=current.assigned_shop_id, actor_id="system", action="bulk_listing_local_ocr",
@@ -1617,6 +1654,7 @@ def _run_bulk_listing_pilot(batch_id: int, max_items: int, submit_after_prepare:
                     field = issue.get("field", "") if isinstance(issue, dict) else ""
                     is_warning = (
                         code == "preflight_fixed"
+                        or code == "ocr_hint"
                         or (field == "media" and "recommended" in msg.lower())
                     )
                     if is_warning:
@@ -1678,6 +1716,15 @@ def _run_bulk_listing_pilot(batch_id: int, max_items: int, submit_after_prepare:
                 if failed:
                     err_msg = str(exc)
                     err_lower = err_msg.lower()
+                    pause_reason = _systemic_batch_pause_reason(err_msg)
+                    if pause_reason:
+                        failed.status = "queued"
+                        failed.error_message = pause_reason
+                        live_batch = db.get(BulkListingBatchRecord, batch_id)
+                        if live_batch is not None:
+                            live_batch.status = "paused"
+                        db.commit()
+                        break
                     # Daily creation quota — wait until next day, do NOT keep retrying
                     is_quota = _is_quota_error(err_msg)
                     # Transient errors — safe to retry automatically

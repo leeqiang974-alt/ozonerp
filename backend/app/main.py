@@ -4689,6 +4689,19 @@ def refresh_listing_draft_source_materials(shop_id: int, draft_id: int, db: Sess
         if matched_image.startswith(("http://", "https://")) and current_image != matched_image:
             variant.image_url = matched_image
             updated_sku_images += 1
+        # Backfill the per-SKU gallery array when the source captured one and
+        # the draft variant still lacks it. Never overwrite an operator's picks.
+        if matched is not None and not variant.image_urls:
+            try:
+                mraw = json.loads(matched.raw_json or "{}") if matched.raw_json else {}
+            except Exception:
+                mraw = {}
+            src_imgs = mraw.get("image_urls") or mraw.get("imageUrls") or []
+            if isinstance(src_imgs, list):
+                src_imgs = [str(u).strip() for u in src_imgs if str(u).strip()]
+            if src_imgs:
+                variant.image_urls_json = json.dumps(src_imgs, ensure_ascii=False)
+                updated_sku_images += 1
     video = next((row.url for row in media_rows if row.media_type == "video" and row.url), None)
     video_filled = False
     if video and not draft.video_url:

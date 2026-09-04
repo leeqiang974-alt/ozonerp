@@ -192,6 +192,19 @@ def build_import_payload(db: Session, shop_id: int, source_product_id: int) -> d
             values.append({"dictionary_value_id":ids[index] if index<len(ids) else 0,"value":text})
         attributes_list.append({"complex_id":0,"id":str(attr["attribute_id"]),"values":values})
 
+    # Variant-dimension attributes (Ozon is_aspect) must carry each SKU's own
+    # value on submission, not the single product-level value copied into every
+    # item.  Load the aspect attribute map (id -> name) once from the shared
+    # category cache; colour (10096/10097) keeps its dedicated path below.
+    aspect_attrs: dict[str, str] = {}
+    try:
+        from ..listing_metadata_service import get_category_attributes
+        for _ca in get_category_attributes(db, shop_id, str(pipeline.matched_category_id or ""), str(pipeline.matched_type_id or "")):
+            if _ca.get("is_aspect") and str(_ca.get("id") or "") not in {"10096", "10097"}:
+                aspect_attrs[str(_ca["id"])] = str(_ca.get("name") or "")
+    except Exception:
+        aspect_attrs = {}
+
     # Filter valid image URLs. Variant-specific images are kept separately
     # and must never inflate the shared gallery count.
     pipeline_variants = variant_data.get("variants", [])
@@ -248,12 +261,16 @@ def build_import_payload(db: Session, shop_id: int, source_product_id: int) -> d
     for variant_index,var in enumerate(variants):
         draft_var=draft_variants.get(normalize_offer_id(var["seller_sku"])) or draft_variants.get(var["seller_sku"])
         color=_variant_color(db,pipeline,source,var,variant_index)
+        saved_vv: dict[str, Any] = {}
         if draft_var and draft_var.variant_values_json:
-            saved=json.loads(draft_var.variant_values_json)
-            saved_ids=saved.get("__ids__") or {}
-            saved_color_ids=saved_ids.get("商品颜色") or []
-            if saved.get("商品颜色") and saved_color_ids:
-                color={"value_id":str(saved_color_ids[0]),"value_text":str(saved["商品颜色"]),"name_ru":str(saved.get("颜色名称") or draft_var.name_ru or saved["商品颜色"])}
+            try:
+                saved_vv=json.loads(draft_var.variant_values_json)
+            except (json.JSONDecodeError, TypeError):
+                saved_vv={}
+        saved_ids=saved_vv.get("__ids__") if isinstance(saved_vv.get("__ids__"),dict) else {}
+        saved_color_ids=saved_ids.get("商品颜色") if isinstance(saved_ids.get("商品颜色"),list) else []
+        if saved_vv.get("商品颜色") and saved_color_ids:
+            color={"value_id":str(saved_color_ids[0]),"value_text":str(saved_vv["商品颜色"]),"name_ru":str(saved_vv.get("颜色名称") or draft_var.name_ru or saved_vv["商品颜色"])}
         var_pricing = next(
             (p for p in pricing.get("variants", []) if p.get("source_sku") == var.get("source_sku")),
             {},
@@ -263,7 +280,27 @@ def build_import_payload(db: Session, shop_id: int, source_product_id: int) -> d
         price_str = _format_price(price_val)
         old_price_str = _format_price(old_price_val) if old_price_val else price_str
 
-        item_attributes=[row for row in attributes_list if str(row.get("id")) not in {"10096","10097"}]
+        # Every is_aspect dimension (besides colour) uses this SKU's own saved
+        # value, so SKUs differing by e.g. pack quantity keep their own values
+        # on Ozon.  Missing per-SKU values fall back to the product-level value.
+        item_attributes=[row for row in attributes_list if str(row.get("id")) not in aspect_attrs and str(row.get("id")) not in {"10096","10097"}]
+        for aspect_id, aspect_name in aspect_attrs.items():
+            per_sku = saved_vv.get(aspect_name)
+            if per_sku is None or str(per_sku).strip() == "":
+                common = next((r for r in attributes_list if str(r.get("id")) == aspect_id), None)
+                if common:
+                    item_attributes.append(common)
+                continue
+            ids = saved_ids.get(aspect_name)
+            if not isinstance(ids, list):
+                ids = []
+            texts = [part.strip() for part in str(per_sku).split("|") if part.strip()] if "|" in str(per_sku) else [str(per_sku).strip()]
+            values=[]
+            for index,text in enumerate(texts):
+                vid=str(ids[index]) if index < len(ids) and str(ids[index]).strip() else "0"
+                values.append({"dictionary_value_id": int(vid) if str(vid).isdigit() else 0, "value": text})
+            if values:
+                item_attributes.append({"complex_id":0,"id":aspect_id,"values":values})
         item_attributes.extend([
             {"complex_id":0,"id":"10096","values":[{"dictionary_value_id":color["value_id"],"value":color["value_text"]}]},
             {"complex_id":0,"id":"10097","values":[{"dictionary_value_id":0,"value":color["name_ru"]}]},

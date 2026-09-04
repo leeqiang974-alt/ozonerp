@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "Ozon ERP 统一采集助手",
-  "version": "0.7.16",
+  "version": "0.7.17",
   "description": "统一采集 1688、Ozon 与 Amazon 商品，并发送到对应 ERP。",
   "action": {
     "default_title": "Ozon ERP 统一采集助手",

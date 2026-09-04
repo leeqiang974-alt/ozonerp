@@ -42,8 +42,17 @@ _LOGISTICS_OR_RETURNS = re.compile(
     re.IGNORECASE,
 )
 _COUNTERFEIT = re.compile(
-    r"\b(?:реплик\w*|копи\w*|подделк\w*|контрафакт\w*|1\s*[:/]\s*1|"
+    r"\b(?:реплик\w*|копи\w*|подделк\w*|контрафакт\w*|"
     r"оригинал\w*|original|aaa\s*(?:качест\w*|quality)|не\s*оригинал\w*)\b",
+    re.IGNORECASE,
+)
+# A bare "1:1" is usually a size/ratio description (dimension charts) and must
+# not block a card.  Only a 1:1 immediately tied to an explicit counterfeiting
+# term stays blocked, so legit dimension text passes while "1:1 复刻/原单" style
+# claims remain gated.
+_COUNTERFEIT_RATIO = re.compile(
+    r"1\s*[:/]\s*1\s*(?:复刻|原单|高仿|仿制|仿品|仿|"
+    r"реплик\w*|копи\w*|подделк\w*|fake|replica)\w*",
     re.IGNORECASE,
 )
 _RANDOM_STYLE = re.compile(
@@ -92,7 +101,8 @@ def _check_text(text: str, field: str, *, title: bool = False) -> list[ContentIs
         ("social_or_marketplace_reference", _SOCIAL_OR_PLATFORM, "商品卡不得提及社交平台、其他商城或 Ozon 平台本身。"),
         ("promotion_or_competition", _PROMOTION, "商品卡不得包含折扣、促销、抽奖、返现等广告营销信息。"),
         ("logistics_or_returns", _LOGISTICS_OR_RETURNS, "商品卡不得包含配送、时效、退货或换货条件。"),
-        ("counterfeit_or_originality_claim", _COUNTERFEIT, "商品卡不得出现仿制、1:1、原版/Original、AAA 等假货或真实性宣称。"),
+        ("counterfeit_or_originality_claim", _COUNTERFEIT, "商品卡不得出现仿制、原版/Original、AAA 等假货或真实性宣称。"),
+        ("counterfeit_ratio_claim", _COUNTERFEIT_RATIO, "1:1 若与复刻、原单、高仿等仿牌词连用，视为假货或真实性宣称，禁止自动提交。"),
         ("random_style_listing", _RANDOM_STYLE, "商品卡不得销售随机款式/随机颜色或声明无法选择变体。"),
         ("adult_tobacco_or_profanity", _ADULT_TOBACCO, "成人、烟酒烟草或脏话内容需按 Ozon 18+ / 禁售规则人工复核，当前禁止自动提交。"),
     )

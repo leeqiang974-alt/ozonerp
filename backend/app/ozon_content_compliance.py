@@ -22,7 +22,7 @@ class ContentIssue:
 
 _URL_OR_CONTACT = re.compile(
     r"(?:https?://|www\.|\b(?:vk\.com|t\.me|wa\.me)\b|"
-    r"(?:\+?\d[\d\s().-]{8,}\d)|\b8[\s-]?800[\s-]?\d{3}[\s-]?\d{2}[\s-]?\d{2}\b)",
+    r"\+\d[\d\s().-]{7,}\d|\b8[\s-]?800[\s-]?\d{3}[\s-]?\d{2}[\s-]?\d{2}\b)",
     re.IGNORECASE,
 )
 _SOCIAL_OR_PLATFORM = re.compile(
@@ -85,7 +85,7 @@ def _rich_text(value: str) -> Iterable[str]:
         elif isinstance(item, list):
             for child in item:
                 yield from walk(child, key)
-        elif isinstance(item, str) and key not in {"url", "src", "image", "image_url"}:
+        elif isinstance(item, str) and not any(k in key for k in ("url", "src", "image")):
             yield item
 
     yield from walk(node)

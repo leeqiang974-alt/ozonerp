@@ -64,7 +64,7 @@ def translate_capture(payload: dict[str, Any], shop_id: int, *, source_platform:
         # Ozon: /product/name-123456789/ or /product/123456789/
         match = (
             re.search(r"/offer/(\d+)", url)
-            or re.search(r"/product/(?:[^/]+-)?(\d{5,})/?$", url)
+            or re.search(r"/product/(?:[^/]+-)?(\d{5,})(?:/|\?|$)", url)
             or re.search(r"/product/(\d+)/", url)
             or re.search(r"/product/[^/]+/(\d+)", url)
         )

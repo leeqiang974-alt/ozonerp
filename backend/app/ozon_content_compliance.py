@@ -43,7 +43,7 @@ _LOGISTICS_OR_RETURNS = re.compile(
 )
 _COUNTERFEIT = re.compile(
     r"\b(?:реплик\w*|копи\w*|подделк\w*|контрафакт\w*|"
-    r"оригинал\w*|original|aaa\s*(?:качест\w*|quality)|не\s*оригинал\w*)\b",
+    r"оригинал(?!ьн)\w*|original|aaa\s*(?:качест\w*|quality)|не\s*оригинал(?!ьн)\w*)\b",
     re.IGNORECASE,
 )
 # A bare "1:1" is usually a size/ratio description (dimension charts) and must
@@ -62,7 +62,7 @@ _RANDOM_STYLE = re.compile(
 )
 _ADULT_TOBACCO = re.compile(
     r"\b(?:сигарет\w*|табак\w*|вейп\w*|кальян\w*|алкогол\w*|"
-    r"эротик\w*|порн\w*|секс\w*|мат\w*)\b",
+    r"эротик\w*|порн\w*|секс\w*)\b",
     re.IGNORECASE,
 )
 _EMOJI = re.compile("[\U0001F000-\U0001FAFF\U00002600-\U000027BF]")

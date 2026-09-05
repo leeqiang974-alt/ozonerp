@@ -80,7 +80,6 @@ def get_bucket() -> oss2.Bucket:
         f"https://{cfg['endpoint']}",
         cfg["bucket"],
         connect_timeout=15,
-        timeout=60,
     )
 
 

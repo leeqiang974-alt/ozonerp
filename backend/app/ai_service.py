@@ -15,7 +15,7 @@ from typing import Any
 import httpx
 from dotenv import load_dotenv
 
-from .llm_provider import get_listing_llm_config, get_listing_llm_provider
+from .llm_provider import get_listing_llm_failover_configs, get_listing_llm_config, get_listing_llm_provider
 
 load_dotenv(os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(__file__))), ".env"), override=True)
 
@@ -25,34 +25,54 @@ def _config() -> tuple[str, str, str]:
     return get_listing_llm_config()
 
 
-def _chat(messages: list[dict[str, str]], *, temperature: float = 0.3, max_tokens: int = 4096) -> str:
-    """Call the DeepSeek chat-completions endpoint and return the text reply."""
-    api_key, base_url, model = _config()
-    if not api_key:
+def _chat(messages: list[dict[str, str]], *, temperature: float = 0.3, max_tokens: int = 4096) -> tuple[str, str, str]:
+    """Call the chat-completions endpoint and return ``(text, provider, model)``.
+
+    Providers are tried in failover order (agnes -> volcengine -> deepseek).
+    A 4xx/5xx, timeout or empty reply on one provider moves to the next, so a
+    single account going 402/500 never stalls the whole batch.
+    """
+    configs = get_listing_llm_failover_configs()
+    if not configs:
         raise RuntimeError("LLM_API_KEY 未配置，无法使用 AI 功能")
-    url = f"{base_url.rstrip('/')}/chat/completions"
-    headers = {
-        "Authorization": f"Bearer {api_key}",
-        "Content-Type": "application/json",
-    }
-    payload = {"model": model, "messages": messages, "temperature": temperature, "max_tokens": max_tokens}
-    if get_listing_llm_provider() == "volcengine":
-        payload["thinking"] = {"type": "disabled"}
-    resp = httpx.post(url, headers=headers, json=payload, timeout=60.0)
-    if resp.status_code >= 400:
-        # If thinking param is rejected, retry without it
-        if resp.status_code == 400 and "thinking" in resp.text.lower():
-            payload.pop("thinking", None)
+    last_err: Exception | None = None
+    for cfg in configs:
+        api_key, base_url, model = cfg["api_key"], cfg["base_url"], cfg["model"]
+        if not api_key or not base_url:
+            continue
+        url = f"{base_url.rstrip('/')}/chat/completions"
+        headers = {
+            "Authorization": f"Bearer {api_key}",
+            "Content-Type": "application/json",
+        }
+        payload = {"model": model, "messages": messages, "temperature": temperature, "max_tokens": max_tokens}
+        if cfg["provider"] == "volcengine":
+            payload["thinking"] = {"type": "disabled"}
+        try:
             resp = httpx.post(url, headers=headers, json=payload, timeout=60.0)
-        if resp.status_code >= 400:
-            raise RuntimeError(f"LLM API 返回 {resp.status_code}: {resp.text[:500]}")
-    body = resp.json()
-    msg = body["choices"][0]["message"]
-    text = msg.get("content") or ""
-    if not text.strip():
-        # Reasoning models (deepseek-v4, glm-5.2) put output in reasoning_content
-        text = msg.get("reasoning_content") or ""
-    return text.strip()
+            if resp.status_code >= 400:
+                # If thinking param is rejected, retry without it
+                if resp.status_code == 400 and "thinking" in resp.text.lower():
+                    payload.pop("thinking", None)
+                    resp = httpx.post(url, headers=headers, json=payload, timeout=60.0)
+                if resp.status_code >= 400:
+                    last_err = RuntimeError(f"LLM API 返回 {resp.status_code}: {resp.text[:500]}")
+                    continue
+            body = resp.json()
+            msg = body["choices"][0]["message"]
+            text = msg.get("content") or ""
+            if not text.strip():
+                # Reasoning models (deepseek-v4, glm-5.2) put output in reasoning_content
+                text = msg.get("reasoning_content") or ""
+            if text.strip():
+                return text.strip(), cfg["provider"], model
+            last_err = RuntimeError("LLM 返回空内容")
+        except (httpx.HTTPError, ValueError, KeyError, IndexError) as exc:
+            last_err = exc
+            continue
+    if last_err is None:
+        last_err = RuntimeError("所有 LLM Provider 均未返回结果")
+    raise last_err
 
 
 _RUSSIAN_HASHTAG_RE = re.compile(r"^#[А-Яа-яЁё]+(?:_[А-Яа-яЁё]+)?$")
@@ -127,7 +147,7 @@ Rules (STRICT - Ozon will reject non-compliant tags):
     # valid tags turned an entire batch row into a hard failure.
     best: list[str] = []
     for _attempt in range(2):
-        value = _chat([{"role": "user", "content": prompt}], temperature=0.7, max_tokens=4096)
+        value, _p, _m = _chat([{"role": "user", "content": prompt}], temperature=0.7, max_tokens=4096)
         tags = normalize_hashtags(value, min_count=1)
         if len(tags) > len(best):
             best = tags
@@ -177,9 +197,8 @@ def translate_text(
     context: str = "",
 ) -> dict[str, Any]:
     """Translate a single text snippet.  Returns {translated, lang, method}."""
-    api_key, _, model = _config()
-    provider = get_listing_llm_provider()
-    if not api_key:
+    _api_key, _, _model = _config()
+    if not _api_key and not get_listing_llm_failover_configs():
         raise RuntimeError("LLM_API_KEY 未配置")
     lang_name = {"ru": "俄语", "en": "英语", "zh": "中文"}.get(target_lang, target_lang)
     ctx = f"\n上下文信息：{context}" if context else ""
@@ -205,7 +224,7 @@ def translate_text(
         {"role": "system", "content": sys_prompt},
         {"role": "user", "content": f"{text}{ctx}"},
     ]
-    result = _chat(messages, temperature=0.2, max_tokens=2048)
+    result, provider, model = _chat(messages, temperature=0.2, max_tokens=2048)
     return {"translated": _strip_ozon_assortment_claims(result), "lang": target_lang, "method": provider, "model": model}
 
 
@@ -222,9 +241,8 @@ def suggest_attribute_value(
     If dictionary_options is provided, the AI will pick the best matching
     option from the list and return its id + value.
     """
-    api_key, _, model = _config()
-    provider = get_listing_llm_provider()
-    if not api_key:
+    _api_key, _, _model = _config()
+    if not _api_key and not get_listing_llm_failover_configs():
         raise RuntimeError("LLM_API_KEY 未配置")
 
     dict_hint = ""
@@ -252,7 +270,7 @@ def suggest_attribute_value(
             ),
         },
     ]
-    raw = _chat(messages, temperature=0.3, max_tokens=2048)
+    raw, provider, model = _chat(messages, temperature=0.3, max_tokens=2048)
     try:
         result = _extract_json(raw)
     except (json.JSONDecodeError, ValueError):
@@ -270,9 +288,8 @@ def generate_description(
     target_lang: str = "ru",
 ) -> dict[str, Any]:
     """Generate a structured product description for Ozon."""
-    api_key, _, model = _config()
-    provider = get_listing_llm_provider()
-    if not api_key:
+    _api_key, _, _model = _config()
+    if not _api_key and not get_listing_llm_failover_configs():
         raise RuntimeError("LLM_API_KEY 未配置")
 
     lang_name = {"ru": "俄语", "en": "英语", "zh": "中文"}.get(target_lang, target_lang)
@@ -306,7 +323,7 @@ def generate_description(
             ),
         },
     ]
-    result = _chat(messages, temperature=0.4, max_tokens=4096)
+    result, provider, model = _chat(messages, temperature=0.4, max_tokens=4096)
     return {"description": _strip_ozon_assortment_claims(result)[:3000], "lang": target_lang, "method": provider, "model": model}
 
 
@@ -427,8 +444,8 @@ def match_category_with_ai(
     candidates: list of {"category_id", "type_id", "title", "title_zh", "score"}
     Returns: {"best": {...}, "reason": str, "all_ranked": [...]}
     """
-    api_key, _, model = _config()
-    if not api_key:
+    _api_key, _, model = _config()
+    if not _api_key and not get_listing_llm_failover_configs():
         raise RuntimeError("LLM_API_KEY 未配置")
     if not candidates:
         return {"best": None, "reason": "无候选类目", "all_ranked": []}
@@ -464,7 +481,7 @@ def match_category_with_ai(
             ),
         },
     ]
-    raw = _chat(messages, temperature=0.1, max_tokens=4096)
+    raw, _p, _m = _chat(messages, temperature=0.1, max_tokens=4096)
     try:
         result = _extract_json(raw)
         best_idx = int(result.get("best_index", 0)) - 1
@@ -480,6 +497,6 @@ def match_category_with_ai(
     return {
         "best": best,
         "reason": reason,
-        "model": model,
+        "model": _m,
     }
 

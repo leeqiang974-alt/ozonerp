@@ -68,10 +68,20 @@ def read_oss_config() -> dict:
 
 
 def get_bucket() -> oss2.Bucket:
-    """Create and return an authenticated oss2.Bucket ready for operations."""
+    """Create and return an authenticated oss2.Bucket ready for operations.
+
+    Explicit timeouts prevent a slow OSS endpoint from hanging the batch
+    worker indefinitely.
+    """
     cfg = read_oss_config()
     auth = oss2.Auth(cfg["access_key_id"], cfg["access_key_secret"])
-    return oss2.Bucket(auth, f"https://{cfg['endpoint']}", cfg["bucket"])
+    return oss2.Bucket(
+        auth,
+        f"https://{cfg['endpoint']}",
+        cfg["bucket"],
+        connect_timeout=15,
+        timeout=60,
+    )
 
 
 def _public_url(bucket: oss2.Bucket, object_key: str) -> str:

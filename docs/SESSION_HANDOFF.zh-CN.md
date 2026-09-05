@@ -7,7 +7,8 @@
 - 启动规则：`main.py` 仅在 SQLite 使用 `create_all()`；PostgreSQL 只能由 Alembic 迁移。`deploy/start_backend.sh` 在 Uvicorn 前执行 `alembic upgrade head`，Docker compose 与远程 bootstrap 使用同一入口。进程环境变量优先于 `.env`，避免服务器注入的 `DATABASE_URL` 被本机模板覆盖。
 - 安全：自动库存写入必须同时设置 `OZON_ENABLE_BACKGROUND_STOCK_MONITOR=1` 和 `OZON_ENABLE_BACKGROUND_WRITES=1`；自动回执修正/重提同样受写入总开关控制。默认安全启动不外发。
 - 暂停保护：OCR 处理只可修正本地图片证据，不能把已暂停批次恢复为 `running` 或隐式启动 worker；单条/批量重试和普通 start 在暂停时返回 409。worker 在领任务及 Ozon 提交前都检查持久化暂停状态，暂停接口与最终提交共用批次锁，避免暂停竞态多发一条。
-- 验证：全新 SQLite、旧 `d4a8…` 数据库、历史 `create_all` 完整数据库均升到 `e5f6…`；重复 `upgrade head` 和 `alembic check` 通过。`pytest` 全套为 `216 passed, 3 subtests passed`；暂停/回执相关定向测试为 `6 passed`；`compileall`、两个前端 `node --check` 通过。尚未连接真实 PostgreSQL、未启动批量发布或库存补录。
+- 验证：全新 SQLite、旧 `d4a8…` 数据库、历史 `create_all` 完整数据库均升到 `e5f6…`；重复 `upgrade head` 和 `alembic check` 通过。`pytest` 全套为 `217 passed, 3 subtests passed`；暂停/回执相关定向测试为 `6 passed`；`compileall`、两个前端 `node --check` 通过。尚未连接真实 PostgreSQL、未启动批量发布或库存补录。
+- 笔记本密钥目录：新增 `backend/app/secret_paths.py`。若没有显式 `ERP_API_DIR`、`DEEPSEEK_API_KEY_FILE`、`CANGYUAN_API_KEY_FILE` 或 `ALIYUN_OSS_CREDENTIAL_FILE`，Windows 会优先沿用 `D:\Desktop\api`，不存在时自动读取当前用户 `Desktop\api`（本机为 `C:\Users\Administrator\Desktop\api`）。只读取文件路径，绝不复制、打印或提交密钥内容。
 
 ## 2026-09-01：批量刊登增加可持久化暂停/继续
 
@@ -1100,3 +1101,28 @@
 - **根因**：旧逻辑错误地把“是否允许重新处理”绑定到“是否允许勾选”，因此已成功行变灰；表头勾选又只选择可重试行，违背了独立行选择与全局选择的基本表格行为。明细还没有更新时间排序、店铺多选或独立实时刷新，且每次刷新会把运营人员拉回表格顶部。
 - **修正**：所有行勾选框始终可用，表头与工具栏的“全选当前筛选”覆盖全部可见行。批量重处理接口只把失败/需处理/等待额度等行重新排队，已成功或等待 Ozon 回执的选中行不改变并返回 `skipped_count`，因此全选后操作不再整体报错或误重提。默认 `updated_at` 倒序，提供正序切换；店铺表头为可勾选多选下拉。批次运行/回执中每 5 秒刷新明细，保留滚动位置、筛选、排序及已选集合。
 - **验证**：真实浏览器打开 #1“徽章”任务（3076 行），“已成功”筛选时 539 个行勾选框均未禁用；单行可独立勾选，表头全选实测选中全部 539 行，按钮显示“批量重新处理所选（539）”。时间、店铺筛选与自动刷新验证保持通过；`node --check frontend/app.js`、前端 HTTP 200、后端 `/health=ok` 通过，浏览器无 ERP console error。
+# 2026-09-01 Ozon 市场分析采集
+
+- 扩展版本升至 0.7.2；Seller “Ozon 上的商品”页按钮会显示“采集当前分析表”。
+- 新接口：`POST /api/ozon/market-snapshots`；新表：`ozon_market_snapshots`；迁移：`d913a86e51f0`。
+- 已通过 `node --check`、单一 Alembic head、`test_ozon_market_snapshot.py` 与完整 `test_pipeline.py`（28 tests）。
+- 尚需在用户已登录且加载新版扩展的 Seller 页面完成真实 DOM/点击/入库回读；未做此验证前不得宣称页面采集已经通过。
+
+### 2026-09-02 款式分组变体与 8 图 AI 套图
+
+- 编辑器变体表按款式分组合并显示：款式图和款式名称纵向合并，同一款式下保留每个尺寸 SKU 的价格、库存、尺重、属性和独立图片选择。款式单元提供“AI 作图”入口。
+- AI 套图由商品级唯一任务改为“店铺 + 货源 + 款式键”唯一任务；每个款式只能使用该款式的 SKU 图作为唯一生图参考。槽位扩展为 8 张：首图、尺寸、细节、步骤、用途，以及居家、玄关、礼赠/中性场景三张。
+- 应用结果只写入所选款式下 SKU 的 `image_urls_json` 和首图，公共详情图库及其他款式 SKU 保持不变；审计保留目标 SKU、款式键、前后图片集合和生成账本。单槽失败/重启中断仍不自动补发。
+- 验证：`pytest backend/tests/test_visual_image_service.py backend/tests/test_listing_service.py -q` 为 35 passed；`node --check frontend/listing-editor.js` 与 Alembic 单 head 通过。尚未执行付费生图、Ozon 写入或真实浏览器款式表点击验收。
+
+### 2026-09-02 Ozon 前台详情页插件采集入口
+
+- 根因：公开 Ozon 商品详情页此前复用了列表页的“导入可见商品”按钮；详情页没有商品卡列表，按钮返回“未找到商品”，让人误以为插件没有 Ozon 详情采集能力。另一个问题是详情回传接口业务拒收时仍返回 HTTP 200，旧 popup 会误报“采集成功”。
+- 修正：商品 URL `/product/...-数字` 上的悬浮入口改为“采集当前商品”，从已渲染的标题、图片、价格、属性、类目、评分和页面可见尺重/销量提示创建只读快照，发送到 `POST /api/ozon-learning/extension/detail-result`。列表页和 Seller 分析页原有入口不变。popup 和详情页均只有收到 `ok=true` 且 `ingested=true` 才显示成功，否则展示后端的店铺/标题等真实拒收原因。
+- 验证：`node --check browser_extension/erp-collector-extension/{content,popup,background}.js`、manifest JSON 均通过；笔记本 `http://192.168.0.147:8000/health` HTTP 200；对详情回传接口提交无效店铺探针，确认返回 `ingested=false` 和 `storeId is required`，不会再误报成功。仍需运营重新加载 0.7.4 扩展后在登录的真实商品详情页点击一次，并回读采集箱新记录；在此之前不得称真实采集已验证。
+
+### 2026-09-02 Ozon 内容安全归档闭环
+
+- `OZ1D23E83C94` 所属的同卡共享图片经实际审计含跨性别旗帜及 `trans rights are human rights`、`respect trans women` 等文字；因此不是“描述改一下”可以修复的问题。
+- Ozon 回读确认：`6179582062`、`6179582066`、`6179582101` 归档后均为 `is_archived=true / UNAVAILABLE`；`6179582127` 已不存在，不能伪报为已归档。草稿 #825 已标为 `archived`，同步任务亦停为 `archived`，禁止自动重提/库存回写。
+- 新门禁：文本预检硬阻断、中文/英语/俄语 OCR 图文排除、Terra 生图分析声明 `content_safety`，以及全部生图提示禁止生成相关旗帜、符号和口号。回归：39 passed（质量预检、Ozon 客户端、OCR 门禁、AI 生图）。

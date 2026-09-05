@@ -88,3 +88,57 @@ def get_listing_llm_config() -> tuple[str, str, str]:
         or os.getenv("LLM_MODEL", "").strip()
     )
     return api_key, base_url, model
+
+
+def get_listing_llm_failover_configs() -> list[dict[str, str]]:
+    """Return ordered LLM configs for failover: agnes -> volcengine -> deepseek.
+
+    Each entry is ``{"provider", "api_key", "base_url", "model"}``.  Providers
+    without a configured key are skipped so a missing fallback never blocks
+    the primary route.  This lets the pipeline continue with the next provider
+    when one account hits 402 / 500 / timeout instead of stalling the batch.
+    """
+    configs: list[dict[str, str]] = []
+
+    agnes_key = _read_agnes_api_key()
+    if agnes_key:
+        configs.append({
+            "provider": "agnes",
+            "api_key": agnes_key,
+            "base_url": os.getenv("AGNES_BASE_URL", AGNES_DEFAULT_BASE_URL).strip(),
+            "model": os.getenv("AGNES_LLM_MODEL", AGNES_DEFAULT_MODEL).strip(),
+        })
+
+    volc_key = (
+        os.getenv("VOLCENGINE_LLM_API_KEY", "").strip()
+        or os.getenv("LLM_API_KEY", "").strip()
+        or os.getenv("OPENAI_API_KEY", "").strip()
+    )
+    volc_base = (
+        os.getenv("VOLCENGINE_LLM_BASE_URL", "").strip()
+        or os.getenv("LLM_BASE_URL", "").strip()
+    )
+    volc_model = (
+        os.getenv("VOLCENGINE_LLM_MODEL", "").strip()
+        or os.getenv("LLM_MODEL", "").strip()
+    )
+    if volc_key and volc_base and volc_model:
+        configs.append({
+            "provider": "volcengine",
+            "api_key": volc_key,
+            "base_url": volc_base,
+            "model": volc_model,
+        })
+
+    deepseek_key = os.getenv("DEEPSEEK_API_KEY", "").strip() or _read_secret_file(
+        os.getenv("DEEPSEEK_API_KEY_FILE", str(api_file("deepseek.txt")))
+    )
+    if deepseek_key:
+        configs.append({
+            "provider": "deepseek",
+            "api_key": deepseek_key,
+            "base_url": os.getenv("DEEPSEEK_BASE_URL", DEEPSEEK_DEFAULT_BASE_URL).strip(),
+            "model": os.getenv("DEEPSEEK_MODEL", DEEPSEEK_DEFAULT_MODEL).strip(),
+        })
+
+    return configs

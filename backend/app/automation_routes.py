@@ -1279,7 +1279,7 @@ def approve_prepared_bulk_items(batch_id: int, payload: BulkListingApproveWrite,
             "next_step": "在审批发布页面明确确认后提交Ozon"}
 
 
-def _run_bulk_listing_pilot(batch_id: int, max_items: int, submit_after_prepare: bool = False, actor_id: str = "operator", item_ids: list[int] | None = None) -> None:
+def _run_bulk_listing_pilot(batch_id: int, max_items: int, submit_after_prepare: bool = False, actor_id: str = "operator", item_ids: list[int] | None = None, shop_id_filter: int | None = None) -> None:
     """Run the existing per-product listing chain, optionally submitting each completed item."""
     db = SessionLocal()
     try:
@@ -1346,6 +1346,8 @@ def _run_bulk_listing_pilot(batch_id: int, max_items: int, submit_after_prepare:
             item_query = item_query.where(BulkListingBatchItemRecord.assigned_shop_id.in_(eligible_shop_ids))
         if item_ids:
             item_query = item_query.where(BulkListingBatchItemRecord.id.in_(item_ids))
+        if shop_id_filter is not None:
+            item_query = item_query.where(BulkListingBatchItemRecord.assigned_shop_id == shop_id_filter)
         # Queue-first selection.  Historical failed rows (older, smaller id)
         # must not starve un-attempted queued/prepared candidates: the old
         # single ``order_by(id)`` let every failed row claim the whole window
@@ -1913,7 +1915,19 @@ def execute_bulk_listing_batch(batch_id: int, payload: BulkListingExecute, backg
         batch.status = "running"
         db.commit()
         count = min(payload.max_items, int(remaining))
-        background_tasks.add_task(_run_bulk_listing_pilot, batch_id, count, True, payload.actor_id)
+        # Start one pilot per eligible shop for true 4-shop concurrency.
+        # Each pilot runs in its own daemon thread with its own DB session and only
+        # processes its own shop's items, so there is no cross-thread DB contention.
+        # NOTE: FastAPI BackgroundTasks are serial, so we use threading.Thread directly.
+        import threading as _threading
+        for _shop_id in sorted(resumable_shops):
+            _t = _threading.Thread(
+                target=_run_bulk_listing_pilot,
+                args=(batch_id, count, True, payload.actor_id, None, _shop_id),
+                daemon=True,
+                name=f"bulk-pilot-shop-{_shop_id}",
+            )
+            _t.start()
         return {"batch_id": batch_id, "status": "running", "started_items": count, "remaining": int(remaining),
                 "resumed_shop_ids": sorted(resumable_shops), "shop_capacities": capacities}
     finally:

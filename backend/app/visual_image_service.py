@@ -440,55 +440,66 @@ def generate_set(db: Session, shop_id: int, source_id: int, draft_id: int | None
         generated=generated if isinstance(generated,list) else []
         generated_this_run=0
         failures=[]
+        # Concurrent generation with 2 workers + automatic 503 retry
+        def _generate_slot_with_retry(slot: str, prompt: str, refs_list: list, jid: int) -> tuple:
+            """Generate one slot with automatic 503 queue-full retry. Returns (slot, url, response_meta, error)."""
+            max_retries = 3
+            retry_delays = [5, 10, 15]
+            last_error = None
+            for attempt_idx in range(max_retries):
+                try:
+                    url, resp_meta = generate_one(prompt, refs_list, jid, slot)
+                    return (slot, url, resp_meta, None)
+                except Exception as exc:
+                    last_error = str(exc)[:1400]
+                    if "503" in last_error and attempt_idx < max_retries - 1:
+                        time.sleep(retry_delays[attempt_idx])
+                        continue
+                    break
+            return (slot, None, None, last_error)
+
+        # Prepare history entries for all slots in main thread (thread-safe DB write)
         for item in image_plan:
             history = _history(job)
-            attempt = {"kind": "image_request", "run_id": run_id, "slot": item["slot"], "state": "preparing_reference", "started_at": _timestamp()}
+            attempt = {"kind": "image_request", "run_id": run_id, "slot": item["slot"], "state": "provider_requesting", "started_at": _timestamp()}
             history.append(attempt)
             job.attempt_history_json = json.dumps(history[-300:], ensure_ascii=False)
-            db.commit()
+        db.commit()
 
-            def mark_provider_request(meta: dict[str, Any], attempt: dict[str, Any] = attempt) -> None:
-                current = _history(job)
-                entry = _attempt_entry(current, run_id, attempt["slot"])
-                if entry:
-                    entry["state"] = "provider_requesting"
-                    entry["provider_request_started_at"] = _timestamp()
-                    entry["request"] = meta
-                job.attempt_history_json = json.dumps(current[-300:], ensure_ascii=False)
-                db.commit()
+        # Concurrent generation with 2 worker threads
+        from concurrent.futures import ThreadPoolExecutor, as_completed
+        slot_results: dict = {}
+        with ThreadPoolExecutor(max_workers=2) as executor:
+            futures = {
+                executor.submit(_generate_slot_with_retry, item["slot"], item["prompt"], refs, job.id): item["slot"]
+                for item in image_plan
+            }
+            for future in as_completed(futures):
+                slot, url, resp_meta, error = future.result()
+                slot_results[slot] = (url, resp_meta, error)
 
-            def mark_provider_response(meta: dict[str, Any], attempt: dict[str, Any] = attempt) -> None:
-                current = _history(job)
-                entry = _attempt_entry(current, run_id, attempt["slot"])
-                if entry:
-                    entry["state"] = "response_received"
-                    entry["provider_response_at"] = _timestamp()
-                    entry["response"] = meta
-                job.attempt_history_json = json.dumps(current[-300:], ensure_ascii=False)
-                db.commit()
-
-            try:
-                url, response_meta = generate_one(item["prompt"], refs, job.id, item["slot"], mark_provider_request, mark_provider_response)
-                current = _history(job); entry = _attempt_entry(current, run_id, item["slot"])
-                if entry:
+        # Update database in main thread (thread-safe, no concurrent DB writes)
+        for item in image_plan:
+            slot = item["slot"]
+            url, resp_meta, error = slot_results.get(slot, (None, None, "unknown"))
+            current = _history(job)
+            entry = _attempt_entry(current, run_id, slot)
+            if entry:
+                if url:
                     entry["state"] = "succeeded"
                     entry["completed_at"] = _timestamp()
-                    entry["response"] = response_meta
-                job.attempt_history_json = json.dumps(current[-300:], ensure_ascii=False)
-                generated=[x for x in generated if x.get("slot") != item["slot"]]
-                generated.append({"slot":item["slot"],"title":item["title"],"url":url,"selected":True})
-                generated_this_run += 1
-            except Exception as exc:
-                # A failed slot must not discard already generated images or
-                # prevent later slots from being attempted.
-                current = _history(job); entry = _attempt_entry(current, run_id, item["slot"])
-                if entry:
+                    entry["response"] = resp_meta
+                    generated = [x for x in generated if x.get("slot") != slot]
+                    generated.append({"slot": slot, "title": item["title"], "url": url, "selected": True})
+                    generated_this_run += 1
+                else:
                     entry["state"] = "failed"
                     entry["completed_at"] = _timestamp()
-                    entry["error"] = str(exc)[:1400]
-                job.attempt_history_json = json.dumps(current[-300:], ensure_ascii=False)
-                failures.append({"slot": item["slot"], "title": item["title"], "error": str(exc)[:1400]})
-            job.generated_images_json=json.dumps(generated,ensure_ascii=False); job.attempt_history_json=json.dumps(_history(job)[-300:],ensure_ascii=False); db.commit()
+                    entry["error"] = error or "unknown error"
+                    failures.append({"slot": slot, "title": item["title"], "error": error or "unknown error"})
+            job.attempt_history_json = json.dumps(current[-300:], ensure_ascii=False)
+        job.generated_images_json = json.dumps(generated, ensure_ascii=False)
+        db.commit()
         job.selected_images_json=json.dumps([x["url"] for x in generated],ensure_ascii=False)
         job.error_message = json.dumps({"failed_slots": failures}, ensure_ascii=False) if failures else None
         job.status = "ready" if generated else "failed"

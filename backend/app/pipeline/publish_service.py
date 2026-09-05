@@ -11,7 +11,7 @@ import json
 import hashlib
 import uuid
 from io import BytesIO
-from concurrent.futures import ThreadPoolExecutor
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime, timezone
 from typing import Any
 from urllib.parse import urlparse
@@ -403,8 +403,15 @@ def _filter_submission_images_by_ozon_constraints(payload: dict[str, Any]) -> di
     # unbounded burst against the source host or OSS.
     with httpx.Client(follow_redirects=True, timeout=httpx.Timeout(12.0), headers={"User-Agent": "OzonERP/1.0 image-preflight"}) as client:
         with ThreadPoolExecutor(max_workers=min(8, max(1, len(urls)))) as executor:
-            for url, check in zip(urls, executor.map(lambda value: _inspect_submission_image(value, client), urls)):
-                checks[url] = check
+            future_to_url = {executor.submit(_inspect_submission_image, url, client): url for url in urls}
+            for future in as_completed(future_to_url):
+                url = future_to_url[future]
+                try:
+                    checks[url] = future.result(timeout=20.0)
+                except TimeoutError:
+                    checks[url] = {"valid": False, "reason": "图片校验超时（20s），已跳过"}
+                except Exception as exc:
+                    checks[url] = {"valid": False, "reason": f"图片校验异常：{str(exc)[:180]}"}
 
     filtered_urls: list[dict[str, str]] = []
     invalid_dimensions = 0

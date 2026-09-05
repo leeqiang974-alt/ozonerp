@@ -1965,11 +1965,14 @@ function syncAiCreativeGroupPicker() {
   const picker = $("#le-ai-creative-group");
   if (!picker) return;
   const groups = variantCreativeGroups();
-  if (groups.length > 1 && !groups.some(group => group.key === state.aiCreativeGroupKey)) state.aiCreativeGroupKey = groups[0].key;
-  if (groups.length <= 1) state.aiCreativeGroupKey = groups[0]?.key || "__product__";
-  picker.innerHTML = groups.length
-    ? groups.map(group => `<option value="${esc(group.key)}">${esc(group.label)}（${group.indexes.length} 个尺寸 SKU）</option>`).join("")
-    : '<option value="__product__">当前商品</option>';
+  // Always keep the global ("current product") option so operators can generate
+  // a shared gallery for all SKUs even when style variants exist.
+  const globalOption = '<option value="__product__">当前商品（全局生图，所有 SKU 共用）</option>';
+  const styleOptions = groups.map(group => `<option value="${esc(group.key)}">${esc(group.label)}（${group.indexes.length} 个尺寸 SKU）</option>`).join("");
+  picker.innerHTML = globalOption + styleOptions;
+  // If the current key is neither global nor a known style, fall back to global.
+  const validKeys = new Set(["__product__", ...groups.map(g => g.key)]);
+  if (!validKeys.has(state.aiCreativeGroupKey)) state.aiCreativeGroupKey = "__product__";
   picker.value = state.aiCreativeGroupKey;
 }
 
@@ -2208,14 +2211,14 @@ async function generateAiImages(requestedSlots = null) {
   finally{btn.disabled=false;btn.textContent="✨ 开始生图";}
 }
 
-async function applyAiImages() {
+async function applyAiImages(skipConfirm = false) {
   const selected=(state.aiImageJob.generated_images||[]).map(x=>x.url).filter(url=>state.selectedAiImages.has(url));
   if(!selected.length){toast("请至少选择一张图片","error");return;}
   const targetGroup = (variantCreativeGroups()).find(group => group.key === state.aiCreativeGroupKey);
   const targetIndexes = targetGroup?.indexes || state.variants.map((_, index) => index);
   const targetSkus = targetIndexes.map(index => state.variants[index]?.seller_sku).filter(Boolean);
   if(!targetSkus.length){toast("当前款式没有可应用的 SKU","error");return;}
-  if(!window.confirm(`将 ${selected.length} 张AI图片应用到“${targetGroup?.label || "当前款式"}”的 ${targetSkus.length} 个尺寸 SKU。不会修改公共详情图库或其他款式。确认继续？`))return;
+  if(!skipConfirm && !window.confirm(`将 ${selected.length} 张AI图片应用到“${targetGroup?.label || "当前款式"}”的 ${targetSkus.length} 个尺寸 SKU。不会修改公共详情图库或其他款式。确认继续？`))return;
   const btn=$("#le-ai-apply-images");btn.disabled=true;
   try {
     // Applying images is an explicit persistence action.  If this is still a
@@ -2238,6 +2241,32 @@ async function applyAiImages() {
   }
   catch(e){toast("应用套图失败："+e.message,"error");}
   finally{btn.disabled=false;}
+}
+
+// Style-exclusive hero: generate one Ozon-style hero for a specific style/SKU,
+// using that style's SKU image as reference, then auto-apply to all size SKUs
+// of that style. This is for the "AI 作图" button in the variant table.
+async function generateAndApplyStyleHero(styleKey) {
+  if(!state.shopId || !state.sourceProduct?.id){toast("请先选择采集商品","error");return;}
+  state.aiCreativeGroupKey = styleKey;
+  syncAiCreativeGroupPicker();
+  document.querySelector("#le-ai-image-panel")?.scrollIntoView({ behavior: "smooth", block: "center" });
+  toast("正在生成该款式的 Ozon 风格首图...", "");
+  try {
+    await generateAiImages(["hero"]);
+    // After generation, auto-select the hero and apply to all size SKUs of this style.
+    const heroImage = state.aiImageJob?.generated_images?.find(x => x.slot === "hero");
+    if (!heroImage) {
+      toast("首图生成失败，请查看 AI 款式套图面板的错误信息", "error");
+      return;
+    }
+    state.selectedAiImages.clear();
+    state.selectedAiImages.add(heroImage.url);
+    await applyAiImages(true); // skipConfirm = true
+    toast("款式首图已生成并应用到该款式的所有尺寸 SKU", "success");
+  } catch(e) {
+    toast("款式首图生成失败："+e.message, "error");
+  }
 }
 
 async function matchVariantWarehouses() {
@@ -2550,10 +2579,10 @@ function renderVariantTable() {
     toggleColorMultiSelect(Number(inp.dataset.groupFirstIdx), inp, group?.indexes || []);
   }));
   $$("[data-ai-style-key]").forEach(button => button.addEventListener("click", async () => {
-    state.aiCreativeGroupKey = button.dataset.aiStyleKey;
-    syncAiCreativeGroupPicker();
-    document.querySelector("#le-ai-image-panel")?.scrollIntoView({ behavior: "smooth", block: "center" });
-    await loadAiImageJob();
+    // "AI 作图" button: generate one Ozon-style hero for this style, using its
+    // SKU image as reference, featuring the style's exclusive attributes (color,
+    // quantity, size), then auto-apply to all size SKUs of this style.
+    await generateAndApplyStyleHero(button.dataset.aiStyleKey);
   }));
 
 }
@@ -2586,9 +2615,41 @@ function openImageGallery(variantIdx, imgType) {
       const card = (url, isSelected, index) => { const isSku = url === variant.image_url; return `<div class="le-product-gallery-card ${isSelected ? "active" : ""}" data-gallery-url="${esc(url)}" draggable="${isSelected ? "true" : "false"}" data-selected-index="${isSelected ? index : ""}"><img src="${esc(url)}" loading="lazy" referrerpolicy="no-referrer" /><span class="le-product-gallery-order">${isSelected ? `${index + 1}${index === 0 ? " · 首图" : ""}` : "可补充"}${isSku ? " · 款式图" : " · 公共图"}</span>${isSelected ? `<button type="button" class="le-product-gallery-primary" data-gallery-primary="${esc(url)}">${url === current ? "当前首图" : "设为首图"}</button><button type="button" class="le-product-gallery-delete" data-gallery-remove="${esc(url)}" title="从当前款式移除">×</button>` : `<button type="button" class="le-product-gallery-add" data-gallery-add="${esc(url)}">加入此款式</button>`}</div>`; };
       const sourceCard = url => { const isAdded = selected.has(url); return `<div class="le-product-gallery-card le-product-gallery-source-card ${isAdded ? "active" : ""}" data-gallery-url="${esc(url)}"><img src="${esc(url)}" loading="lazy" referrerpolicy="no-referrer" /><span class="le-product-gallery-order">公共图${isAdded ? " · 已加入" : " · 可补充"}</span>${isAdded ? '<button type="button" class="le-product-gallery-added" disabled>已加入当前款式</button>' : `<button type="button" class="le-product-gallery-add" data-gallery-add="${esc(url)}">加入此款式</button>`}</div>`; };
       const targetCount = creativeGroupAtIndex(variantIdx)?.indexes.length || 1;
-      modal.innerHTML = `<div class="le-product-gallery-dialog"><div class="le-product-gallery-head"><div><strong>款式图片设置</strong><small>左侧为当前款式已选图片，右侧为完整公共总图库；会同步本款 ${targetCount} 个尺寸 SKU，不影响公共图库或其他款式。</small></div><button type="button" data-gallery-close>×</button></div><div class="le-product-gallery-columns"><section class="le-product-gallery-pane"><h4>当前款式已选（${selectedImgs.length}）</h4><div class="le-product-gallery-grid le-product-gallery-selected">${selectedImgs.map((url, i) => card(url, true, i)).join("") || '<p class="le-product-gallery-empty">暂无已选图片</p>'}</div></section><section class="le-product-gallery-pane"><h4>总图库（${availableImgs.length}）</h4><div class="le-product-gallery-grid le-product-gallery-available">${availableImgs.map(sourceCard).join("") || '<p class="le-product-gallery-empty">暂无公共图库图片</p>'}</div></section></div><div class="le-product-gallery-foot"><span>拖动左侧图片调整顺序；第一张会成为本款所有尺寸的首图。右侧只补充图片，不会删除公共图库。</span><button type="button" data-gallery-close>完成</button></div></div>`;
+      const styleKey = creativeGroupAtIndex(variantIdx)?.key || "__product__";
+      modal.innerHTML = `<div class="le-product-gallery-dialog"><div class="le-product-gallery-head"><div><strong>款式图片设置</strong><small>左侧为当前款式已选图片，右侧为完整公共总图库；会同步本款 ${targetCount} 个尺寸 SKU，不影响公共图库或其他款式。</small></div><div style="display:flex;gap:8px;align-items:center"><button type="button" class="le-btn le-btn-sm" data-gallery-ai-gen style="background:#6c5ce7;color:#fff;border-color:#6c5ce7">✨ AI 生套图</button><button type="button" data-gallery-close>×</button></div></div><div class="le-product-gallery-columns"><section class="le-product-gallery-pane"><h4>当前款式已选（${selectedImgs.length}）</h4><div class="le-product-gallery-grid le-product-gallery-selected">${selectedImgs.map((url, i) => card(url, true, i)).join("") || '<p class="le-product-gallery-empty">暂无已选图片</p>'}</div></section><section class="le-product-gallery-pane"><h4>总图库（${availableImgs.length}）</h4><div class="le-product-gallery-grid le-product-gallery-available">${availableImgs.map(sourceCard).join("") || '<p class="le-product-gallery-empty">暂无公共图库图片</p>'}</div></section></div><div class="le-product-gallery-foot"><span>拖动左侧图片调整顺序；第一张会成为本款所有尺寸的首图。右侧只补充图片，不会删除公共图库。</span><button type="button" data-gallery-close>完成</button></div></div>`;
     }
     modal.querySelectorAll("[data-gallery-close]").forEach(button => button.addEventListener("click", () => modal.remove()));
+    // AI 生套图 button: generate a full 8-image set for this style, then add
+    // the generated images to this style's selected gallery.
+    const aiGenBtn = modal.querySelector("[data-gallery-ai-gen]");
+    if (aiGenBtn) {
+      aiGenBtn.addEventListener("click", async () => {
+        if(!state.shopId || !state.sourceProduct?.id){toast("请先选择采集商品","error");return;}
+        aiGenBtn.disabled = true;
+        aiGenBtn.textContent = "生成中...";
+        state.aiCreativeGroupKey = styleKey;
+        syncAiCreativeGroupPicker();
+        try {
+          await generateAiImages(); // full 8-slot set
+          // After generation, add all generated images to this style's gallery.
+          const generatedUrls = (state.aiImageJob?.generated_images || []).map(x => x.url).filter(Boolean);
+          if (generatedUrls.length) {
+            const currentVariant = state.variants[variantIdx];
+            const existing = Array.isArray(currentVariant.image_urls) ? [...currentVariant.image_urls] : [...imgs];
+            const merged = [...new Set([...generatedUrls, ...existing])].slice(0, 15);
+            applyImagesToCreativeGroup(variantIdx, merged);
+            onImagesChanged();
+            toast(`已生成 ${generatedUrls.length} 张 AI 套图并加入当前款式`, "success");
+          } else {
+            toast("AI 套图生成失败，请查看 AI 款式套图面板", "error");
+          }
+        } catch(e) {
+          toast("AI 套图生成失败："+e.message, "error");
+        } finally {
+          render(); // re-render the modal with the new images
+        }
+      });
+    }
     const moveSelectedImage = (from, to) => {
       if (!Number.isInteger(from) || !Number.isInteger(to) || from === to) return false;
       const currentVariant = state.variants[variantIdx];

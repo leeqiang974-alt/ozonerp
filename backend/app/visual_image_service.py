@@ -244,14 +244,24 @@ def analyze(db: Session, shop_id: int, source_id: int, creative_group_key: str =
     return result, refs, usage
 
 
-def plan(product: SourceProductRecord, analysis: dict[str, Any], creative_group_label: str = "") -> list[dict[str, str]]:
+def plan(product: SourceProductRecord, analysis: dict[str, Any], creative_group_label: str = "", sku_exclusive_info: dict[str, Any] | None = None) -> list[dict[str, str]]:
     facts = json.dumps(analysis.get("product_truth") or {}, ensure_ascii=False)
     dims = json.dumps(analysis.get("dimensions") or {}, ensure_ascii=False)
     excluded = json.dumps(analysis.get("not_included") or [], ensure_ascii=False)
     group_lock = f" STYLE VARIANT LOCK: this is only style '{creative_group_label}'. Never use another style, pattern, colourway or SKU image." if creative_group_label else ""
     common = f"Campaign Style Lock: {STYLE_LOCK}. PRODUCT TRUTH LOCK: sold product {analysis.get('sold_product') or product.title}; visible facts {facts}; not included {excluded}.{group_lock} Preserve exact identity, quantity, color, structure and visible hardware. Russian Ozon ecommerce image, vertical 3:4, crisp short Russian text. No Chinese, English, price, watermark, QR, fake certification or invented specifications. Never create, retain, or embellish LGBT/sexual-orientation/gender-identity messaging, rainbow/pride flags, transgender symbols, or related slogans."
+    # Style-exclusive hero: when generating for a specific style/SKU, the hero
+    # must feature that variant's identity (color/pattern/quantity/size) as the
+    # primary differentiator, not a generic product shot.
+    hero_exclusive = ""
+    if creative_group_label:
+        hero_exclusive += f" This is the '{creative_group_label}' style variant hero. The product shown MUST be exactly this style's color/pattern — never another style. "
+    if sku_exclusive_info:
+        exclusive_text = json.dumps(sku_exclusive_info, ensure_ascii=False)
+        hero_exclusive += f" Feature this variant's exclusive attributes prominently on the hero (as Russian labels or visual emphasis): {exclusive_text}. "
+    hero_prompt = common + hero_exclusive + " Premium hero infographic, product 38%, concise Russian headline and exactly three evidence-backed labels that highlight this variant's exclusive attributes (color, quantity, size)."
     return [
-        {"slot":"hero","title":"销售首图","prompt":common+" Premium hero infographic, product 38%, concise Russian headline and exactly three evidence-backed labels."},
+        {"slot":"hero","title":"销售首图","prompt":hero_prompt},
         {"slot":"dimensions","title":"尺寸规格","prompt":common+f" E-commerce dimension infographic, top-down. Only verified dimensions: {dims}. If none, show structure without numbers."},
         {"slot":"details","title":"结构细节","prompt":common+" E-commerce detail infographic with one full product and two macro callouts of real visible structure/material."},
         {"slot":"steps","title":"使用步骤","prompt":common+" E-commerce three-step usage infographic based only on evidenced use; never imply tools are included."},
@@ -392,6 +402,17 @@ def serialize(job: VisualImageJobRecord | None) -> dict[str, Any]:
 def generate_set(db: Session, shop_id: int, source_id: int, draft_id: int | None = None, requested_slots: list[str] | None = None, creative_group_key: str = PRODUCT_GROUP_KEY):
     product, grouped_variants, _ = source_bundle(db, shop_id, source_id, creative_group_key)
     group_label = _source_variant_group(grouped_variants[0])[1] if creative_group_key != PRODUCT_GROUP_KEY and grouped_variants else ""
+    # Extract style/SKU-exclusive info for the hero image (color, quantity, size).
+    sku_exclusive_info: dict[str, Any] | None = None
+    if creative_group_key != PRODUCT_GROUP_KEY and grouped_variants:
+        first_variant = grouped_variants[0]
+        spec = str(first_variant.spec_name or "").strip()
+        sku_exclusive_info = {
+            "style_label": group_label,
+            "spec": spec,
+            "source_sku": str(first_variant.source_sku or ""),
+            "variant_count": len(grouped_variants),
+        }
     job = db.scalar(select(VisualImageJobRecord).where(VisualImageJobRecord.shop_id==shop_id,VisualImageJobRecord.source_product_id==source_id,VisualImageJobRecord.creative_group_key==creative_group_key))
     if not job: job=VisualImageJobRecord(shop_id=shop_id,source_product_id=source_id,creative_group_key=creative_group_key); db.add(job); db.flush()
     job.listing_draft_id=draft_id or job.listing_draft_id; job.status="analyzing"; job.error_message=None; db.commit()
@@ -404,7 +425,7 @@ def generate_set(db: Session, shop_id: int, source_id: int, draft_id: int | None
         content_safety = analysis.get("content_safety") if isinstance(analysis, dict) else {}
         if isinstance(content_safety, dict) and content_safety.get("prohibited_lgbt_symbolism") is True:
             raise ValueError("图片分析命中 Ozon 禁止的 LGBT/非传统性别关系宣传内容；禁止生图，必须人工移除相关素材或归档商品")
-        image_plan=plan(product,analysis,group_label)
+        image_plan=plan(product,analysis,group_label,sku_exclusive_info)
         if requested_slots:
             requested = set(requested_slots)
             image_plan = [item for item in image_plan if item.get("slot") in requested]

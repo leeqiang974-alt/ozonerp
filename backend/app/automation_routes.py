@@ -2291,11 +2291,15 @@ def list_approval_batches(db: Session = Depends(get_db)) -> list[dict]:
 
 def _shop_upload_capacity(db: Session, shop_id: int) -> dict:
     """Return a conservative create allowance, preferring Ozon's live quota."""
-    today = datetime.now(ZoneInfo("Asia/Shanghai")).date()
+    # Align local counting with Ozon's quota cycle: Ozon resets at 00:00 UTC = 08:00 Beijing time.
+    now = datetime.now(ZoneInfo("Asia/Shanghai"))
+    cycle_start = now.replace(hour=8, minute=0, second=0, microsecond=0)
+    if now.hour < 8:
+        cycle_start = cycle_start - timedelta(days=1)
     locally_submitted = db.scalar(select(func.count(AuditEventRecord.id)).where(
         AuditEventRecord.shop_id == shop_id,
         AuditEventRecord.action == "pipeline_product_submitted",
-        func.date(AuditEventRecord.created_at) == today,
+        AuditEventRecord.created_at >= cycle_start,
     )) or 0
     fallback_limit = 180
     result = {

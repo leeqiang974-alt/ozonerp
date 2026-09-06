@@ -442,7 +442,7 @@ def _loop() -> None:
                         if _allow_external_writes and bulk_item and feedback_rows and _try_auto_repair_and_resubmit(db, candidate, bulk_item, feedback_rows):
                             continue
                         candidate.status = "needs_review" if feedback_rows and bulk_item and bulk_item.status == "needs_review" else "imported"
-                        if bulk_item and bulk_item.status not in {"needs_review", "waiting_quota"}:
+                        if bulk_item and bulk_item.status != "needs_review":
                             bulk_item.status = "imported"
                             bulk_item.error_message = ("Ozon已导入；存在警告，库存继续由 Ozon 状态和仓库回读确认" if feedback_rows else None)
                     elif status in {"import_failed", "failed"}:

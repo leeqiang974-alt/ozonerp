@@ -97,6 +97,16 @@ class SkuBulkCostRequest(BaseModel):
     cny_rub_rate: float | None = None
 
 
+class SkuCostItem(BaseModel):
+    seller_sku: str
+    purchase_cost_cny: float
+
+
+class SkuCostItemsRequest(BaseModel):
+    items: list[SkuCostItem]
+    cny_rub_rate: float | None = None
+
+
 class ProductRead(BaseModel):
     model_config = ConfigDict(from_attributes=True)
 

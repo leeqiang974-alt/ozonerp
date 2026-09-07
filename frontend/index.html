@@ -340,6 +340,7 @@
           <div style="display:flex;gap:8px;align-items:center">
             <input id="product-search" placeholder="搜索 SKU / 商品名" style="padding:6px 10px;border:1px solid #d8c9ad;border-radius:8px;background:#fff;color:#5c4a3a;width:220px" onkeydown="onProductSearchEnter(event)" />
             <button class="primary" onclick="loadOperationalData()">搜索</button>
+            <button class="primary" id="save-cost-btn" onclick="saveSkuCostEdits()" disabled>保存成本价修改</button>
             <button class="primary" onclick="openBulkCostDialog()">批量填成本价</button>
           </div>
         </div>
@@ -1313,7 +1314,7 @@
       </form>
     </dialog>
     <div id="toast" role="status"></div>
-                 <script src="./app.js?v=128"></script>
+                 <script src="./app.js?v=129"></script>
     <script src="./quick-review.js?v=2"></script>
     <script src="./qr-injector.js"></script>
     <div id="image-modal" class="image-modal" style="display:none;position:fixed;inset:0;background:#000000e6;z-index:9999;place-items:center;padding:24px;cursor:zoom-out">

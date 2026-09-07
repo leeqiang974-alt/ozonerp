@@ -26,7 +26,7 @@ from .models import ApiCredential, Shop
 from .schemas import OzonCredentialStatus, OzonCredentialUpsert, ShopCreate, ShopRead, ShopUpdate
 from .security import CredentialEncryptionUnavailable, encrypt_secret
 from .sync_service import sync_category_cache, sync_fbs_postings, sync_fbs_product_images, sync_products
-from .schemas import FbsPostingDetailRead, FbsPostingRead, FbsPostingSyncRequest, ListingDraftCreate, ListingDraftRead, ListingTemplateCreate, ListingValidationRead, ProductRead, ProductSyncRequest, SkuBulkCostRequest, SyncRunRead, ListingAttributeValueCreate, ListingVariantCreate
+from .schemas import FbsPostingDetailRead, FbsPostingRead, FbsPostingSyncRequest, ListingDraftCreate, ListingDraftRead, ListingTemplateCreate, ListingValidationRead, ProductRead, ProductSyncRequest, SkuBulkCostRequest, SkuCostItemsRequest, SyncRunRead, ListingAttributeValueCreate, ListingVariantCreate
 from .listing_service import build_variant_image_list, normalize_dictionary_attribute_value, validate_listing_draft
 from .listing_cache_service import promote_legacy_listing_caches
 from .pricing import PriceInput, PricingService
@@ -1096,6 +1096,58 @@ def auto_sync_shop_view(
         if decision["status"] == "started" and decision["lease_owner"]:
             background_tasks.add_task(run_auto_sync_resource, shop_id, decision["resource"], decision["lease_owner"])
     return decisions
+
+
+@app.post("/api/v1/shops/{shop_id}/skus/cost-items")
+def bulk_set_sku_cost_items(shop_id: int, payload: SkuCostItemsRequest, db: Session = Depends(get_db)) -> dict:
+    # Update exact seller_skus purchase cost (local DB, optional Ozon net_price sync).
+    if not payload.items:
+        return {"updated": 0, "ozon_updated": 0, "ozon_failed": [], "items": []}
+    sku_map = {}
+    for it in payload.items:
+        sku_map[str(it.seller_sku).strip()] = float(it.purchase_cost_cny)
+    skus = list(db.scalars(
+        select(SkuRecord).where(SkuRecord.shop_id == shop_id, SkuRecord.seller_sku.in_(list(sku_map.keys())))
+    ))
+    if not skus:
+        return {"updated": 0, "ozon_updated": 0, "ozon_failed": [], "items": []}
+
+    ozon_failed: list[dict] = []
+    ozon_updated = 0
+    targets = skus
+    if payload.cny_rub_rate and payload.cny_rub_rate > 0:
+        from .sync_service import _credentials
+        from .integrations.ozon_seller import OzonSellerClient
+        client_id, api_key = _credentials(db, shop_id)
+        prices = []
+        for sku in skus:
+            net_rub = round(sku_map[sku.seller_sku] * payload.cny_rub_rate, 2)
+            prices.append({"offer_id": sku.seller_sku, "net_price": str(net_rub)})
+        try:
+            with OzonSellerClient(client_id=client_id, api_key=api_key) as client:
+                resp = client.update_product_prices(prices=prices)
+        except Exception as exc:
+            raise HTTPException(status_code=502, detail=f"Ozon cost update failed: {exc}") from exc
+        results = (resp.get("result") or []) if isinstance(resp, dict) else []
+        ok_offers: set[str] = set()
+        for item in results:
+            offer = str(item.get("offer_id") or "")
+            if item.get("updated"):
+                ok_offers.add(offer)
+                ozon_updated += 1
+            else:
+                ozon_failed.append({"offer_id": offer, "errors": item.get("errors") or []})
+        targets = [s for s in skus if s.seller_sku in ok_offers]
+
+    for sku in targets:
+        sku.purchase_cost_cny = Decimal(str(sku_map[sku.seller_sku]))
+    db.commit()
+    return {
+        "updated": len(targets),
+        "ozon_updated": ozon_updated,
+        "ozon_failed": ozon_failed,
+        "items": [{"seller_sku": s.seller_sku, "purchase_cost_cny": sku_map[s.seller_sku]} for s in skus],
+    }
 
 
 @app.get("/api/v1/shops/{shop_id}/products", response_model=list[ProductRead])

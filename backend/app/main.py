@@ -1,5 +1,10 @@
 ﻿import hashlib
 import os
+# 产品默认需求：批量上架后自动回填 Ozon 库存 + 库存监控线程。
+# 强制开启（不依赖看门狗/计划任务传参——uvicorn spawn 子进程会丢失环境变量导致
+# 线程永不启动，库存永远填不上）。如需关闭，将下方两个值改为 "0" 并重启后端。
+os.environ["OZON_ENABLE_BACKGROUND_WRITES"] = "1"
+os.environ["OZON_ENABLE_BACKGROUND_STOCK_MONITOR"] = "1"
 import time
 import httpx
 import json
@@ -195,9 +200,17 @@ def _startup_reconcile_loop(external_writes: bool) -> None:
 def start_listing_stock_monitor() -> None:
     global _stock_monitor_thread
     from .database import SessionLocal
+    # 二次强制：config/ai_service/llm_translate 的 load_dotenv(override=True)
+    # 会在 import 阶段把 .env 里的 OZON_ENABLE_BACKGROUND_WRITES=0 覆盖掉顶部赋值，
+    # 导致库存监控线程永不启动。这里在全部 import 完成后再次强制（产品默认需求）。
+    os.environ["OZON_ENABLE_BACKGROUND_WRITES"] = "1"
+    os.environ["OZON_ENABLE_BACKGROUND_STOCK_MONITOR"] = "1"
     external_writes = _background_external_writes_enabled()
     stock_monitor = _background_stock_monitor_enabled()
     polling = _background_polling_enabled()
+    print(f"[stock-monitor] external_writes={external_writes} stock_monitor={stock_monitor} polling={polling} "
+          f"writes_env={os.getenv('OZON_ENABLE_BACKGROUND_WRITES')!r} stock_env={os.getenv('OZON_ENABLE_BACKGROUND_STOCK_MONITOR')!r}",
+          flush=True)
     # A FastAPI BackgroundTask disappears on a backend restart.  Recover
     # locally interrupted rows immediately, before accepting a new bulk-run:
     # rows that already have an Ozon task stay submitted; only rows that never

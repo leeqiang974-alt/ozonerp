@@ -453,10 +453,27 @@ def _dims_label(dims) -> str:
     Handles both '7.5cm / 2.95inch' and plain numbers, and tolerates LLM
     output drift (sometimes dimensions comes back as a string)."""
     if isinstance(dims, str):
+        import re
+        # LLM sometimes serializes dimensions as "{'value': 7,5, 'unit': ' см', ...} × {...}"
+        items = re.findall(r"'value':\s*([\d.,]+),\s*'unit':\s*'([^']*)'", dims)
+        if not items:
+            items = re.findall(r'"value":\s*([\d.,]+),\s*"unit":\s*"([^"]*)"', dims)
+        if items:
+            parts = []
+            for val, unit in items:
+                m = val.replace(".", ",")
+                u = (unit or "").strip() or "см"
+                parts.append(f"{m} {u}".strip())
+            if parts:
+                return " × ".join(parts)
         parts = [p.strip().replace(".", ",") for p in str(dims).split("/")[:2]]
         return " × ".join(p for p in parts if p)
     if not isinstance(dims, dict):
         return ""
+    if dims.get("value") is not None:
+        m = str(dims["value"]).replace(".", ",")
+        u = str(dims.get("unit") or "см").strip() or "см"
+        return f"{m} {u}".strip()
     parts = []
     for k in ("height", "width", "length", "height_cm", "width_cm", "length_cm"):
         v = dims.get(k)

@@ -281,7 +281,7 @@ def plan(product: SourceProductRecord, analysis: dict[str, Any], creative_group_
     dims = json.dumps(analysis.get("dimensions") or {}, ensure_ascii=False)
     excluded = json.dumps(analysis.get("not_included") or [], ensure_ascii=False)
     group_lock = f" STYLE VARIANT LOCK: this is only style '{creative_group_label}'. Never use another style, pattern, colourway or SKU image." if creative_group_label else ""
-    common = f"Campaign Style Lock: {STYLE_LOCK}. Product truth (never invent): sold product {analysis.get('sold_product') or product.title}; visible facts {facts}; not included {excluded}.{group_lock} Preserve exact identity, quantity, color, structure and visible hardware. Premium marketplace product infographic, vertical 3:4, clean minimal design. ON-IMAGE TEXT POLICY (important): this is a Russian-market listing, so the image MAY contain a small amount of real, correctly-spelled Russian text — e.g. a short title phrase like 'Винтажная брошь с кристаллами', specification numbers like '7,5 см' or '2 шт', and short keyword labels like 'Для пальто и костюма'. FORBIDDEN on the image: any Chinese/CJK characters, any fake Latin gibberish words, any garbled/illegible characters, any brand or store name (including 'Ozon'/'OZONE' and any trademark), watermarks, QR codes, certification stamps, decorative symbols, and repeated ornamental lettering. Even if Chinese or other languages appear elsewhere in this instruction, they are context only and must NEVER be drawn on the image — on-image text must be Russian only and must stay clean and legible. Never create, retain, or embellish LGBT/sexual-orientation/gender-identity messaging, rainbow/pride flags, transgender symbols, or related slogans."
+    common = f"Campaign Style Lock: {STYLE_LOCK}. Product truth (never invent): sold product {analysis.get('sold_product') or product.title}; visible facts {facts}; not included {excluded}.{group_lock} Preserve exact identity, quantity, color, structure and visible hardware. Premium marketplace product infographic, vertical 3:4, clean minimal design. ON-IMAGE TEXT: NONE — the generated image must contain zero characters of any language (no Russian, no Latin, no Chinese, no numbers, no labels, no brand names, no watermark, no icons); the platform will add Russian captions later, so produce a clean product image only. Never create, retain, or embellish LGBT/sexual-orientation/gender-identity messaging, rainbow/pride flags, transgender symbols, or related slogans."
     # Style-exclusive hero: when generating for a specific style/SKU, the hero
     # must feature that variant's identity (color/pattern/quantity/size) as the
     # primary differentiator, not a generic product shot.
@@ -291,13 +291,13 @@ def plan(product: SourceProductRecord, analysis: dict[str, Any], creative_group_
     if sku_exclusive_info:
         exclusive_text = json.dumps(sku_exclusive_info, ensure_ascii=False)
         hero_exclusive += f" Feature this variant's exclusive attributes on the hero as clean visual emphasis (minimal numeric/color labels only, no invented words): {exclusive_text}. "
-    hero_prompt = common + hero_exclusive + " Premium hero infographic, product 38% centered on a clean neutral background; may carry at most one short Russian title phrase and small specification numbers; no Chinese, no English, no brand names, no watermark."
+    hero_prompt = common + hero_exclusive + " Premium hero infographic, product 38% centered on a clean neutral background; zero text of any language anywhere."
     return [
         {"slot":"hero","title":"销售首图","prompt":hero_prompt},
         {"slot":"dimensions","title":"尺寸规格","prompt":common+f" E-commerce dimension infographic, top-down. Only verified dimensions: {dims}. If none, show structure without numbers."},
         {"slot":"details","title":"结构细节","prompt":common+" E-commerce detail infographic with one full product and two macro callouts of real visible structure/material."},
         {"slot":"steps","title":"使用步骤","prompt":common+" E-commerce three-step usage infographic based only on evidenced use; never imply tools are included."},
-        {"slot":"lifestyle","title":"场景用途","prompt":common+" Premium lifestyle infographic with three believable use scenes of the product; short Russian captions are allowed, no Chinese, no English, no brand names, no watermarks."},
+        {"slot":"lifestyle","title":"场景用途","prompt":common+" Premium lifestyle infographic with three believable use scenes of the product; zero text of any language anywhere."},
         {"slot":"scene_home","title":"居家场景","prompt":common+" Premium believable home scene. Product is clearly visible and remains the exact selected style; no other styles in frame."},
         {"slot":"scene_entry","title":"玄关场景","prompt":common+" Premium believable entryway scene. Product is clearly visible and remains the exact selected style; no other styles in frame."},
         {"slot":"scene_gift","title":"礼赠场景","prompt":common+" Premium believable gift or seasonal scene only when supported by product truth; otherwise use a neutral lifestyle scene. Preserve the exact selected style."},
@@ -448,6 +448,65 @@ def _download_generated_result(url: str, path: Path, *, max_seconds: float = 150
         raise
 
 
+def _dims_label(dims: dict) -> str:
+    """Format real dimensions into a Russian-style label like '7,5 см × 7,5 см'."""
+    parts = []
+    for k in ("height_cm", "width_cm", "length_cm"):
+        v = dims.get(k)
+        if v:
+            parts.append(f"{str(v).replace('.', ',')} см")
+    return " × ".join(parts)
+
+
+def _overlay_russian_text(path: Path, slot: str, title_ru: str, desc_ru: str, dims_label: str) -> None:
+    """Burn real Russian captions onto a generated PNG so on-image text is always correct.
+    Failure must never break generation, so every error is swallowed."""
+    try:
+        from PIL import Image, ImageDraw, ImageFont
+        if slot not in ("hero", "dimensions"):
+            return
+        img = Image.open(path).convert("RGB")
+        W, H = img.size
+        font_path = next((f for f in (
+            r"C:\Windows\Fonts\arialbd.ttf", r"C:\Windows\Fonts\arial.ttf",
+            r"C:\Windows\Fonts\segoeuib.ttf", r"C:\Windows\Fonts\segoeui.ttf",
+        ) if os.path.exists(f)), None)
+        if not font_path:
+            return
+        draw = ImageDraw.Draw(img)
+
+        def _fit(text: str, font, max_w: int) -> str:
+            text = text or ""
+            while len(text) > 1:
+                b = draw.textbbox((0, 0), text, font=font)
+                if (b[2] - b[0]) <= max_w:
+                    return text
+                text = text[:-1]
+            return text
+
+        bar_h = max(int(H * 0.10), 90)
+        draw.rectangle([0, H - bar_h, W, H], fill=(247, 242, 234))
+        if slot == "hero":
+            title = _fit((title_ru or "").strip(), ImageFont.truetype(font_path, max(int(W * 0.034), 22)), int(W * 0.92))
+            fnt = ImageFont.truetype(font_path, max(int(W * 0.034), 22))
+            b = draw.textbbox((0, 0), title, font=fnt)
+            draw.text(((W - (b[2] - b[0])) / 2, H - bar_h + max((bar_h - int(W * 0.034) * 2.4) / 2, 6)), title, fill=(40, 40, 40), font=fnt)
+            desc = _fit((desc_ru or "").strip(), ImageFont.truetype(font_path, max(int(W * 0.022), 14)), int(W * 0.92))
+            if desc:
+                fntd = ImageFont.truetype(font_path, max(int(W * 0.022), 14))
+                b2 = draw.textbbox((0, 0), desc, font=fntd)
+                draw.text(((W - (b2[2] - b2[0])) / 2, H - bar_h + int(W * 0.034) * 1.7), desc, fill=(95, 95, 95), font=fntd)
+        elif slot == "dimensions":
+            label = _fit(dims_label or "", ImageFont.truetype(font_path, max(int(W * 0.032), 20)), int(W * 0.92))
+            if label:
+                fnt = ImageFont.truetype(font_path, max(int(W * 0.032), 20))
+                b = draw.textbbox((0, 0), label, font=fnt)
+                draw.text(((W - (b[2] - b[0])) / 2, H - bar_h + (bar_h - int(W * 0.032) * 1.3) / 2), label, fill=(60, 60, 60), font=fnt)
+        img.save(path)
+    except Exception:
+        pass
+
+
 def serialize(job: VisualImageJobRecord | None) -> dict[str, Any]:
     if not job: return {"status":"not_started","generated_images":[]}
     return {"id":job.id,"shop_id":job.shop_id,"source_product_id":job.source_product_id,"creative_group_key":job.creative_group_key,"listing_draft_id":job.listing_draft_id,"status":job.status,"analysis":loads(job.analysis_json,{}),"plan":loads(job.plan_json,[]),"generated_images":loads(job.generated_images_json,[]),"selected_images":loads(job.selected_images_json,[]),"reference_images":loads(job.reference_images_json,[]),"error_message":job.error_message,"llm_model":job.llm_model,"image_model":job.image_model,"usage":loads(job.usage_json,{}),"attempt_history":_history(job),"current_run_id":job.current_run_id,"applied_by":job.applied_by,"applied_at":job.applied_at}
@@ -494,6 +553,11 @@ def generate_set(db: Session, shop_id: int, source_id: int, draft_id: int | None
         generated=generated if isinstance(generated,list) else []
         generated_this_run=0
         failures=[]
+        # Real Russian caption material for programmatic on-image overlay (never
+        # let the image model draw text — it garbles any language longer than a digit).
+        title_ru = product.title or ""
+        desc_ru = (product.description or "").strip().replace("\n", " ")[:90]
+        dims_label = _dims_label(analysis.get("dimensions") or {})
         # Serial generation (Agnes cannot handle concurrent image requests —
         # parallel calls trigger "image queue is full" 503) + long backoff retry
         def _generate_slot_with_retry(slot: str, prompt: str, refs_list: list, jid: int) -> tuple:
@@ -504,6 +568,13 @@ def generate_set(db: Session, shop_id: int, source_id: int, draft_id: int | None
             for attempt_idx in range(max_retries):
                 try:
                     url, resp_meta = generate_one(prompt, refs_list, jid, slot)
+                    try:
+                        fname = url.rstrip("/").rsplit("/", 1)[-1]
+                        opath = OUTPUT_DIR / fname
+                        if opath.exists():
+                            _overlay_russian_text(opath, slot, title_ru, desc_ru, dims_label)
+                    except Exception:
+                        pass
                     return (slot, url, resp_meta, None)
                 except Exception as exc:
                     last_error = str(exc)[:1400]

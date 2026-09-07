@@ -2204,9 +2204,12 @@ async function loadAiImageJob() {
   try { state.aiImageJob=await api("GET",`/api/v1/shops/${state.shopId}/ai-images/source-products/${state.sourceProduct.id}?creative_group_key=${encodeURIComponent(state.aiCreativeGroupKey || "__product__")}`); renderAiImageJob(); } catch(e) { console.warn("AI image job load failed",e); }
 }
 
+let aiGeneratingBusy = false;
 async function generateAiImages(requestedSlots = null) {
+  if (aiGeneratingBusy) { toast("已有生图任务在处理中，请等待完成后再操作", "error"); return; }
   if(!state.shopId || !state.sourceProduct?.id){toast("请先选择采集商品","error");return;}
   if(state.aiImageJob?.status === "interrupted" && !window.confirm("上一次任务因后端重启中断，供应商是否已扣费无法确认。确认已核对沧猿调用明细后，才开始一个新的付费生图批次。继续吗？")) return;
+  aiGeneratingBusy = true;
   const sourceId=state.sourceProduct.id;
   const mode = $("#le-ai-generate-mode")?.value || "all";
   const slots = Array.isArray(requestedSlots) && requestedSlots.length ? requestedSlots : (mode === "hero" ? ["hero"] : AI_IMAGE_DEFAULT_SLOTS.map(item => item.slot));
@@ -2218,12 +2221,13 @@ async function generateAiImages(requestedSlots = null) {
     const resp=await api("POST",`/api/v1/shops/${state.shopId}/ai-images/generate`,{source_product_id:sourceId,listing_draft_id:state.draftId||null,creative_group_key:state.aiCreativeGroupKey || "__product__",slots});
     state.aiImageJob=resp;
     if (resp && resp.should_start === false) {
-      toast(`已有生图任务运行中，本次未提交新任务；当前只重做“${slotTitle}”这张`, "");
+      toast("已有生图任务运行中，本次未提交新任务；请等待当前任务完成后，再对指定图片重做", "");
     } else {
       toast(`${slotTitle}任务已提交，可继续编辑其他字段`, "success");
     }
     renderAiImageJob();
-    while (["queued","analyzing","generating"].includes(state.aiImageJob?.status)) {
+    const pollDeadline = Date.now() + 5*60*1000; // stop auto-refresh after 5 min to avoid endless UI flicker
+    while (["queued","analyzing","generating"].includes(state.aiImageJob?.status) && Date.now() < pollDeadline) {
       await new Promise(resolve=>setTimeout(resolve,3000));
       if(state.sourceProduct?.id!==sourceId)return;
       const prevKey = [state.aiImageJob?.status, (state.aiImageJob?.attempt_history||[]).length, (state.aiImageJob?.generated_images||[]).length].join("|");
@@ -2231,11 +2235,20 @@ async function generateAiImages(requestedSlots = null) {
       const nextKey = [state.aiImageJob?.status, (state.aiImageJob?.attempt_history||[]).length, (state.aiImageJob?.generated_images||[]).length].join("|");
       if (prevKey !== nextKey) renderAiImageJob();
     }
-    if(state.aiImageJob?.status==="ready")toast("AI套图已生成，请点击图片选择后使用","success");
+    if(["queued","analyzing","generating"].includes(state.aiImageJob?.status)){
+      toast("任务仍在后台处理，已停止自动刷新；可稍后刷新页面查看结果", "");
+    } else if(state.aiImageJob?.status==="ready"){
+      toast("AI套图已生成，请点击图片选择后使用","success");
+      // Single-slot retry success: auto-select that image so Apply is immediately usable.
+      if (Array.isArray(requestedSlots) && requestedSlots.length === 1) {
+        const slotItem = (state.aiImageJob?.generated_images||[]).find(x => x.slot === requestedSlots[0]);
+        if (slotItem) { state.selectedAiImages.clear(); state.selectedAiImages.add(slotItem.url); renderAiImageJob(); toast(`“${slotTitle}”已重新生成并自动选中，可直接应用`, "success"); }
+      }
+    }
     else if(state.aiImageJob?.status==="failed")toast(`套图部分失败，但已生成 ${state.aiImageJob.generated_images?.length || 0} 张仍可选择使用`, "");
   }
   catch(e){toast("AI套图生成失败："+e.message,"error"); await loadAiImageJob();}
-  finally{btn.disabled=false;btn.textContent="✨ 开始生图";}
+  finally{btn.disabled=false;btn.textContent="✨ 开始生图"; aiGeneratingBusy = false;}
 }
 
 async function applyAiImages(skipConfirm = false, applyAll = false) {

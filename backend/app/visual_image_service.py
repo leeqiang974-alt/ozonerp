@@ -17,7 +17,7 @@ from .secret_paths import api_file
 ROOT = Path(__file__).resolve().parents[2]
 OUTPUT_DIR = ROOT / "frontend" / "generated" / "ai-images"
 PUBLIC_PREFIX = os.getenv("GENERATED_IMAGE_PUBLIC_BASE", "http://127.0.0.1:5500/generated/ai-images").rstrip("/")
-STYLE_LOCK = "premium Ozon ecommerce system; warm off-white #F7F2EA, deep charcoal text, restrained metallic-gold accents, modern geometric sans-serif, thin-line icons, neutral-warm studio light, generous whitespace"
+STYLE_LOCK = "premium ecommerce product presentation; warm off-white #F7F2EA clean background, restrained metallic-gold accents, minimal layout with generous whitespace, neutral-warm studio light, sharp product focus; absolutely no decorative lettering, no icons, no logos, no watermarks"
 PRODUCT_GROUP_KEY = "__product__"
 AI_IMAGE_SLOTS = [
     "hero", "dimensions", "details", "steps", "lifestyle",
@@ -281,7 +281,7 @@ def plan(product: SourceProductRecord, analysis: dict[str, Any], creative_group_
     dims = json.dumps(analysis.get("dimensions") or {}, ensure_ascii=False)
     excluded = json.dumps(analysis.get("not_included") or [], ensure_ascii=False)
     group_lock = f" STYLE VARIANT LOCK: this is only style '{creative_group_label}'. Never use another style, pattern, colourway or SKU image." if creative_group_label else ""
-    common = f"Campaign Style Lock: {STYLE_LOCK}. Product truth (never invent): sold product {analysis.get('sold_product') or product.title}; visible facts {facts}; not included {excluded}.{group_lock} Preserve exact identity, quantity, color, structure and visible hardware. Premium marketplace product infographic, vertical 3:4, clean minimal design. Text on image: ONLY verified numeric measurements (e.g. 7.5 cm, 2 шт) and the variant color name may appear; absolutely no invented words, no lettering, no English words, no Chinese/CJK characters, no 'Ozon'/'OZONE' or any brand or store name, no watermark, no QR, no fake certification, no decorative symbols. Never create, retain, or embellish LGBT/sexual-orientation/gender-identity messaging, rainbow/pride flags, transgender symbols, or related slogans."
+    common = f"Campaign Style Lock: {STYLE_LOCK}. Product truth (never invent): sold product {analysis.get('sold_product') or product.title}; visible facts {facts}; not included {excluded}.{group_lock} Preserve exact identity, quantity, color, structure and visible hardware. Premium marketplace product infographic, vertical 3:4, clean minimal design. ZERO TEXT RULE — the reference photo contains Chinese/English/Russian text, labels and watermarks: ERASE all of them completely, never redraw, imitate or invent any characters. The final image must contain NO characters of ANY language: no Latin, no Cyrillic, no Chinese/CJK, no letters, no words, no brand names, no 'Ozon'/'OZONE', no watermark, no logo, no icon, no QR, no certification, no decorative symbols. If a size label is genuinely required, use at most one small plain white numeric label such as '7.5 cm' or '2 шт'; nothing else textual may appear. Never create, retain, or embellish LGBT/sexual-orientation/gender-identity messaging, rainbow/pride flags, transgender symbols, or related slogans."
     # Style-exclusive hero: when generating for a specific style/SKU, the hero
     # must feature that variant's identity (color/pattern/quantity/size) as the
     # primary differentiator, not a generic product shot.
@@ -291,7 +291,7 @@ def plan(product: SourceProductRecord, analysis: dict[str, Any], creative_group_
     if sku_exclusive_info:
         exclusive_text = json.dumps(sku_exclusive_info, ensure_ascii=False)
         hero_exclusive += f" Feature this variant's exclusive attributes on the hero as clean visual emphasis (minimal numeric/color labels only, no invented words): {exclusive_text}. "
-    hero_prompt = common + hero_exclusive + " Premium hero infographic, product 38%, minimal verified labels only (numeric size/quantity and color); no headline, no invented lettering."
+    hero_prompt = common + hero_exclusive + " Premium hero infographic, product 38% centered on a clean neutral background, ZERO text anywhere — no headline, no labels, no letters, no watermark; clean product-only shot."
     return [
         {"slot":"hero","title":"销售首图","prompt":hero_prompt},
         {"slot":"dimensions","title":"尺寸规格","prompt":common+f" E-commerce dimension infographic, top-down. Only verified dimensions: {dims}. If none, show structure without numbers."},

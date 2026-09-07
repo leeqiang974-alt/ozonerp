@@ -31,8 +31,13 @@ class ShopUpdate(BaseModel):
 class ShopRead(ShopBase):
     model_config = ConfigDict(from_attributes=True)
     id: int
+    cny_rub_rate: float | None = None
     created_at: datetime
     updated_at: datetime
+
+
+class ShopCostSettingsUpdate(BaseModel):
+    cny_rub_rate: float | None = Field(default=None, gt=0)
 
 
 class OzonCredentialUpsert(BaseModel):

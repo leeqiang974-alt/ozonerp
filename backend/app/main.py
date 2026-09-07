@@ -26,7 +26,7 @@ from .models import ApiCredential, Shop
 from .schemas import OzonCredentialStatus, OzonCredentialUpsert, ShopCreate, ShopRead, ShopUpdate
 from .security import CredentialEncryptionUnavailable, encrypt_secret
 from .sync_service import sync_category_cache, sync_fbs_postings, sync_fbs_product_images, sync_products
-from .schemas import FbsPostingDetailRead, FbsPostingRead, FbsPostingSyncRequest, ListingDraftCreate, ListingDraftRead, ListingTemplateCreate, ListingValidationRead, ProductRead, ProductSyncRequest, SkuBulkCostRequest, SkuCostItemsRequest, SyncRunRead, ListingAttributeValueCreate, ListingVariantCreate
+from .schemas import FbsPostingDetailRead, FbsPostingRead, FbsPostingSyncRequest, ListingDraftCreate, ListingDraftRead, ListingTemplateCreate, ListingValidationRead, ProductRead, ProductSyncRequest, ShopCostSettingsUpdate, SkuBulkCostRequest, SkuCostItemsRequest, SyncRunRead, ListingAttributeValueCreate, ListingVariantCreate
 from .listing_service import build_variant_image_list, normalize_dictionary_attribute_value, validate_listing_draft
 from .listing_cache_service import promote_legacy_listing_caches
 from .pricing import PriceInput, PricingService
@@ -1096,6 +1096,25 @@ def auto_sync_shop_view(
         if decision["status"] == "started" and decision["lease_owner"]:
             background_tasks.add_task(run_auto_sync_resource, shop_id, decision["resource"], decision["lease_owner"])
     return decisions
+
+
+@app.get("/api/v1/shops/{shop_id}/cost-settings")
+def get_shop_cost_settings(shop_id: int, db: Session = Depends(get_db)) -> dict:
+    shop = db.get(Shop, shop_id)
+    if not shop:
+        raise HTTPException(status_code=404, detail="店铺不存在")
+    rate = shop.cny_rub_rate
+    return {"cny_rub_rate": float(rate) if rate is not None else None}
+
+
+@app.put("/api/v1/shops/{shop_id}/cost-settings")
+def update_shop_cost_settings(shop_id: int, payload: ShopCostSettingsUpdate, db: Session = Depends(get_db)) -> dict:
+    shop = db.get(Shop, shop_id)
+    if not shop:
+        raise HTTPException(status_code=404, detail="店铺不存在")
+    shop.cny_rub_rate = payload.cny_rub_rate
+    db.commit()
+    return {"cny_rub_rate": payload.cny_rub_rate}
 
 
 @app.post("/api/v1/shops/{shop_id}/skus/cost-items")

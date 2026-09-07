@@ -343,6 +343,12 @@
             <button class="primary" id="save-cost-btn" onclick="saveSkuCostEdits()" disabled>保存成本价修改</button>
             <button class="primary" onclick="openBulkCostDialog()">批量填成本价</button>
           </div>
+          <div style="display:flex;gap:8px;align-items:center;margin-top:10px;font-size:13px;color:#8a7357">
+            <label for="cost-rate-input">成本汇率（¥→₽，保存成本价时自动同步 Ozon 后台成本；留空则只写本地）：</label>
+            <input id="cost-rate-input" type="number" step="0.01" min="0" placeholder="例：12.5" style="width:110px;padding:6px 10px;border:1px solid #d8c9ad;border-radius:8px;background:#fff;color:#5c4a3a" />
+            <button class="ghost" onclick="saveCostRateSetting()">保存汇率</button>
+            <span id="cost-rate-status" style="color:#a08a6a"></span>
+          </div>
         </div>
         <section class="panel">
           <table>
@@ -1314,7 +1320,7 @@
       </form>
     </dialog>
     <div id="toast" role="status"></div>
-                 <script src="./app.js?v=129"></script>
+                 <script src="./app.js?v=130"></script>
     <script src="./quick-review.js?v=2"></script>
     <script src="./qr-injector.js"></script>
     <div id="image-modal" class="image-modal" style="display:none;position:fixed;inset:0;background:#000000e6;z-index:9999;place-items:center;padding:24px;cursor:zoom-out">

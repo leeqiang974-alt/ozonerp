@@ -1168,7 +1168,7 @@ def bulk_set_sku_cost(shop_id: int, payload: SkuBulkCostRequest, db: Session = D
 
 @app.get("/api/v1/shops/{shop_id}/fbs-postings", response_model=list[FbsPostingRead])
 def list_fbs_postings(shop_id: int, status_filter: str | None = None, db: Session = Depends(get_db)) -> list[FbsPostingRecord]:
-    statement = select(FbsPostingRecord).where(FbsPostingRecord.shop_id == shop_id)
+    statement = select(FbsPostingRecord).options(selectinload(FbsPostingRecord.lines)).where(FbsPostingRecord.shop_id == shop_id)
     if status_filter:
         statement = statement.where(FbsPostingRecord.normalized_status == status_filter)
     return list(db.scalars(statement.order_by(FbsPostingRecord.pack_by.asc().nulls_last(), FbsPostingRecord.id.desc()).limit(500)))

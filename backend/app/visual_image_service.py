@@ -463,7 +463,7 @@ def _overlay_russian_text(path: Path, slot: str, title_ru: str, desc_ru: str, di
     Failure must never break generation, so every error is swallowed."""
     try:
         from PIL import Image, ImageDraw, ImageFont
-        if slot not in ("hero", "dimensions"):
+        if slot not in ("hero", "dimensions", "details"):
             return
         img = Image.open(path).convert("RGB")
         W, H = img.size
@@ -484,24 +484,29 @@ def _overlay_russian_text(path: Path, slot: str, title_ru: str, desc_ru: str, di
                 text = text[:-1]
             return text
 
-        bar_h = max(int(H * 0.10), 90)
+        bar_h = max(int(H * 0.13), 120)
         draw.rectangle([0, H - bar_h, W, H], fill=(247, 242, 234))
         if slot == "hero":
-            title = _fit((title_ru or "").strip(), ImageFont.truetype(font_path, max(int(W * 0.034), 22)), int(W * 0.92))
-            fnt = ImageFont.truetype(font_path, max(int(W * 0.034), 22))
-            b = draw.textbbox((0, 0), title, font=fnt)
-            draw.text(((W - (b[2] - b[0])) / 2, H - bar_h + max((bar_h - int(W * 0.034) * 2.4) / 2, 6)), title, fill=(40, 40, 40), font=fnt)
-            desc = _fit((desc_ru or "").strip(), ImageFont.truetype(font_path, max(int(W * 0.022), 14)), int(W * 0.92))
-            if desc:
-                fntd = ImageFont.truetype(font_path, max(int(W * 0.022), 14))
-                b2 = draw.textbbox((0, 0), desc, font=fntd)
-                draw.text(((W - (b2[2] - b2[0])) / 2, H - bar_h + int(W * 0.034) * 1.7), desc, fill=(95, 95, 95), font=fntd)
+            size_t = max(int(W * 0.028), 22)
+            fnt = ImageFont.truetype(font_path, size_t)
+            title = _fit((title_ru or "").strip(), fnt, int(W * 0.94))
+            if title:
+                b = draw.textbbox((0, 0), title, font=fnt)
+                draw.text(((W - (b[2] - b[0])) / 2, H - bar_h + 14), title, fill=(40, 40, 40), font=fnt)
         elif slot == "dimensions":
-            label = _fit(dims_label or "", ImageFont.truetype(font_path, max(int(W * 0.032), 20)), int(W * 0.92))
+            size_d = max(int(W * 0.032), 20)
+            fnt = ImageFont.truetype(font_path, size_d)
+            label = _fit(dims_label or "", fnt, int(W * 0.94))
             if label:
-                fnt = ImageFont.truetype(font_path, max(int(W * 0.032), 20))
                 b = draw.textbbox((0, 0), label, font=fnt)
-                draw.text(((W - (b[2] - b[0])) / 2, H - bar_h + (bar_h - int(W * 0.032) * 1.3) / 2), label, fill=(60, 60, 60), font=fnt)
+                draw.text(((W - (b[2] - b[0])) / 2, H - bar_h + (bar_h - size_d * 1.3) / 2), label, fill=(60, 60, 60), font=fnt)
+        elif slot == "details":
+            size_d = max(int(W * 0.022), 14)
+            fnt = ImageFont.truetype(font_path, size_d)
+            desc = _fit((desc_ru or "").strip(), fnt, int(W * 0.94))
+            if desc:
+                b = draw.textbbox((0, 0), desc, font=fnt)
+                draw.text(((W - (b[2] - b[0])) / 2, H - bar_h + (bar_h - size_d * 1.3) / 2), desc, fill=(90, 90, 90), font=fnt)
         img.save(path)
     except Exception:
         pass

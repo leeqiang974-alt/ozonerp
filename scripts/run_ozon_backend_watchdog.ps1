@@ -32,6 +32,14 @@ $env:ERP_LOCAL_SECRET_KEY_PATH = Join-Path $ProjectRoot '.local-secrets\credenti
 # products itself; FastAPI startup only recovers persisted rows and the batch
 # worker remains idempotent on Ozon task_id.
 while ($true) {
+  # Port guard: another backend (manual start, duplicate watchdog) may already
+  # own :Port. Starting uvicorn on an occupied port would loop-crash with
+  # Errno 10048, so only start when nothing is listening.
+  $listening = Get-NetTCPConnection -LocalPort $Port -State Listen -ErrorAction SilentlyContinue
+  if ($listening) {
+    Start-Sleep -Seconds 30
+    continue
+  }
   $stamp = Get-Date -Format 'yyyyMMdd-HHmmss'
   $outLog = Join-Path $logDir "backend-$stamp.out.log"
   $errLog = Join-Path $logDir "backend-$stamp.err.log"

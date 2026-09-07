@@ -297,7 +297,7 @@ def plan(product: SourceProductRecord, analysis: dict[str, Any], creative_group_
         {"slot":"dimensions","title":"尺寸规格","prompt":common+f" E-commerce dimension infographic, top-down. Only verified dimensions: {dims}. If none, show structure without numbers."},
         {"slot":"details","title":"结构细节","prompt":common+" E-commerce detail infographic with one full product and two macro callouts of real visible structure/material."},
         {"slot":"steps","title":"使用步骤","prompt":common+" E-commerce three-step usage infographic based only on evidenced use; never imply tools are included."},
-        {"slot":"lifestyle","title":"场景用途","prompt":common+" Premium lifestyle infographic with three believable uses, clearly labeled as examples, not package contents."},
+        {"slot":"lifestyle","title":"场景用途","prompt":common+" Premium lifestyle infographic with three believable use scenes of the product; NO text labels, NO captions, NO lettering, NO framed text — zero text anywhere, images only."},
         {"slot":"scene_home","title":"居家场景","prompt":common+" Premium believable home scene. Product is clearly visible and remains the exact selected style; no other styles in frame."},
         {"slot":"scene_entry","title":"玄关场景","prompt":common+" Premium believable entryway scene. Product is clearly visible and remains the exact selected style; no other styles in frame."},
         {"slot":"scene_gift","title":"礼赠场景","prompt":common+" Premium believable gift or seasonal scene only when supported by product truth; otherwise use a neutral lifestyle scene. Preserve the exact selected style."},

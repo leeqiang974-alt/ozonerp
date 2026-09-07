@@ -452,6 +452,24 @@ def _dims_label(dims) -> str:
     """Format real dimensions into a Russian-style label like '7,5 см × 6,0 см'.
     Handles both '7.5cm / 2.95inch' and plain numbers, and tolerates LLM
     output drift (sometimes dimensions comes back as a string)."""
+    if isinstance(dims, list):
+        parts = []
+        for item in dims:
+            if not isinstance(item, dict):
+                continue
+            t = str(item.get("type") or "")
+            if t not in ("height", "width", "length"):
+                continue
+            v = item.get("value")
+            if not v:
+                continue
+            m = str(v).split("/")[0].strip().replace(".", ",")
+            if "см" not in m:
+                m = m.replace("cm", " см") if "cm" in m.lower() else m + " см"
+            parts.append(m.strip())
+        if parts:
+            return " × ".join(parts)
+        return ""
     if isinstance(dims, str):
         import re
         # LLM sometimes serializes dimensions as "{'value': 7,5, 'unit': ' см', ...} × {...}"

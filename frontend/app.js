@@ -1882,10 +1882,12 @@ async function saveSkuCostEdits() {
   const dirty = Object.entries(window.skuCostDirty || {});
   if (!shopId) { toast("请先选择一个店铺。", true); return; }
   if (!dirty.length) { toast("没有需要保存的修改", true); return; }
+  const currencyCode = ($("#cost-currency-select")?.value || "CNY").toUpperCase();
   const rateText = ($("#cost-rate-input")?.value || "").trim();
   const rate = rateText ? Number(rateText) : null;
-  if (rateText && !(rate > 0)) { toast("请先在顶部填写并保存有效汇率，或清空汇率以只写本地", true); return; }
-  const payload = { items: dirty.map(([seller_sku, purchase_cost_cny]) => ({ seller_sku, purchase_cost_cny })) };
+  if (rateText && !(rate > 0)) { toast("汇率无效，请先在顶部修正", true); return; }
+  if (currencyCode === "RUB" && !(rate > 0)) { toast("RUB 结算店需要先在顶部填写卢布汇率", true); return; }
+  const payload = { items: dirty.map(([seller_sku, purchase_cost_cny]) => ({ seller_sku, purchase_cost_cny })), currency_code: currencyCode };
   if (rate !== null) payload.cny_rub_rate = rate;
   try {
     const resp = await fetch(`${apiBase}/api/v1/shops/${shopId}/skus/cost-items`, {
@@ -1899,8 +1901,8 @@ async function saveSkuCostEdits() {
     if (data.ozon_updated !== undefined) {
       msg += `；Ozon 同步 ${data.ozon_updated} 个`;
       if (data.ozon_failed && data.ozon_failed.length) msg += `，失败 ${data.ozon_failed.length} 个`;
-    } else if (!rate) {
-      msg += `（未同步 Ozon：未配置汇率）`;
+    } else if (!currencyCode) {
+      msg += `（未同步 Ozon）`;
     }
     toast(msg);
     window.skuCostDirty = {};
@@ -1916,24 +1918,28 @@ async function loadCostRateSetting() {
     const data = await resp.json();
     const input = $("#cost-rate-input");
     if (input) input.value = data.cny_rub_rate != null ? data.cny_rub_rate : "";
+    const curSel = $("#cost-currency-select");
+    if (curSel && data.currency_code) curSel.value = data.currency_code;
     const st = $("#cost-rate-status");
-    if (st) st.textContent = data.cny_rub_rate != null ? `当前汇率 ${data.cny_rub_rate}（保存成本价将同步 Ozon）` : "未配置汇率（保存成本价只写本地）";
+    if (st) st.textContent = `货币 ${data.currency_code || "RUB"}${data.cny_rub_rate != null ? ` · 汇率 ${data.cny_rub_rate}` : ""}（保存成本价将同步 Ozon 成本）`;
   } catch (_) {}
 }
 async function saveCostRateSetting() {
   const shopId = $("#shop-filter").value;
   if (!shopId) { toast("请先选择一个店铺。", true); return; }
+  const currencyCode = ($("#cost-currency-select")?.value || "CNY").toUpperCase();
   const text = ($("#cost-rate-input")?.value || "").trim();
   const rate = text ? Number(text) : null;
   if (text && !(rate > 0)) { toast("汇率无效", true); return; }
+  if (currencyCode === "RUB" && !(rate > 0)) { toast("RUB 结算店需要填写卢布汇率", true); return; }
   try {
     const resp = await fetch(`${apiBase}/api/v1/shops/${shopId}/cost-settings`, {
       method: "PUT",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ cny_rub_rate: rate }),
+      body: JSON.stringify({ cny_rub_rate: rate, currency_code: currencyCode }),
     });
-    if (!resp.ok) throw new Error((await resp.json()).detail || "保存汇率失败");
-    toast(rate != null ? `汇率已保存 ${rate}，保存成本价将自动同步 Ozon` : "已清空汇率（保存成本价只写本地）");
+    if (!resp.ok) throw new Error((await resp.json()).detail || "保存失败");
+    toast(`已保存：货币 ${currencyCode}${rate != null ? ` · 汇率 ${rate}` : ""}（保存成本价将自动同步 Ozon 成本）`);
     await loadCostRateSetting();
   } catch (e) { toast(e.message || "保存汇率失败", true); }
 }

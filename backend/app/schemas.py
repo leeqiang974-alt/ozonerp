@@ -38,6 +38,7 @@ class ShopRead(ShopBase):
 
 class ShopCostSettingsUpdate(BaseModel):
     cny_rub_rate: float | None = Field(default=None, gt=0)
+    currency_code: str | None = Field(default=None, max_length=3)
 
 
 class OzonCredentialUpsert(BaseModel):
@@ -100,6 +101,7 @@ class SkuBulkCostRequest(BaseModel):
     sku_keyword: str
     purchase_cost_cny: float
     cny_rub_rate: float | None = None
+    currency_code: str | None = None
 
 
 class SkuCostItem(BaseModel):
@@ -110,6 +112,7 @@ class SkuCostItem(BaseModel):
 class SkuCostItemsRequest(BaseModel):
     items: list[SkuCostItem]
     cny_rub_rate: float | None = None
+    currency_code: str | None = None
 
 
 class ProductRead(BaseModel):

@@ -1104,7 +1104,7 @@ def get_shop_cost_settings(shop_id: int, db: Session = Depends(get_db)) -> dict:
     if not shop:
         raise HTTPException(status_code=404, detail="店铺不存在")
     rate = shop.cny_rub_rate
-    return {"cny_rub_rate": float(rate) if rate is not None else None}
+    return {"cny_rub_rate": float(rate) if rate is not None else None, "currency_code": (shop.currency or "RUB").upper()}
 
 
 @app.put("/api/v1/shops/{shop_id}/cost-settings")
@@ -1112,9 +1112,12 @@ def update_shop_cost_settings(shop_id: int, payload: ShopCostSettingsUpdate, db:
     shop = db.get(Shop, shop_id)
     if not shop:
         raise HTTPException(status_code=404, detail="店铺不存在")
-    shop.cny_rub_rate = payload.cny_rub_rate
+    if payload.currency_code is not None:
+        shop.currency = payload.currency_code.upper()
+    if payload.cny_rub_rate is not None:
+        shop.cny_rub_rate = payload.cny_rub_rate
     db.commit()
-    return {"cny_rub_rate": payload.cny_rub_rate}
+    return {"cny_rub_rate": float(shop.cny_rub_rate) if shop.cny_rub_rate is not None else None, "currency_code": (shop.currency or "RUB").upper()}
 
 
 @app.post("/api/v1/shops/{shop_id}/skus/cost-items")
@@ -1134,14 +1137,17 @@ def bulk_set_sku_cost_items(shop_id: int, payload: SkuCostItemsRequest, db: Sess
     ozon_failed: list[dict] = []
     ozon_updated = 0
     targets = skus
-    if payload.cny_rub_rate and payload.cny_rub_rate > 0:
+    shop_row = db.get(Shop, shop_id)
+    currency_code = (payload.currency_code or (shop_row.currency if shop_row else None) or "RUB").upper()
+    do_convert = currency_code == "RUB" and payload.cny_rub_rate and payload.cny_rub_rate > 0
+    if currency_code:
         from .sync_service import _credentials
         from .integrations.ozon_seller import OzonSellerClient
         client_id, api_key = _credentials(db, shop_id)
         prices = []
         for sku in skus:
-            net_rub = round(sku_map[sku.seller_sku] * payload.cny_rub_rate, 2)
-            prices.append({"offer_id": sku.seller_sku, "net_price": str(net_rub)})
+            net_val = round(sku_map[sku.seller_sku] * payload.cny_rub_rate, 2) if do_convert else sku_map[sku.seller_sku]
+            prices.append({"offer_id": sku.seller_sku, "net_price": str(net_val), "currency_code": currency_code})
         try:
             with OzonSellerClient(client_id=client_id, api_key=api_key) as client:
                 resp = client.update_product_prices(prices=prices)
@@ -1203,12 +1209,15 @@ def bulk_set_sku_cost(shop_id: int, payload: SkuBulkCostRequest, db: Session = D
     ozon_failed: list[dict] = []
     ozon_updated = 0
     targets = skus
-    if payload.cny_rub_rate and payload.cny_rub_rate > 0:
+    shop_row = db.get(Shop, shop_id)
+    currency_code = (payload.currency_code or (shop_row.currency if shop_row else None) or "RUB").upper()
+    do_convert = currency_code == "RUB" and payload.cny_rub_rate and payload.cny_rub_rate > 0
+    if currency_code:
         from .sync_service import _credentials
         from .integrations.ozon_seller import OzonSellerClient
         client_id, api_key = _credentials(db, shop_id)
-        net_rub = round(float(payload.purchase_cost_cny) * payload.cny_rub_rate, 2)
-        prices = [{"offer_id": sku.seller_sku, "net_price": str(net_rub)} for sku in skus]
+        net_val = round(float(payload.purchase_cost_cny) * payload.cny_rub_rate, 2) if do_convert else float(payload.purchase_cost_cny)
+        prices = [{"offer_id": sku.seller_sku, "net_price": str(net_val), "currency_code": currency_code} for sku in skus]
         try:
             with OzonSellerClient(client_id=client_id, api_key=api_key) as client:
                 resp = client.update_product_prices(prices=prices)

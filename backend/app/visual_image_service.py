@@ -131,6 +131,20 @@ def llm_config() -> tuple[str, str, str]:
     return (os.getenv("VISUAL_LLM_API_KEY", "").strip() or keys.get("LLM_API_KEY", ""), os.getenv("VISUAL_LLM_BASE_URL", "https://ai.cangyuansuanli.cn/v1").rstrip("/"), os.getenv("VISUAL_LLM_MODEL", "gpt-5.6-terra"))
 
 
+def llm_config_chain() -> list[tuple[str, str, str]]:
+    """Candidate chain for vision analysis: Agnes first, Cangyuan (Terra) fallback.
+    Returns [(key, base, model), ...]; caller tries each in order."""
+    keys = _keys()
+    chain: list[tuple[str, str, str]] = []
+    agnes = (os.getenv("AGNES_API_KEY", "").strip() or keys.get("AGNES_API_KEY", "")).strip()
+    if agnes:
+        chain.append((agnes, "https://apihub.agnes-ai.com/v1", os.getenv("AGNES_VISUAL_LLM_MODEL", "agnes-2.5-flash")))
+    cangyuan_key = os.getenv("VISUAL_LLM_API_KEY", "").strip() or keys.get("LLM_API_KEY", "")
+    if cangyuan_key:
+        chain.append((cangyuan_key, os.getenv("VISUAL_LLM_BASE_URL", "https://ai.cangyuansuanli.cn/v1").rstrip("/"), os.getenv("VISUAL_LLM_MODEL", "gpt-5.6-terra")))
+    return chain
+
+
 def image_config() -> tuple[str, str, str]:
     keys = _keys()
     agnes = (os.getenv("AGNES_API_KEY", "").strip() or keys.get("AGNES_API_KEY", "")).strip()
@@ -148,27 +162,45 @@ def image_config() -> tuple[str, str, str]:
     return (os.getenv("IMAGE_API_KEY", "").strip() or keys.get("IMAGE_API_KEY", ""), os.getenv("IMAGE_BASE_URL", "https://ai.cangyuansuanli.cn/v1").rstrip("/"), requested)
 
 
+def image_config_chain() -> list[tuple[str, str, str]]:
+    """Candidate chain for image generation: Agnes first, Cangyuan fallback."""
+    keys = _keys()
+    chain: list[tuple[str, str, str]] = []
+    agnes = (os.getenv("AGNES_API_KEY", "").strip() or keys.get("AGNES_API_KEY", "")).strip()
+    if agnes:
+        chain.append((agnes, "https://apihub.agnes-ai.com/v1", os.getenv("AGNES_IMAGE_MODEL", "agnes-image-2.5-flash")))
+    cangyuan_key = os.getenv("IMAGE_API_KEY", "").strip() or keys.get("IMAGE_API_KEY", "")
+    if cangyuan_key:
+        requested = os.getenv("IMAGE_MODEL", "gpt-image-2").strip().lower()
+        if requested in {"imag-2", "image-2", "gpt-image-2-1k", "image-2-1k"}:
+            requested = "gpt-image-2"
+        chain.append((cangyuan_key, os.getenv("IMAGE_BASE_URL", "https://ai.cangyuansuanli.cn/v1").rstrip("/"), requested))
+    return chain
+
+
 def chat_json(messages: list[dict[str, Any]]) -> tuple[dict[str, Any], dict[str, Any]]:
-    key, base, model = llm_config()
-    if not key: raise RuntimeError("VISUAL_LLM_API_KEY/LLM_API_KEY 未配置")
-    payload = {"model": model, "messages": messages, "temperature": 0.1, "max_tokens": 5000}
+    configs = llm_config_chain()
+    if not configs:
+        raise RuntimeError("VISUAL_LLM_API_KEY/LLM_API_KEY 未配置")
     last = ""
-    for attempt, wait in enumerate((0, 2, 5)):
-        if wait: time.sleep(wait)
-        try:
-            response = httpx.post(f"{base}/chat/completions", headers={"Authorization": f"Bearer {key}"}, json=payload, timeout=90)
-            if response.is_error:
-                # Preserve the provider's validation message; a bare 400 is not
-                # actionable when diagnosing one malformed reference image.
-                detail = response.text.strip().replace("\n", " ")[:600]
-                raise RuntimeError(f"HTTP {response.status_code}: {detail}")
-            body = response.json(); choices = body.get("choices") or []
-            if not choices: raise RuntimeError("LLM返回空choices")
-            text = choices[0].get("message", {}).get("content") or choices[0].get("message", {}).get("reasoning_content") or ""
-            text = re.sub(r"^```(?:json)?\s*|\s*```$", "", text.strip())
-            return json.loads(text), body.get("usage") or {}
-        except Exception as exc: last = str(exc)
-    raise RuntimeError(f"Terra图片分析失败：{last[:500]}")
+    for key, base, model in configs:
+        payload = {"model": model, "messages": messages, "temperature": 0.1, "max_tokens": 5000}
+        for attempt, wait in enumerate((0, 2, 5)):
+            if wait: time.sleep(wait)
+            try:
+                response = httpx.post(f"{base}/chat/completions", headers={"Authorization": f"Bearer {key}"}, json=payload, timeout=90)
+                if response.is_error:
+                    # Preserve the provider's validation message; a bare 400 is not
+                    # actionable when diagnosing one malformed reference image.
+                    detail = response.text.strip().replace("\n", " ")[:600]
+                    raise RuntimeError(f"HTTP {response.status_code}: {detail}")
+                body = response.json(); choices = body.get("choices") or []
+                if not choices: raise RuntimeError("LLM返回空choices")
+                text = choices[0].get("message", {}).get("content") or choices[0].get("message", {}).get("reasoning_content") or ""
+                text = re.sub(r"^```(?:json)?\s*|\s*```$", "", text.strip())
+                return json.loads(text), body.get("usage") or {}
+            except Exception as exc: last = str(exc)
+    raise RuntimeError(f"图片分析失败（已尝试 {len(configs)} 个供应商）：{last[:500]}")
 
 
 def _source_variant_group(variant: SourceVariantRecord) -> tuple[str, str]:
@@ -249,7 +281,7 @@ def plan(product: SourceProductRecord, analysis: dict[str, Any], creative_group_
     dims = json.dumps(analysis.get("dimensions") or {}, ensure_ascii=False)
     excluded = json.dumps(analysis.get("not_included") or [], ensure_ascii=False)
     group_lock = f" STYLE VARIANT LOCK: this is only style '{creative_group_label}'. Never use another style, pattern, colourway or SKU image." if creative_group_label else ""
-    common = f"Campaign Style Lock: {STYLE_LOCK}. PRODUCT TRUTH LOCK: sold product {analysis.get('sold_product') or product.title}; visible facts {facts}; not included {excluded}.{group_lock} Preserve exact identity, quantity, color, structure and visible hardware. Russian Ozon ecommerce image, vertical 3:4, crisp short Russian text. No Chinese, English, price, watermark, QR, fake certification or invented specifications. Never create, retain, or embellish LGBT/sexual-orientation/gender-identity messaging, rainbow/pride flags, transgender symbols, or related slogans."
+    common = f"Campaign Style Lock: {STYLE_LOCK}. Product truth (never invent): sold product {analysis.get('sold_product') or product.title}; visible facts {facts}; not included {excluded}.{group_lock} Preserve exact identity, quantity, color, structure and visible hardware. Premium marketplace product infographic, vertical 3:4, clean minimal design. Text on image: ONLY verified numeric measurements (e.g. 7.5 cm, 2 шт) and the variant color name may appear; absolutely no invented words, no lettering, no English words, no Chinese/CJK characters, no 'Ozon'/'OZONE' or any brand or store name, no watermark, no QR, no fake certification, no decorative symbols. Never create, retain, or embellish LGBT/sexual-orientation/gender-identity messaging, rainbow/pride flags, transgender symbols, or related slogans."
     # Style-exclusive hero: when generating for a specific style/SKU, the hero
     # must feature that variant's identity (color/pattern/quantity/size) as the
     # primary differentiator, not a generic product shot.
@@ -258,8 +290,8 @@ def plan(product: SourceProductRecord, analysis: dict[str, Any], creative_group_
         hero_exclusive += f" This is the '{creative_group_label}' style variant hero. The product shown MUST be exactly this style's color/pattern — never another style. "
     if sku_exclusive_info:
         exclusive_text = json.dumps(sku_exclusive_info, ensure_ascii=False)
-        hero_exclusive += f" Feature this variant's exclusive attributes prominently on the hero (as Russian labels or visual emphasis): {exclusive_text}. "
-    hero_prompt = common + hero_exclusive + " Premium hero infographic, product 38%, concise Russian headline and exactly three evidence-backed labels that highlight this variant's exclusive attributes (color, quantity, size)."
+        hero_exclusive += f" Feature this variant's exclusive attributes on the hero as clean visual emphasis (minimal numeric/color labels only, no invented words): {exclusive_text}. "
+    hero_prompt = common + hero_exclusive + " Premium hero infographic, product 38%, minimal verified labels only (numeric size/quantity and color); no headline, no invented lettering."
     return [
         {"slot":"hero","title":"销售首图","prompt":hero_prompt},
         {"slot":"dimensions","title":"尺寸规格","prompt":common+f" E-commerce dimension infographic, top-down. Only verified dimensions: {dims}. If none, show structure without numbers."},
@@ -320,8 +352,30 @@ def generate_one(
     before_provider_request: Any | None = None,
     after_provider_response: Any | None = None,
 ) -> tuple[str, dict[str, Any]]:
-    key, base, model = image_config()
-    if not key: raise RuntimeError("IMAGE_API_KEY未配置")
+    """Generate one image, trying each provider in the chain (Agnes → Cangyuan)."""
+    configs = image_config_chain()
+    if not configs:
+        raise RuntimeError("IMAGE_API_KEY未配置")
+    last_error = None
+    for key, base, model in configs:
+        try:
+            return _generate_one_with(prompt, refs, job_id, slot, key, base, model, before_provider_request, after_provider_response)
+        except Exception as exc:
+            last_error = str(exc)[:1400]
+    raise RuntimeError(last_error or f"图片生成失败（已尝试 {len(configs)} 个供应商）")
+
+
+def _generate_one_with(
+    prompt: str,
+    refs: list[str],
+    job_id: int,
+    slot: str,
+    key: str,
+    base: str,
+    model: str,
+    before_provider_request: Any | None,
+    after_provider_response: Any | None,
+) -> tuple[str, dict[str, Any]]:
     # The analysis stage may inspect up to 12 URLs, but paid Image 2 receives
     # exactly one validated reference image. This avoids multipart gateway
     # failures and prevents dimensions/promotional images from changing the
@@ -440,11 +494,12 @@ def generate_set(db: Session, shop_id: int, source_id: int, draft_id: int | None
         generated=generated if isinstance(generated,list) else []
         generated_this_run=0
         failures=[]
-        # Concurrent generation with 2 workers + automatic 503 retry
+        # Serial generation (Agnes cannot handle concurrent image requests —
+        # parallel calls trigger "image queue is full" 503) + long backoff retry
         def _generate_slot_with_retry(slot: str, prompt: str, refs_list: list, jid: int) -> tuple:
             """Generate one slot with automatic 503 queue-full retry. Returns (slot, url, response_meta, error)."""
-            max_retries = 3
-            retry_delays = [5, 10, 15]
+            max_retries = 5
+            retry_delays = [10, 20, 40, 80, 160]
             last_error = None
             for attempt_idx in range(max_retries):
                 try:
@@ -466,10 +521,10 @@ def generate_set(db: Session, shop_id: int, source_id: int, draft_id: int | None
             job.attempt_history_json = json.dumps(history[-300:], ensure_ascii=False)
         db.commit()
 
-        # Concurrent generation with 2 worker threads
+        # Serial generation: max_workers=1 (Agnes image queue is full on concurrency)
         from concurrent.futures import ThreadPoolExecutor, as_completed
         slot_results: dict = {}
-        with ThreadPoolExecutor(max_workers=2) as executor:
+        with ThreadPoolExecutor(max_workers=1) as executor:
             futures = {
                 executor.submit(_generate_slot_with_retry, item["slot"], item["prompt"], refs, job.id): item["slot"]
                 for item in image_plan

@@ -78,6 +78,15 @@ async function saveWatermarkPreset() {
 const $ = (s) => document.querySelector(s);
 const $$ = (s) => document.querySelectorAll(s);
 const esc = (v) => String(v ?? "").replace(/[&<>"']/g, (c) => ({ "&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;" }[c]));
+// Normalize generated-image URLs for display: backend stores http://127.0.0.1:5500/...
+// which only works when the browser runs on the ERP host. Rewrite to current origin.
+function displayImageUrl(u) {
+  const s = String(u || "").trim();
+  if (!s) return "";
+  try {
+    return s.replace(/^https?:\/\/127\.0\.0\.1:5500\//i, `${location.origin}/`).replace(/^https?:\/\/localhost:5500\//i, `${location.origin}/`);
+  } catch (e) { return s; }
+}
 function toast(msg, type = "") { const el = $("#le-toast"); el.textContent = msg; el.className = "show " + type; setTimeout(() => (el.className = ""), 3000); }
 const EDITOR_RETURN_VIEWS = new Set(["collection-box", "automation", "candidate-pool", "bulk-listing", "approval-center", "listing", "jxhy"]);
 function configureEditorBackLink() {
@@ -1532,12 +1541,12 @@ function renderImages() {
   $("#le-image-count").textContent = (images.length || skuCount)
     ? `(${images.length} 张公共产品图${skuCount ? ` + ${skuCount} 张SKU图` : ""})` : "";
   const skuHtml = skuGroups.length
-    ? `<div style="grid-column:1/-1;margin-top:14px;border-top:1px dashed #d0d0d0;padding-top:10px"><div style="font-size:12px;color:#888;margin-bottom:8px">SKU 图集（按变体归属，同时在变体表“产品图”列展示，共 ${skuCount} 张）</div>${skuGroups.map(grp => `<div style="margin-bottom:14px"><div style="font-size:12px;font-weight:600;color:#444;margin-bottom:6px">${esc(grp.skuName)} (${grp.urls.length})</div><div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(120px,1fr));gap:8px">${grp.urls.map(u => `<div style="position:relative;aspect-ratio:1;border:1px solid #e2e2e2;border-radius:5px;overflow:hidden;background:#f7f7f7;cursor:pointer" onclick="zoomSkuImage('${esc(u)}')" title="查看大图"><img src="${esc(u)}" loading="lazy" referrerpolicy="no-referrer" style="width:100%;height:100%;object-fit:cover" /><div style="position:absolute;bottom:0;left:0;right:0;background:rgba(0,0,0,.55);color:#fff;font-size:10px;padding:2px 4px;text-align:center;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">${esc(grp.skuName)}</div></div>`).join("")}</div></div>`).join("")}</div>`
+    ? `<div style="grid-column:1/-1;margin-top:14px;border-top:1px dashed #d0d0d0;padding-top:10px"><div style="font-size:12px;color:#888;margin-bottom:8px">SKU 图集（按变体归属，同时在变体表“产品图”列展示，共 ${skuCount} 张）</div>${skuGroups.map(grp => `<div style="margin-bottom:14px"><div style="font-size:12px;font-weight:600;color:#444;margin-bottom:6px">${esc(grp.skuName)} (${grp.urls.length})</div><div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(120px,1fr));gap:8px">${grp.urls.map(u => `<div style="position:relative;aspect-ratio:1;border:1px solid #e2e2e2;border-radius:5px;overflow:hidden;background:#f7f7f7;cursor:pointer" onclick="zoomSkuImage('${esc(u)}')" title="查看大图"><img src="${esc(displayImageUrl(u))}" loading="lazy" referrerpolicy="no-referrer" style="width:100%;height:100%;object-fit:cover" /><div style="position:absolute;bottom:0;left:0;right:0;background:rgba(0,0,0,.55);color:#fff;font-size:10px;padding:2px 4px;text-align:center;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">${esc(grp.skuName)}</div></div>`).join("")}</div></div>`).join("")}</div>`
     : "";
   g.innerHTML = images.map((url, i) => {
     const selected = state.selectedImages.has(i);
     return `<div class="le-image-card ${i === 0 ? "le-image-primary" : ""} ${selected ? "le-image-selected" : ""}" data-index="${i}" onclick="toggleImageSelect(${i})" style="cursor:pointer">
-      <img src="${esc(url)}" loading="lazy" referrerpolicy="no-referrer" onerror="this.style.opacity=0.3" />
+      <img src="${esc(displayImageUrl(url))}" loading="lazy" referrerpolicy="no-referrer" onerror="this.style.opacity=0.3" />
       <button class="le-image-remove" onclick="event.stopPropagation();removeImage(${i})">×</button>
       <button class="le-image-zoom" onclick="event.stopPropagation();zoomImage(${i})" title="放大查看">\uD83D\uDD0D</button>
       ${selected ? '<div class="le-image-selected-badge">\u2713</div>' : ''}
@@ -1596,7 +1605,7 @@ window.zoomSkuImage = function(url) {
     dialog.addEventListener("click", event => { if (event.target === dialog) dialog.close(); });
     dialog.onkeydown = event => { if (event.key === "Escape") dialog.close(); };
   }
-  $("#le-sku-image-large").src = url;
+  $("#le-sku-image-large").src = displayImageUrl(url);
   dialog.showModal();
   dialog.focus();
 };
@@ -2039,7 +2048,7 @@ function renderAiImageJob() {
     const attempt = attemptsBySlot.get(slot.slot);
     if (generated) {
       const {item,index}=generated;
-      return `<div class="le-ai-image-card selected-ready ${state.selectedAiImages.has(item.url) ? "selected" : ""}" data-ai-image-index="${index}" role="button" tabindex="0" aria-pressed="${state.selectedAiImages.has(item.url)}"><img src="${esc(item.url)}" loading="lazy"><span>${item.slot === "hero" ? "SKU首图 · " : ""}${esc(item.title || slot.title)}</span><small class="le-ai-slot-state success">生成成功</small><div class="le-ai-slot-actions"><button type="button" data-ai-zoom="${index}">放大</button><button type="button" class="le-ai-slot-retry" data-ai-retry-slot="${esc(slot.slot)}">重做此图</button></div></div>`;
+      return `<div class="le-ai-image-card selected-ready ${state.selectedAiImages.has(item.url) ? "selected" : ""}" data-ai-image-index="${index}" role="button" tabindex="0" aria-pressed="${state.selectedAiImages.has(item.url)}"><img src="${esc(displayImageUrl(item.url))}" loading="lazy"><span>${item.slot === "hero" ? "SKU首图 · " : ""}${esc(item.title || slot.title)}</span><small class="le-ai-slot-state success">生成成功</small><div class="le-ai-slot-actions"><button type="button" data-ai-zoom="${index}">放大</button><button type="button" class="le-ai-slot-retry" data-ai-retry-slot="${esc(slot.slot)}">重做此图</button></div></div>`;
     }
     // A missing attempt means this slot was never started/sent, even when an
     // earlier slot caused the overall run to be interrupted.  Only ledger
@@ -2047,8 +2056,14 @@ function renderAiImageJob() {
     const attemptState = attempt?.state || "not_started";
     const stateText = slotLabels[attemptState] || (attemptState === "not_started" ? (["interrupted","failed"].includes(job.status) ? "未开始 · 未发送" : "等待前序图片") : attemptState);
     const errorText = attempt?.error ? String(attempt.error).replace(/\s+/g," ").slice(0,160) : "";
-    const canRetry = !["queued","analyzing","generating"].includes(job.status) && !["provider_requesting","response_received","preparing_reference"].includes(attemptState);
-    return `<div class="le-ai-image-card le-ai-slot-placeholder state-${esc(attemptState)}"><div class="le-ai-slot-empty"><b>${attemptState === "failed" ? "!" : attemptState === "provider_requesting" || attemptState === "response_received" ? "…" : "○"}</b></div><span>${esc(slot.title)}</span><small class="le-ai-slot-state">${esc(stateText)}</small>${errorText ? `<em title="${esc(attempt.error)}">${esc(errorText)}</em>` : ""}${canRetry ? `<button type="button" class="le-ai-slot-retry" data-ai-retry-slot="${esc(slot.slot)}">${attemptState === "failed" || attemptState === "interrupted_unknown" ? "重做此图" : "生成此图"}</button>` : ""}</div>`;
+    const taskRunning = ["queued","analyzing","generating"].includes(job.status);
+    const canRetry = !taskRunning && !["provider_requesting","response_received","preparing_reference"].includes(attemptState);
+    const retryBtn = canRetry
+      ? `<button type="button" class="le-ai-slot-retry" data-ai-retry-slot="${esc(slot.slot)}">${attemptState === "failed" || attemptState === "interrupted_unknown" ? "重做此图" : "生成此图"}</button>`
+      : (taskRunning && (attemptState === "failed" || attemptState === "not_started" || attemptState === "interrupted_unknown")
+          ? `<button type="button" class="le-ai-slot-retry" disabled title="只重做选中的图片，其他图片不受影响；本次任务完成后可重试">等待本次重做</button>`
+          : "");
+    return `<div class="le-ai-image-card le-ai-slot-placeholder state-${esc(attemptState)}"><div class="le-ai-slot-empty"><b>${attemptState === "failed" ? "!" : attemptState === "provider_requesting" || attemptState === "response_received" ? "…" : "○"}</b></div><span>${esc(slot.title)}</span><small class="le-ai-slot-state">${esc(stateText)}</small>${errorText ? `<em title="${esc(attempt.error)}">${esc(errorText)}</em>` : ""}${retryBtn}</div>`;
   }).join("");
   grid.querySelectorAll("[data-ai-image-index]").forEach(card => {
     const toggle = () => { const item=images[Number(card.dataset.aiImageIndex)]; if(!item)return; if(state.selectedAiImages.has(item.url))state.selectedAiImages.delete(item.url);else state.selectedAiImages.add(item.url); renderAiImageJob(); };
@@ -2178,7 +2193,7 @@ function aiAnalysisLabel(value, preferredKeys = []) {
   return Object.entries(value).slice(0, 3).map(([key, item]) => `${key}: ${aiAnalysisLabel(item, [])}`).join("；") || "待判断";
 }
 
-window.zoomAiImage = function(index) { const item=state.aiImageJob?.generated_images?.[index]; if(!item)return; const modal=document.createElement("div"); modal.className="le-ai-image-lightbox"; modal.innerHTML=`<img src="${esc(item.url)}"><button>×</button>`; modal.addEventListener("click",()=>modal.remove()); document.body.appendChild(modal); };
+window.zoomAiImage = function(index) { const item=state.aiImageJob?.generated_images?.[index]; if(!item)return; const modal=document.createElement("div"); modal.className="le-ai-image-lightbox"; modal.innerHTML=`<img src="${esc(displayImageUrl(item.url))}"><button>×</button>`; modal.addEventListener("click",()=>modal.remove()); document.body.appendChild(modal); };
 
 async function loadAiImageJob() {
   state.aiImageJob=null; state.selectedAiImages.clear(); state.selectedAiJobId=null; renderAiImageJob();
@@ -2196,13 +2211,22 @@ async function generateAiImages(requestedSlots = null) {
   const btn=$("#le-ai-generate-images"); btn.disabled=true; btn.textContent="分析并生成中..."; toast(`正在分析图库并生成${slotTitle}，请勿关闭页面`,"");
   try {
     state.selectedAiImages.clear();
-    state.aiImageJob=await api("POST",`/api/v1/shops/${state.shopId}/ai-images/generate`,{source_product_id:sourceId,listing_draft_id:state.draftId||null,creative_group_key:state.aiCreativeGroupKey || "__product__",slots});
-    renderAiImageJob(); toast(`${slotTitle}任务已提交，可继续编辑其他字段`, "success");
+    state.selectedAiJobId = null; // force re-initialize selection on next render
+    const resp=await api("POST",`/api/v1/shops/${state.shopId}/ai-images/generate`,{source_product_id:sourceId,listing_draft_id:state.draftId||null,creative_group_key:state.aiCreativeGroupKey || "__product__",slots});
+    state.aiImageJob=resp;
+    if (resp && resp.should_start === false) {
+      toast(`已有生图任务运行中，本次未提交新任务；当前只重做“${slotTitle}”这张`, "");
+    } else {
+      toast(`${slotTitle}任务已提交，可继续编辑其他字段`, "success");
+    }
+    renderAiImageJob();
     while (["queued","analyzing","generating"].includes(state.aiImageJob?.status)) {
       await new Promise(resolve=>setTimeout(resolve,3000));
       if(state.sourceProduct?.id!==sourceId)return;
+      const prevKey = [state.aiImageJob?.status, (state.aiImageJob?.attempt_history||[]).length, (state.aiImageJob?.generated_images||[]).length].join("|");
       state.aiImageJob=await api("GET",`/api/v1/shops/${state.shopId}/ai-images/source-products/${sourceId}?creative_group_key=${encodeURIComponent(state.aiCreativeGroupKey || "__product__")}`);
-      renderAiImageJob();
+      const nextKey = [state.aiImageJob?.status, (state.aiImageJob?.attempt_history||[]).length, (state.aiImageJob?.generated_images||[]).length].join("|");
+      if (prevKey !== nextKey) renderAiImageJob();
     }
     if(state.aiImageJob?.status==="ready")toast("AI套图已生成，请点击图片选择后使用","success");
     else if(state.aiImageJob?.status==="failed")toast(`套图部分失败，但已生成 ${state.aiImageJob.generated_images?.length || 0} 张仍可选择使用`, "");
@@ -2211,14 +2235,15 @@ async function generateAiImages(requestedSlots = null) {
   finally{btn.disabled=false;btn.textContent="✨ 开始生图";}
 }
 
-async function applyAiImages(skipConfirm = false) {
+async function applyAiImages(skipConfirm = false, applyAll = false) {
   const selected=(state.aiImageJob.generated_images||[]).map(x=>x.url).filter(url=>state.selectedAiImages.has(url));
   if(!selected.length){toast("请至少选择一张图片","error");return;}
   const targetGroup = (variantCreativeGroups()).find(group => group.key === state.aiCreativeGroupKey);
-  const targetIndexes = targetGroup?.indexes || state.variants.map((_, index) => index);
+  const targetIndexes = applyAll ? state.variants.map((_, index) => index) : (targetGroup?.indexes || state.variants.map((_, index) => index));
   const targetSkus = targetIndexes.map(index => state.variants[index]?.seller_sku).filter(Boolean);
-  if(!targetSkus.length){toast("当前款式没有可应用的 SKU","error");return;}
-  if(!skipConfirm && !window.confirm(`将 ${selected.length} 张AI图片应用到“${targetGroup?.label || "当前款式"}”的 ${targetSkus.length} 个尺寸 SKU。不会修改公共详情图库或其他款式。确认继续？`))return;
+  if(!targetSkus.length){toast("当前商品没有可应用的 SKU","error");return;}
+  const scopeLabel = applyAll ? `该商品的所有 ${targetSkus.length} 个 SKU` : `“${targetGroup?.label || "当前款式"}”的 ${targetSkus.length} 个尺寸 SKU`;
+  if(!skipConfirm && !window.confirm(`将 ${selected.length} 张AI图片应用到${scopeLabel}。不会修改公共详情图库或其他款式。确认继续？`))return;
   const btn=$("#le-ai-apply-images");btn.disabled=true;
   try {
     // Applying images is an explicit persistence action.  If this is still a
@@ -2612,8 +2637,8 @@ function openImageGallery(variantIdx, imgType) {
       const selected = new Set(selectedImgs);
       const current = variant.image_url || selectedImgs[0] || imgs[0];
       const availableImgs = publicGalleryImages();
-      const card = (url, isSelected, index) => { const isSku = url === variant.image_url; return `<div class="le-product-gallery-card ${isSelected ? "active" : ""}" data-gallery-url="${esc(url)}" draggable="${isSelected ? "true" : "false"}" data-selected-index="${isSelected ? index : ""}"><img src="${esc(url)}" loading="lazy" referrerpolicy="no-referrer" /><span class="le-product-gallery-order">${isSelected ? `${index + 1}${index === 0 ? " · 首图" : ""}` : "可补充"}${isSku ? " · 款式图" : " · 公共图"}</span>${isSelected ? `<button type="button" class="le-product-gallery-primary" data-gallery-primary="${esc(url)}">${url === current ? "当前首图" : "设为首图"}</button><button type="button" class="le-product-gallery-delete" data-gallery-remove="${esc(url)}" title="从当前款式移除">×</button>` : `<button type="button" class="le-product-gallery-add" data-gallery-add="${esc(url)}">加入此款式</button>`}</div>`; };
-      const sourceCard = url => { const isAdded = selected.has(url); return `<div class="le-product-gallery-card le-product-gallery-source-card ${isAdded ? "active" : ""}" data-gallery-url="${esc(url)}"><img src="${esc(url)}" loading="lazy" referrerpolicy="no-referrer" /><span class="le-product-gallery-order">公共图${isAdded ? " · 已加入" : " · 可补充"}</span>${isAdded ? '<button type="button" class="le-product-gallery-added" disabled>已加入当前款式</button>' : `<button type="button" class="le-product-gallery-add" data-gallery-add="${esc(url)}">加入此款式</button>`}</div>`; };
+      const card = (url, isSelected, index) => { const isSku = url === variant.image_url; return `<div class="le-product-gallery-card ${isSelected ? "active" : ""}" data-gallery-url="${esc(url)}" draggable="${isSelected ? "true" : "false"}" data-selected-index="${isSelected ? index : ""}"><img src="${esc(displayImageUrl(url))}" loading="lazy" referrerpolicy="no-referrer" /><span class="le-product-gallery-order">${isSelected ? `${index + 1}${index === 0 ? " · 首图" : ""}` : "可补充"}${isSku ? " · 款式图" : " · 公共图"}</span>${isSelected ? `<button type="button" class="le-product-gallery-primary" data-gallery-primary="${esc(url)}">${url === current ? "当前首图" : "设为首图"}</button><button type="button" class="le-product-gallery-delete" data-gallery-remove="${esc(url)}" title="从当前款式移除">×</button>` : `<button type="button" class="le-product-gallery-add" data-gallery-add="${esc(url)}">加入此款式</button>`}</div>`; };
+      const sourceCard = url => { const isAdded = selected.has(url); return `<div class="le-product-gallery-card le-product-gallery-source-card ${isAdded ? "active" : ""}" data-gallery-url="${esc(url)}"><img src="${esc(displayImageUrl(url))}" loading="lazy" referrerpolicy="no-referrer" /><span class="le-product-gallery-order">公共图${isAdded ? " · 已加入" : " · 可补充"}</span>${isAdded ? '<button type="button" class="le-product-gallery-added" disabled>已加入当前款式</button>' : `<button type="button" class="le-product-gallery-add" data-gallery-add="${esc(url)}">加入此款式</button>`}</div>`; };
       const targetCount = creativeGroupAtIndex(variantIdx)?.indexes.length || 1;
       const styleKey = creativeGroupAtIndex(variantIdx)?.key || "__product__";
       modal.innerHTML = `<div class="le-product-gallery-dialog"><div class="le-product-gallery-head"><div><strong>款式图片设置</strong><small>左侧为当前款式已选图片，右侧为完整公共总图库；会同步本款 ${targetCount} 个尺寸 SKU，不影响公共图库或其他款式。</small></div><div style="display:flex;gap:8px;align-items:center"><button type="button" class="le-btn le-btn-sm" data-gallery-ai-gen style="background:#6c5ce7;color:#fff;border-color:#6c5ce7">✨ AI 生套图</button><button type="button" data-gallery-close>×</button></div></div><div class="le-product-gallery-columns"><section class="le-product-gallery-pane"><h4>当前款式已选（${selectedImgs.length}）</h4><div class="le-product-gallery-grid le-product-gallery-selected">${selectedImgs.map((url, i) => card(url, true, i)).join("") || '<p class="le-product-gallery-empty">暂无已选图片</p>'}</div></section><section class="le-product-gallery-pane"><h4>总图库（${availableImgs.length}）</h4><div class="le-product-gallery-grid le-product-gallery-available">${availableImgs.map(sourceCard).join("") || '<p class="le-product-gallery-empty">暂无公共图库图片</p>'}</div></section></div><div class="le-product-gallery-foot"><span>拖动左侧图片调整顺序；第一张会成为本款所有尺寸的首图。右侧只补充图片，不会删除公共图库。</span><button type="button" data-gallery-close>完成</button></div></div>`;
@@ -3214,7 +3239,7 @@ window.zoomVariantImage = function(idx) {
   if (!url) { toast("该 SKU 没有图片", "error"); return; }
   const modal = document.createElement("div");
   modal.style.cssText = "position:fixed;inset:0;background:rgba(0,0,0,.85);z-index:2147483647;display:flex;align-items:center;justify-content:center;cursor:zoom-out";
-  modal.innerHTML = `<img src="${esc(url)}" style="max-width:92vw;max-height:92vh;object-fit:contain" referrerpolicy="no-referrer"><button type="button" style="position:fixed;right:18px;top:12px;border:0;background:transparent;color:white;font-size:30px;cursor:pointer">×</button>`;
+  modal.innerHTML = `<img src="${esc(displayImageUrl(url))}" style="max-width:92vw;max-height:92vh;object-fit:contain" referrerpolicy="no-referrer"><button type="button" style="position:fixed;right:18px;top:12px;border:0;background:transparent;color:white;font-size:30px;cursor:pointer">×</button>`;
   modal.addEventListener("click", () => modal.remove());
   modal.querySelector("button").addEventListener("click", () => modal.remove());
   document.body.appendChild(modal);
@@ -4170,7 +4195,8 @@ document.addEventListener("DOMContentLoaded", async () => {
   $("#le-import-source-images").addEventListener("click", importSourceImages);
   $("#le-translate-images").addEventListener("click", translateSelectedImages);
   $("#le-ai-generate-images").addEventListener("click", generateAiImages);
-  $("#le-ai-apply-images").addEventListener("click", applyAiImages);
+  $("#le-ai-generate-images-panel")?.addEventListener("click", generateAiImages);
+  $("#le-ai-apply-images").addEventListener("click", () => applyAiImages(false, true));
   $("#le-ai-creative-group")?.addEventListener("change", async event => { state.aiCreativeGroupKey = event.target.value || "__product__"; await loadAiImageJob(); });
   $("#le-add-variant-row").addEventListener("click", addVariantRow);
   $("#le-source-select").addEventListener("change", (e) => loadSourceProductDetail(e.target.value));

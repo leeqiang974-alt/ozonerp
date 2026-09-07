@@ -1113,17 +1113,57 @@ def list_products(shop_id: int, keyword: str | None = None, db: Session = Depend
 
 @app.post("/api/v1/shops/{shop_id}/skus/bulk-cost")
 def bulk_set_sku_cost(shop_id: int, payload: SkuBulkCostRequest, db: Session = Depends(get_db)) -> dict:
-    """Bulk set purchase cost for listed SKUs (local DB only, no Ozon submit)."""
+    """
+    Bulk set purchase cost for listed SKUs.
+    Local DB always updated; when cny_rub_rate is provided the cost is also
+    pushed to Ozon as net_price (cost) via /v1/product/import/prices - this is
+    an update of an existing listing, not a new-product submission.
+    """
     keyword = (payload.sku_keyword or "").strip()
     if not keyword:
         raise HTTPException(status_code=422, detail="sku_keyword must not be empty")
-    result = db.execute(
-        update(SkuRecord)
-        .where(SkuRecord.shop_id == shop_id, SkuRecord.seller_sku.ilike("%" + keyword + "%"))
-        .values(purchase_cost_cny=payload.purchase_cost_cny)
-    )
+
+    skus = list(db.scalars(
+        select(SkuRecord).where(SkuRecord.shop_id == shop_id, SkuRecord.seller_sku.ilike("%" + keyword + "%"))
+    ))
+    if not skus:
+        return {"updated": 0, "ozon_updated": 0, "ozon_failed": [], "keyword": keyword, "purchase_cost_cny": payload.purchase_cost_cny}
+
+    ozon_failed: list[dict] = []
+    ozon_updated = 0
+    targets = skus
+    if payload.cny_rub_rate and payload.cny_rub_rate > 0:
+        from .sync_service import _credentials
+        from .integrations.ozon_seller import OzonSellerClient
+        client_id, api_key = _credentials(db, shop_id)
+        net_rub = round(float(payload.purchase_cost_cny) * payload.cny_rub_rate, 2)
+        prices = [{"offer_id": sku.seller_sku, "net_price": str(net_rub)} for sku in skus]
+        try:
+            with OzonSellerClient(client_id=client_id, api_key=api_key) as client:
+                resp = client.update_product_prices(prices=prices)
+        except Exception as exc:
+            raise HTTPException(status_code=502, detail=f"Ozon cost update failed: {exc}") from exc
+        results = (resp.get("result") or []) if isinstance(resp, dict) else []
+        ok_offers: set[str] = set()
+        for item in results:
+            offer = str(item.get("offer_id") or "")
+            if item.get("updated"):
+                ok_offers.add(offer)
+                ozon_updated += 1
+            else:
+                ozon_failed.append({"offer_id": offer, "errors": item.get("errors") or []})
+        targets = [s for s in skus if s.seller_sku in ok_offers]
+
+    for sku in targets:
+        sku.purchase_cost_cny = Decimal(str(payload.purchase_cost_cny))
     db.commit()
-    return {"updated": result.rowcount or 0, "keyword": keyword, "purchase_cost_cny": payload.purchase_cost_cny}
+    return {
+        "updated": len(targets),
+        "ozon_updated": ozon_updated,
+        "ozon_failed": ozon_failed,
+        "keyword": keyword,
+        "purchase_cost_cny": payload.purchase_cost_cny,
+    }
 
 
 @app.get("/api/v1/shops/{shop_id}/fbs-postings", response_model=list[FbsPostingRead])

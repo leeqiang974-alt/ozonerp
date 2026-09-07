@@ -1862,15 +1862,26 @@ async function openBulkCostDialog() {
   if (keyword === null || !keyword.trim()) { toast("已取消", true); return; }
   const cost = prompt("输入成本价（CNY）：");
   if (cost === null || !(Number(cost) > 0)) { toast("成本价无效，已取消", true); return; }
+  const rateText = prompt("人民币→卢布汇率（用于同步 Ozon 后台成本；留空则只写本地、不同步 Ozon。例：12.5）：");
+  if (rateText === null) { toast("已取消", true); return; }
+  const rate = rateText.trim() ? Number(rateText.trim()) : null;
+  if (rateText.trim() && !(rate > 0)) { toast("汇率无效，已取消", true); return; }
+  const payload = { sku_keyword: keyword.trim(), purchase_cost_cny: Number(cost) };
+  if (rate !== null) payload.cny_rub_rate = rate;
   try {
     const resp = await fetch(`${apiBase}/api/v1/shops/${shopId}/skus/bulk-cost`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ sku_keyword: keyword.trim(), purchase_cost_cny: Number(cost) }),
+      body: JSON.stringify(payload),
     });
     if (!resp.ok) throw new Error((await resp.json()).detail || "批量填成本失败");
     const data = await resp.json();
-    toast(`已为 ${data.updated} 个 SKU 填入成本价 ¥${data.purchase_cost_cny}`);
+    let msg = `本地已填 ${data.updated} 个 SKU 成本价 ¥${data.purchase_cost_cny}`;
+    if (data.ozon_updated !== undefined) {
+      msg += `；Ozon 同步 ${data.ozon_updated} 个`;
+      if (data.ozon_failed && data.ozon_failed.length) msg += `，失败 ${data.ozon_failed.length} 个`;
+    }
+    toast(msg);
     await loadOperationalData();
   } catch (e) { toast(e.message || "批量填成本失败", true); }
 }

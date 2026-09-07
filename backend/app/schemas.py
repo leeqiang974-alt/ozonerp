@@ -94,6 +94,7 @@ class AutoSyncDecisionRead(BaseModel):
 class SkuBulkCostRequest(BaseModel):
     sku_keyword: str
     purchase_cost_cny: float
+    cny_rub_rate: float | None = None
 
 
 class ProductRead(BaseModel):

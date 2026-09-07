@@ -449,12 +449,17 @@ def _download_generated_result(url: str, path: Path, *, max_seconds: float = 150
 
 
 def _dims_label(dims: dict) -> str:
-    """Format real dimensions into a Russian-style label like '7,5 см × 7,5 см'."""
+    """Format real dimensions into a Russian-style label like '7,5 см × 6,0 см'.
+    Handles both '7.5cm / 2.95inch' and plain numbers."""
     parts = []
-    for k in ("height_cm", "width_cm", "length_cm"):
+    for k in ("height", "width", "length", "height_cm", "width_cm", "length_cm"):
         v = dims.get(k)
-        if v:
-            parts.append(f"{str(v).replace('.', ',')} см")
+        if not v:
+            continue
+        m = str(v).split("/")[0].strip().replace(".", ",")
+        if "см" not in m:
+            m = m.replace("cm", " см") if "cm" in m.lower() else m + " см"
+        parts.append(m.strip())
     return " × ".join(parts)
 
 

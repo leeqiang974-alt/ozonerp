@@ -15,18 +15,18 @@ from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse
 from urllib.parse import parse_qs, unquote, urlparse
 from pydantic import BaseModel, Field
 from fastapi.middleware.cors import CORSMiddleware
-from sqlalchemy import select, or_, func, text
+from sqlalchemy import select, or_, func, text, update
 from sqlalchemy.exc import IntegrityError
-from sqlalchemy.orm import Session
+from sqlalchemy.orm import Session, selectinload
 
 from .database import Base, engine, ensure_sqlite_operational_columns, get_db, settings
 from . import erp_models  # noqa: F401 - registers persistent operational tables.
-from .erp_models import AuditEventRecord, BulkListingBatchItemRecord, BulkListingBatchRecord, FbsPostingRecord, ListingAttributeValueRecord, ListingDraftRecord, ListingTemplateRecord, ListingVariantRecord, OzonAttributeCacheRecord, OzonAttributeDictionaryQueryCacheRecord, OzonAttributeDictionaryValueRecord, OzonCategoryCacheRecord, OzonGlobalCategoryCacheRecord, OzonGlobalAttributeCacheRecord, OzonGlobalDictValueRecord, PipelineProductRecord, ProductRecord, SyncRun, SyncState, SourceProductRecord, SourceProductShopRecord, YunNewtonSupplementJobRecord
+from .erp_models import AuditEventRecord, BulkListingBatchItemRecord, BulkListingBatchRecord, FbsPostingRecord, ListingAttributeValueRecord, ListingDraftRecord, ListingTemplateRecord, ListingVariantRecord, OzonAttributeCacheRecord, OzonAttributeDictionaryQueryCacheRecord, OzonAttributeDictionaryValueRecord, OzonCategoryCacheRecord, OzonGlobalCategoryCacheRecord, OzonGlobalAttributeCacheRecord, OzonGlobalDictValueRecord, PipelineProductRecord, ProductRecord, SkuRecord, SyncRun, SyncState, SourceProductRecord, SourceProductShopRecord, YunNewtonSupplementJobRecord
 from .models import ApiCredential, Shop
 from .schemas import OzonCredentialStatus, OzonCredentialUpsert, ShopCreate, ShopRead, ShopUpdate
 from .security import CredentialEncryptionUnavailable, encrypt_secret
 from .sync_service import sync_category_cache, sync_fbs_postings, sync_fbs_product_images, sync_products
-from .schemas import FbsPostingDetailRead, FbsPostingRead, FbsPostingSyncRequest, ListingDraftCreate, ListingDraftRead, ListingTemplateCreate, ListingValidationRead, ProductRead, ProductSyncRequest, SyncRunRead, ListingAttributeValueCreate, ListingVariantCreate
+from .schemas import FbsPostingDetailRead, FbsPostingRead, FbsPostingSyncRequest, ListingDraftCreate, ListingDraftRead, ListingTemplateCreate, ListingValidationRead, ProductRead, ProductSyncRequest, SkuBulkCostRequest, SyncRunRead, ListingAttributeValueCreate, ListingVariantCreate
 from .listing_service import build_variant_image_list, normalize_dictionary_attribute_value, validate_listing_draft
 from .listing_cache_service import promote_legacy_listing_caches
 from .pricing import PriceInput, PricingService
@@ -1099,8 +1099,31 @@ def auto_sync_shop_view(
 
 
 @app.get("/api/v1/shops/{shop_id}/products", response_model=list[ProductRead])
-def list_products(shop_id: int, db: Session = Depends(get_db)) -> list[ProductRecord]:
-    return list(db.scalars(select(ProductRecord).where(ProductRecord.shop_id == shop_id).order_by(ProductRecord.updated_at.desc()).limit(500)))
+def list_products(shop_id: int, keyword: str | None = None, db: Session = Depends(get_db)) -> list[ProductRecord]:
+    stmt = (
+        select(ProductRecord)
+        .options(selectinload(ProductRecord.skus))
+        .where(ProductRecord.shop_id == shop_id)
+    )
+    if keyword and keyword.strip():
+        kw = "%" + keyword.strip() + "%"
+        stmt = stmt.where(or_(ProductRecord.offer_id.ilike(kw), ProductRecord.name.ilike(kw)))
+    return list(db.scalars(stmt.order_by(ProductRecord.updated_at.desc()).limit(500)))
+
+
+@app.post("/api/v1/shops/{shop_id}/skus/bulk-cost")
+def bulk_set_sku_cost(shop_id: int, payload: SkuBulkCostRequest, db: Session = Depends(get_db)) -> dict:
+    """Bulk set purchase cost for listed SKUs (local DB only, no Ozon submit)."""
+    keyword = (payload.sku_keyword or "").strip()
+    if not keyword:
+        raise HTTPException(status_code=422, detail="sku_keyword must not be empty")
+    result = db.execute(
+        update(SkuRecord)
+        .where(SkuRecord.shop_id == shop_id, SkuRecord.seller_sku.ilike("%" + keyword + "%"))
+        .values(purchase_cost_cny=payload.purchase_cost_cny)
+    )
+    db.commit()
+    return {"updated": result.rowcount or 0, "keyword": keyword, "purchase_cost_cny": payload.purchase_cost_cny}
 
 
 @app.get("/api/v1/shops/{shop_id}/fbs-postings", response_model=list[FbsPostingRead])

@@ -91,6 +91,11 @@ class AutoSyncDecisionRead(BaseModel):
     status: Literal["fresh", "started", "already_running", "failed_to_start"]
 
 
+class SkuBulkCostRequest(BaseModel):
+    sku_keyword: str
+    purchase_cost_cny: float
+
+
 class ProductRead(BaseModel):
     model_config = ConfigDict(from_attributes=True)
 
@@ -100,6 +105,7 @@ class ProductRead(BaseModel):
     offer_id: str | None
     name: str
     updated_at: datetime
+    purchase_cost_cny: float | None = None
 
 
 class FbsPostingLineRead(BaseModel):

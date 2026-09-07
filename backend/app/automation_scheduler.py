@@ -290,10 +290,20 @@ def _try_auto_repair_and_resubmit(db: Session, candidate: AutomationCandidateRec
         return True
     deterministic_image_repair = _has_deterministic_image_payload_feedback(rows)
     if not rows or (not _auto_repairable_feedback(rows) and not deterministic_image_repair) or not bulk_item.listing_draft_id:
+        # 无自动可修项：移出自动修复队列（skipped 保留人工可见），避免不可修行
+        # 占满每轮修复名额导致可修项被饿死。
+        bulk_item.status = "skipped"
+        bulk_item.updated_at = datetime.now()
+        bulk_item.error_message = "无自动可修复项，转人工处理"
+        db.commit()
         return False
     # ``attempts`` is incremented by the bulk worker before the initial submit.
     # Two automatic correction rounds are enough to avoid a feedback loop.
     if int(bulk_item.attempts or 0) >= 3:
+        bulk_item.status = "skipped"
+        bulk_item.updated_at = datetime.now()
+        bulk_item.error_message = "自动修复3次未成功，转人工处理"
+        db.commit()
         return False
     draft = db.get(ListingDraftRecord, bulk_item.listing_draft_id)
     if draft is None:
@@ -328,6 +338,7 @@ def _try_auto_repair_and_resubmit(db: Session, candidate: AutomationCandidateRec
             # Persist the inspection so an unchanged error snapshot is not sent
             # to the AI on every 30-second scheduler tick.
             bulk_item.attempts = int(bulk_item.attempts or 0) + 1
+            bulk_item.updated_at = datetime.now()  # 失败行轮转：不再占满每轮修复名额
             bulk_item.error_message = "已检查，当前 Ozon 回执没有可自动修复项，等待人工处理"
             db.commit()
             return False

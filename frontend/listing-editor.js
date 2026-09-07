@@ -1567,15 +1567,18 @@ window.zoomImage = function(index) {
   if (!images[index]) return;
   let dialog = $("#le-product-image-viewer");
   if (!dialog) {
-    document.body.insertAdjacentHTML("beforeend", '<dialog id="le-product-image-viewer" class="le-source-image-dialog le-product-image-viewer"><div class="le-source-image-head"><strong id="le-product-image-title">产品图</strong><button type="button" id="le-product-image-close" aria-label="关闭">×</button></div><div class="le-source-image-stage"><button type="button" id="le-product-image-prev" aria-label="上一张">‹</button><img id="le-product-image-large" alt="产品大图" referrerpolicy="no-referrer"><button type="button" id="le-product-image-next" aria-label="下一张">›</button></div><div class="le-source-image-foot"><span id="le-product-image-count"></span><small>← → 可切换图片</small><button type="button" id="le-product-image-done">关闭</button></div></dialog>');
+    document.body.insertAdjacentHTML("beforeend", '<dialog id="le-product-image-viewer" class="le-source-image-dialog le-product-image-viewer"><div class="le-source-image-head"><strong id="le-product-image-title">产品图</strong><button type="button" id="le-product-image-close" aria-label="关闭">×</button></div><div class="le-source-image-stage"><button type="button" id="le-product-image-prev" aria-label="上一张">‹</button><img id="le-product-image-large" alt="产品大图" referrerpolicy="no-referrer"><button type="button" id="le-product-image-next" aria-label="下一张">›</button></div><div class="le-source-image-foot"><span id="le-product-image-count"></span><small>← → 可切换图片 · 点击图片可100%缩放</small><button type="button" id="le-product-image-done">关闭</button></div></dialog>');
     dialog = $("#le-product-image-viewer");
     $("#le-product-image-close").onclick = () => dialog.close();
     $("#le-product-image-done").onclick = () => dialog.close();
     dialog.addEventListener("click", event => { if (event.target === dialog) dialog.close(); });
+    $("#le-product-image-large").addEventListener("click", event => { event.stopPropagation(); event.currentTarget.classList.toggle("zoom-original"); });
   }
   let current = index;
   const show = () => {
-    $("#le-product-image-large").src = images[current];
+    const imgEl = $("#le-product-image-large");
+    imgEl.classList.remove("zoom-original");
+    imgEl.src = images[current];
     $("#le-product-image-title").textContent = current === 0 ? "产品图 · 主图" : "产品图";
     $("#le-product-image-count").textContent = `${current + 1} / ${images.length}`;
     $("#le-product-image-prev").disabled = images.length < 2;

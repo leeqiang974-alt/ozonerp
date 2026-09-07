@@ -556,7 +556,10 @@ def generate_set(db: Session, shop_id: int, source_id: int, draft_id: int | None
         # Real Russian caption material for programmatic on-image overlay (never
         # let the image model draw text — it garbles any language longer than a digit).
         title_ru = product.title or ""
-        desc_ru = (product.description or "").strip().replace("\n", " ")[:90]
+        desc_ru = ""
+        draft_for_text = db.get(ListingDraftRecord, draft_id) if draft_id else None
+        if draft_for_text and getattr(draft_for_text, "description", None):
+            desc_ru = draft_for_text.description.strip().replace("\n", " ")[:90]
         dims_label = _dims_label(analysis.get("dimensions") or {})
         # Serial generation (Agnes cannot handle concurrent image requests —
         # parallel calls trigger "image queue is full" 503) + long backoff retry

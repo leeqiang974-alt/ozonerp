@@ -562,12 +562,21 @@ def _ref_color_hint(fileobj) -> str:
         return ""
 
 
+SCENE_SLOT_TITLES = {
+    "steps": "Инструкция по использованию",
+    "lifestyle": "Стильный аксессуар для любого образа",
+    "scene_home": "Идеально для дома",
+    "scene_entry": "Украшение для прихожей",
+    "scene_gift": "Идеальный подарок",
+}
+
+
 def _overlay_russian_text(path: Path, slot: str, title_ru: str, desc_ru: str, dims_label: str) -> None:
     """Burn real Russian captions onto a generated PNG so on-image text is always correct.
     Failure must never break generation, so every error is swallowed."""
     try:
         from PIL import Image, ImageDraw, ImageFont
-        if slot not in ("hero", "dimensions", "details"):
+        if slot not in ("hero", "dimensions", "details", "steps", "lifestyle", "scene_home", "scene_entry", "scene_gift"):
             return
         img = Image.open(path).convert("RGB")
         W, H = img.size
@@ -611,6 +620,13 @@ def _overlay_russian_text(path: Path, slot: str, title_ru: str, desc_ru: str, di
             if desc:
                 b = draw.textbbox((0, 0), desc, font=fnt)
                 draw.text(((W - (b[2] - b[0])) / 2, H - bar_h + (bar_h - size_d * 1.3) / 2), desc, fill=(90, 90, 90), font=fnt)
+        else:
+            size_s = max(int(W * 0.026), 18)
+            fnt = ImageFont.truetype(font_path, size_s)
+            cap = _fit(SCENE_SLOT_TITLES.get(slot, ""), fnt, int(W * 0.94))
+            if cap:
+                b = draw.textbbox((0, 0), cap, font=fnt)
+                draw.text(((W - (b[2] - b[0])) / 2, H - bar_h + (bar_h - size_s * 1.3) / 2), cap, fill=(60, 60, 60), font=fnt)
         img.save(path)
     except Exception:
         pass

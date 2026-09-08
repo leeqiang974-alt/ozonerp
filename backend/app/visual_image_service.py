@@ -281,7 +281,19 @@ def plan(product: SourceProductRecord, analysis: dict[str, Any], creative_group_
     dims = json.dumps(analysis.get("dimensions") or {}, ensure_ascii=False)
     excluded = json.dumps(analysis.get("not_included") or [], ensure_ascii=False)
     group_lock = f" STYLE VARIANT LOCK: this is only style '{creative_group_label}'. Never use another style, pattern, colourway or SKU image." if creative_group_label else ""
-    common = f"Campaign Style Lock: {STYLE_LOCK}. Product truth (never invent): sold product {analysis.get('sold_product') or product.title}; visible facts {facts}; not included {excluded}.{group_lock} Preserve exact identity, quantity, color, structure and visible hardware. Premium marketplace product infographic, vertical 3:4, clean minimal design. ON-IMAGE TEXT: NONE — the generated image must contain zero characters of any language (no Russian, no Latin, no Chinese, no numbers, no labels, no brand names, no watermark, no icons); the platform will add Russian captions later, so produce a clean product image only. Never create, retain, or embellish LGBT/sexual-orientation/gender-identity messaging, rainbow/pride flags, transgender symbols, or related slogans."
+    base_lock = f"Campaign Style Lock: {STYLE_LOCK}. Product truth (never invent): sold product {analysis.get('sold_product') or product.title}; visible facts {facts}; not included {excluded}.{group_lock} Preserve exact identity, quantity, color, structure and visible hardware. Premium marketplace product infographic, vertical 3:4, clean minimal design."
+    # GPT-routed product slots (hero/dimensions/details/steps): the model is
+    # strong enough to draw short real Russian on-image text, Ozon-infographic
+    # style (bold title + spec numbers + short selling-point labels), while
+    # strictly reproducing the reference product. Program overlay is skipped
+    # for these slots so the AI text is not duplicated.
+    common_gpt = (base_lock
+        + " ON-IMAGE TEXT POLICY: this is a Russian-market listing. The image SHOULD carry a small amount of real, correctly-spelled Russian text styled like a high-converting Ozon infographic: a bold main title phrase (short, max 4 words), small specification numbers (e.g. '7,5 см' or '2 шт'), and short selling-point labels (max 2-3 words each, e.g. 'Для пальто'). FORBIDDEN on the image: any Chinese/CJK characters, any fake Latin gibberish, any garbled or illegible text, any brand or store name (including 'Ozon'/'OZONE' and any trademark), watermarks, QR codes, prices, certification stamps, decorative symbols, repeated ornamental lettering. On-image text must be Russian only and must stay clean and legible. Never create, retain, or embellish LGBT/sexual-orientation/gender-identity messaging, rainbow/pride flags, transgender symbols, or related slogans.")
+    # Agnes-routed scene slots: the flash model garbles any on-image text, so
+    # it draws a clean scene with zero characters; the Russian scene caption is
+    # burned in programmatically afterwards (guaranteed correct).
+    common_agnes = (base_lock
+        + " ON-IMAGE TEXT: NONE — the generated image must contain zero characters of any language (no Russian, no Latin, no Chinese, no numbers, no labels, no brand names, no watermark, no icons); captions are added by the platform later, so produce a clean scene image only. Never create, retain, or embellish LGBT/sexual-orientation/gender-identity messaging, rainbow/pride flags, transgender symbols, or related slogans.")
     # Style-exclusive hero: when generating for a specific style/SKU, the hero
     # must feature that variant's identity (color/pattern/quantity/size) as the
     # primary differentiator, not a generic product shot.
@@ -291,16 +303,17 @@ def plan(product: SourceProductRecord, analysis: dict[str, Any], creative_group_
     if sku_exclusive_info:
         exclusive_text = json.dumps(sku_exclusive_info, ensure_ascii=False)
         hero_exclusive += f" Feature this variant's exclusive attributes on the hero as clean visual emphasis (minimal numeric/color labels only, no invented words): {exclusive_text}. "
-    hero_prompt = common + hero_exclusive + " Premium hero infographic, product 38% centered on a clean neutral background; zero text of any language anywhere."
+    hero_prompt = (common_gpt + hero_exclusive
+        + " Premium hero infographic styled like a top Ozon main image: strictly reproduce the reference product's appearance, color, material, structure, proportion and details — do not alter the product itself and do not add features that do not exist; product occupies 65-80% of the frame, sharp edges, real commercial product photography. Layout: bold Russian main title near the top (largest text on the image, e.g. 'Винтажная брошь с кристаллами'); one line of core parameters right under the title (small numbers, e.g. '7,5 см × 6,0 см'); 2-3 short Russian selling-point labels around the product with simple clean pictogram icons (e.g. 'Кристаллы', 'Металл', 'Винтаж') only when true to the product. Keep generous whitespace; no more than ~4 short text blocks.")
     return [
         {"slot":"hero","title":"销售首图","prompt":hero_prompt},
-        {"slot":"dimensions","title":"尺寸规格","prompt":common+f" E-commerce dimension infographic, top-down. Only verified dimensions: {dims}. If none, show structure without numbers."},
-        {"slot":"details","title":"结构细节","prompt":common+" E-commerce detail infographic with one full product and two macro callouts of real visible structure/material."},
-        {"slot":"steps","title":"使用步骤","prompt":common+" E-commerce three-step usage infographic based only on evidenced use; never imply tools are included."},
-        {"slot":"lifestyle","title":"场景用途","prompt":common+" Premium lifestyle infographic with three believable use scenes of the product; zero text of any language anywhere; plain neutral wall and room backgrounds, absolutely no rainbow, no multicolor decorations, no flags, no political symbols."},
-        {"slot":"scene_home","title":"居家场景","prompt":common+" Premium believable home scene. Product is clearly visible and remains the exact selected style; no other styles in frame."},
-        {"slot":"scene_entry","title":"玄关场景","prompt":common+" Premium believable entryway scene. Product is clearly visible and remains the exact selected style; no other styles in frame."},
-        {"slot":"scene_gift","title":"礼赠场景","prompt":common+" Premium believable gift or seasonal scene only when supported by product truth; otherwise use a neutral lifestyle scene. Preserve the exact selected style."},
+        {"slot":"dimensions","title":"尺寸规格","prompt":common_gpt+f" E-commerce dimension infographic, top-down. Only verified dimensions: {dims}. If none, show structure without numbers. Add a small clean block of short Russian specification numbers (e.g. '7,5 см × 6,0 см')."},
+        {"slot":"details","title":"结构细节","prompt":common_gpt+" E-commerce detail infographic with one full product and two macro callouts of real visible structure/material. Callouts may carry one short Russian keyword label each (max 2-3 words, true to the product)."},
+        {"slot":"steps","title":"使用步骤","prompt":common_gpt+" E-commerce three-step usage infographic based only on evidenced use; never imply tools are included. Steps may carry short Russian numbers only (1, 2, 3)."},
+        {"slot":"lifestyle","title":"场景用途","prompt":common_agnes+" Premium lifestyle infographic with three believable use scenes of the product; plain neutral wall and room backgrounds, absolutely no rainbow, no multicolor decorations, no flags, no political symbols."},
+        {"slot":"scene_home","title":"居家场景","prompt":common_agnes+" Premium believable home scene. Product is clearly visible and remains the exact selected style; no other styles in frame."},
+        {"slot":"scene_entry","title":"玄关场景","prompt":common_agnes+" Premium believable entryway scene. Product is clearly visible and remains the exact selected style; no other styles in frame."},
+        {"slot":"scene_gift","title":"礼赠场景","prompt":common_agnes+" Premium believable gift or seasonal scene only when supported by product truth; otherwise use a neutral lifestyle scene. Preserve the exact selected style."},
     ]
 
 
@@ -772,7 +785,7 @@ def generate_set(db: Session, shop_id: int, source_id: int, draft_id: int | None
                     try:
                         fname = url.rstrip("/").rsplit("/", 1)[-1]
                         opath = OUTPUT_DIR / fname
-                        if opath.exists():
+                        if opath.exists() and slot not in PRODUCT_FIDELITY_SLOTS:
                             _overlay_russian_text(opath, slot, title_ru, desc_ru, dims_label)
                     except Exception:
                         pass

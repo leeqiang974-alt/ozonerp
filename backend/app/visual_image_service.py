@@ -520,11 +520,22 @@ def _dims_label(dims) -> str:
         v = dims.get(k)
         if not v:
             continue
+        if isinstance(v, dict):
+            v = v.get("value") or v.get("val") or v.get("value_cm")
+            if not v:
+                continue
         m = str(v).split("/")[0].strip().replace(".", ",")
         if "см" not in m:
             m = m.replace("cm", " см") if "cm" in m.lower() else m + " см"
         parts.append(m.strip())
-    return " × ".join(parts)
+    if parts:
+        return " × ".join(parts)
+    # Last resort: pull numbers+cm straight out of the raw representation.
+    import re
+    found = re.findall(r"(\d+[.,]\d+)\s*(?:см|cm)", str(dims), re.IGNORECASE)
+    if len(found) >= 2:
+        return " × ".join(f.replace(".", ",") + " см" for f in found[:2])
+    return ""
 
 
 def _strip_color_words(text) -> str:

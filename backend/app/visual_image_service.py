@@ -504,6 +504,19 @@ def _dims_label(dims) -> str:
     return " × ".join(parts)
 
 
+def _strip_color_words(text) -> str:
+    """Remove Chinese color words from prompt text so the AI never blends
+    colors mentioned in descriptions (e.g. 'green and yellow available').
+    Color must come only from the reference image."""
+    if not isinstance(text, str):
+        return ""
+    for c in ("翠绿", "深绿", "浅绿", "墨绿", "草绿", "绿色", "黄色", "米黄", "杏黄",
+              "红色", "深红", "粉色", "蓝色", "深蓝", "天蓝", "黑色", "白色", "紫色",
+              "棕色", "浅棕", "灰色", "金色", "银色", "橙色", "混色", "渐变", "多色"):
+        text = text.replace(c, "")
+    return text
+
+
 def _overlay_russian_text(path: Path, slot: str, title_ru: str, desc_ru: str, dims_label: str) -> None:
     """Burn real Russian captions onto a generated PNG so on-image text is always correct.
     Failure must never break generation, so every error is swallowed."""
@@ -589,7 +602,14 @@ def generate_set(db: Session, shop_id: int, source_id: int, draft_id: int | None
         content_safety = analysis.get("content_safety") if isinstance(analysis, dict) else {}
         if isinstance(content_safety, dict) and content_safety.get("prohibited_lgbt_symbolism") is True:
             raise ValueError("图片分析命中 Ozon 禁止的 LGBT/非传统性别关系宣传内容；禁止生图，必须人工移除相关素材或归档商品")
-        image_plan=plan(product,analysis,group_label,sku_exclusive_info)
+        # Colors mentioned in text descriptions would make the AI blend a
+        # multicolor product; strip them so the only color source is the
+        # reference image.
+        analysis_for_prompt = dict(analysis)
+        for _k in ("sold_product", "product_truth"):
+            if isinstance(analysis_for_prompt.get(_k), str):
+                analysis_for_prompt[_k] = _strip_color_words(analysis_for_prompt[_k])
+        image_plan=plan(product,analysis_for_prompt,group_label,sku_exclusive_info)
         if requested_slots:
             requested = set(requested_slots)
             image_plan = [item for item in image_plan if item.get("slot") in requested]
@@ -599,11 +619,11 @@ def generate_set(db: Session, shop_id: int, source_id: int, draft_id: int | None
         # never blend colors mentioned in text descriptions (e.g. "green and
         # yellow available") into one multicolor product. This is the highest
         # priority instruction and overrides earlier text in the same prompt.
-        color_lock = (" COLOR LOCK (highest priority, do not violate): the product in the image must match "
-                      "the reference image's color exactly — one clean uniform color throughout. Never blend, "
-                      "mix, add or swap colors mentioned anywhere in text; if the reference shows several color "
-                      "variants, pick the single most prominent one and keep every stone and every metal tone "
-                      "consistent with it. No multicolor, no two-tone mixing, no color gradients between stones.")
+        color_lock = (" COLOR LOCK (highest priority, do not violate): ignore ALL color words in this text. "
+                      "The product's color comes ONLY from the reference image — copy the reference's exact "
+                      "single color and keep every stone and every metal tone uniform with it. Never blend, "
+                      "mix, add or swap colors; no multicolor, no two-tone mixing, no color gradients between "
+                      "stones, no green-to-yellow mix.")
         for _item in image_plan:
             _item["prompt"] = (_item.get("prompt") or "") + color_lock
         job.analysis_json=json.dumps(analysis,ensure_ascii=False); job.reference_images_json=json.dumps(refs,ensure_ascii=False); job.plan_json=json.dumps(image_plan,ensure_ascii=False); job.usage_json=json.dumps({"analysis":usage},ensure_ascii=False); job.llm_model=llm_config()[2]; job.image_model=image_config()[2]; job.status="generating"; db.commit()

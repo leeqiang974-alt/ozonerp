@@ -595,6 +595,17 @@ def generate_set(db: Session, shop_id: int, source_id: int, draft_id: int | None
             image_plan = [item for item in image_plan if item.get("slot") in requested]
             if not image_plan:
                 raise ValueError("没有可生成的图片槽位")
+        # Single-color lock: the AI must follow the reference image's color and
+        # never blend colors mentioned in text descriptions (e.g. "green and
+        # yellow available") into one multicolor product. This is the highest
+        # priority instruction and overrides earlier text in the same prompt.
+        color_lock = (" COLOR LOCK (highest priority, do not violate): the product in the image must match "
+                      "the reference image's color exactly — one clean uniform color throughout. Never blend, "
+                      "mix, add or swap colors mentioned anywhere in text; if the reference shows several color "
+                      "variants, pick the single most prominent one and keep every stone and every metal tone "
+                      "consistent with it. No multicolor, no two-tone mixing, no color gradients between stones.")
+        for _item in image_plan:
+            _item["prompt"] = (_item.get("prompt") or "") + color_lock
         job.analysis_json=json.dumps(analysis,ensure_ascii=False); job.reference_images_json=json.dumps(refs,ensure_ascii=False); job.plan_json=json.dumps(image_plan,ensure_ascii=False); job.usage_json=json.dumps({"analysis":usage},ensure_ascii=False); job.llm_model=llm_config()[2]; job.image_model=image_config()[2]; job.status="generating"; db.commit()
         _update_run(db, job, run_id, "generating", analysis_completed_at=_timestamp(), planned_slots=[item["slot"] for item in image_plan])
         # Keep successful files from earlier runs visible until a replacement

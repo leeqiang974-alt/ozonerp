@@ -344,6 +344,23 @@ def download_ref(url: str, index: int):
     return ("image", (f"reference-{index}.{ext}", content, mime))
 
 
+def _product_first_chain() -> list[tuple[str, str, str]]:
+    """Chain for product-fidelity slots: Cangyuan gpt-image-2 first (fidelity +
+    on-image text), Agnes flash as fallback."""
+    keys = _keys()
+    chain: list[tuple[str, str, str]] = []
+    cangyuan_key = os.getenv("IMAGE_API_KEY", "").strip() or keys.get("IMAGE_API_KEY", "")
+    if cangyuan_key:
+        requested = os.getenv("IMAGE_MODEL", "gpt-image-2").strip().lower()
+        if requested in {"imag-2", "image-2", "gpt-image-2-1k", "image-2-1k"}:
+            requested = "gpt-image-2"
+        chain.append((cangyuan_key, os.getenv("IMAGE_BASE_URL", "https://ai.cangyuansuanli.cn/v1").rstrip("/"), requested))
+    agnes = (os.getenv("AGNES_API_KEY", "").strip() or keys.get("AGNES_API_KEY", "")).strip()
+    if agnes:
+        chain.append((agnes, "https://apihub.agnes-ai.com/v1", os.getenv("AGNES_IMAGE_MODEL", "agnes-image-2.5-flash")))
+    return chain
+
+
 def generate_one(
     prompt: str,
     refs: list[str],
@@ -352,8 +369,14 @@ def generate_one(
     before_provider_request: Any | None = None,
     after_provider_response: Any | None = None,
 ) -> tuple[str, dict[str, Any]]:
-    """Generate one image, trying each provider in the chain (Agnes → Cangyuan)."""
-    configs = image_config_chain()
+    """Generate one image, trying each provider in the chain.
+    Product-fidelity slots (hero/dimensions/details/steps, incl. SKU-exclusive
+    images) prefer Cangyuan gpt-image-2; scene slots prefer free Agnes flash.
+    Each falls back to the other provider."""
+    if slot in PRODUCT_FIDELITY_SLOTS:
+        configs = _product_first_chain()
+    else:
+        configs = image_config_chain()
     if not configs:
         raise RuntimeError("IMAGE_API_KEY未配置")
     last_error = None
@@ -569,6 +592,10 @@ SCENE_SLOT_TITLES = {
     "scene_entry": "Украшение для прихожей",
     "scene_gift": "Идеальный подарок",
 }
+
+# Product-fidelity slots route to Cangyuan gpt-image-2 (strict identity, better
+# on-image text); scene slots route to the free Agnes flash model.
+PRODUCT_FIDELITY_SLOTS = {"hero", "dimensions", "details", "steps"}
 
 
 def _overlay_russian_text(path: Path, slot: str, title_ru: str, desc_ru: str, dims_label: str) -> None:

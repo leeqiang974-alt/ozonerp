@@ -1,7 +1,7 @@
 """AI Ozon image-set workflow. Generated images remain drafts until explicitly applied."""
 from __future__ import annotations
 
-import base64, ipaddress, json, os, re, socket, time, uuid
+import base64, ipaddress, io, json, os, re, socket, time, uuid
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
@@ -517,6 +517,51 @@ def _strip_color_words(text) -> str:
     return text
 
 
+def _ref_color_hint(fileobj) -> str:
+    """Analyze the reference image's dominant hue and return an English single-
+    color phrase for the prompt, so the image model keeps one uniform product
+    color instead of blending colors mentioned in text."""
+    try:
+        from PIL import Image
+        img = Image.open(fileobj).convert("RGB")
+        img.thumbnail((160, 160))
+        buckets = {}
+        for r, g, b in img.getdata():
+            mx, mn = max(r, g, b), min(r, g, b)
+            if mx < 120:
+                continue
+            sat = (mx - mn) / max(mx, 1)
+            if sat < 0.18:
+                continue
+            d = mx - mn
+            if mx == r:
+                h = ((g - b) / d) * 60
+            elif mx == g:
+                h = ((b - r) / d) * 60 + 120
+            else:
+                h = ((r - g) / d) * 60 + 240
+            h %= 360
+            buckets[int(h // 30) * 30] = buckets.get(int(h // 30) * 30, 0) + 1
+        if not buckets:
+            return ""
+        peak = max(buckets, key=buckets.get)
+        if 30 <= peak <= 60:
+            return "warm amber / golden yellow"
+        if 0 <= peak < 30:
+            return "warm orange / amber"
+        if 60 <= peak < 150:
+            return "green"
+        if 150 <= peak < 210:
+            return "cyan / teal"
+        if 210 <= peak < 270:
+            return "blue"
+        if 270 <= peak < 330:
+            return "purple / magenta"
+        return "red / pink"
+    except Exception:
+        return ""
+
+
 def _overlay_russian_text(path: Path, slot: str, title_ru: str, desc_ru: str, dims_label: str) -> None:
     """Burn real Russian captions onto a generated PNG so on-image text is always correct.
     Failure must never break generation, so every error is swallowed."""
@@ -619,11 +664,24 @@ def generate_set(db: Session, shop_id: int, source_id: int, draft_id: int | None
         # never blend colors mentioned in text descriptions (e.g. "green and
         # yellow available") into one multicolor product. This is the highest
         # priority instruction and overrides earlier text in the same prompt.
-        color_lock = (" COLOR LOCK (highest priority, do not violate): ignore ALL color words in this text. "
-                      "The product's color comes ONLY from the reference image — copy the reference's exact "
-                      "single color and keep every stone and every metal tone uniform with it. Never blend, "
-                      "mix, add or swap colors; no multicolor, no two-tone mixing, no color gradients between "
-                      "stones, no green-to-yellow mix.")
+        _ref_hint = ""
+        if files:
+            try:
+                _ref_hint = _ref_color_hint(io.BytesIO(files[0][1][1]))
+            except Exception:
+                _ref_hint = ""
+        if _ref_hint:
+            color_lock = (f" COLOR LOCK (highest priority, do not violate): the product in the image must be a "
+                          f"clean single color — {_ref_hint}. Render every stone, every metal accent and every "
+                          f"detail in exactly this one color family. Never mix in green, blue, red or any second "
+                          f"color; no multicolor, no two-tone mixing, no color gradients. Ignore any other color "
+                          f"word in this text.")
+        else:
+            color_lock = (" COLOR LOCK (highest priority, do not violate): ignore ALL color words in this text. "
+                          "The product's color comes ONLY from the reference image — copy the reference's exact "
+                          "single color and keep every stone and every metal tone uniform with it. Never blend, "
+                          "mix, add or swap colors; no multicolor, no two-tone mixing, no color gradients between "
+                          "stones, no green-to-yellow mix.")
         for _item in image_plan:
             _item["prompt"] = (_item.get("prompt") or "") + color_lock
         job.analysis_json=json.dumps(analysis,ensure_ascii=False); job.reference_images_json=json.dumps(refs,ensure_ascii=False); job.plan_json=json.dumps(image_plan,ensure_ascii=False); job.usage_json=json.dumps({"analysis":usage},ensure_ascii=False); job.llm_model=llm_config()[2]; job.image_model=image_config()[2]; job.status="generating"; db.commit()

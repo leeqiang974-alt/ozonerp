@@ -665,9 +665,10 @@ def generate_set(db: Session, shop_id: int, source_id: int, draft_id: int | None
         # yellow available") into one multicolor product. This is the highest
         # priority instruction and overrides earlier text in the same prompt.
         _ref_hint = ""
-        if files:
+        if refs:
             try:
-                _ref_hint = _ref_color_hint(io.BytesIO(files[0][1][1]))
+                _raw = download_ref(refs[0], 0)
+                _ref_hint = _ref_color_hint(io.BytesIO(_raw[1][1]))
             except Exception:
                 _ref_hint = ""
         if _ref_hint:

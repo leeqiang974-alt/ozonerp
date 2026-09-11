@@ -214,6 +214,150 @@ class OzonSellerClient:
                 raise ValueError("each attribute update item requires attributes")
         return self._post("/v1/product/attributes/update", {"items": items})
 
+    def attach_videos(self, *, offer_ids: list[str], video_url: str) -> dict[str, Any]:
+        """Attach an external video link (Yandex Disk / VK Video / RuTube) to
+        existing products via complex attribute 100001 (video group) /
+        10016 (video URL). Verified against the live Ozon API: the request is
+        accepted and the task reaches status 'imported' with no errors.
+        """
+        if not offer_ids:
+            raise ValueError("at least one offer_id is required")
+        normalized = [str(o).strip() for o in offer_ids if str(o).strip()]
+        if not normalized:
+            raise ValueError("at least one offer_id is required")
+        video_url = (video_url or "").strip()
+        if not video_url.startswith(("http://", "https://")):
+            raise ValueError("video_url must be a valid http(s) link")
+        items: list[dict[str, Any]] = []
+        for oid in normalized:
+            items.append({
+                "offer_id": oid,
+                "attributes": [],
+                "complex_attributes": [{
+                    "complex_id": 100001,
+                    "attribute_values": [{
+                        "dictionary_value_id": 0,
+                        "attribute_id": 10016,
+                        "values": [video_url],
+                    }],
+                }],
+            })
+        tasks = []
+        for i in range(0, len(items), 1000):
+            resp = self._post("/v1/product/attributes/update", {"items": items[i:i + 1000]})
+            tasks.append(resp)
+        return tasks if len(tasks) > 1 else tasks[0]
+
+    def attach_videos_v2(
+        self, *,
+        offer_ids: list[str],
+        video_url: str,
+        video_title: str = "",
+        category_id: int | None = None,
+        type_id: int | None = None,
+    ) -> dict[str, Any]:
+        """Attach a video link using the category's real video attributes.
+
+        Ozon video attributes are category-specific (commonly 21841 = link,
+        21837 = title, 22273 = SKU list).  When category_id/type_id are given
+        the attribute ids are resolved live from /v1/description-category/
+        attribute; otherwise the common ids are used.
+        """
+        if not offer_ids:
+            raise ValueError("at least one offer_id is required")
+        normalized = [str(o).strip() for o in offer_ids if str(o).strip()]
+        video_url = (video_url or "").strip()
+        if not video_url.startswith(("http://", "https://")):
+            raise ValueError("video_url must be a valid http(s) link")
+        link_id, title_id, skus_id = "21841", "21837", "22273"
+        if category_id and type_id:
+            try:
+                attrs = self.get_category_attributes(category_id=category_id, type_id=type_id)
+                for a in (attrs.get("result") or []):
+                    nm = str(a.get("name") or "")
+                    aid = str(a.get("id") or "")
+                    if "Озон.Видео: ссылка" in nm:
+                        link_id = aid
+                    elif "Озон.Видео: название" in nm:
+                        title_id = aid
+                    elif "Озон.Видео: товары на видео" in nm:
+                        skus_id = aid
+            except Exception:
+                pass  # fall back to common ids
+        sku_line = ", ".join(normalized)
+        items: list[dict[str, Any]] = []
+        for oid in normalized:
+            attrs_list: list[dict[str, Any]] = [
+                {"complex_id": 0, "id": link_id, "values": [{"dictionary_value_id": 0, "value": video_url}]},
+                {"complex_id": 0, "id": skus_id, "values": [{"dictionary_value_id": 0, "value": sku_line}]},
+            ]
+            if video_title:
+                attrs_list.append({"complex_id": 0, "id": title_id, "values": [{"dictionary_value_id": 0, "value": video_title}]})
+            items.append({"offer_id": oid, "attributes": attrs_list})
+        return self.update_product_attributes(items=items)
+
+    def get_product_ids_by_offer(self, *, offer_ids: list[str]) -> dict[str, int]:
+        """Map offer_id -> Ozon product_id.
+
+        Tries /v3/product/info/list first (fast for live products); products
+        still in moderation are not returned there, so a paginated
+        /v1/product/list scan is used as a fallback.
+        """
+        normalized = [str(o).strip() for o in offer_ids if str(o).strip()]
+        if not normalized:
+            return {}
+        want = {o: None for o in normalized}
+        for i in range(0, len(normalized), 1000):
+            chunk = normalized[i:i + 1000]
+            try:
+                resp = self._post("/v3/product/info/list", {
+                    "product_id": [], "sku": [], "offer_id": chunk,
+                })
+                for it in (resp.get("result") or {}).get("items") or []:
+                    oid = str(it.get("offer_id") or "").strip()
+                    pid = it.get("product_id")
+                    if oid in want and pid:
+                        want[oid] = int(pid)
+            except Exception:
+                pass
+        missing = [oid for oid, pid in want.items() if not pid]
+        if missing:
+            last_id = ""
+            for _ in range(50):
+                resp = self._post("/v3/product/list", {
+                    "filter": {"visibility": "ALL"},
+                    "limit": 100,
+                    "last_id": last_id,
+                })
+                result = resp.get("result") or {}
+                items = result.get("items") or []
+                for it in items:
+                    oid = str(it.get("offer_id") or "").strip()
+                    pid = it.get("product_id")
+                    if oid in want and pid and not want[oid]:
+                        want[oid] = int(pid)
+                last_id = str(result.get("last_id") or "")
+                if not items or not last_id:
+                    break
+                if all(want.values()):
+                    break
+        return {oid: pid for oid, pid in want.items() if pid}
+
+    def import_product_pictures(self, *, product_id: int, images: list[str]) -> dict[str, Any]:
+        """Import picture URLs into an existing Ozon product card.
+
+        POST /v1/product/pictures/import: Ozon fetches each URL itself and
+        hosts it on its CDN.  Only public cloud URLs are accepted.
+        """
+        if not product_id:
+            raise ValueError("product_id is required")
+        valid = [str(u) for u in images if str(u).strip().startswith(("http://", "https://"))]
+        if not valid:
+            raise ValueError("at least one public image URL is required")
+        if len(valid) > 15:
+            valid = valid[:15]
+        return self._post("/v1/product/pictures/import", {"product_id": int(product_id), "images": valid})
+
     def list_warehouses(self) -> dict[str, Any]:
         """Get FBS warehouse list (v2 endpoint, v1 is deprecated)."""
         return self._post("/v2/warehouse/list", {})
@@ -236,6 +380,48 @@ class OzonSellerClient:
     def get_product_upload_quota(self) -> dict[str, Any]:
         """Read product create/update limits from the official v4 endpoint."""
         return self._post("/v4/product/info/limit", {})
+
+    def upload_image(self, *, image_bytes: bytes, filename: str = "image.jpg", mime: str = "image/jpeg") -> dict[str, Any]:
+        """Upload raw image bytes to the Ozon image CDN (POST /v1/images/upload).
+
+        Ozon re-hosts the file and returns a direct image URL that its own
+        CDN can always serve — required because Ozon's crawler cannot reach
+        most Chinese CDNs (alicdn etc.) when it re-fetches product images.
+        """
+        if not image_bytes:
+            raise ValueError("image_bytes is required")
+        # The client-level header pins Content-Type to application/json; a
+        # multipart upload must not inherit it.
+        headers = {
+            "Client-Id": self._http.headers["Client-Id"],
+            "Api-Key": self._http.headers["Api-Key"],
+        }
+        try:
+            response = self._http.post(
+                "/v1/images/upload",
+                files={"file": (filename, image_bytes, mime)},
+                headers=headers,
+            )
+        except httpx.TimeoutException as exc:
+            raise OzonTransportError("Ozon image upload timed out") from exc
+        except httpx.HTTPError as exc:
+            raise OzonTransportError("Ozon image upload transport failed") from exc
+
+        if response.status_code >= 400:
+            body_text = response.text[:2000]
+            if response.status_code in (401, 403):
+                raise OzonAuthenticationError(f"Ozon image auth failed: {body_text}")
+            if response.status_code == 429:
+                raise OzonRateLimitError(f"Ozon image rate limit reached: {body_text}")
+            if 400 <= response.status_code < 500:
+                raise OzonClientResponseError(f"Ozon image upload failed (HTTP {response.status_code}): {body_text}")
+            raise OzonServerError(f"Ozon image service failed (HTTP {response.status_code}): {body_text}")
+        try:
+            body = response.json()
+        except ValueError as exc:
+            raise OzonServerError("Ozon image upload returned invalid JSON") from exc
+        return body
+
 
     def generate_barcodes(self, *, product_ids: list[int]) -> dict[str, Any]:
         """Generate barcodes for products via /v1/barcode/generate."""

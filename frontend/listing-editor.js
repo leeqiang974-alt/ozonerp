@@ -1,4 +1,4 @@
-﻿/* v4 - combobox + tree browser with search + match history */
+/* v4 - combobox + tree browser with search + match history */
 "use strict";
 const API_BASE = window.ERP_API_BASE || `http://${location.hostname || "127.0.0.1"}:8000`;
 const state = { shopId: null, categoryId: null, typeId: null, attributes: [], attributeOptionsCache: {}, attrValues: {}, attributeLoadToken: 0, images: [], variants: [], variantDimensions: [], sourceProduct: null, sourceSkuImageUrls: new Set(), draftId: null, isSubmitted: false, lastImportTaskId: null, editorDirty: false, editorQueue: [], categorySearchTimer: null, dictSearchTimers: {}, richContentCompact: null, richContentAuto: false, contentGenerationPromise: null, selectedImages: new Set(), translatedImageCache: {}, listingTemplates: [], learningAttributeIds: new Set(), aiImageJob: null, selectedAiImages: new Set(), selectedAiJobId: null, aiCreativeGroupKey: "__product__", skuImageUrls: new Set(), watermark: { enabled: false, image_data_url: "", position: "br", scale: 1, opacity: 0.65 } };
@@ -660,6 +660,7 @@ function setupDictionarySearch(input) {
   // typed into now.  Selection remains explicit: only clicking an option
   // writes an Ozon dictionary value_id.
   var singleSearchRequest = 0;
+  var msSearchSeq = 0;
 
   console.log("[dict] setupDictionarySearch attrId=" + attrId + " isColl=" + isColl + " hasDropdown=" + !!dropdown + " hasArrow=" + !!arrow);
 
@@ -676,7 +677,9 @@ function setupDictionarySearch(input) {
 
   function refreshDisplay() {
     if (!isColl) return;
+    _restoring = true;
     input.value = (state.attrValues[attrId].value_texts || []).join(", ");
+    _restoring = false;
   }
 
   function openDropdown() {
@@ -707,7 +710,7 @@ function setupDictionarySearch(input) {
     if (isOpen) closeDropdown(); else openDropdown();
   }
 
-  async function loadOpts(q) {
+  async function loadOpts(q, guard) {
     if (!state.shopId || !state.categoryId) { dropdown.innerHTML = '<div class="le-combobox-empty">请先选择类目</div>'; return; }
     if (!state.typeId) { dropdown.innerHTML = '<div class="le-combobox-empty">缺少类型ID</div>'; return; }
     const cached = Array.isArray(state.attributeOptionsCache?.[attrId]) ? state.attributeOptionsCache[attrId] : null;
@@ -715,6 +718,7 @@ function setupDictionarySearch(input) {
     dropdown.innerHTML = '<div class="le-combobox-empty">加载中...</div>';
     try {
       opts = await api("GET", '/api/v1/shops/' + state.shopId + '/metadata/categories/' + state.categoryId + '/types/' + state.typeId + '/attributes/' + attrId + '/values?query=' + encodeURIComponent(q) + '&limit=50');
+      if (guard && guard !== msSearchSeq) return;  // 过期搜索响应丢弃
       console.log("[dict] loaded " + opts.length + " opts for attrId=" + attrId);
       renderOpts("");
     } catch (e) {
@@ -731,17 +735,10 @@ function setupDictionarySearch(input) {
     var sv = state.attrValues[attrId];
     var selIds = (sv.value_ids || []).map(String);
     var list = ft ? opts.filter(function (o) { return (o.value || "").toLowerCase().indexOf(ft.toLowerCase()) >= 0; }) : opts;
-    var searchBox = dropdown.querySelector(".le-ms-search");
     var optionsBox = dropdown.querySelector(".le-ms-options");
-    if (!searchBox || !optionsBox) {
-      dropdown.innerHTML = '<div style="padding:4px 6px;border-bottom:1px solid #eee;position:sticky;top:0;background:#fff;z-index:1"><input type="text" dir="ltr" class="le-ms-search" placeholder="输入中文、俄文或单个字符搜索" style="width:100%;padding:3px 6px;border:1px solid #ddd;border-radius:3px;font-size:12px;direction:ltr;text-align:left;unicode-bidi:isolate" /></div><div class="le-ms-options"></div>';
-      searchBox = dropdown.querySelector(".le-ms-search");
+    if (!optionsBox) {
+      dropdown.innerHTML = '<div class="le-ms-options"></div>';
       optionsBox = dropdown.querySelector(".le-ms-options");
-      var composing = false;
-      var applyFilter = function () { if (!composing) renderOpts(searchBox.value); };
-      searchBox.addEventListener("compositionstart", function () { composing = true; });
-      searchBox.addEventListener("compositionend", function () { composing = false; renderOpts(searchBox.value); });
-      searchBox.addEventListener("input", applyFilter);
     }
     var h = "";
     if (!list.length) { h = '<div class="le-combobox-empty">无选项</div>'; }
@@ -753,7 +750,6 @@ function setupDictionarySearch(input) {
       });
     }
     optionsBox.innerHTML = h;
-    var si = searchBox;
     optionsBox.querySelectorAll(".le-ms-item").forEach(function (el) {
       el.addEventListener("click", function (e) {
         e.stopPropagation();
@@ -768,8 +764,8 @@ function setupDictionarySearch(input) {
         else { sv2.value_ids.push(vid); sv2.value_texts.push(vt); }
         console.log("[dict] SELECT attrId=" + attrId + " vid=" + vid + " total=" + sv2.value_ids.length);
         refreshDisplay();
-        renderOpts(si ? si.value : "");
-        if (si) si.focus();
+        renderOpts("");
+        input.focus();
       });
     });
   }
@@ -826,24 +822,43 @@ function setupDictionarySearch(input) {
   if (isColl) {
     // Multi-select: click on input toggles dropdown
     input.addEventListener("click", function (e) { e.stopPropagation(); toggleDropdown(); });
-    // Block typing in multi-select (no readOnly, so we prevent manually)
+    // Backspace/Delete: remove last selected only when the box shows the
+    // selected display text (i.e. no active search term); otherwise let the
+    // key edit the search term normally.
     input.addEventListener("keydown", function (e) {
       if (e.key === "Backspace" || e.key === "Delete") {
-        e.preventDefault();
-        var sv = state.attrValues[attrId];
-        if (sv.value_ids && sv.value_ids.length) { sv.value_ids.pop(); sv.value_texts.pop(); refreshDisplay(); }
+        var display = (state.attrValues[attrId].value_texts || []).join(", ");
+        if (input.value === display || input.value.trim() === "") {
+          e.preventDefault();
+          var sv = state.attrValues[attrId];
+          if (sv.value_ids && sv.value_ids.length) { sv.value_ids.pop(); sv.value_texts.pop(); refreshDisplay(); }
+        }
       } else if (e.key === "Tab" || e.ctrlKey || e.metaKey || e.altKey) {
         // allow navigation and shortcuts
-      } else if (e.key.length === 1) {
-        e.preventDefault(); // block character typing
       }
     });
-    // Restore display value if paste or other input sneaks in
+    // Typing in the box searches the options directly (replaces the old
+    // in-dropdown search bar). Selection stays click-based.
     input.addEventListener("input", function () {
       if (_restoring) return;
-      _restoring = true;
-      refreshDisplay();
-      _restoring = false;
+      var v = input.value.trim();
+      var display = (state.attrValues[attrId].value_texts || []).join(", ");
+      if (v === display) { if (!isOpen) openDropdown(); return; }
+      if (!isOpen) openDropdown();
+      renderOpts(v);                       // filter already-loaded options
+      var seq = ++msSearchSeq;
+      clearTimeout(state.dictSearchTimers[attrId]);
+      state.dictSearchTimers[attrId] = setTimeout(function () {
+        if (seq !== msSearchSeq) return;
+        loadOpts(v, seq);                  // server-side search with stale guard
+      }, 300);
+    });
+    // Restore the selected display text and close the dropdown on blur.
+    input.addEventListener("blur", function () {
+      setTimeout(function () {
+        refreshDisplay();
+        closeDropdown();
+      }, 150);
     });
   } else {
     // Single-select: focus opens dropdown, typing searches
@@ -1019,7 +1034,13 @@ function autoFillDefaults(forcePackage = false) {
     if (state.attrValues[aid]?.value_text && !(forcePackage && isPackageAttr)) continue;
     // Defaults such as brand/country must also come through the actual Ozon
     // dictionary. The backend auto-fill path resolves those selections.
-    if (isDictionaryAttribute(attr)) continue;
+    if (isDictionaryAttribute(attr)) {
+      // 原产国 → 自动选中"中国"（从 Ozon 词典解析 value_id；已有有效选择时不覆盖）
+      if ((name.includes("原产国") || name.toLowerCase().includes("страна")) && !state.attrValues[aid]?.value_id) {
+        autoSelectCountryChina(attr);
+      }
+      continue;
+    }
     // Brand -> Нет бренда (no brand)
     if (name.includes("品牌") || name.toLowerCase().includes("бренд")) {
       state.attrValues[aid] = { value_id: "126745801", value_text: "Нет бренда" };
@@ -1326,6 +1347,7 @@ function setupVideoHandlers() {
   const urlInput = $("#le-video-url");
   const player = $("#le-video-player");
   const removeBtn = $("#le-video-remove");
+  const genBtn = $("#le-video-generate");
   function updatePlayer() {
     const url = urlInput.value.trim();
     if (url && (url.endsWith(".mp4") || url.endsWith(".webm") || url.includes("video"))) {
@@ -1343,6 +1365,29 @@ function setupVideoHandlers() {
   }
   urlInput.addEventListener("input", updatePlayer);
   removeBtn.addEventListener("click", () => { urlInput.value = ""; updatePlayer(); });
+  // 生成视频：8 图轮播（ffmpeg，非 AI）→ 上传 Yandex Disk → 直链回填输入框。
+  // Ozon 只接受 RuTube/VK/Яндекс Диск 来源，yandex_url 可直接挂载。
+  if (genBtn) genBtn.addEventListener("click", async () => {
+    const images = (state.images || []).slice(0, 8);
+    if (!images.length) { toast("请先确认产品图片（至少 1 张）再生成视频", "error"); return; }
+    if (!state.shopId) { toast("缺少店铺信息，请先选择店铺", "error"); return; }
+    genBtn.disabled = true; const old = genBtn.textContent; genBtn.textContent = "生成中...";
+    try {
+      const r = await api("POST", `/api/v1/shops/${state.shopId}/videos/slideshow`, {
+        image_urls: images, duration_per_sec: 2, fade_sec: 0.5, target: "1080x1080",
+      });
+      const link = r.yandex_url || r.url;
+      if (!link) throw new Error(r.yandex_upload_error || "未返回视频链接");
+      urlInput.value = link;
+      urlInput.dispatchEvent(new Event("input"));
+      // 生成成功即自动保存草稿，避免刷新后视频链接丢失（此前只回填输入框）
+      let saved = false;
+      try { saved = await saveDraft(); } catch (_) { saved = false; }
+      if (r.yandex_url) toast(saved ? "视频已生成、上传 Yandex 并保存到草稿" : "视频已生成（Yandex 直链），请补全 Offer ID/标题后保存", saved ? "success" : "error");
+      else toast(saved ? "视频已生成（本地预览）并保存，Yandex 上传失败：" + (r.yandex_upload_error || "未知") : "视频已生成但 Yandex 上传失败，且草稿未保存：" + (r.yandex_upload_error || "未知"), "error");
+    } catch (e) { toast("生成视频失败：" + e.message, "error"); }
+    finally { genBtn.disabled = false; genBtn.textContent = old; }
+  });
 }
 function videoPreviewUrl(url) {
   // The external media proxy rejects the browser's playback request. The local
@@ -1356,6 +1401,28 @@ function autoFillVideoFromSource() {
   const video = state.sourceProduct.media.find(m => m.media_type === "video");
   // Never overwrite a video link deliberately saved on an existing draft.
   if (video && video.url && !$("#le-video-url").value.trim()) { $("#le-video-url").value = video.url; $("#le-video-url").dispatchEvent(new Event("input")); }
+}
+
+async function autoSelectCountryChina(attr) {
+  // 原产国写死"中国"：从 Ozon 词典解析真实 value_id（不依赖硬编码 ID），
+  // 未绑定有效选项时才自动填充，避免覆盖用户手动选择。
+  const aid = String(attr.id);
+  if (!state.shopId || !state.categoryId || !state.typeId) return;
+  try {
+    const vals = await api("GET", `/api/v1/shops/${state.shopId}/metadata/categories/${state.categoryId}/types/${state.typeId}/attributes/${aid}/values?query=${encodeURIComponent("中国")}&limit=10`);
+    let hit = (vals || []).find(v => String(v.value || "").includes("中国") || String(v.value || "").toLowerCase().includes("китай"));
+    if (!hit && vals && vals.length) hit = vals[0];
+    if (!hit) return;
+    state.attrValues[aid] = { value_id: String(hit.id), value_text: String(hit.value), method: "auto" };
+    const inp = $(`.le-attr-input[data-attr-id="${aid}"]`);
+    if (inp) {
+      inp.value = String(hit.value);
+      inp.dataset.selectedValueId = String(hit.id);
+      inp.dataset.selectedValueText = String(hit.value);
+      const row = inp.closest(".le-attr-row"); if (row) row.classList.remove("le-attr-manual");
+    }
+    console.log("[dict] AUTO country=China attrId=" + aid + " vid=" + hit.id + " value=" + hit.value);
+  } catch (e) { console.error("[dict] autoSelectCountryChina error:", e); }
 }
 
 function isDictionaryAttribute(attr) {
@@ -2051,7 +2118,7 @@ function renderAiImageJob() {
     const attempt = attemptsBySlot.get(slot.slot);
     if (generated) {
       const {item,index}=generated;
-      return `<div class="le-ai-image-card selected-ready ${state.selectedAiImages.has(item.url) ? "selected" : ""}" data-ai-image-index="${index}" role="button" tabindex="0" aria-pressed="${state.selectedAiImages.has(item.url)}"><img src="${esc(displayImageUrl(item.url))}" loading="lazy"><span>${item.slot === "hero" ? "SKU首图 · " : ""}${esc(item.title || slot.title)}</span><small class="le-ai-slot-state success">生成成功</small><div class="le-ai-slot-actions"><button type="button" data-ai-zoom="${index}">放大</button><button type="button" class="le-ai-slot-retry" data-ai-retry-slot="${esc(slot.slot)}">重做此图</button></div></div>`;
+      return `<div class="le-ai-image-card selected-ready ${state.selectedAiImages.has(item.url) ? "selected" : ""}" data-ai-image-index="${index}" role="button" tabindex="0" aria-pressed="${state.selectedAiImages.has(item.url)}"><input type="checkbox" data-ai-check="${index}" title="勾选以应用到当前款式" ${state.selectedAiImages.has(item.url) ? "checked" : ""}><img src="${esc(displayImageUrl(item.url))}" loading="lazy" draggable="false"><span>${item.slot === "hero" ? "SKU首图 · " : ""}${esc(item.title || slot.title)}</span><small class="le-ai-slot-state success">生成成功 · 点击图片放大</small><div class="le-ai-slot-actions"><button type="button" data-ai-zoom="${index}">放大</button><button type="button" class="le-ai-slot-retry" data-ai-retry-slot="${esc(slot.slot)}">重做此图</button></div></div>`;
     }
     // A missing attempt means this slot was never started/sent, even when an
     // earlier slot caused the overall run to be interrupted.  Only ledger
@@ -2069,10 +2136,17 @@ function renderAiImageJob() {
     return `<div class="le-ai-image-card le-ai-slot-placeholder state-${esc(attemptState)}"><div class="le-ai-slot-empty"><b>${attemptState === "failed" ? "!" : attemptState === "provider_requesting" || attemptState === "response_received" ? "…" : "○"}</b></div><span>${esc(slot.title)}</span><small class="le-ai-slot-state">${esc(stateText)}</small>${errorText ? `<em title="${esc(attempt.error)}">${esc(errorText)}</em>` : ""}${retryBtn}</div>`;
   }).join("");
   grid.querySelectorAll("[data-ai-image-index]").forEach(card => {
-    const toggle = () => { const item=images[Number(card.dataset.aiImageIndex)]; if(!item)return; if(state.selectedAiImages.has(item.url))state.selectedAiImages.delete(item.url);else state.selectedAiImages.add(item.url); renderAiImageJob(); };
-    card.addEventListener("click", event => { if(event.target.closest("button"))return; toggle(); });
-    card.addEventListener("keydown", event => { if(event.key === "Enter" || event.key === " "){event.preventDefault();toggle();} });
+    // 点击图片 = 放大预览（不刷新面板、不改变选中状态）
+    const zoom = () => { const index = Number(card.dataset.aiImageIndex); const item = images[index]; if (item) zoomAiImage(index); };
+    card.addEventListener("click", event => { if (event.target.closest("button") || event.target.closest("input")) return; zoom(); });
+    card.addEventListener("keydown", event => { if (event.key === "Enter" || event.key === " "){event.preventDefault();zoom();} });
   });
+  // 选用改由勾选框控制，避免"点图就刷新整个面板"
+  grid.querySelectorAll("[data-ai-check]").forEach(cb => cb.addEventListener("change", () => {
+    const item = images[Number(cb.dataset.aiCheck)]; if (!item) return;
+    if (cb.checked) state.selectedAiImages.add(item.url); else state.selectedAiImages.delete(item.url);
+    renderAiImageJob();
+  }));
   grid.querySelectorAll("[data-ai-zoom]").forEach(button => button.addEventListener("click", event => { event.stopPropagation(); zoomAiImage(Number(button.dataset.aiZoom)); }));
   bindAiSlotRetryButtons(grid);
   const allSelected = images.length > 0 && images.every(item => state.selectedAiImages.has(item.url));
@@ -2197,6 +2271,15 @@ function aiAnalysisLabel(value, preferredKeys = []) {
 }
 
 window.zoomAiImage = function(index) { const item=state.aiImageJob?.generated_images?.[index]; if(!item)return; const modal=document.createElement("div"); modal.className="le-ai-image-lightbox"; modal.innerHTML=`<img src="${esc(displayImageUrl(item.url))}"><button>×</button>`; modal.addEventListener("click",()=>modal.remove()); document.body.appendChild(modal); };
+window.zoomInlineImage = function(url) {
+  if (!url) return;
+  document.querySelectorAll(".le-ai-image-lightbox").forEach(el => el.remove());
+  const modal = document.createElement("div");
+  modal.className = "le-ai-image-lightbox";
+  modal.innerHTML = `<img src="${esc(displayImageUrl(url))}" alt=""><button type="button">×</button>`;
+  modal.addEventListener("click", () => modal.remove());
+  document.body.appendChild(modal);
+};
 
 async function loadAiImageJob() {
   state.aiImageJob=null; state.selectedAiImages.clear(); state.selectedAiJobId=null; renderAiImageJob();
@@ -2225,8 +2308,10 @@ async function generateAiImages(requestedSlots = null) {
     } else {
       toast(`${slotTitle}任务已提交，可继续编辑其他字段`, "success");
     }
-    renderAiImageJob();
-    const pollDeadline = Date.now() + 5*60*1000; // stop auto-refresh after 5 min to avoid endless UI flicker
+    if (!(Array.isArray(requestedSlots) && requestedSlots.length === 1 && ["queued","analyzing","generating"].includes(state.aiImageJob?.status))) {
+      renderAiImageJob();
+    }
+    const pollDeadline = Date.now() + 30*60*1000; // 生图任务可能长达20+分钟；轮询窗口放宽到30分钟，避免前端提前停在运行中
     while (["queued","analyzing","generating"].includes(state.aiImageJob?.status) && Date.now() < pollDeadline) {
       await new Promise(resolve=>setTimeout(resolve,3000));
       if(state.sourceProduct?.id!==sourceId)return;
@@ -2255,9 +2340,9 @@ async function applyAiImages(skipConfirm = false, applyAll = false) {
   const selected=(state.aiImageJob.generated_images||[]).map(x=>x.url).filter(url=>state.selectedAiImages.has(url));
   if(!selected.length){toast("请至少选择一张图片","error");return;}
   const targetGroup = (variantCreativeGroups()).find(group => group.key === state.aiCreativeGroupKey);
-  const targetIndexes = applyAll ? state.variants.map((_, index) => index) : (targetGroup?.indexes || state.variants.map((_, index) => index));
+  const targetIndexes = applyAll ? state.variants.map((_, index) => index) : (targetGroup?.indexes || []); // v15: 组不匹配时禁止静默应用到所有 SKU
   const targetSkus = targetIndexes.map(index => state.variants[index]?.seller_sku).filter(Boolean);
-  if(!targetSkus.length){toast("当前商品没有可应用的 SKU","error");return;}
+  if(!targetGroup && !applyAll){toast("未匹配到当前款式组，请先重新选择款式后重试","error");return;} if(!targetSkus.length){toast("当前商品没有可应用的 SKU","error");return;}
   const scopeLabel = applyAll ? `该商品的所有 ${targetSkus.length} 个 SKU` : `“${targetGroup?.label || "当前款式"}”的 ${targetSkus.length} 个尺寸 SKU`;
   if(!skipConfirm && !window.confirm(`将 ${selected.length} 张AI图片应用到${scopeLabel}。不会修改公共详情图库或其他款式。确认继续？`))return;
   const btn=$("#le-ai-apply-images");btn.disabled=true;
@@ -2303,8 +2388,17 @@ async function generateAndApplyStyleHero(styleKey) {
     }
     state.selectedAiImages.clear();
     state.selectedAiImages.add(heroImage.url);
-    await applyAiImages(true); // skipConfirm = true
-    toast("款式首图已生成并应用到该款式的所有尺寸 SKU", "success");
+    // v16: 生成后自动加入该款式 SKU 图库，不自动设为首图；主图由用户在图库中手动选择
+    const tg = (variantCreativeGroups()).find(g => g.key === styleKey);
+    (tg?.indexes || []).forEach(i => {
+      const v = state.variants[i];
+      if (!v) return;
+      const prior = Array.isArray(v.image_urls) ? v.image_urls : (v.image_url ? [v.image_url] : []);
+      v.image_urls = [heroImage.url, ...prior.filter(u => u !== heroImage.url)].slice(0, 15);
+    });
+    renderVariantTable();
+    if (state.draftId) { try { await saveDraft(); } catch (e) { console.warn("auto-save after gallery add failed", e); } }
+    toast("首图已生成并自动加入该款式 SKU 图库，点击产品图列可手动设为首图", "success");
   } catch(e) {
     toast("款式首图生成失败："+e.message, "error");
   }
@@ -2374,7 +2468,7 @@ function renderColorSamples() {
     const image = group.image_url || v.image_url || state.images[0] || "";
     return `<div class="le-color-sample" data-idx="${i}">
       <input type="checkbox" checked data-sample-idx="${i}" />
-      <img src="${esc(image)}" loading="lazy" referrerpolicy="no-referrer" onerror="this.style.opacity=0.3" onclick="event.stopPropagation(); zoomVariantImage(${i})" title="点击查看该款式图片" style="cursor:zoom-in" />
+      <img src="${esc(displayImageUrl(image))}" loading="lazy" referrerpolicy="no-referrer" onerror="this.style.opacity=0.3" onclick="event.stopPropagation(); zoomVariantImage(${i})" title="点击查看该款式图片" style="cursor:zoom-in" />
       <small>${esc(colorName)}</small>
       <button type="button" class="le-btn le-btn-sm" onclick="event.stopPropagation(); translateVariantImage(${i})" title="翻译此款式图片并回填" style="padding:1px 8px;margin-top:3px">翻译</button>
     </div>`;
@@ -2530,7 +2624,7 @@ function renderVariantTable() {
     const groupStyleEditor = !groupDimension ? "" : (isColorVariantAttribute(groupDimension)
       ? `<input class="le-color-ms-trigger le-group-style-trigger" type="text" value="${esc(groupDimensionValue)}" placeholder="请选择" data-group-first-idx="${i}" data-group-dim="${esc(groupDimension.name)}" title="设置后同步到同款全部尺寸" autocomplete="off" />`
       : `<input class="le-group-style-input" type="text" value="${esc(groupDimensionValue)}" data-group-first-idx="${i}" data-group-dim="${esc(groupDimension.name)}" title="设置后同步到同款全部尺寸" />`);
-    const groupCells = groupEntry?.position === 0 ? `<td rowspan="${groupSize}" class="le-variant-group-image"><img class="le-variant-thumb" src="${esc(groupImg)}" loading="lazy" referrerpolicy="no-referrer" onerror="this.style.opacity=0.3" /><button type="button" class="le-variant-group-ai" data-ai-style-key="${esc(groupEntry.group.key)}">AI 作图</button></td><td rowspan="${groupSize}" class="le-variant-group-name"><strong>${esc(groupEntry.group.label)}</strong>${groupStyleEditor}<small>${groupSize} 个尺寸 SKU</small></td><td rowspan="${groupSize}" class="le-variant-group-image"><img class="le-variant-thumb le-color-thumb" src="${esc(groupImg)}" loading="lazy" referrerpolicy="no-referrer" onerror="this.style.opacity=0.3" title="同款颜色样本" /></td><td rowspan="${groupSize}" style="position:relative" class="le-variant-group-image"><img class="le-variant-thumb" src="${esc(groupImg)}" loading="lazy" referrerpolicy="no-referrer" onerror="this.style.opacity=0.3" data-click="product-img" data-idx="${i}" title="点击设置该款式图片库" style="cursor:pointer" /><span class="le-img-badge">${groupImages.length}</span></td>` : "";
+    const groupCells = groupEntry?.position === 0 ? `<td rowspan="${groupSize}" class="le-variant-group-image"><img class="le-variant-thumb" src="${esc(displayImageUrl(groupImg))}" loading="lazy" referrerpolicy="no-referrer" onerror="this.style.opacity=0.3" /><button type="button" class="le-variant-group-ai" data-ai-style-key="${esc(groupEntry.group.key)}">AI 作图</button><button type="button" class="le-btn le-btn-sm" onclick="event.stopPropagation(); translateVariantImage(${groupEntry.group.indexes[0]})" title="翻译此款式图片并回填" style="padding:1px 8px;margin-top:3px;margin-left:4px">翻译</button></td><td rowspan="${groupSize}" class="le-variant-group-name"><strong>${esc(groupEntry.group.label)}</strong>${groupStyleEditor}<small>${groupSize} 个尺寸 SKU</small></td><td rowspan="${groupSize}" class="le-variant-group-image"><img class="le-variant-thumb le-color-thumb" src="${esc(displayImageUrl(groupImg))}" loading="lazy" referrerpolicy="no-referrer" onerror="this.style.opacity=0.3" title="同款颜色样本" /></td><td rowspan="${groupSize}" style="position:relative" class="le-variant-group-image"><img class="le-variant-thumb" src="${esc(displayImageUrl(groupImg))}" loading="lazy" referrerpolicy="no-referrer" onerror="this.style.opacity=0.3" data-click="product-img" data-idx="${i}" title="点击设置该款式图片库" style="cursor:pointer" /><span class="le-img-badge">${groupImages.length}</span></td>` : "";
     return `<tr data-row-idx="${i}">
       <td><input type="checkbox" class="le-variant-row-check" data-idx="${i}" /></td>
       ${groupCells}
@@ -2653,8 +2747,8 @@ function openImageGallery(variantIdx, imgType) {
       const selected = new Set(selectedImgs);
       const current = variant.image_url || selectedImgs[0] || imgs[0];
       const availableImgs = publicGalleryImages();
-      const card = (url, isSelected, index) => { const isSku = url === variant.image_url; return `<div class="le-product-gallery-card ${isSelected ? "active" : ""}" data-gallery-url="${esc(url)}" draggable="${isSelected ? "true" : "false"}" data-selected-index="${isSelected ? index : ""}"><img src="${esc(displayImageUrl(url))}" loading="lazy" referrerpolicy="no-referrer" /><span class="le-product-gallery-order">${isSelected ? `${index + 1}${index === 0 ? " · 首图" : ""}` : "可补充"}${isSku ? " · 款式图" : " · 公共图"}</span>${isSelected ? `<button type="button" class="le-product-gallery-primary" data-gallery-primary="${esc(url)}">${url === current ? "当前首图" : "设为首图"}</button><button type="button" class="le-product-gallery-delete" data-gallery-remove="${esc(url)}" title="从当前款式移除">×</button>` : `<button type="button" class="le-product-gallery-add" data-gallery-add="${esc(url)}">加入此款式</button>`}</div>`; };
-      const sourceCard = url => { const isAdded = selected.has(url); return `<div class="le-product-gallery-card le-product-gallery-source-card ${isAdded ? "active" : ""}" data-gallery-url="${esc(url)}"><img src="${esc(displayImageUrl(url))}" loading="lazy" referrerpolicy="no-referrer" /><span class="le-product-gallery-order">公共图${isAdded ? " · 已加入" : " · 可补充"}</span>${isAdded ? '<button type="button" class="le-product-gallery-added" disabled>已加入当前款式</button>' : `<button type="button" class="le-product-gallery-add" data-gallery-add="${esc(url)}">加入此款式</button>`}</div>`; };
+      const card = (url, isSelected, index) => { const isSku = url === variant.image_url; return `<div class="le-product-gallery-card ${isSelected ? "active" : ""}" data-gallery-url="${esc(url)}" draggable="${isSelected ? "true" : "false"}" data-selected-index="${isSelected ? index : ""}"><img src="${esc(displayImageUrl(url))}" loading="lazy" referrerpolicy="no-referrer" draggable="false" /><span class="le-product-gallery-order">${isSelected ? `${index + 1}${index === 0 ? " · 首图" : ""}` : "可补充"}${isSku ? " · 款式图" : " · 公共图"}</span>${isSelected ? `<button type="button" class="le-product-gallery-primary" data-gallery-primary="${esc(url)}">${url === current ? "当前首图" : "设为首图"}</button><button type="button" class="le-product-gallery-delete" data-gallery-remove="${esc(url)}" title="从当前款式移除">×</button>` : `<button type="button" class="le-product-gallery-add" data-gallery-add="${esc(url)}">加入此款式</button>`}</div>`; };
+      const sourceCard = url => { const isAdded = selected.has(url); return `<div class="le-product-gallery-card le-product-gallery-source-card ${isAdded ? "active" : ""}" data-gallery-url="${esc(url)}"><img src="${esc(displayImageUrl(url))}" loading="lazy" referrerpolicy="no-referrer" draggable="false" /><span class="le-product-gallery-order">公共图${isAdded ? " · 已加入" : " · 可补充"}</span>${isAdded ? '<button type="button" class="le-product-gallery-added" disabled>已加入当前款式</button>' : `<button type="button" class="le-product-gallery-add" data-gallery-add="${esc(url)}">加入此款式</button>`}</div>`; };
       const targetCount = creativeGroupAtIndex(variantIdx)?.indexes.length || 1;
       const styleKey = creativeGroupAtIndex(variantIdx)?.key || "__product__";
       modal.innerHTML = `<div class="le-product-gallery-dialog"><div class="le-product-gallery-head"><div><strong>款式图片设置</strong><small>左侧为当前款式已选图片，右侧为完整公共总图库；会同步本款 ${targetCount} 个尺寸 SKU，不影响公共图库或其他款式。</small></div><div style="display:flex;gap:8px;align-items:center"><button type="button" class="le-btn le-btn-sm" data-gallery-ai-gen style="background:#6c5ce7;color:#fff;border-color:#6c5ce7">✨ AI 生套图</button><button type="button" data-gallery-close>×</button></div></div><div class="le-product-gallery-columns"><section class="le-product-gallery-pane"><h4>当前款式已选（${selectedImgs.length}）</h4><div class="le-product-gallery-grid le-product-gallery-selected">${selectedImgs.map((url, i) => card(url, true, i)).join("") || '<p class="le-product-gallery-empty">暂无已选图片</p>'}</div></section><section class="le-product-gallery-pane"><h4>总图库（${availableImgs.length}）</h4><div class="le-product-gallery-grid le-product-gallery-available">${availableImgs.map(sourceCard).join("") || '<p class="le-product-gallery-empty">暂无公共图库图片</p>'}</div></section></div><div class="le-product-gallery-foot"><span>拖动左侧图片调整顺序；第一张会成为本款所有尺寸的首图。右侧只补充图片，不会删除公共图库。</span><button type="button" data-gallery-close>完成</button></div></div>`;
@@ -2717,7 +2811,6 @@ function openImageGallery(variantIdx, imgType) {
       card.addEventListener("pointerdown", event => {
         const index = Number(card.dataset.selectedIndex);
         if (!Number.isInteger(index) || event.target.closest("button")) return;
-        event.preventDefault();
         modal.__galleryMouseDrag = null;
         pointerDrag = { id: event.pointerId, from: index, startX: event.clientX, startY: event.clientY, active: false };
         card.setPointerCapture?.(event.pointerId);
@@ -2744,6 +2837,13 @@ function openImageGallery(variantIdx, imgType) {
       };
       card.addEventListener("pointerup", finishPointerDrag);
       card.addEventListener("pointercancel", finishPointerDrag);
+      // 点击图片 = 放大预览（拖拽重排后 render() 重建 DOM，原卡片被替换，不会误弹放大）
+      card.addEventListener("click", event => {
+        if (event.target.closest("button")) return;
+        event.stopPropagation();
+        const url = card.dataset.galleryUrl;
+        if (url) zoomInlineImage(url);
+      });
     });
     modal.querySelectorAll("[data-gallery-add]").forEach(button => button.addEventListener("click", event => {
       event.stopPropagation();
@@ -2771,9 +2871,34 @@ function openImageGallery(variantIdx, imgType) {
       const url = button.dataset.galleryPrimary;
       const currentUrls = Array.isArray(variant.image_urls) ? variant.image_urls : [...imgs];
       if (!currentUrls.includes(url)) return;
+      // 已经是首图：静默无操作，不触发任何刷新
+      if (currentUrls[0] === url) return;
       applyImagesToCreativeGroup(variantIdx, [url, ...currentUrls.filter(item => item !== url)]);
-      onImagesChanged();
-      render();
+      // 轻量更新：不重建弹窗、不整页重渲染，只重排已选区卡片并刷新外部首图缩略图
+      const newCurrent = variant.image_url || url;
+      const pane = modal.querySelector(".le-product-gallery-selected");
+      if (pane) {
+        const cards = [...pane.querySelectorAll(".le-product-gallery-card")];
+        const byUrl = new Map(cards.map(c => [c.dataset.galleryUrl, c]));
+        const urls = variant.image_urls || [url];
+        pane.innerHTML = "";
+        urls.forEach((u, i) => {
+          const c = byUrl.get(u);
+          if (!c) return;
+          c.dataset.selectedIndex = String(i);
+          const order = c.querySelector(".le-product-gallery-order");
+          if (order) order.textContent = `${i + 1}${i === 0 ? " · 首图" : ""}${u === newCurrent ? " · 款式图" : " · 公共图"}`;
+          const pb = c.querySelector(".le-product-gallery-primary");
+          if (pb) pb.textContent = u === newCurrent ? "当前首图" : "设为首图";
+          pane.appendChild(c);
+        });
+      }
+      const group = creativeGroupAtIndex(variantIdx);
+      const firstIdx = group?.indexes?.[0] ?? variantIdx;
+      const newSrc = displayImageUrl(newCurrent || "");
+      document.querySelectorAll(`#le-variant-rows tr[data-row-idx="${firstIdx}"] .le-variant-thumb`)
+        .forEach(img => { img.src = newSrc; });
+      toast("已设为首图（同步本款所有尺寸）", "success");
     }));
     const nextDialog = modal.querySelector(".le-product-gallery-dialog");
     if (nextDialog) nextDialog.scrollTop = previousDialogScrollTop;
@@ -2791,7 +2916,6 @@ function openImageGallery(variantIdx, imgType) {
     if (!card || event.target.closest("button")) return;
     const from = Number(card.dataset.selectedIndex);
     if (!Number.isInteger(from)) return;
-    event.preventDefault();
     modal.__galleryMouseDrag = { from, startX: event.clientX, startY: event.clientY, active: false };
   });
   modal.addEventListener("mousemove", event => {
@@ -3835,6 +3959,8 @@ function showSubmittedState(message, taskId = state.lastImportTaskId) {
   if (btn) { btn.textContent = "修改后重新提交"; btn.disabled = false; btn.classList.remove("le-submitted"); }
   const attributesBtn = $("#le-update-attributes-btn");
   if (attributesBtn) attributesBtn.style.display = "inline-block";
+  const fixesBtn = $("#le-submit-fixes-btn");
+  if (fixesBtn) fixesBtn.style.display = "inline-block";
   if (status) { status.hidden = false; status.textContent = message || `已提交${state.lastImportTaskId ? ` · task_id: ${state.lastImportTaskId}` : ""}；修改后可重新提交`; }
   const feedbackBtn = $("#le-sync-feedback-btn");
   if (feedbackBtn) feedbackBtn.style.display = "inline-block";
@@ -3941,6 +4067,30 @@ async function updateProductAttributes() {
     toast("属性更新失败: " + error.message, "error");
   } finally {
     if (btn) { btn.textContent = "仅更新产品属性"; btn.disabled = false; }
+  }
+}
+
+// Submit manual fixes to an existing Ozon card (colours / model name /
+// rich content / per-SKU pictures / video). Only corrections are sent.
+async function submitDraftFixes() {
+  if (!state.shopId || !state.draftId || !state.isSubmitted) { toast("请先完成一次完整提交，确认 Ozon 商品已存在", "error"); return; }
+  if (!window.confirm("将把当前草稿的变体颜色、型号合并名、富内容、图片和视频修正提交到原 Ozon 商品卡（不重建、不改价格库存标题）。确认提交？")) return;
+  const saved = await saveDraft();
+  if (!saved) return;
+  const btn = $("#le-submit-fixes-btn");
+  if (btn) { btn.textContent = "修正提交中..."; btn.disabled = true; }
+  try {
+    const result = await api("POST", `/api/v1/shops/${state.shopId}/listing-drafts/${state.draftId}/submit-fixes`, {});
+    const picParts = Object.entries(result.pictures || {}).map(([oid, v]) => {
+      const states = ((v.result || {}).pictures || []).map(p => p.state).filter(Boolean);
+      return `${oid}:${states.length ? states[0] : (v.error || "?")}`;
+    });
+    toast(`修正已提交（属性 ${result.attributes_update?.task_id || "?"}，图片 ${picParts.join("；") || "无"}）`, "success");
+    showSubmittedState(`修正已提交到 Ozon：属性 task ${result.attributes_update?.task_id || "?"}；图片 ${picParts.join("；") || "无"}；${result.video || "未挂视频"}。`, null);
+  } catch (error) {
+    toast("修正提交失败: " + error.message, "error");
+  } finally {
+    if (btn) { btn.textContent = "提交修正"; btn.disabled = false; }
   }
 }
 
@@ -4212,7 +4362,7 @@ document.addEventListener("DOMContentLoaded", async () => {
   $("#le-translate-images").addEventListener("click", translateSelectedImages);
   $("#le-ai-generate-images").addEventListener("click", generateAiImages);
   $("#le-ai-generate-images-panel")?.addEventListener("click", generateAiImages);
-  $("#le-ai-apply-images").addEventListener("click", () => applyAiImages(false, true));
+  $("#le-ai-apply-images").addEventListener("click", () => applyAiImages(false, false)); // v14: 按钮语义=仅当前款式，不再误写所有 SKU
   $("#le-ai-creative-group")?.addEventListener("change", async event => { state.aiCreativeGroupKey = event.target.value || "__product__"; await loadAiImageJob(); });
   $("#le-add-variant-row").addEventListener("click", addVariantRow);
   $("#le-source-select").addEventListener("change", (e) => loadSourceProductDetail(e.target.value));
@@ -4221,6 +4371,7 @@ document.addEventListener("DOMContentLoaded", async () => {
   $("#le-save-btn").addEventListener("click", saveDraft);
   $("#le-submit-btn").addEventListener("click", submitDraft);
   $("#le-update-attributes-btn").addEventListener("click", updateProductAttributes);
+  $("#le-submit-fixes-btn").addEventListener("click", submitDraftFixes);
   $("#le-sync-feedback-btn").addEventListener("click", syncFeedback);
   $("#le-auto-fix-btn").addEventListener("click", autoFixListing);
   $$(".le-section-title").forEach(t => t.addEventListener("click", () => t.parentElement.classList.toggle("le-section-collapsed")));
@@ -4260,3 +4411,17 @@ document.addEventListener("DOMContentLoaded", async () => {
   renderEditorQueue();
 });
 
+// v17: 全局图片点击放大（点外围关闭）；图片库/AI面板等已有交互逻辑保持不动
+document.addEventListener("click", function (e) {
+  const t = e.target;
+  if (!(t instanceof HTMLImageElement)) return;
+  if (t.closest(".le-ai-image-lightbox")) return;
+  if (t.hasAttribute("data-click")) return;          // 打开图库/翻译等既有点击逻辑
+  if (t.closest("#le-ai-image-grid")) return;        // AI 候选图（已有放大+选中逻辑）
+  if (t.closest("button, a, label")) return;         // 按钮/链接/标签内图片不劫持
+  const src = t.currentSrc || t.src;
+  if (!src || src.startsWith("data:")) return;
+  e.preventDefault();
+  e.stopPropagation();
+  window.zoomInlineImage(src);
+});

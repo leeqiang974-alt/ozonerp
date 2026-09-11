@@ -342,6 +342,7 @@
             <button class="primary" onclick="loadOperationalData()">搜索</button>
             <button class="primary" id="save-cost-btn" onclick="saveSkuCostEdits()" disabled>保存成本价修改</button>
             <button class="primary" onclick="openBulkCostDialog()">批量填成本价</button>
+            <button class="primary" onclick="openBulkVideoDialog()">批量挂视频</button>
           </div>
           <div style="display:flex;gap:8px;align-items:center;margin-top:10px;font-size:13px;color:#8a7357">
             <label for="cost-currency-select">Ozon 结算货币：</label>
@@ -432,6 +433,7 @@
               刷新所选结果</button
             ><button class="secondary" id="cb-refresh-all">刷新全部结果</button
             ><button class="secondary" id="cb-delete-selected" disabled>删除所选</button
+            ><button class="secondary" id="cb-import-offers">批量导入采集</button
             ><button
               class="primary"
               id="cb-pull-ozon"
@@ -1329,8 +1331,26 @@
         <footer><button type="button" class="secondary" id="bulk-batch-cancel">取消</button><button type="submit" class="primary">创建本地任务</button></footer>
       </form>
     </dialog>
+        <dialog id="import-offers-dialog" class="panel" style="max-width:640px">
+      <div class="page-title"><div><h3>批量导入 1688 采集</h3><p>粘贴商品列表入队，插件爬虫自动逐个采集进采集箱。</p></div></div>
+      <label>目标 Ozon 店铺<select id="import-offers-shop" style="margin-left:8px"></select></label>
+      <label style="display:block;margin-top:10px">商品列表（每行一条）：
+        <textarea id="import-offers-text" rows="10" style="width:100%;margin-top:6px" placeholder="支持三种格式，一行一个：&#10;1) 纯 offer_id：1058667167366&#10;2) 1688 链接：https://detail.1688.com/offer/969826029919.html&#10;3) offer_id,商品名称,价格：841252470563,狗垫子冬季保暖,27.5&#10;&#10;可以直接粘贴 CSV 表格内容，自动识别列"></textarea>
+      </label>
+      <div style="display:flex;gap:8px;margin-top:8px;align-items:center">
+        <button type="button" class="secondary" id="import-offers-file-btn" style="white-space:nowrap">上传表格文件</button>
+        <input type="file" id="import-offers-file" accept=".csv,.txt,.xls,.xlsx" style="display:none">
+        <span class="muted" style="font-size:12px">支持 CSV / Excel / TXT，自动识别列</span>
+      </div>
+      <div style="display:flex;gap:8px;margin-top:8px;align-items:center">
+        <input id="import-offers-path" placeholder="或粘贴文件路径（本机 / 共享目录），如 C:\list.csv 或 \\192.168.0.147\share\list.xlsx" style="flex:1;padding:6px">
+        <button type="button" class="secondary" id="import-offers-path-btn" style="white-space:nowrap">读取路径</button>
+      </div>
+      <p id="import-offers-preview" class="muted">未解析</p>
+      <footer><button type="button" class="secondary" id="import-offers-cancel">取消</button><button type="button" class="primary" id="import-offers-submit" disabled>入队采集</button></footer>
+    </dialog>
     <div id="toast" role="status"></div>
-                 <script src="./app.js?v=131"></script>
+                 <script src="./app.js?v=133"></script>
     <script src="./quick-review.js?v=2"></script>
     <script src="./qr-injector.js"></script>
     <div id="image-modal" class="image-modal" style="display:none;position:fixed;inset:0;background:#000000e6;z-index:9999;place-items:center;padding:24px;cursor:zoom-out">

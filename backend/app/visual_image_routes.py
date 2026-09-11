@@ -22,7 +22,7 @@ def generate(shop_id:int,payload:GenerateRequest,background_tasks:BackgroundTask
         job, should_start = queue_set(db,shop_id,payload.source_product_id,payload.listing_draft_id,requested_slots,payload.creative_group_key)
         if should_start:
             background_tasks.add_task(run_queued_set,shop_id,payload.source_product_id,payload.listing_draft_id,requested_slots,payload.creative_group_key)
-        return serialize(job)
+        return {**serialize(job), "should_start": should_start}
     except ValueError as exc:raise HTTPException(422,str(exc)) from exc
     except Exception as exc:raise HTTPException(502,str(exc)) from exc
 

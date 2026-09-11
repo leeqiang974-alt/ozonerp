@@ -1,4 +1,4 @@
-﻿"""Rich Content JSON builder for Ozon product listings.
+"""Rich Content JSON builder for Ozon product listings.
 
 Generates the Rich Content JSON (attribute id=11254) from product images
 and description text.  The JSON is passed as an attribute value in the
@@ -102,51 +102,38 @@ def build_rich_content(
 ) -> str:
     """Build the complete Rich Content JSON string.
 
+    Ozon's rich-content template validator (verified 2026-09) accepts ONLY
+    text-only payloads with a top-level ``version`` field.  Image widgets
+    (``raShowcase``) carrying external (non-Ozon-CDN) image URLs are erased
+    with ``erased_attribute_value`` ("Rich-контент JSON не соответствует
+    шаблону"), and an empty JSON ``{}`` is also rejected.  The validated
+    shape (verified against approved products XY000001 / AECMTS... /
+    DFEMTS... / CFFMTS...) is::
+
+        {"content": [{"widgetName":"raTextBlock", ...paragraphs...}], "version": 0.3}
+
     Args:
-        image_urls: List of product image URLs (must be publicly accessible).
+        image_urls: Kept for call-compatibility only; external images are
+            intentionally NOT embedded (the template validator rejects them).
         description_ru: Russian product description text.
-        title_ru: Russian product title (used as the text block title).
+        title_ru: Russian product title (used as the first text block).
         description_as_text_block: If True, include a text widget with the description.
-        images_first: If True, images come before text; False = text first.
+        images_first: Kept for call-compatibility; has no effect.
 
     Returns:
         JSON string suitable for attribute id=11254 in /v3/product/import.
     """
     widgets: list[dict[str, Any]] = []
-
-    # Build image showcase widget
-    valid_images = [u for u in image_urls if u and isinstance(u, str) and u.startswith(("https://", "http://"))]
-    if valid_images:
-        showcase = build_showcase_widget(valid_images)
-    else:
-        showcase = None
-
-    # Build text widget from description
-    text_widget = None
-    if description_as_text_block and description_ru:
-        text_widget = build_text_widget(description_ru.strip())
-
-    # Order widgets
-    if images_first:
-        if showcase:
-            widgets.append(showcase)
-        if text_widget:
-            widgets.append(text_widget)
-    else:
-        if text_widget:
-            widgets.append(text_widget)
-        if showcase:
-            widgets.append(showcase)
-
-    # Fallback: if no widgets, create a minimal showcase with no blocks
+    if title_ru and str(title_ru).strip():
+        widgets.append(build_text_widget(str(title_ru).strip()))
+    if description_as_text_block and description_ru and str(description_ru).strip():
+        widgets.append(build_text_widget(str(description_ru).strip()))
     if not widgets:
-        widgets.append({
-            "widgetName": "raShowcase",
-            "type": "roll",
-            "blocks": [],
-        })
+        widgets.append(build_text_widget(""))
 
-    return json.dumps({"content": widgets, "version": 0.3}, ensure_ascii=False, separators=(",", ":"))
+    payload: dict[str, Any] = {"content": widgets}
+    payload["version"] = 0.3
+    return json.dumps(payload, ensure_ascii=False, separators=(",", ":"))
 
 
 def get_rich_content_attribute(image_urls: list[str], description_ru: str = "", title_ru: str = "") -> dict[str, Any]:

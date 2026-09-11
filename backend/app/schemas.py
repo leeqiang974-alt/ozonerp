@@ -104,6 +104,18 @@ class SkuBulkCostRequest(BaseModel):
     currency_code: str | None = None
 
 
+class VideoAttachRequest(BaseModel):
+    sku_keyword: str
+    video_url: str
+
+
+class SlideshowVideoRequest(BaseModel):
+    image_urls: list[str]
+    duration_per_sec: float = 2.0
+    fade_sec: float = 0.5
+    target: str = "1080x1080"
+
+
 class SkuCostItem(BaseModel):
     seller_sku: str
     purchase_cost_cny: float

@@ -31,7 +31,7 @@ from .models import ApiCredential, Shop
 from .schemas import OzonCredentialStatus, OzonCredentialUpsert, ShopCreate, ShopRead, ShopUpdate
 from .security import CredentialEncryptionUnavailable, encrypt_secret
 from .sync_service import sync_category_cache, sync_fbs_postings, sync_fbs_product_images, sync_products
-from .schemas import FbsPostingDetailRead, FbsPostingRead, FbsPostingSyncRequest, ListingDraftCreate, ListingDraftRead, ListingTemplateCreate, ListingValidationRead, ProductRead, ProductSyncRequest, ShopCostSettingsUpdate, SkuBulkCostRequest, SkuCostItemsRequest, SyncRunRead, ListingAttributeValueCreate, ListingVariantCreate
+from .schemas import FbsPostingDetailRead, FbsPostingRead, FbsPostingSyncRequest, ListingDraftCreate, ListingDraftRead, ListingTemplateCreate, ListingValidationRead, ProductRead, ProductSyncRequest, ShopCostSettingsUpdate, SkuBulkCostRequest, SkuCostItemsRequest, VideoAttachRequest, SlideshowVideoRequest, SyncRunRead, ListingAttributeValueCreate, ListingVariantCreate
 from .listing_service import build_variant_image_list, normalize_dictionary_attribute_value, validate_listing_draft
 from .listing_cache_service import promote_legacy_listing_caches
 from .pricing import PriceInput, PricingService
@@ -1257,6 +1257,169 @@ def bulk_set_sku_cost(shop_id: int, payload: SkuBulkCostRequest, db: Session = D
         "keyword": keyword,
         "purchase_cost_cny": payload.purchase_cost_cny,
     }
+
+
+@app.post("/api/v1/shops/{shop_id}/videos/attach")
+def bulk_attach_videos(shop_id: int, payload: VideoAttachRequest, db: Session = Depends(get_db)) -> dict:
+    """Bulk attach an external video link (Yandex Disk / VK / RuTube) to all
+    listed SKUs matching the keyword. Uses /v1/product/attributes/update with
+    complex attribute 100001 (video group) / 10016 (video URL) - verified
+    accepted by the live Ozon API. Updates existing listings only.
+    """
+    keyword = (payload.sku_keyword or "").strip()
+    if not keyword:
+        raise HTTPException(status_code=422, detail="sku_keyword must not be empty")
+    video_url = (payload.video_url or "").strip()
+    if not video_url.startswith(("http://", "https://")):
+        raise HTTPException(status_code=422, detail="video_url must be a valid http(s) link")
+
+    skus = list(db.scalars(
+        select(SkuRecord).where(SkuRecord.shop_id == shop_id, SkuRecord.seller_sku.ilike("%" + keyword + "%"))
+    ))
+    offer_ids = [s.seller_sku for s in skus if s.seller_sku]
+    if not offer_ids:
+        return {"matched": 0, "attached": 0, "task_ids": [], "failed": [], "keyword": keyword, "video_url": video_url}
+
+    from .sync_service import _credentials
+    from .integrations.ozon_seller import OzonSellerClient
+    client_id, api_key = _credentials(db, shop_id)
+    failed: list[dict] = []
+    task_ids: list[str] = []
+    attached = 0
+    for i in range(0, len(offer_ids), 100):
+        batch = offer_ids[i:i + 100]
+        try:
+            with OzonSellerClient(client_id=client_id, api_key=api_key) as client:
+                resp = client.attach_videos(offer_ids=batch, video_url=video_url)
+        except Exception as exc:
+            failed.extend({"offer_id": oid, "errors": [str(exc)[:500]]} for oid in batch)
+            continue
+        results = []
+        if isinstance(resp, dict):
+            results = resp.get("result") or []
+            tid = resp.get("task_id")
+            if tid:
+                task_ids.append(str(tid))
+        elif isinstance(resp, list):
+            for r in resp:
+                if isinstance(r, dict):
+                    tid = r.get("task_id")
+                    if tid:
+                        task_ids.append(str(tid))
+                    results.extend(r.get("result") or [])
+        for item in results:
+            offer = str(item.get("offer_id") or "")
+            if item.get("updated"):
+                attached += 1
+            else:
+                failed.append({"offer_id": offer, "errors": item.get("errors") or []})
+    return {
+        "matched": len(offer_ids),
+        "attached": attached,
+        "task_ids": task_ids,
+        "failed": failed,
+        "keyword": keyword,
+        "video_url": video_url,
+    }
+
+
+@app.post("/api/v1/shops/{shop_id}/videos/slideshow")
+def generate_slideshow_video(shop_id: int, payload: SlideshowVideoRequest, db: Session = Depends(get_db)) -> dict:
+    """Generate an MP4 slideshow from up to 8 product images using local ffmpeg
+    (no AI, zero cost, seconds per item). Each image plays for duration_per_sec
+    with a short fade in/out, then segments are concatenated. Output is written
+    under frontend/generated/videos and returned as a local URL; upload it to
+    Yandex Disk first before attaching to Ozon (Ozon only accepts whitelisted
+    video sources).
+    """
+    images = [u for u in (payload.image_urls or []) if u]
+    if not 1 <= len(images) <= 8:
+        raise HTTPException(status_code=422, detail="image_urls must contain 1-8 images")
+    duration = payload.duration_per_sec or 2.0
+    fade = payload.fade_sec if payload.fade_sec is not None else 0.5
+    target = (payload.target or "1080x1080").lower()
+    if target.count("x") != 1 or not all(p.isdigit() for p in target.split("x")):
+        raise HTTPException(status_code=422, detail="target must be like 1080x1080")
+
+    from pathlib import Path
+    is_local = lambda value: "127.0.0.1" in value.lower() or "localhost" in value.lower()
+    import os as _os
+    import subprocess as _sp
+    import sys as _sys
+    from datetime import datetime as _dt
+    from urllib.parse import urlparse as _up, unquote as _unq
+
+    frontend_dir = (Path(__file__).resolve().parents[2] / "frontend").resolve()
+    videos_dir = (frontend_dir / "generated" / "videos").resolve()
+    videos_dir.mkdir(parents=True, exist_ok=True)
+    workdir = (Path(__file__).resolve().parents[2] / "tmp_slideshow").resolve()
+    workdir.mkdir(parents=True, exist_ok=True)
+    roots = {"/translated/": (frontend_dir / "translated").resolve(), "/generated/": (frontend_dir / "generated").resolve()}
+
+    def fetch_image(url: str, dest: Path) -> None:
+        if is_local(url):
+            path = _unq(_up(url).path)
+            marker = next((m for m in roots if m in path), None)
+            if marker:
+                local_path = (roots[marker] / path.split(marker, 1)[1]).resolve()
+                if local_path.is_file():
+                    dest.write_bytes(local_path.read_bytes())
+                    return
+            raise HTTPException(status_code=422, detail=f"无法读取本地图片：{url}")
+        r = httpx.get(url, timeout=25.0, follow_redirects=True)
+        r.raise_for_status()
+        dest.write_bytes(r.content)
+
+    local_files: list[str] = []
+    try:
+        for idx, u in enumerate(images):
+            ext = _os.path.splitext(_up(u).path)[1].lower()
+            if ext not in (".png", ".jpg", ".jpeg", ".webp"):
+                ext = ".png"
+            dest = workdir / f"_in{idx:02d}{ext}"
+            fetch_image(u, dest)
+            local_files.append(str(dest))
+        stamp = _dt.now().strftime("%Y%m%d_%H%M%S")
+        out_name = f"slideshow_{shop_id}_{stamp}.mp4"
+        out_path = videos_dir / out_name
+        script = (Path(__file__).resolve().parents[2] / "slideshow_service.py").resolve()
+        cmd = [_sys.executable, str(script), str(out_path), *local_files,
+               "--duration", str(duration), "--fade", str(fade), "--target", target,
+               "--workdir", str(workdir)]
+        proc = _sp.run(cmd, capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=600)
+        if proc.returncode != 0:
+            raise RuntimeError((proc.stderr or proc.stdout)[-1200:])
+        size = out_path.stat().st_size
+        yandex_url = None
+        upload_error = None
+        try:
+            from .yandex_disk_service import upload_video
+            yandex_url = upload_video(out_path.read_bytes(), out_name)
+        except Exception as exc:
+            upload_error = str(exc)[:300]
+        result = {
+            "shop_id": shop_id,
+            "url": f"http://127.0.0.1:5500/generated/videos/{out_name}",
+            "file": str(out_path),
+            "size_bytes": size,
+            "duration_sec": round(len(images) * duration, 2),
+            "image_count": len(images),
+            "model": "ffmpeg-slideshow",
+            "yandex_url": yandex_url,
+        }
+        if upload_error:
+            result["yandex_upload_error"] = upload_error
+        return result
+    except HTTPException:
+        raise
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=f"轮播视频生成失败：{str(exc)[:800]}")
+    finally:
+        for f in local_files:
+            try:
+                _os.remove(f)
+            except Exception:
+                pass
 
 
 @app.get("/api/v1/shops/{shop_id}/fbs-postings", response_model=list[FbsPostingRead])
@@ -3371,14 +3534,18 @@ def list_shop_warehouses(shop_id: int, db: Session = Depends(get_db)) -> list[di
     # Cache to DB
     db.query(Warehouse).filter(Warehouse.shop_id == shop_id).delete()
     for wh in warehouses:
-        db.add(Warehouse(
+        db_wh = Warehouse(
             shop_id=shop_id,
             name=wh.get("name", ""),
-            pickup_point=wh.get("pickup_point", "") if isinstance(wh.get("pickup_point"), str) else "",
+            pickup_point=wh.get("pickup_point", "") if isinstance(wh.get("pickup_point"), str) else (
+                wh.get("address_info", {}).get("address", "") if isinstance(wh.get("address_info"), dict) else ""
+            ),
             cutoff_time=str(wh.get("cutoff_time", "")),
             workdays=str(wh.get("workdays", "")),
             carrier=str(wh.get("carrier", "")),
-        ))
+        )
+        db_wh.warehouse_id = str(wh.get("warehouse_id", ""))
+        db.add(db_wh)
     db.commit()
     return [{"name": wh.get("name", ""), "carrier": wh.get("carrier", "")} for wh in warehouses]
 
@@ -5409,6 +5576,54 @@ def update_listing_draft(shop_id: int, draft_id: int, payload: ListingDraftUpdat
     db.commit()
     db.refresh(draft)
     return draft
+
+
+class FixSubmitColorOverride(BaseModel):
+    """Per-SKU colour picked in the UI for a fix submission."""
+    color_value_id: str | int = Field(default=0)
+    color_text: str = Field(default="", max_length=64)
+    color_name: str = Field(default="", max_length=64)
+
+
+class ListingDraftFixSubmitRequest(BaseModel):
+    """Manual-fix submission for an already-created Ozon card.
+
+    Only corrections are sent (attributes / images / video); price, stock,
+    title and description are never touched by this endpoint.
+    """
+    color_overrides: dict[str, FixSubmitColorOverride] | None = Field(default=None)
+
+
+@app.post("/api/v1/shops/{shop_id}/listing-drafts/{draft_id}/submit-fixes")
+def submit_listing_draft_fixes(
+    shop_id: int,
+    draft_id: int,
+    payload: ListingDraftFixSubmitRequest,
+    db: Session = Depends(get_db),
+) -> dict:
+    """Push manual corrections for an existing Ozon card without re-creating it.
+
+    Uses /v1/product/attributes/update (variant colour, model name 9048,
+    rich content 11254, category video attributes) plus
+    /v1/product/pictures/import for per-SKU galleries.  Safe for cards that
+    are live or in moderation.
+    """
+    from .pipeline.fix_submit_service import submit_fixes
+
+    overrides: dict[str, dict] | None = None
+    if payload.color_overrides:
+        overrides = {
+            str(oid): {"color_value_id": ov.color_value_id, "color_text": ov.color_text, "color_name": ov.color_name}
+            for oid, ov in payload.color_overrides.items()
+        }
+    try:
+        return submit_fixes(db, shop_id=shop_id, draft_id=draft_id, color_overrides=overrides)
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=f"submit_fixes failed: {str(exc)[:400]}") from exc
+
+
 
 
 

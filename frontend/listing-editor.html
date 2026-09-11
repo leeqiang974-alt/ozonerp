@@ -1,4 +1,4 @@
-﻿<!doctype html>
+<!doctype html>
 <html lang="zh-CN">
 <head>
   <meta charset="UTF-8" />
@@ -33,6 +33,7 @@
       <button class="le-btn le-btn-save" id="le-save-btn">保存</button>
       <button class="le-btn le-btn-validate" id="le-submit-btn">保存并提交</button>
       <button class="le-btn le-btn-sm" id="le-update-attributes-btn" style="display:none" title="仅更新已存在 Ozon 商品的属性；不会更新价格、尺重、图片或 SKU">仅更新产品属性</button>
+      <button class="le-btn le-btn-sm" id="le-submit-fixes-btn" style="display:none" title="提交手动修正：变体颜色/型号合并名/富内容/图片/视频（只更新原商品卡，不重建）">提交修正</button>
       <span id="le-submit-status" class="le-submit-status" hidden></span>
       <button class="le-btn le-btn-feedback" id="le-sync-feedback-btn" style="background:#6c5ce7;color:#fff;display:none">刷新 Ozon 状态</button>
       <button class="le-btn le-btn-autofix" id="le-auto-fix-btn" style="background:#e17055;color:#fff;display:none">自动修复</button>
@@ -192,6 +193,7 @@
           <div style="flex:1">
             <div style="display:flex;gap:6px">
               <input type="url" id="le-video-url" placeholder="https://... 采集商品的视频链接会自动填入" style="flex:1" />
+              <button class="le-btn le-btn-sm" id="le-video-generate" type="button">生成视频</button>
               <button class="le-btn le-btn-sm le-btn-danger" id="le-video-remove" type="button">删除视频</button>
             </div>
             <div id="le-video-player" style="margin-top:8px;display:none"></div>
@@ -298,7 +300,7 @@
 
   <div id="le-toast"></div>
 <script src="./erp-config.js"></script>
-<script src="./listing-editor.js?v=103"></script>
+<script src="./listing-editor.js?v=107"></script>
 </body>
 </html>
 

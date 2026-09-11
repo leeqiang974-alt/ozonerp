@@ -97,6 +97,10 @@ def sanitize_hashtags(value: str, max_count: int = 30) -> list[str]:
     seen: set[str] = set()
     for raw in str(value or "").split():
         tag = raw.strip(".,;:!?，。；：！")
+        # Tolerate a missing leading '#' — a pure Cyrillic word is still a
+        # valid Ozon tag once prefixed.  Some LLM outputs omit the hash.
+        if not tag.startswith("#") and _RUSSIAN_HASHTAG_RE.fullmatch("#" + tag):
+            tag = "#" + tag
         normalized = tag.lower()
         if (
             not _RUSSIAN_HASHTAG_RE.fullmatch(tag)
@@ -136,24 +140,34 @@ Rules (STRICT - Ozon will reject non-compliant tags):
 - Target 30 unique hashtags; if you cannot find 30 strong tags, return 20-30
 - Each hashtag starts with #
 - Each hashtag is 1-2 Russian words only (use underscore for 2 words)
+- Each hashtag MUST be pure Russian Cyrillic letters (А-Я а-я) - no exceptions
+- FORBIDDEN: Latin/English tags (e.g. #anime #manga #cosplay #badge), Japanese, Chinese, digits, spaces inside a tag
 - Space-separated, all on one line
 - Use only facts relevant to this individual product
 - NO Chinese, brand/manufacturer/supplier/shop/platform names (including Ozon), numbers or marketing words
 - Each tag max 30 characters including #
+- Examples of correct tags: #аниме #значок #булавка #металлический_значок #мультфильм
 - Return ONLY the hashtags line, nothing else"""
     # 20–30 is a content-quality target, not an Ozon submission gate.  Ask a
     # second time when the first response is short; if it remains short but is
     # otherwise valid, keep it and let the product proceed.  Previously 19
     # valid tags turned an entire batch row into a hard failure.
     best: list[str] = []
+    last_err: Exception | None = None
     for _attempt in range(2):
-        value, _p, _m = _chat([{"role": "user", "content": prompt}], temperature=0.7, max_tokens=4096)
-        tags = normalize_hashtags(value, min_count=1)
-        if len(tags) > len(best):
-            best = tags
-        if len(tags) >= 20:
-            return " ".join(tags)
-    return " ".join(best)
+        try:
+            value, _p, _m = _chat([{"role": "user", "content": prompt}], temperature=0.7, max_tokens=4096)
+            tags = normalize_hashtags(value, min_count=1)
+            if len(tags) > len(best):
+                best = tags
+            if len(tags) >= 20:
+                return " ".join(tags)
+        except Exception as exc:
+            last_err = exc
+            continue
+    if best:
+        return " ".join(best)
+    raise last_err or RuntimeError("AI未返回任何可用的俄文主题标签")
 
 
 def _extract_json(text: str) -> dict[str, Any]:
@@ -333,10 +347,13 @@ def generate_rich_content(
     *,
     shop_name: str = "",
 ) -> dict[str, Any]:
-    """Generate Ozon rich-content JSON from description + images.
+    """Generate Ozon rich-content JSON from description.
 
-    Per user preference: Russian welcome + product description + 5 detail images.
-    Format: Ozon raShowcase widget structure, wrapped in {"content": [...]}.
+    Per user preference: Russian welcome + product description.
+    Text-only template (raTextBlock + version:0.3): Ozon's rich-content
+    template validator rejects external image URLs inside raShowcase widgets
+    ("Rich-kontent JSON ne sootvetstvuet shablonu"). image_urls is kept for
+    call-compatibility only and is NOT embedded.
     """
     # Rich content is product content. Do not leak a shop name, which may
     # itself be a brand, into the product card.
@@ -397,27 +414,6 @@ def generate_rich_content(
                     ]
                 }
             ]
-        })
-
-    # Image gallery: raShowcase with up to 5 images
-    valid_imgs = [u.strip() for u in image_urls[:5] if u and u.strip()]
-    if valid_imgs:
-        blocks = []
-        for url in valid_imgs:
-            blocks.append({
-                "imgLink": "",
-                "img": {
-                    "src": url,
-                    "srcMobile": url,
-                    "alt": "",
-                    "position": "width_full",
-                    "positionMobile": "width_full"
-                }
-            })
-        widgets.append({
-            "widgetName": "raShowcase",
-            "type": "roll",
-            "blocks": blocks
         })
 
     # Wrap in {"content": [...]} as Ozon requires

@@ -96,7 +96,10 @@ def _credentials(db: Session, shop_id: int) -> tuple[str, str]:
 
 
 def _upsert_products(db: Session, shop_id: int, response: dict[str, Any]) -> tuple[int, int, str | None]:
-    items = response.get("items", [])
+    # Ozon v3/product/list nests items under "result"; reading the top-level
+    # "items" silently returned zero records on every sync.
+    result = response.get("result", {}) if isinstance(response, dict) else {}
+    items = result.get("items", []) if isinstance(result, dict) else []
     if not isinstance(items, list):
         raise ValueError("Ozon 商品响应格式错误")
     changed = 0
@@ -120,7 +123,7 @@ def _upsert_products(db: Session, shop_id: int, response: dict[str, Any]) -> tup
         else:
             sku.product_id, sku.title = product.id, name
         changed += 1
-    return len(items), changed, str(response.get("last_id") or "") or None
+    return len(items), changed, str(result.get("last_id") or "") or None
 
 
 def _upsert_postings(db: Session, shop_id: int, response: dict[str, Any]) -> tuple[int, int, str | None]:

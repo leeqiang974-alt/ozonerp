@@ -24,6 +24,13 @@ class ProductRecord(Base):
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())
     skus: Mapped[list["SkuRecord"]] = relationship(back_populates="product", cascade="all, delete-orphan")
 
+    @property
+    def purchase_cost_cny(self) -> Decimal | None:
+        for sku in self.skus:
+            if sku.purchase_cost_cny is not None:
+                return sku.purchase_cost_cny
+        return None
+
 
 class SkuRecord(Base):
     __tablename__ = "skus"
@@ -35,6 +42,7 @@ class SkuRecord(Base):
     seller_sku: Mapped[str] = mapped_column(String(128))
     title: Mapped[str] = mapped_column(String(500))
     min_price_cny: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    purchase_cost_cny: Mapped[Decimal | None] = mapped_column(Numeric(14, 2), nullable=True)
     product: Mapped[ProductRecord] = relationship(back_populates="skus")
 
 

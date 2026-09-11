@@ -31,8 +31,14 @@ class ShopUpdate(BaseModel):
 class ShopRead(ShopBase):
     model_config = ConfigDict(from_attributes=True)
     id: int
+    cny_rub_rate: float | None = None
     created_at: datetime
     updated_at: datetime
+
+
+class ShopCostSettingsUpdate(BaseModel):
+    cny_rub_rate: float | None = Field(default=None, gt=0)
+    currency_code: str | None = Field(default=None, max_length=3)
 
 
 class OzonCredentialUpsert(BaseModel):
@@ -91,6 +97,24 @@ class AutoSyncDecisionRead(BaseModel):
     status: Literal["fresh", "started", "already_running", "failed_to_start"]
 
 
+class SkuBulkCostRequest(BaseModel):
+    sku_keyword: str
+    purchase_cost_cny: float
+    cny_rub_rate: float | None = None
+    currency_code: str | None = None
+
+
+class SkuCostItem(BaseModel):
+    seller_sku: str
+    purchase_cost_cny: float
+
+
+class SkuCostItemsRequest(BaseModel):
+    items: list[SkuCostItem]
+    cny_rub_rate: float | None = None
+    currency_code: str | None = None
+
+
 class ProductRead(BaseModel):
     model_config = ConfigDict(from_attributes=True)
 
@@ -100,6 +124,7 @@ class ProductRead(BaseModel):
     offer_id: str | None
     name: str
     updated_at: datetime
+    purchase_cost_cny: float | None = None
 
 
 class FbsPostingLineRead(BaseModel):

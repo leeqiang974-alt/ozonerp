@@ -1,4 +1,7 @@
-const apiBase = window.ERP_API_BASE || ((location.hostname === "127.0.0.1" || location.hostname === "localhost") ? "http://127.0.0.1:8000" : "");
+// The operator UI may be served from either the workstation or the notebook,
+// but the durable ERP database and workers live on the dedicated notebook.
+// Never silently fall back to a second localhost backend with a different DB.
+const apiBase = window.ERP_API_BASE || (location.hostname === "192.168.0.147" ? "" : "http://192.168.0.147:8000");
 let shops = [];
 let allPostings = [];
 let activeOrderFilter = "all";
@@ -10,7 +13,17 @@ const $ = selector => document.querySelector(selector);
 
 function toast(message, isError = false) { const box = $("#toast"); box.textContent = message; box.className = isError ? "show error" : "show"; setTimeout(() => box.className = "", 2800); }
 function escapeHtml(value) { return String(value ?? "").replace(/[&<>'"]/g, character => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", "'": "&#39;", '"': "&quot;" })[character]); }
-function lineImage(url, name) { return url ? `<img class="line-image" src="${escapeHtml(url)}" alt="${escapeHtml(name || "商品图片")}" loading="lazy" referrerpolicy="no-referrer" />` : '<span class="line-image-placeholder">无图</span>'; }
+function showImageLightbox(url) {
+  let overlay = document.getElementById("img-lightbox");
+  if (overlay) overlay.remove();
+  overlay = document.createElement("div");
+  overlay.id = "img-lightbox";
+  overlay.style.cssText = "position:fixed;inset:0;background:rgba(20,15,10,0.78);display:flex;align-items:center;justify-content:center;z-index:99999;cursor:zoom-out";
+  overlay.innerHTML = `<img src="${escapeHtml(url)}" style="max-width:92vw;max-height:92vh;border-radius:10px;box-shadow:0 10px 50px rgba(0,0,0,0.55);background:#fff;object-fit:contain" referrerpolicy="no-referrer" />`;
+  overlay.addEventListener("click", () => overlay.remove());
+  document.body.appendChild(overlay);
+}
+function lineImage(url, name) { return url ? `<img class="line-image" src="${escapeHtml(url)}" alt="${escapeHtml(name || "商品图片")}" loading="lazy" referrerpolicy="no-referrer" style="cursor:zoom-in" onclick="showImageLightbox('${escapeHtml(url)}')" />` : '<span class="line-image-placeholder">无图</span>'; }
 function installCategorySelector() { const input = document.querySelector('#listing-form input[name="category_id"]'); if (!input) return; input.outerHTML = '<select name="category_choice" id="listing-category" required><option value="">请先选择店铺并加载类目</option></select>'; const select = $("#listing-category"); select.parentElement.insertAdjacentHTML("afterend", '<div id="listing-required-attributes"><span class="listing-attribute-title">选择类目后填写 Ozon 必填属性</span></div>'); select.addEventListener("change", loadCategoryAttributes); }
 async function loadListingCategories() { const shopId = $("#shop-filter").value; const select = $("#listing-category"); const token = listingCategoryRequests.begin(shopId); select.dataset.shopId = ""; select.innerHTML = '<option value="">正在加载 Ozon 类目…</option>'; try { let response = await fetch(`${apiBase}/api/v1/shops/${shopId}/metadata/categories`); let categories = response.ok ? await response.json() : []; if (!categories.length) { await fetch(`${apiBase}/api/v1/shops/${shopId}/metadata/categories`, { method: "POST" }); response = await fetch(`${apiBase}/api/v1/shops/${shopId}/metadata/categories`); categories = await response.json(); } if (!listingCategoryRequests.isCurrent(token, $("#shop-filter").value)) return; select.dataset.shopId = shopId; select.innerHTML = '<option value="">请选择末级类目与商品类型</option>' + categories.map(item => `<option value="${item.category_id}:${item.type_id}">${escapeHtml(item.title)}</option>`).join(""); } catch (_) { if (listingCategoryRequests.isCurrent(token, $("#shop-filter").value)) select.innerHTML = '<option value="">类目加载失败，请稍后重试</option>'; } }
 function installDictionarySearch(categoryId, typeId, shopId) { document.querySelectorAll('#listing-required-attributes input[data-attribute-kind="dictionary"]').forEach(control => { let timer; const requests = window.ListingAttributes.createRequestGate(); control.addEventListener("input", () => { control.setCustomValidity(""); clearTimeout(timer); const query = control.value.trim(); const list = document.getElementById(control.getAttribute("list")); const selected = [...(list?.options || [])].find(item => item.value === query); if (selected) { control.dataset.valueId = selected.dataset.valueId || ""; control.dataset.valueText = selected.dataset.valueText || ""; requests.invalidate(); return; } control.dataset.valueId = ""; control.dataset.valueText = ""; const token = requests.begin(query); if (query.length < 2) { if (list) list.innerHTML = ""; return; } timer = setTimeout(async () => { try { const response = await fetch(`${apiBase}/api/v1/shops/${shopId}/metadata/categories/${categoryId}/types/${typeId}/attributes/${control.dataset.listingAttribute}/values?query=${encodeURIComponent(query)}&limit=50`); if (!response.ok) throw new Error((await response.json()).detail || "属性值搜索失败"); const values = await response.json(); if (!requests.isCurrent(token, control.value.trim()) || $("#shop-filter").value !== shopId || !list) return; list.innerHTML = values.map(window.ListingAttributes.dictionaryOptionHtml).join(""); } catch (error) { if (requests.isCurrent(token, control.value.trim()) && list) { list.innerHTML = ""; toast(error.message || "Ozon 属性值搜索失败", true); } } }, 300); }); }); }
@@ -796,8 +809,9 @@ async function loadOperationLogs() {
 function orderRisk(posting) { const closed = ["delivered", "cancelled"].includes(posting.normalized_status); if (closed || !posting.pack_by) return "normal"; const remaining = new Date(posting.pack_by).getTime() - Date.now(); if (remaining < 0) return "overdue"; if (remaining <= 2 * 60 * 60 * 1000) return "urgent"; return "normal"; }
 function riskLabel(risk) { return risk === "overdue" ? "已超截单" : risk === "urgent" ? "2 小时内截单" : "正常"; }
 function statusLabel(status) { return ({ awaiting_packaging: "待打包", awaiting_deliver: "待交接", delivering: "配送中", delivered: "已送达", cancelled: "已取消" })[status] || status; }
-function renderPostingRows() { const selected = allPostings.filter(posting => activeOrderFilter === "all" || (activeOrderFilter === "risk" ? orderRisk(posting) !== "normal" : posting.normalized_status === activeOrderFilter)); $("#posting-rows").innerHTML = selected.length ? selected.map(posting => { const risk = orderRisk(posting); return `<tr><td><b>${escapeHtml(posting.posting_number)}</b></td><td>${escapeHtml(posting.raw_ozon_status || "—")}</td><td><span class="badge">${escapeHtml(statusLabel(posting.normalized_status))}</span></td><td>${displayTime(posting.pack_by)}</td><td><span class="status ${risk === "normal" ? "ready" : "off"}">${riskLabel(risk)}</span></td><td><button class="link view-posting" data-posting-id="${posting.id}">查看明细</button></td></tr>`; }).join("") : '<tr><td colspan="6" class="muted">当前筛选条件下没有订单</td></tr>'; document.querySelectorAll(".view-posting").forEach(button => button.addEventListener("click", () => loadPostingDetail(button.dataset.postingId))); }
-async function loadOperationalData() { const shopId = $("#shop-filter").value; if (!shopId) { allPostings = []; $("#posting-rows").innerHTML = '<tr><td colspan="6" class="muted">请选择店铺后查看订单</td></tr>'; $("#product-rows").innerHTML = '<tr><td colspan="4" class="muted">请选择店铺后查看商品</td></tr>'; return; } try { const [productsResponse, postingsResponse] = await Promise.all([fetch(`${apiBase}/api/v1/shops/${shopId}/products`), fetch(`${apiBase}/api/v1/shops/${shopId}/fbs-postings`)]); if (!productsResponse.ok || !postingsResponse.ok) throw new Error(); const [products, postings] = await Promise.all([productsResponse.json(), postingsResponse.json()]); $("#product-rows").innerHTML = products.length ? products.map(product => `<tr><td><b>${escapeHtml(product.name)}</b></td><td>${escapeHtml(product.offer_id || "—")}</td><td>${escapeHtml(product.ozon_product_id)}</td><td>${displayTime(product.updated_at)}</td></tr>`).join("") : '<tr><td colspan="4" class="muted">本次同步未返回商品</td></tr>'; allPostings = postings; renderPostingRows(); const now = Date.now(); const awaiting = postings.filter(item => item.normalized_status === "awaiting_packaging").length; const risk = postings.filter(item => item.pack_by && new Date(item.pack_by).getTime() - now <= 2 * 60 * 60 * 1000 && new Date(item.pack_by).getTime() >= now).length; $("#awaiting-packaging").textContent = awaiting; $("#delivery-risk").textContent = risk; $("#stock-risk").textContent = "—"; $("#promotion-review").textContent = "—"; $("#data-status").textContent = `● 已加载 ${postings.length} 个 FBS 订单`; $("#next-task").textContent = awaiting ? `优先处理 ${awaiting} 个待打包订单` : "当前没有待打包订单"; $("#nav button[data-view=\"orders\"] em").textContent = postings.filter(item => orderRisk(item) !== "normal").length; } catch (_) { $("#data-status").textContent = "● 无法读取运营数据"; } }
+function renderPostingRows() { const selected = allPostings.filter(posting => activeOrderFilter === "all" || (activeOrderFilter === "risk" ? orderRisk(posting) !== "normal" : posting.normalized_status === activeOrderFilter)); $("#posting-rows").innerHTML = selected.length ? selected.map(posting => { const risk = orderRisk(posting); const lines = posting.lines || []; const firstImg = lines.map(l => l.image_url).find(u => u) || ""; const itemCount = lines.reduce((n, l) => n + (l.quantity || 0), 0); return `<tr><td><div class="line-product">${firstImg ? `<img src="${escapeHtml(firstImg)}" style="width:36px;height:36px;border-radius:6px;object-fit:cover;vertical-align:middle;margin-right:8px;cursor:zoom-in" referrerpolicy="no-referrer" title="点击放大" onclick="showImageLightbox('${escapeHtml(firstImg)}')" />` : ""}<span><b>${escapeHtml(posting.posting_number)}</b>${lines.length ? `<small style="display:block;color:#a08a6a">${lines.length} 种商品${itemCount ? ` · 共 ${itemCount} 件` : ""}</small>` : ""}</span></div></td><td>${escapeHtml(posting.raw_ozon_status || "—")}</td><td><span class="badge">${escapeHtml(statusLabel(posting.normalized_status))}${posting.raw_ozon_status && posting.raw_ozon_status !== posting.normalized_status ? ` <small style="color:#a08a6a">(${escapeHtml(posting.raw_ozon_status)})</small>` : ""}</span></td><td>${displayTime(posting.pack_by)}</td><td><span class="status ${risk === "normal" ? "ready" : "off"}">${riskLabel(risk)}</span></td><td><button class="link view-posting" data-posting-id="${posting.id}">查看明细</button></td></tr>`; }).join("") : '<tr><td colspan="6" class="muted">当前筛选条件下没有订单</td></tr>'; document.querySelectorAll(".view-posting").forEach(button => button.addEventListener("click", () => loadPostingDetail(button.dataset.postingId))); }
+async function loadOperationalData() { const shopId = $("#shop-filter").value; if (!shopId) { allPostings = []; $("#posting-rows").innerHTML = '<tr><td colspan="6" class="muted">请选择店铺后查看订单</td></tr>'; $("#product-rows").innerHTML = '<tr><td colspan="4" class="muted">请选择店铺后查看商品</td></tr>'; return; } loadCostRateSetting(); try { const productKw = ($("#product-search")?.value || "").trim();
+  const [productsResponse, postingsResponse] = await Promise.all([fetch(`${apiBase}/api/v1/shops/${shopId}/products?keyword=${encodeURIComponent(productKw)}`), fetch(`${apiBase}/api/v1/shops/${shopId}/fbs-postings`)]); if (!productsResponse.ok || !postingsResponse.ok) throw new Error(); const [products, postings] = await Promise.all([productsResponse.json(), postingsResponse.json()]); $("#product-rows").innerHTML = products.length ? products.map(product => { const costVal = product.purchase_cost_cny != null ? escapeHtml(product.purchase_cost_cny) : ""; return `<tr><td><b>${escapeHtml(product.name)}</b></td><td>${escapeHtml(product.offer_id || "—")}</td><td>${escapeHtml(product.ozon_product_id)}</td><td><input type="number" step="0.01" min="0" class="sku-cost-input" data-sku="${escapeHtml(product.offer_id || "")}" value="${costVal}" placeholder="未填" oninput="markSkuCostDirty(this)" style="width:90px;padding:4px 6px;border:1px solid #d8c9ad;border-radius:6px;background:#fff;color:#5c4a3a" /></td><td>${displayTime(product.updated_at)}</td></tr>`; }).join("") : '<tr><td colspan="5" class="muted">本次同步未返回商品</td></tr>'; allPostings = postings; renderPostingRows(); const now = Date.now(); const awaiting = postings.filter(item => item.normalized_status === "awaiting_packaging").length; const risk = postings.filter(item => item.pack_by && new Date(item.pack_by).getTime() - now <= 2 * 60 * 60 * 1000 && new Date(item.pack_by).getTime() >= now).length; $("#awaiting-packaging").textContent = awaiting; $("#delivery-risk").textContent = risk; $("#stock-risk").textContent = "—"; $("#promotion-review").textContent = "—"; $("#data-status").textContent = `● 已加载 ${postings.length} 个 FBS 订单`; $("#next-task").textContent = awaiting ? `优先处理 ${awaiting} 个待打包订单` : "当前没有待打包订单"; $("#nav button[data-view=\"orders\"] em").textContent = postings.filter(item => orderRisk(item) !== "normal").length; } catch (_) { $("#data-status").textContent = "● 无法读取运营数据"; } }
 async function loadPostingDetail(postingId) { const shopId = $("#shop-filter").value; if (!shopId) return; const drawer = $("#order-drawer"); drawer.classList.add("open"); drawer.setAttribute("aria-hidden", "false"); $("#drawer-posting-number").textContent = "加载中…"; $("#drawer-content").textContent = "正在读取订单商品明细…"; try { const response = await fetch(`${apiBase}/api/v1/shops/${shopId}/fbs-postings/${postingId}`); if (!response.ok) throw new Error((await response.json()).detail || "读取订单明细失败"); const posting = await response.json(); $("#drawer-posting-number").textContent = posting.posting_number; const lines = posting.lines || []; $("#drawer-content").innerHTML = `<div class="meta"><span>Ozon 状态：${escapeHtml(posting.raw_ozon_status || "—")}</span><span>ERP 状态：${escapeHtml(posting.normalized_status)}</span><span>截单时间：${displayTime(posting.pack_by)}</span></div>${lines.length ? `<table><thead><tr><th>商品</th><th>Offer ID</th><th>数量</th></tr></thead><tbody>${lines.map(line => `<tr><td><div class="line-product">${lineImage(line.image_url, line.name)}<span>${escapeHtml(line.name || "—")}</span></div></td><td>${escapeHtml(line.offer_id)}</td><td>${line.quantity}</td></tr>`).join("")}</tbody></table>` : '<p class="muted">该订单暂无商品明细；请重新同步 FBS 订单。</p>'}`; } catch (error) { $("#drawer-content").textContent = error.message || "读取订单明细失败"; } }
 async function loadListingDrafts() { const shopId = $("#shop-filter").value; if (!shopId) { $("#listing-rows").innerHTML = '<tr><td colspan="5" class="muted">请选择店铺后查看上架草稿</td></tr>'; return; } try { const response = await fetch(`${apiBase}/api/v1/shops/${shopId}/listing-drafts`); if (!response.ok) throw new Error(); const drafts = await response.json(); $("#listing-rows").innerHTML = drafts.length ? drafts.map(draft => `<tr><td><b>${escapeHtml(draft.title)}</b><br><small>${escapeHtml(draft.category_id || "未选类目")}</small></td><td>${escapeHtml(draft.offer_id)}</td><td>${draft.variants.length}</td><td><span class="status ${draft.status === "ready_for_approval" ? "ready" : "off"}">${draft.status === "ready_for_approval" ? "可进入审批" : draft.status === "validation_failed" ? "预检未通过" : "草稿"}</span></td><td><button class="link validate-listing" data-draft-id="${draft.id}">预检</button></td></tr>`).join("") : '<tr><td colspan="5" class="muted">还没有草稿，先新建一个商品。</td></tr>'; document.querySelectorAll(".validate-listing").forEach(button => button.addEventListener("click", () => validateListing(button.dataset.draftId))); } catch (_) { $("#listing-rows").innerHTML = '<tr><td colspan="5" class="muted">无法读取上架草稿</td></tr>'; } }
 
@@ -1849,6 +1863,119 @@ async function loadAutomationCenter() {
   try { const response = await fetch(`${apiBase}/api/v1/automation/overview`); const data = await response.json(); if (!response.ok) throw new Error(data.detail || "任务加载失败"); const tasks = data.tasks || []; rows.innerHTML = tasks.length ? tasks.map(task => `<tr><td>${escapeHtml(task.name || `任务 #${task.id}`)}</td><td>${escapeHtml(task.status || "-")}</td><td>${escapeHtml(task.schedule_time || "-")}</td></tr>`).join("") : '<tr><td colspan="3" class="muted">暂无采集任务</td></tr>'; $("#automation-task-count").textContent = `${tasks.length} 个任务`; } catch (error) { rows.innerHTML = `<tr><td colspan="3" class="muted">${escapeHtml(error.message || "任务加载失败")}</td></tr>`; }
 }
 async function validateListing(draftId) { const shopId = $("#shop-filter").value; try { const response = await fetch(`${apiBase}/api/v1/shops/${shopId}/listing-drafts/${draftId}/validate`, { method: "POST" }); const result = await response.json(); if (!response.ok) throw new Error(result.detail || "预检失败"); await loadListingDrafts(); const riskCodes = result.risk_codes || []; const riskMsg = riskCodes.length ? ` 风险码: ${riskCodes.join(", ")}` : ""; toast(result.issues.length ? `预检发现 ${result.issues.length} 项问题，请修正后再审批。${riskMsg}` : `预检通过：已完成 CNY 核价。${riskMsg || "无风险"}`, result.issues.length > 0 || riskCodes.length > 0); } catch (error) { toast(error.message || "预检失败", true); } }
+window.skuCostDirty = window.skuCostDirty || {};
+function markSkuCostDirty(input) {
+  const sku = input.dataset.sku;
+  const val = input.value.trim();
+  if (val === "") { delete window.skuCostDirty[sku]; }
+  else { window.skuCostDirty[sku] = Number(val); }
+  input.style.borderColor = window.skuCostDirty[sku] !== undefined ? "#e08a3c" : "#d8c9ad";
+  updateSaveCostBtn();
+}
+function updateSaveCostBtn() {
+  const n = Object.keys(window.skuCostDirty || {}).length;
+  const btn = document.getElementById("save-cost-btn");
+  if (btn) { btn.disabled = n === 0; btn.textContent = n ? `保存成本价修改 (${n})` : "保存成本价修改"; }
+}
+async function saveSkuCostEdits() {
+  const shopId = $("#shop-filter").value;
+  const dirty = Object.entries(window.skuCostDirty || {});
+  if (!shopId) { toast("请先选择一个店铺。", true); return; }
+  if (!dirty.length) { toast("没有需要保存的修改", true); return; }
+  const currencyCode = ($("#cost-currency-select")?.value || "CNY").toUpperCase();
+  const rateText = ($("#cost-rate-input")?.value || "").trim();
+  const rate = rateText ? Number(rateText) : null;
+  if (rateText && !(rate > 0)) { toast("汇率无效，请先在顶部修正", true); return; }
+  if (currencyCode === "RUB" && !(rate > 0)) { toast("RUB 结算店需要先在顶部填写卢布汇率", true); return; }
+  const payload = { items: dirty.map(([seller_sku, purchase_cost_cny]) => ({ seller_sku, purchase_cost_cny })), currency_code: currencyCode };
+  if (rate !== null) payload.cny_rub_rate = rate;
+  try {
+    const resp = await fetch(`${apiBase}/api/v1/shops/${shopId}/skus/cost-items`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(payload),
+    });
+    if (!resp.ok) throw new Error((await resp.json()).detail || "保存成本价失败");
+    const data = await resp.json();
+    let msg = `本地已保存 ${data.updated} 个 SKU`;
+    if (data.ozon_updated !== undefined) {
+      msg += `；Ozon 同步 ${data.ozon_updated} 个`;
+      if (data.ozon_failed && data.ozon_failed.length) msg += `，失败 ${data.ozon_failed.length} 个`;
+    } else if (!currencyCode) {
+      msg += `（未同步 Ozon）`;
+    }
+    toast(msg);
+    window.skuCostDirty = {};
+    await loadOperationalData();
+  } catch (e) { toast(e.message || "保存成本价失败", true); }
+}
+async function loadCostRateSetting() {
+  const shopId = $("#shop-filter").value;
+  if (!shopId) return;
+  try {
+    const resp = await fetch(`${apiBase}/api/v1/shops/${shopId}/cost-settings`);
+    if (!resp.ok) return;
+    const data = await resp.json();
+    const input = $("#cost-rate-input");
+    if (input) input.value = data.cny_rub_rate != null ? data.cny_rub_rate : "";
+    const curSel = $("#cost-currency-select");
+    if (curSel && data.currency_code) curSel.value = data.currency_code;
+    const st = $("#cost-rate-status");
+    if (st) st.textContent = `货币 ${data.currency_code || "RUB"}${data.cny_rub_rate != null ? ` · 汇率 ${data.cny_rub_rate}` : ""}（保存成本价将同步 Ozon 成本）`;
+  } catch (_) {}
+}
+async function saveCostRateSetting() {
+  const shopId = $("#shop-filter").value;
+  if (!shopId) { toast("请先选择一个店铺。", true); return; }
+  const currencyCode = ($("#cost-currency-select")?.value || "CNY").toUpperCase();
+  const text = ($("#cost-rate-input")?.value || "").trim();
+  const rate = text ? Number(text) : null;
+  if (text && !(rate > 0)) { toast("汇率无效", true); return; }
+  if (currencyCode === "RUB" && !(rate > 0)) { toast("RUB 结算店需要填写卢布汇率", true); return; }
+  try {
+    const resp = await fetch(`${apiBase}/api/v1/shops/${shopId}/cost-settings`, {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ cny_rub_rate: rate, currency_code: currencyCode }),
+    });
+    if (!resp.ok) throw new Error((await resp.json()).detail || "保存失败");
+    toast(`已保存：货币 ${currencyCode}${rate != null ? ` · 汇率 ${rate}` : ""}（保存成本价将自动同步 Ozon 成本）`);
+    await loadCostRateSetting();
+  } catch (e) { toast(e.message || "保存汇率失败", true); }
+}
+function onProductSearchEnter(event) { if (event.key === "Enter") { loadOperationalData(); } }
+
+async function openBulkCostDialog() {
+  const shopId = $("#shop-filter").value;
+  if (!shopId) { toast("请先选择一个店铺。", true); return; }
+  const keyword = prompt("输入 SKU 关键词（如 SKU00259，匹配该店铺下所有包含此关键词的 SKU）：");
+  if (keyword === null || !keyword.trim()) { toast("已取消", true); return; }
+  const cost = prompt("输入成本价（CNY）：");
+  if (cost === null || !(Number(cost) > 0)) { toast("成本价无效，已取消", true); return; }
+  const rateText = prompt("人民币→卢布汇率（用于同步 Ozon 后台成本；留空则只写本地、不同步 Ozon。例：12.5）：");
+  if (rateText === null) { toast("已取消", true); return; }
+  const rate = rateText.trim() ? Number(rateText.trim()) : null;
+  if (rateText.trim() && !(rate > 0)) { toast("汇率无效，已取消", true); return; }
+  const payload = { sku_keyword: keyword.trim(), purchase_cost_cny: Number(cost) };
+  if (rate !== null) payload.cny_rub_rate = rate;
+  try {
+    const resp = await fetch(`${apiBase}/api/v1/shops/${shopId}/skus/bulk-cost`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(payload),
+    });
+    if (!resp.ok) throw new Error((await resp.json()).detail || "批量填成本失败");
+    const data = await resp.json();
+    let msg = `本地已填 ${data.updated} 个 SKU 成本价 ¥${data.purchase_cost_cny}`;
+    if (data.ozon_updated !== undefined) {
+      msg += `；Ozon 同步 ${data.ozon_updated} 个`;
+      if (data.ozon_failed && data.ozon_failed.length) msg += `，失败 ${data.ozon_failed.length} 个`;
+    }
+    toast(msg);
+    await loadOperationalData();
+  } catch (e) { toast(e.message || "批量填成本失败", true); }
+}
+
 async function saveListingDraft(event) { event.preventDefault(); const shopId = $("#shop-filter").value; if (!shopId) { toast("请先选择一个店铺。", true); return; } if ($("#listing-category").dataset.shopId !== shopId) { toast("店铺已切换，请重新打开草稿并选择类目。", true); return; } const controls = [...event.target.querySelectorAll("[data-listing-attribute]")]; const entries = []; for (const control of controls) { let valueId = ""; let value = control.value; if (control.dataset.attributeKind === "dictionary") { const list = document.getElementById(control.getAttribute("list")); const option = [...(list?.options || [])].find(item => item.value === control.value); valueId = option?.dataset.valueId || ""; value = option?.dataset.valueText || ""; if (control.required && !valueId) { control.setCustomValidity("请输入至少 2 个字，并从 Ozon 搜索结果中选择"); control.reportValidity(); return; } } entries.push({ attributeId: control.dataset.listingAttribute, name: control.dataset.attributeName, kind: control.dataset.attributeKind, value, valueId }); } const data = Object.fromEntries(new FormData(event.target)); const [categoryId, typeId] = String(data.category_choice || "").split(":"); const payload = { offer_id: data.offer_id, title: data.title, category_id: categoryId, type_id: typeId, primary_image_url: data.primary_image_url, attributes: window.ListingAttributes.attributePayloadFromEntries(entries), variants: [{ seller_sku: data.seller_sku, purchase_cost_cny: Number(data.purchase_cost_cny), weight_g: Number(data.weight_g), length_mm: Number(data.length_mm), width_mm: Number(data.width_mm), height_mm: Number(data.height_mm) }] }; try { const response = await fetch(`${apiBase}/api/v1/shops/${shopId}/listing-drafts`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(payload) }); if (!response.ok) throw new Error((await response.json()).detail || "草稿保存失败"); $("#listing-dialog").close(); event.target.reset(); $("#listing-required-attributes").innerHTML = '<span class="listing-attribute-title">选择类目后填写 Ozon 必填属性</span>'; await loadListingDrafts(); toast("草稿与 Ozon 属性已保存；请执行预检后再进入审批。 "); } catch (error) { toast(error.message || "草稿保存失败", true); } }
 async function runReadOnlySync() { const shopId = $("#shop-filter").value; if (!shopId) { toast("请先在顶部选择一个店铺。", true); return; } const now = new Date(); const since = new Date(now.getTime() - 7 * 24 * 60 * 60 * 1000); const requests = [{ path: "products", payload: { limit: 100, last_id: "" } }, { path: "fbs-postings", payload: { since: since.toISOString(), to: now.toISOString(), limit: 100, offset: 0, status: "" } }, { path: "fbs-product-images", payload: null }]; try { $("#run-sync").disabled = true; $("#sync-button").disabled = true; toast("正在只读同步商品、图片和近 7 天 FBS 订单…"); for (const request of requests) { const response = await fetch(`${apiBase}/api/v1/shops/${shopId}/sync/${request.path}`, { method: "POST", headers: { "Content-Type": "application/json" }, body: request.payload ? JSON.stringify(request.payload) : undefined }); if (!response.ok) throw new Error((await response.json()).detail || "同步失败"); } await Promise.all([loadSyncRuns(), loadOperationalData()]); toast("只读同步已完成。 "); } catch (error) { await loadSyncRuns(); toast(error.message || "同步失败，请查看同步记录。", true); } finally { $("#run-sync").disabled = false; $("#sync-button").disabled = false; } }
 async function saveShop(event) { event.preventDefault(); const data = Object.fromEntries(new FormData(event.target)); const shopPayload = { name: data.name, manager_name: data.manager_name || null, legal_entity: data.legal_entity || null, currency: "CNY" }; const credentialPayload = { client_id: data.client_id, api_key: data.api_key, key_label: data.key_label || null }; let createdShop; try { const shopResponse = await fetch(`${apiBase}/api/v1/shops`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(shopPayload) }); if (!shopResponse.ok) throw new Error((await shopResponse.json()).detail || "店铺保存失败"); createdShop = await shopResponse.json(); const credentialResponse = await fetch(`${apiBase}/api/v1/shops/${createdShop.id}/credentials/ozon`, { method: "PUT", headers: { "Content-Type": "application/json" }, body: JSON.stringify(credentialPayload) }); if (!credentialResponse.ok) throw new Error((await credentialResponse.json()).detail || "授权保存失败"); $("#shop-dialog").close(); event.target.reset(); await loadShops(); toast("店铺已接入，下一步可配置仓库并执行只读同步。"); } catch (error) { if (createdShop) await fetch(`${apiBase}/api/v1/shops/${createdShop.id}`, { method: "DELETE" }).catch(() => {}); toast(error.message || "保存失败", true); } }

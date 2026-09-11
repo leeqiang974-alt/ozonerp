@@ -1,7 +1,7 @@
 """AI Ozon image-set workflow. Generated images remain drafts until explicitly applied."""
 from __future__ import annotations
 
-import base64, ipaddress, json, os, re, socket, time, uuid
+import base64, ipaddress, io, json, os, re, socket, time, uuid
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
@@ -17,7 +17,7 @@ from .secret_paths import api_file
 ROOT = Path(__file__).resolve().parents[2]
 OUTPUT_DIR = ROOT / "frontend" / "generated" / "ai-images"
 PUBLIC_PREFIX = os.getenv("GENERATED_IMAGE_PUBLIC_BASE", "http://127.0.0.1:5500/generated/ai-images").rstrip("/")
-STYLE_LOCK = "premium Ozon ecommerce system; warm off-white #F7F2EA, deep charcoal text, restrained metallic-gold accents, modern geometric sans-serif, thin-line icons, neutral-warm studio light, generous whitespace"
+STYLE_LOCK = "premium ecommerce product presentation; warm off-white #F7F2EA clean background, restrained metallic-gold accents, minimal layout with generous whitespace, neutral-warm studio light, sharp product focus; absolutely no decorative lettering, no icons, no logos, no watermarks"
 PRODUCT_GROUP_KEY = "__product__"
 AI_IMAGE_SLOTS = [
     "hero", "dimensions", "details", "steps", "lifestyle",
@@ -131,6 +131,20 @@ def llm_config() -> tuple[str, str, str]:
     return (os.getenv("VISUAL_LLM_API_KEY", "").strip() or keys.get("LLM_API_KEY", ""), os.getenv("VISUAL_LLM_BASE_URL", "https://ai.cangyuansuanli.cn/v1").rstrip("/"), os.getenv("VISUAL_LLM_MODEL", "gpt-5.6-terra"))
 
 
+def llm_config_chain() -> list[tuple[str, str, str]]:
+    """Candidate chain for vision analysis: Agnes first, Cangyuan (Terra) fallback.
+    Returns [(key, base, model), ...]; caller tries each in order."""
+    keys = _keys()
+    chain: list[tuple[str, str, str]] = []
+    agnes = (os.getenv("AGNES_API_KEY", "").strip() or keys.get("AGNES_API_KEY", "")).strip()
+    if agnes:
+        chain.append((agnes, "https://apihub.agnes-ai.com/v1", os.getenv("AGNES_VISUAL_LLM_MODEL", "agnes-2.5-flash")))
+    cangyuan_key = os.getenv("VISUAL_LLM_API_KEY", "").strip() or keys.get("LLM_API_KEY", "")
+    if cangyuan_key:
+        chain.append((cangyuan_key, os.getenv("VISUAL_LLM_BASE_URL", "https://ai.cangyuansuanli.cn/v1").rstrip("/"), os.getenv("VISUAL_LLM_MODEL", "gpt-5.6-terra")))
+    return chain
+
+
 def image_config() -> tuple[str, str, str]:
     keys = _keys()
     agnes = (os.getenv("AGNES_API_KEY", "").strip() or keys.get("AGNES_API_KEY", "")).strip()
@@ -148,27 +162,45 @@ def image_config() -> tuple[str, str, str]:
     return (os.getenv("IMAGE_API_KEY", "").strip() or keys.get("IMAGE_API_KEY", ""), os.getenv("IMAGE_BASE_URL", "https://ai.cangyuansuanli.cn/v1").rstrip("/"), requested)
 
 
+def image_config_chain() -> list[tuple[str, str, str]]:
+    """Candidate chain for image generation: Agnes first, Cangyuan fallback."""
+    keys = _keys()
+    chain: list[tuple[str, str, str]] = []
+    agnes = (os.getenv("AGNES_API_KEY", "").strip() or keys.get("AGNES_API_KEY", "")).strip()
+    if agnes:
+        chain.append((agnes, "https://apihub.agnes-ai.com/v1", os.getenv("AGNES_IMAGE_MODEL", "agnes-image-2.5-flash")))
+    cangyuan_key = os.getenv("IMAGE_API_KEY", "").strip() or keys.get("IMAGE_API_KEY", "")
+    if cangyuan_key:
+        requested = os.getenv("IMAGE_MODEL", "gpt-image-2").strip().lower()
+        if requested in {"imag-2", "image-2", "gpt-image-2-1k", "image-2-1k"}:
+            requested = "gpt-image-2"
+        chain.append((cangyuan_key, os.getenv("IMAGE_BASE_URL", "https://ai.cangyuansuanli.cn/v1").rstrip("/"), requested))
+    return chain
+
+
 def chat_json(messages: list[dict[str, Any]]) -> tuple[dict[str, Any], dict[str, Any]]:
-    key, base, model = llm_config()
-    if not key: raise RuntimeError("VISUAL_LLM_API_KEY/LLM_API_KEY 未配置")
-    payload = {"model": model, "messages": messages, "temperature": 0.1, "max_tokens": 5000}
+    configs = llm_config_chain()
+    if not configs:
+        raise RuntimeError("VISUAL_LLM_API_KEY/LLM_API_KEY 未配置")
     last = ""
-    for attempt, wait in enumerate((0, 2, 5)):
-        if wait: time.sleep(wait)
-        try:
-            response = httpx.post(f"{base}/chat/completions", headers={"Authorization": f"Bearer {key}"}, json=payload, timeout=90)
-            if response.is_error:
-                # Preserve the provider's validation message; a bare 400 is not
-                # actionable when diagnosing one malformed reference image.
-                detail = response.text.strip().replace("\n", " ")[:600]
-                raise RuntimeError(f"HTTP {response.status_code}: {detail}")
-            body = response.json(); choices = body.get("choices") or []
-            if not choices: raise RuntimeError("LLM返回空choices")
-            text = choices[0].get("message", {}).get("content") or choices[0].get("message", {}).get("reasoning_content") or ""
-            text = re.sub(r"^```(?:json)?\s*|\s*```$", "", text.strip())
-            return json.loads(text), body.get("usage") or {}
-        except Exception as exc: last = str(exc)
-    raise RuntimeError(f"Terra图片分析失败：{last[:500]}")
+    for key, base, model in configs:
+        payload = {"model": model, "messages": messages, "temperature": 0.1, "max_tokens": 5000}
+        for attempt, wait in enumerate((0, 2, 5)):
+            if wait: time.sleep(wait)
+            try:
+                response = httpx.post(f"{base}/chat/completions", headers={"Authorization": f"Bearer {key}"}, json=payload, timeout=90)
+                if response.is_error:
+                    # Preserve the provider's validation message; a bare 400 is not
+                    # actionable when diagnosing one malformed reference image.
+                    detail = response.text.strip().replace("\n", " ")[:600]
+                    raise RuntimeError(f"HTTP {response.status_code}: {detail}")
+                body = response.json(); choices = body.get("choices") or []
+                if not choices: raise RuntimeError("LLM返回空choices")
+                text = choices[0].get("message", {}).get("content") or choices[0].get("message", {}).get("reasoning_content") or ""
+                text = re.sub(r"^```(?:json)?\s*|\s*```$", "", text.strip())
+                return json.loads(text), body.get("usage") or {}
+            except Exception as exc: last = str(exc)
+    raise RuntimeError(f"图片分析失败（已尝试 {len(configs)} 个供应商）：{last[:500]}")
 
 
 def _source_variant_group(variant: SourceVariantRecord) -> tuple[str, str]:
@@ -244,21 +276,44 @@ def analyze(db: Session, shop_id: int, source_id: int, creative_group_key: str =
     return result, refs, usage
 
 
-def plan(product: SourceProductRecord, analysis: dict[str, Any], creative_group_label: str = "") -> list[dict[str, str]]:
+def plan(product: SourceProductRecord, analysis: dict[str, Any], creative_group_label: str = "", sku_exclusive_info: dict[str, Any] | None = None) -> list[dict[str, str]]:
     facts = json.dumps(analysis.get("product_truth") or {}, ensure_ascii=False)
     dims = json.dumps(analysis.get("dimensions") or {}, ensure_ascii=False)
     excluded = json.dumps(analysis.get("not_included") or [], ensure_ascii=False)
     group_lock = f" STYLE VARIANT LOCK: this is only style '{creative_group_label}'. Never use another style, pattern, colourway or SKU image." if creative_group_label else ""
-    common = f"Campaign Style Lock: {STYLE_LOCK}. PRODUCT TRUTH LOCK: sold product {analysis.get('sold_product') or product.title}; visible facts {facts}; not included {excluded}.{group_lock} Preserve exact identity, quantity, color, structure and visible hardware. Russian Ozon ecommerce image, vertical 3:4, crisp short Russian text. No Chinese, English, price, watermark, QR, fake certification or invented specifications. Never create, retain, or embellish LGBT/sexual-orientation/gender-identity messaging, rainbow/pride flags, transgender symbols, or related slogans."
+    base_lock = f"Campaign Style Lock: {STYLE_LOCK}. Product truth (never invent): sold product {analysis.get('sold_product') or product.title}; visible facts {facts}; not included {excluded}.{group_lock} Preserve exact identity, quantity, color, structure and visible hardware. Premium marketplace product infographic, vertical 3:4, clean minimal design."
+    # GPT-routed product slots (hero/dimensions/details/steps): the model is
+    # strong enough to draw short real Russian on-image text, Ozon-infographic
+    # style (bold title + spec numbers + short selling-point labels), while
+    # strictly reproducing the reference product. Program overlay is skipped
+    # for these slots so the AI text is not duplicated.
+    common_gpt = (base_lock
+        + " ON-IMAGE TEXT POLICY: this is a Russian-market listing. The image SHOULD carry a small amount of real, correctly-spelled Russian text styled like a high-converting Ozon infographic: a bold main title phrase (short, max 4 words), small specification numbers (e.g. '7,5 см' or '2 шт'), and short selling-point labels (max 2-3 words each, e.g. 'Для пальто'). FORBIDDEN on the image: any Chinese/CJK characters, any fake Latin gibberish, any garbled or illegible text, any brand or store name (including 'Ozon'/'OZONE' and any trademark), watermarks, QR codes, prices, certification stamps, decorative symbols, repeated ornamental lettering. On-image text must be Russian only and must stay clean and legible. Never create, retain, or embellish LGBT/sexual-orientation/gender-identity messaging, rainbow/pride flags, transgender symbols, or related slogans.")
+    # Agnes-routed scene slots: the flash model garbles any on-image text, so
+    # it draws a clean scene with zero characters; the Russian scene caption is
+    # burned in programmatically afterwards (guaranteed correct).
+    common_agnes = (base_lock
+        + " ON-IMAGE TEXT: NONE — the generated image must contain zero characters of any language (no Russian, no Latin, no Chinese, no numbers, no labels, no brand names, no watermark, no icons); captions are added by the platform later, so produce a clean scene image only. Never create, retain, or embellish LGBT/sexual-orientation/gender-identity messaging, rainbow/pride flags, transgender symbols, or related slogans.")
+    # Style-exclusive hero: when generating for a specific style/SKU, the hero
+    # must feature that variant's identity (color/pattern/quantity/size) as the
+    # primary differentiator, not a generic product shot.
+    hero_exclusive = ""
+    if creative_group_label:
+        hero_exclusive += f" This is the '{creative_group_label}' style variant hero. The product shown MUST be exactly this style's color/pattern — never another style. "
+    if sku_exclusive_info:
+        exclusive_text = json.dumps(sku_exclusive_info, ensure_ascii=False)
+        hero_exclusive += f" Feature this variant's exclusive attributes on the hero as clean visual emphasis (minimal numeric/color labels only, no invented words): {exclusive_text}. "
+    hero_prompt = (common_gpt + hero_exclusive
+        + " Premium hero infographic styled like a top Ozon main image: strictly reproduce the reference product's appearance, color, material, structure, proportion and details — do not alter the product itself and do not add features that do not exist; product occupies 65-80% of the frame, sharp edges, real commercial product photography. Layout: bold Russian main title near the top (largest text on the image, e.g. 'Винтажная брошь с кристаллами'); one line of core parameters right under the title (small numbers, e.g. '7,5 см × 6,0 см'); 2-3 short Russian selling-point labels around the product with simple clean pictogram icons (e.g. 'Кристаллы', 'Металл', 'Винтаж') only when true to the product. Keep generous whitespace; no more than ~4 short text blocks.")
     return [
-        {"slot":"hero","title":"销售首图","prompt":common+" Premium hero infographic, product 38%, concise Russian headline and exactly three evidence-backed labels."},
-        {"slot":"dimensions","title":"尺寸规格","prompt":common+f" E-commerce dimension infographic, top-down. Only verified dimensions: {dims}. If none, show structure without numbers."},
-        {"slot":"details","title":"结构细节","prompt":common+" E-commerce detail infographic with one full product and two macro callouts of real visible structure/material."},
-        {"slot":"steps","title":"使用步骤","prompt":common+" E-commerce three-step usage infographic based only on evidenced use; never imply tools are included."},
-        {"slot":"lifestyle","title":"场景用途","prompt":common+" Premium lifestyle infographic with three believable uses, clearly labeled as examples, not package contents."},
-        {"slot":"scene_home","title":"居家场景","prompt":common+" Premium believable home scene. Product is clearly visible and remains the exact selected style; no other styles in frame."},
-        {"slot":"scene_entry","title":"玄关场景","prompt":common+" Premium believable entryway scene. Product is clearly visible and remains the exact selected style; no other styles in frame."},
-        {"slot":"scene_gift","title":"礼赠场景","prompt":common+" Premium believable gift or seasonal scene only when supported by product truth; otherwise use a neutral lifestyle scene. Preserve the exact selected style."},
+        {"slot":"hero","title":"销售首图","prompt":hero_prompt},
+        {"slot":"dimensions","title":"尺寸规格","prompt":common_gpt+f" E-commerce dimension infographic, top-down. Only verified dimensions: {dims}. If none, show structure without numbers. Add a small clean block of short Russian specification numbers (e.g. '7,5 см × 6,0 см')."},
+        {"slot":"details","title":"结构细节","prompt":common_gpt+" E-commerce detail infographic with one full product and two macro callouts of real visible structure/material. Callouts may carry one short Russian keyword label each (max 2-3 words, true to the product)."},
+        {"slot":"steps","title":"使用步骤","prompt":common_gpt+" E-commerce three-step usage infographic based only on evidenced use; never imply tools are included. Steps may carry short Russian numbers only (1, 2, 3)."},
+        {"slot":"lifestyle","title":"场景用途","prompt":common_agnes+" Premium lifestyle infographic with three believable use scenes of the product; plain neutral wall and room backgrounds, absolutely no rainbow, no multicolor decorations, no flags, no political symbols."},
+        {"slot":"scene_home","title":"居家场景","prompt":common_agnes+" Premium believable home scene. Product is clearly visible and remains the exact selected style; no other styles in frame."},
+        {"slot":"scene_entry","title":"玄关场景","prompt":common_agnes+" Premium believable entryway scene. Product is clearly visible and remains the exact selected style; no other styles in frame."},
+        {"slot":"scene_gift","title":"礼赠场景","prompt":common_agnes+" Premium believable gift or seasonal scene only when supported by product truth; otherwise use a neutral lifestyle scene. Preserve the exact selected style."},
     ]
 
 
@@ -302,6 +357,23 @@ def download_ref(url: str, index: int):
     return ("image", (f"reference-{index}.{ext}", content, mime))
 
 
+def _product_first_chain() -> list[tuple[str, str, str]]:
+    """Chain for product-fidelity slots: Cangyuan gpt-image-2 first (fidelity +
+    on-image text), Agnes flash as fallback."""
+    keys = _keys()
+    chain: list[tuple[str, str, str]] = []
+    cangyuan_key = os.getenv("IMAGE_API_KEY", "").strip() or keys.get("IMAGE_API_KEY", "")
+    if cangyuan_key:
+        requested = os.getenv("IMAGE_MODEL", "gpt-image-2").strip().lower()
+        if requested in {"imag-2", "image-2", "gpt-image-2-1k", "image-2-1k"}:
+            requested = "gpt-image-2"
+        chain.append((cangyuan_key, os.getenv("IMAGE_BASE_URL", "https://ai.cangyuansuanli.cn/v1").rstrip("/"), requested))
+    agnes = (os.getenv("AGNES_API_KEY", "").strip() or keys.get("AGNES_API_KEY", "")).strip()
+    if agnes:
+        chain.append((agnes, "https://apihub.agnes-ai.com/v1", os.getenv("AGNES_IMAGE_MODEL", "agnes-image-2.5-flash")))
+    return chain
+
+
 def generate_one(
     prompt: str,
     refs: list[str],
@@ -310,8 +382,36 @@ def generate_one(
     before_provider_request: Any | None = None,
     after_provider_response: Any | None = None,
 ) -> tuple[str, dict[str, Any]]:
-    key, base, model = image_config()
-    if not key: raise RuntimeError("IMAGE_API_KEY未配置")
+    """Generate one image, trying each provider in the chain.
+    Product-fidelity slots (hero/dimensions/details/steps, incl. SKU-exclusive
+    images) prefer Cangyuan gpt-image-2; scene slots prefer free Agnes flash.
+    Each falls back to the other provider."""
+    if slot in PRODUCT_FIDELITY_SLOTS:
+        configs = _product_first_chain()
+    else:
+        configs = image_config_chain()
+    if not configs:
+        raise RuntimeError("IMAGE_API_KEY未配置")
+    last_error = None
+    for key, base, model in configs:
+        try:
+            return _generate_one_with(prompt, refs, job_id, slot, key, base, model, before_provider_request, after_provider_response)
+        except Exception as exc:
+            last_error = str(exc)[:1400]
+    raise RuntimeError(last_error or f"图片生成失败（已尝试 {len(configs)} 个供应商）")
+
+
+def _generate_one_with(
+    prompt: str,
+    refs: list[str],
+    job_id: int,
+    slot: str,
+    key: str,
+    base: str,
+    model: str,
+    before_provider_request: Any | None,
+    after_provider_response: Any | None,
+) -> tuple[str, dict[str, Any]]:
     # The analysis stage may inspect up to 12 URLs, but paid Image 2 receives
     # exactly one validated reference image. This avoids multipart gateway
     # failures and prevents dimensions/promotional images from changing the
@@ -384,6 +484,205 @@ def _download_generated_result(url: str, path: Path, *, max_seconds: float = 150
         raise
 
 
+def _dims_label(dims) -> str:
+    """Format real dimensions into a Russian-style label like '7,5 см × 6,0 см'.
+    Handles both '7.5cm / 2.95inch' and plain numbers, and tolerates LLM
+    output drift (sometimes dimensions comes back as a string)."""
+    if isinstance(dims, list):
+        parts = []
+        for item in dims:
+            if not isinstance(item, dict):
+                continue
+            t = str(item.get("type") or "")
+            if t not in ("height", "width", "length"):
+                continue
+            v = item.get("value")
+            if not v:
+                continue
+            m = str(v).split("/")[0].strip().replace(".", ",")
+            if "см" not in m:
+                m = m.replace("cm", " см") if "cm" in m.lower() else m + " см"
+            parts.append(m.strip())
+        if parts:
+            return " × ".join(parts)
+        return ""
+    if isinstance(dims, str):
+        import re
+        # LLM sometimes serializes dimensions as "{'value': 7,5, 'unit': ' см', ...} × {...}"
+        items = re.findall(r"'value':\s*([\d.,]+),\s*'unit':\s*'([^']*)'", dims)
+        if not items:
+            items = re.findall(r'"value":\s*([\d.,]+),\s*"unit":\s*"([^"]*)"', dims)
+        if items:
+            parts = []
+            for val, unit in items:
+                m = val.replace(".", ",")
+                u = (unit or "").strip() or "см"
+                parts.append(f"{m} {u}".strip())
+            if parts:
+                return " × ".join(parts)
+        parts = [p.strip().replace(".", ",") for p in str(dims).split("/")[:2]]
+        return " × ".join(p for p in parts if p)
+    if not isinstance(dims, dict):
+        return ""
+    if dims.get("value") is not None:
+        m = str(dims["value"]).replace(".", ",")
+        u = str(dims.get("unit") or "см").strip() or "см"
+        return f"{m} {u}".strip()
+    parts = []
+    for k in ("height", "width", "length", "height_cm", "width_cm", "length_cm"):
+        v = dims.get(k)
+        if not v:
+            continue
+        if isinstance(v, dict):
+            v = v.get("value") or v.get("val") or v.get("value_cm")
+            if not v:
+                continue
+        m = str(v).split("/")[0].strip().replace(".", ",")
+        if "см" not in m:
+            m = m.replace("cm", " см") if "cm" in m.lower() else m + " см"
+        parts.append(m.strip())
+    if parts:
+        return " × ".join(parts)
+    # Last resort: pull numbers+cm straight out of the raw representation.
+    import re
+    found = re.findall(r"(\d+[.,]\d+)\s*(?:см|cm)", str(dims), re.IGNORECASE)
+    if len(found) >= 2:
+        return " × ".join(f.replace(".", ",") + " см" for f in found[:2])
+    return ""
+
+
+def _strip_color_words(text) -> str:
+    """Remove Chinese color words from prompt text so the AI never blends
+    colors mentioned in descriptions (e.g. 'green and yellow available').
+    Color must come only from the reference image."""
+    if not isinstance(text, str):
+        return ""
+    for c in ("翠绿", "深绿", "浅绿", "墨绿", "草绿", "绿色", "黄色", "米黄", "杏黄",
+              "红色", "深红", "粉色", "蓝色", "深蓝", "天蓝", "黑色", "白色", "紫色",
+              "棕色", "浅棕", "灰色", "金色", "银色", "橙色", "混色", "渐变", "多色"):
+        text = text.replace(c, "")
+    return text
+
+
+def _ref_color_hint(fileobj) -> str:
+    """Analyze the reference image's dominant hue and return an English single-
+    color phrase for the prompt, so the image model keeps one uniform product
+    color instead of blending colors mentioned in text."""
+    try:
+        from PIL import Image
+        img = Image.open(fileobj).convert("RGB")
+        img.thumbnail((160, 160))
+        buckets = {}
+        for r, g, b in img.getdata():
+            mx, mn = max(r, g, b), min(r, g, b)
+            if mx < 120:
+                continue
+            sat = (mx - mn) / max(mx, 1)
+            if sat < 0.18:
+                continue
+            d = mx - mn
+            if mx == r:
+                h = ((g - b) / d) * 60
+            elif mx == g:
+                h = ((b - r) / d) * 60 + 120
+            else:
+                h = ((r - g) / d) * 60 + 240
+            h %= 360
+            buckets[int(h // 30) * 30] = buckets.get(int(h // 30) * 30, 0) + 1
+        if not buckets:
+            return ""
+        peak = max(buckets, key=buckets.get)
+        if 30 <= peak <= 60:
+            return "warm amber / golden yellow"
+        if 0 <= peak < 30:
+            return "warm orange / amber"
+        if 60 <= peak < 150:
+            return "green"
+        if 150 <= peak < 210:
+            return "cyan / teal"
+        if 210 <= peak < 270:
+            return "blue"
+        if 270 <= peak < 330:
+            return "purple / magenta"
+        return "red / pink"
+    except Exception:
+        return ""
+
+
+SCENE_SLOT_TITLES = {
+    "steps": "Инструкция по использованию",
+    "lifestyle": "Стильный аксессуар для любого образа",
+    "scene_home": "Идеально для дома",
+    "scene_entry": "Украшение для прихожей",
+    "scene_gift": "Идеальный подарок",
+}
+
+# Product-fidelity slots route to Cangyuan gpt-image-2 (strict identity, better
+# on-image text); scene slots route to the free Agnes flash model.
+PRODUCT_FIDELITY_SLOTS = {"hero", "dimensions", "details", "steps"}
+
+
+def _overlay_russian_text(path: Path, slot: str, title_ru: str, desc_ru: str, dims_label: str) -> None:
+    """Burn real Russian captions onto a generated PNG so on-image text is always correct.
+    Failure must never break generation, so every error is swallowed."""
+    try:
+        from PIL import Image, ImageDraw, ImageFont
+        if slot not in ("hero", "dimensions", "details", "steps", "lifestyle", "scene_home", "scene_entry", "scene_gift"):
+            return
+        img = Image.open(path).convert("RGB")
+        W, H = img.size
+        font_path = next((f for f in (
+            r"C:\Windows\Fonts\arialbd.ttf", r"C:\Windows\Fonts\arial.ttf",
+            r"C:\Windows\Fonts\segoeuib.ttf", r"C:\Windows\Fonts\segoeui.ttf",
+        ) if os.path.exists(f)), None)
+        if not font_path:
+            return
+        draw = ImageDraw.Draw(img)
+
+        def _fit(text: str, font, max_w: int) -> str:
+            text = text or ""
+            while len(text) > 1:
+                b = draw.textbbox((0, 0), text, font=font)
+                if (b[2] - b[0]) <= max_w:
+                    return text
+                text = text[:-1]
+            return text
+
+        bar_h = max(int(H * 0.13), 120)
+        draw.rectangle([0, H - bar_h, W, H], fill=(247, 242, 234))
+        if slot == "hero":
+            size_t = max(int(W * 0.028), 22)
+            fnt = ImageFont.truetype(font_path, size_t)
+            title = _fit((title_ru or "").strip(), fnt, int(W * 0.94))
+            if title:
+                b = draw.textbbox((0, 0), title, font=fnt)
+                draw.text(((W - (b[2] - b[0])) / 2, H - bar_h + 14), title, fill=(40, 40, 40), font=fnt)
+        elif slot == "dimensions":
+            size_d = max(int(W * 0.032), 20)
+            fnt = ImageFont.truetype(font_path, size_d)
+            label = _fit(dims_label or "", fnt, int(W * 0.94))
+            if label:
+                b = draw.textbbox((0, 0), label, font=fnt)
+                draw.text(((W - (b[2] - b[0])) / 2, H - bar_h + (bar_h - size_d * 1.3) / 2), label, fill=(60, 60, 60), font=fnt)
+        elif slot == "details":
+            size_d = max(int(W * 0.022), 14)
+            fnt = ImageFont.truetype(font_path, size_d)
+            desc = _fit((desc_ru or "").strip(), fnt, int(W * 0.94))
+            if desc:
+                b = draw.textbbox((0, 0), desc, font=fnt)
+                draw.text(((W - (b[2] - b[0])) / 2, H - bar_h + (bar_h - size_d * 1.3) / 2), desc, fill=(90, 90, 90), font=fnt)
+        else:
+            size_s = max(int(W * 0.026), 18)
+            fnt = ImageFont.truetype(font_path, size_s)
+            cap = _fit(SCENE_SLOT_TITLES.get(slot, ""), fnt, int(W * 0.94))
+            if cap:
+                b = draw.textbbox((0, 0), cap, font=fnt)
+                draw.text(((W - (b[2] - b[0])) / 2, H - bar_h + (bar_h - size_s * 1.3) / 2), cap, fill=(60, 60, 60), font=fnt)
+        img.save(path)
+    except Exception:
+        pass
+
+
 def serialize(job: VisualImageJobRecord | None) -> dict[str, Any]:
     if not job: return {"status":"not_started","generated_images":[]}
     return {"id":job.id,"shop_id":job.shop_id,"source_product_id":job.source_product_id,"creative_group_key":job.creative_group_key,"listing_draft_id":job.listing_draft_id,"status":job.status,"analysis":loads(job.analysis_json,{}),"plan":loads(job.plan_json,[]),"generated_images":loads(job.generated_images_json,[]),"selected_images":loads(job.selected_images_json,[]),"reference_images":loads(job.reference_images_json,[]),"error_message":job.error_message,"llm_model":job.llm_model,"image_model":job.image_model,"usage":loads(job.usage_json,{}),"attempt_history":_history(job),"current_run_id":job.current_run_id,"applied_by":job.applied_by,"applied_at":job.applied_at}
@@ -392,6 +691,17 @@ def serialize(job: VisualImageJobRecord | None) -> dict[str, Any]:
 def generate_set(db: Session, shop_id: int, source_id: int, draft_id: int | None = None, requested_slots: list[str] | None = None, creative_group_key: str = PRODUCT_GROUP_KEY):
     product, grouped_variants, _ = source_bundle(db, shop_id, source_id, creative_group_key)
     group_label = _source_variant_group(grouped_variants[0])[1] if creative_group_key != PRODUCT_GROUP_KEY and grouped_variants else ""
+    # Extract style/SKU-exclusive info for the hero image (color, quantity, size).
+    sku_exclusive_info: dict[str, Any] | None = None
+    if creative_group_key != PRODUCT_GROUP_KEY and grouped_variants:
+        first_variant = grouped_variants[0]
+        spec = str(first_variant.spec_name or "").strip()
+        sku_exclusive_info = {
+            "style_label": group_label,
+            "spec": spec,
+            "source_sku": str(first_variant.source_sku or ""),
+            "variant_count": len(grouped_variants),
+        }
     job = db.scalar(select(VisualImageJobRecord).where(VisualImageJobRecord.shop_id==shop_id,VisualImageJobRecord.source_product_id==source_id,VisualImageJobRecord.creative_group_key==creative_group_key))
     if not job: job=VisualImageJobRecord(shop_id=shop_id,source_product_id=source_id,creative_group_key=creative_group_key); db.add(job); db.flush()
     job.listing_draft_id=draft_id or job.listing_draft_id; job.status="analyzing"; job.error_message=None; db.commit()
@@ -404,12 +714,44 @@ def generate_set(db: Session, shop_id: int, source_id: int, draft_id: int | None
         content_safety = analysis.get("content_safety") if isinstance(analysis, dict) else {}
         if isinstance(content_safety, dict) and content_safety.get("prohibited_lgbt_symbolism") is True:
             raise ValueError("图片分析命中 Ozon 禁止的 LGBT/非传统性别关系宣传内容；禁止生图，必须人工移除相关素材或归档商品")
-        image_plan=plan(product,analysis,group_label)
+        # Colors mentioned in text descriptions would make the AI blend a
+        # multicolor product; strip them so the only color source is the
+        # reference image.
+        analysis_for_prompt = dict(analysis)
+        for _k in ("sold_product", "product_truth"):
+            if isinstance(analysis_for_prompt.get(_k), str):
+                analysis_for_prompt[_k] = _strip_color_words(analysis_for_prompt[_k])
+        image_plan=plan(product,analysis_for_prompt,group_label,sku_exclusive_info)
         if requested_slots:
             requested = set(requested_slots)
             image_plan = [item for item in image_plan if item.get("slot") in requested]
             if not image_plan:
                 raise ValueError("没有可生成的图片槽位")
+        # Single-color lock: the AI must follow the reference image's color and
+        # never blend colors mentioned in text descriptions (e.g. "green and
+        # yellow available") into one multicolor product. This is the highest
+        # priority instruction and overrides earlier text in the same prompt.
+        _ref_hint = ""
+        if refs:
+            try:
+                _raw = download_ref(refs[0], 0)
+                _ref_hint = _ref_color_hint(io.BytesIO(_raw[1][1]))
+            except Exception:
+                _ref_hint = ""
+        if _ref_hint:
+            color_lock = (f" COLOR LOCK (highest priority, do not violate): the product in the image must be a "
+                          f"clean single color — {_ref_hint}. Render every stone, every metal accent and every "
+                          f"detail in exactly this one color family. Never mix in green, blue, red or any second "
+                          f"color; no multicolor, no two-tone mixing, no color gradients. Ignore any other color "
+                          f"word in this text.")
+        else:
+            color_lock = (" COLOR LOCK (highest priority, do not violate): ignore ALL color words in this text. "
+                          "The product's color comes ONLY from the reference image — copy the reference's exact "
+                          "single color and keep every stone and every metal tone uniform with it. Never blend, "
+                          "mix, add or swap colors; no multicolor, no two-tone mixing, no color gradients between "
+                          "stones, no green-to-yellow mix.")
+        for _item in image_plan:
+            _item["prompt"] = (_item.get("prompt") or "") + color_lock
         job.analysis_json=json.dumps(analysis,ensure_ascii=False); job.reference_images_json=json.dumps(refs,ensure_ascii=False); job.plan_json=json.dumps(image_plan,ensure_ascii=False); job.usage_json=json.dumps({"analysis":usage},ensure_ascii=False); job.llm_model=llm_config()[2]; job.image_model=image_config()[2]; job.status="generating"; db.commit()
         _update_run(db, job, run_id, "generating", analysis_completed_at=_timestamp(), planned_slots=[item["slot"] for item in image_plan])
         # Keep successful files from earlier runs visible until a replacement
@@ -419,55 +761,85 @@ def generate_set(db: Session, shop_id: int, source_id: int, draft_id: int | None
         generated=generated if isinstance(generated,list) else []
         generated_this_run=0
         failures=[]
+        # Real Russian caption material for programmatic on-image overlay (never
+        # let the image model draw text — it garbles any language longer than a digit).
+        title_ru = product.title or ""
+        desc_ru = ""
+        draft_for_text = db.get(ListingDraftRecord, draft_id) if draft_id else None
+        if draft_for_text:
+            if getattr(draft_for_text, "title", None):
+                title_ru = draft_for_text.title
+            if getattr(draft_for_text, "description", None):
+                desc_ru = draft_for_text.description.strip().replace("\n", " ")[:90]
+        dims_label = _dims_label(analysis.get("dimensions") or {})
+        # Serial generation (Agnes cannot handle concurrent image requests —
+        # parallel calls trigger "image queue is full" 503) + long backoff retry
+        def _generate_slot_with_retry(slot: str, prompt: str, refs_list: list, jid: int) -> tuple:
+            """Generate one slot with automatic 503 queue-full retry. Returns (slot, url, response_meta, error)."""
+            max_retries = 5
+            retry_delays = [10, 20, 40, 80, 160]
+            last_error = None
+            for attempt_idx in range(max_retries):
+                try:
+                    url, resp_meta = generate_one(prompt, refs_list, jid, slot)
+                    try:
+                        fname = url.rstrip("/").rsplit("/", 1)[-1]
+                        opath = OUTPUT_DIR / fname
+                        if opath.exists() and slot not in PRODUCT_FIDELITY_SLOTS:
+                            _overlay_russian_text(opath, slot, title_ru, desc_ru, dims_label)
+                    except Exception:
+                        pass
+                    return (slot, url, resp_meta, None)
+                except Exception as exc:
+                    last_error = str(exc)[:1400]
+                    if "503" in last_error and attempt_idx < max_retries - 1:
+                        time.sleep(retry_delays[attempt_idx])
+                        continue
+                    break
+            return (slot, None, None, last_error)
+
+        # Prepare history entries for all slots in main thread (thread-safe DB write)
         for item in image_plan:
             history = _history(job)
-            attempt = {"kind": "image_request", "run_id": run_id, "slot": item["slot"], "state": "preparing_reference", "started_at": _timestamp()}
+            attempt = {"kind": "image_request", "run_id": run_id, "slot": item["slot"], "state": "provider_requesting", "started_at": _timestamp()}
             history.append(attempt)
             job.attempt_history_json = json.dumps(history[-300:], ensure_ascii=False)
-            db.commit()
+        db.commit()
 
-            def mark_provider_request(meta: dict[str, Any], attempt: dict[str, Any] = attempt) -> None:
-                current = _history(job)
-                entry = _attempt_entry(current, run_id, attempt["slot"])
-                if entry:
-                    entry["state"] = "provider_requesting"
-                    entry["provider_request_started_at"] = _timestamp()
-                    entry["request"] = meta
-                job.attempt_history_json = json.dumps(current[-300:], ensure_ascii=False)
-                db.commit()
+        # Serial generation: max_workers=1 (Agnes image queue is full on concurrency)
+        from concurrent.futures import ThreadPoolExecutor, as_completed
+        slot_results: dict = {}
+        with ThreadPoolExecutor(max_workers=1) as executor:
+            futures = {
+                executor.submit(_generate_slot_with_retry, item["slot"], item["prompt"], refs, job.id): item["slot"]
+                for item in image_plan
+            }
+            for future in as_completed(futures):
+                slot, url, resp_meta, error = future.result()
+                slot_results[slot] = (url, resp_meta, error)
 
-            def mark_provider_response(meta: dict[str, Any], attempt: dict[str, Any] = attempt) -> None:
-                current = _history(job)
-                entry = _attempt_entry(current, run_id, attempt["slot"])
-                if entry:
-                    entry["state"] = "response_received"
-                    entry["provider_response_at"] = _timestamp()
-                    entry["response"] = meta
-                job.attempt_history_json = json.dumps(current[-300:], ensure_ascii=False)
-                db.commit()
-
-            try:
-                url, response_meta = generate_one(item["prompt"], refs, job.id, item["slot"], mark_provider_request, mark_provider_response)
-                current = _history(job); entry = _attempt_entry(current, run_id, item["slot"])
-                if entry:
+        # Update database in main thread (thread-safe, no concurrent DB writes)
+        for item in image_plan:
+            slot = item["slot"]
+            url, resp_meta, error = slot_results.get(slot, (None, None, "unknown"))
+            current = _history(job)
+            entry = _attempt_entry(current, run_id, slot)
+            if entry:
+                if url:
                     entry["state"] = "succeeded"
                     entry["completed_at"] = _timestamp()
-                    entry["response"] = response_meta
-                job.attempt_history_json = json.dumps(current[-300:], ensure_ascii=False)
-                generated=[x for x in generated if x.get("slot") != item["slot"]]
-                generated.append({"slot":item["slot"],"title":item["title"],"url":url,"selected":True})
-                generated_this_run += 1
-            except Exception as exc:
-                # A failed slot must not discard already generated images or
-                # prevent later slots from being attempted.
-                current = _history(job); entry = _attempt_entry(current, run_id, item["slot"])
-                if entry:
+                    entry["response"] = resp_meta
+                    generated = [x for x in generated if x.get("slot") != slot]
+                    generated.append({"slot": slot, "title": item["title"], "url": url, "selected": True})
+                    generated_this_run += 1
+                else:
                     entry["state"] = "failed"
                     entry["completed_at"] = _timestamp()
-                    entry["error"] = str(exc)[:1400]
-                job.attempt_history_json = json.dumps(current[-300:], ensure_ascii=False)
-                failures.append({"slot": item["slot"], "title": item["title"], "error": str(exc)[:1400]})
-            job.generated_images_json=json.dumps(generated,ensure_ascii=False); job.attempt_history_json=json.dumps(_history(job)[-300:],ensure_ascii=False); db.commit()
+                    entry["error"] = error or "unknown error"
+                    failures.append({"slot": slot, "title": item["title"], "error": error or "unknown error"})
+            job.attempt_history_json = json.dumps(current[-300:], ensure_ascii=False)
+        job.generated_images_json = json.dumps(generated, ensure_ascii=False)
+        db.commit()
         job.selected_images_json=json.dumps([x["url"] for x in generated],ensure_ascii=False)
         job.error_message = json.dumps({"failed_slots": failures}, ensure_ascii=False) if failures else None
         job.status = "ready" if generated else "failed"

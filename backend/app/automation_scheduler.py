@@ -88,7 +88,7 @@ def _auto_repairable_feedback(rows: list[dict]) -> bool:
     return bool(codes & {
         "ERROR_ATTRIBUTE_IS_NOT_COLLECTION", "BR_HASHTAG_BRAND",
         "BR_HASHTAG_MARKETING", "FB_MERCH_OZON", "FB_ORIGINAL",
-        "FB_INSTA", "DESCRIPTION_DECLINE",
+        "FB_INSTA", "DESCRIPTION_DECLINE", "RATING_CONDITION",
     } or any(token in text for token in (
         "много повтор", "бессмысленн", "много спецсимвол",
         "слишком много перечислен", "названии товара упоминается бренд",
@@ -107,8 +107,67 @@ def _has_deterministic_image_payload_feedback(rows: list[dict]) -> bool:
         "PRIMARY_IMAGE_LOAD_FAILED",
         "PICS_INVALID_DIMENSIONS",
         "SOME_IMAGE_FAILED",
+        "PICS_URL_UNSUPPORTED",
+        "PICS_NOT_FOUND",
     }
     return bool({str(row.get("code") or "").upper() for row in rows} & image_codes)
+
+
+def _relocate_draft_images_to_oss(db: Session, draft: ListingDraftRecord) -> int:
+    """Mirror non-OSS draft images into the project OSS bucket.
+
+    Ozon's crawler often cannot re-fetch images from Chinese CDNs (alicdn),
+    which surfaces as PICS_URL_UNSUPPORTED / SOME_IMAGE_FAILED.  Re-hosting
+    each URL on the project's Aliyun OSS bucket gives Ozon a durable public
+    URL it can always download.  Already-OSS URLs are kept unchanged.
+    """
+    import hashlib
+    import urllib.parse
+
+    from .oss_upload import fetch_and_upload
+
+    urls: list[str] = []
+    if draft.primary_image_url:
+        urls.append(draft.primary_image_url)
+    try:
+        urls.extend(json.loads(draft.images_json or "[]") or [])
+    except (TypeError, ValueError):
+        pass
+    seen: set[str] = set()
+    ordered: list[str] = []
+    for u in urls:
+        if u and u not in seen:
+            seen.add(u)
+            ordered.append(u)
+    if not ordered:
+        return 0
+
+    bucket = None
+    relocated = 0
+    new_urls: list[str] = []
+    for u in ordered:
+        try:
+            host = urllib.parse.urlparse(u).netloc
+        except Exception:
+            host = ""
+        if "aliyuncs.com" in host:
+            new_urls.append(u)
+            continue
+        key = f"ozon-erp/import-fix/{datetime.now():%Y%m%d}/{hashlib.md5(u.encode('utf-8')).hexdigest()}.jpg"
+        try:
+            nu = fetch_and_upload(u, key, bucket=bucket)
+        except Exception:
+            continue  # preflight may still drop the unreachable URL
+        new_urls.append(nu)
+        relocated += 1
+    if not relocated:
+        return 0
+    if new_urls:
+        if new_urls[0]:
+            draft.primary_image_url = new_urls[0]
+        draft.images_json = json.dumps(new_urls, ensure_ascii=False)
+        db.commit()
+    return relocated
 
 
 def _has_special_symbol_title_decline(rows: list[dict]) -> bool:
@@ -231,10 +290,20 @@ def _try_auto_repair_and_resubmit(db: Session, candidate: AutomationCandidateRec
         return True
     deterministic_image_repair = _has_deterministic_image_payload_feedback(rows)
     if not rows or (not _auto_repairable_feedback(rows) and not deterministic_image_repair) or not bulk_item.listing_draft_id:
+        # 无自动可修项：移出自动修复队列（skipped 保留人工可见），避免不可修行
+        # 占满每轮修复名额导致可修项被饿死。
+        bulk_item.status = "skipped"
+        bulk_item.updated_at = datetime.now()
+        bulk_item.error_message = "无自动可修复项，转人工处理"
+        db.commit()
         return False
     # ``attempts`` is incremented by the bulk worker before the initial submit.
     # Two automatic correction rounds are enough to avoid a feedback loop.
     if int(bulk_item.attempts or 0) >= 3:
+        bulk_item.status = "skipped"
+        bulk_item.updated_at = datetime.now()
+        bulk_item.error_message = "自动修复3次未成功，转人工处理"
+        db.commit()
         return False
     draft = db.get(ListingDraftRecord, bulk_item.listing_draft_id)
     if draft is None:
@@ -245,6 +314,16 @@ def _try_auto_repair_and_resubmit(db: Session, candidate: AutomationCandidateRec
         from .main import auto_fix_listing
         from .quality_preflight import run_quality_preflight, record_preflight_results
         draft.ozon_issues_json = json.dumps(rows, ensure_ascii=False)
+        # Deterministic image fixes first: Ozon's crawler cannot always reach
+        # Chinese CDN URLs (PICS_URL_UNSUPPORTED / SOME_IMAGE_FAILED), so mirror
+        # them onto the project OSS bucket before the corrected resubmit.
+        if deterministic_image_repair:
+            relocated = _relocate_draft_images_to_oss(db, draft)
+            if relocated:
+                draft.ozon_issues_json = json.dumps(rows, ensure_ascii=False)
+        # A video/cover moderation decline is deterministic: drop the video.
+        if any(str(row.get("code") or "").upper() == "RATING_CONDITION" for row in rows) and draft.video_url:
+            draft.video_url = None
         db.commit()
         # Run the same persisted rule table used before the first submission.
         # This covers brand/platform text, marketing tags and original-word
@@ -259,6 +338,7 @@ def _try_auto_repair_and_resubmit(db: Session, candidate: AutomationCandidateRec
             # Persist the inspection so an unchanged error snapshot is not sent
             # to the AI on every 30-second scheduler tick.
             bulk_item.attempts = int(bulk_item.attempts or 0) + 1
+            bulk_item.updated_at = datetime.now()  # 失败行轮转：不再占满每轮修复名额
             bulk_item.error_message = "已检查，当前 Ozon 回执没有可自动修复项，等待人工处理"
             db.commit()
             return False
@@ -442,7 +522,7 @@ def _loop() -> None:
                         if _allow_external_writes and bulk_item and feedback_rows and _try_auto_repair_and_resubmit(db, candidate, bulk_item, feedback_rows):
                             continue
                         candidate.status = "needs_review" if feedback_rows and bulk_item and bulk_item.status == "needs_review" else "imported"
-                        if bulk_item and bulk_item.status not in {"needs_review", "waiting_quota"}:
+                        if bulk_item and bulk_item.status != "needs_review":
                             bulk_item.status = "imported"
                             bulk_item.error_message = ("Ozon已导入；存在警告，库存继续由 Ozon 状态和仓库回读确认" if feedback_rows else None)
                     elif status in {"import_failed", "failed"}:

@@ -1,5 +1,10 @@
 ﻿import hashlib
 import os
+# 产品默认需求：批量上架后自动回填 Ozon 库存 + 库存监控线程。
+# 强制开启（不依赖看门狗/计划任务传参——uvicorn spawn 子进程会丢失环境变量导致
+# 线程永不启动，库存永远填不上）。如需关闭，将下方两个值改为 "0" 并重启后端。
+os.environ["OZON_ENABLE_BACKGROUND_WRITES"] = "1"
+os.environ["OZON_ENABLE_BACKGROUND_STOCK_MONITOR"] = "1"
 import time
 import httpx
 import json
@@ -15,18 +20,18 @@ from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse
 from urllib.parse import parse_qs, unquote, urlparse
 from pydantic import BaseModel, Field
 from fastapi.middleware.cors import CORSMiddleware
-from sqlalchemy import select, or_, func, text
+from sqlalchemy import select, or_, func, text, update
 from sqlalchemy.exc import IntegrityError
-from sqlalchemy.orm import Session
+from sqlalchemy.orm import Session, selectinload
 
 from .database import Base, engine, ensure_sqlite_operational_columns, get_db, settings
 from . import erp_models  # noqa: F401 - registers persistent operational tables.
-from .erp_models import AuditEventRecord, BulkListingBatchItemRecord, BulkListingBatchRecord, FbsPostingRecord, ListingAttributeValueRecord, ListingDraftRecord, ListingTemplateRecord, ListingVariantRecord, OzonAttributeCacheRecord, OzonAttributeDictionaryQueryCacheRecord, OzonAttributeDictionaryValueRecord, OzonCategoryCacheRecord, OzonGlobalCategoryCacheRecord, OzonGlobalAttributeCacheRecord, OzonGlobalDictValueRecord, PipelineProductRecord, ProductRecord, SyncRun, SyncState, SourceProductRecord, SourceProductShopRecord, YunNewtonSupplementJobRecord
+from .erp_models import AuditEventRecord, BulkListingBatchItemRecord, BulkListingBatchRecord, FbsPostingRecord, ListingAttributeValueRecord, ListingDraftRecord, ListingTemplateRecord, ListingVariantRecord, OzonAttributeCacheRecord, OzonAttributeDictionaryQueryCacheRecord, OzonAttributeDictionaryValueRecord, OzonCategoryCacheRecord, OzonGlobalCategoryCacheRecord, OzonGlobalAttributeCacheRecord, OzonGlobalDictValueRecord, PipelineProductRecord, ProductRecord, SkuRecord, SyncRun, SyncState, SourceProductRecord, SourceProductShopRecord, YunNewtonSupplementJobRecord
 from .models import ApiCredential, Shop
 from .schemas import OzonCredentialStatus, OzonCredentialUpsert, ShopCreate, ShopRead, ShopUpdate
 from .security import CredentialEncryptionUnavailable, encrypt_secret
 from .sync_service import sync_category_cache, sync_fbs_postings, sync_fbs_product_images, sync_products
-from .schemas import FbsPostingDetailRead, FbsPostingRead, FbsPostingSyncRequest, ListingDraftCreate, ListingDraftRead, ListingTemplateCreate, ListingValidationRead, ProductRead, ProductSyncRequest, SyncRunRead, ListingAttributeValueCreate, ListingVariantCreate
+from .schemas import FbsPostingDetailRead, FbsPostingRead, FbsPostingSyncRequest, ListingDraftCreate, ListingDraftRead, ListingTemplateCreate, ListingValidationRead, ProductRead, ProductSyncRequest, ShopCostSettingsUpdate, SkuBulkCostRequest, SkuCostItemsRequest, SyncRunRead, ListingAttributeValueCreate, ListingVariantCreate
 from .listing_service import build_variant_image_list, normalize_dictionary_attribute_value, validate_listing_draft
 from .listing_cache_service import promote_legacy_listing_caches
 from .pricing import PriceInput, PricingService
@@ -195,9 +200,17 @@ def _startup_reconcile_loop(external_writes: bool) -> None:
 def start_listing_stock_monitor() -> None:
     global _stock_monitor_thread
     from .database import SessionLocal
+    # 二次强制：config/ai_service/llm_translate 的 load_dotenv(override=True)
+    # 会在 import 阶段把 .env 里的 OZON_ENABLE_BACKGROUND_WRITES=0 覆盖掉顶部赋值，
+    # 导致库存监控线程永不启动。这里在全部 import 完成后再次强制（产品默认需求）。
+    os.environ["OZON_ENABLE_BACKGROUND_WRITES"] = "1"
+    os.environ["OZON_ENABLE_BACKGROUND_STOCK_MONITOR"] = "1"
     external_writes = _background_external_writes_enabled()
     stock_monitor = _background_stock_monitor_enabled()
     polling = _background_polling_enabled()
+    print(f"[stock-monitor] external_writes={external_writes} stock_monitor={stock_monitor} polling={polling} "
+          f"writes_env={os.getenv('OZON_ENABLE_BACKGROUND_WRITES')!r} stock_env={os.getenv('OZON_ENABLE_BACKGROUND_STOCK_MONITOR')!r}",
+          flush=True)
     # A FastAPI BackgroundTask disappears on a backend restart.  Recover
     # locally interrupted rows immediately, before accepting a new bulk-run:
     # rows that already have an Ozon task stay submitted; only rows that never
@@ -1098,14 +1111,157 @@ def auto_sync_shop_view(
     return decisions
 
 
+@app.get("/api/v1/shops/{shop_id}/cost-settings")
+def get_shop_cost_settings(shop_id: int, db: Session = Depends(get_db)) -> dict:
+    shop = db.get(Shop, shop_id)
+    if not shop:
+        raise HTTPException(status_code=404, detail="店铺不存在")
+    rate = shop.cny_rub_rate
+    return {"cny_rub_rate": float(rate) if rate is not None else None, "currency_code": (shop.currency or "RUB").upper()}
+
+
+@app.put("/api/v1/shops/{shop_id}/cost-settings")
+def update_shop_cost_settings(shop_id: int, payload: ShopCostSettingsUpdate, db: Session = Depends(get_db)) -> dict:
+    shop = db.get(Shop, shop_id)
+    if not shop:
+        raise HTTPException(status_code=404, detail="店铺不存在")
+    if payload.currency_code is not None:
+        shop.currency = payload.currency_code.upper()
+    if payload.cny_rub_rate is not None:
+        shop.cny_rub_rate = payload.cny_rub_rate
+    db.commit()
+    return {"cny_rub_rate": float(shop.cny_rub_rate) if shop.cny_rub_rate is not None else None, "currency_code": (shop.currency or "RUB").upper()}
+
+
+@app.post("/api/v1/shops/{shop_id}/skus/cost-items")
+def bulk_set_sku_cost_items(shop_id: int, payload: SkuCostItemsRequest, db: Session = Depends(get_db)) -> dict:
+    # Update exact seller_skus purchase cost (local DB, optional Ozon net_price sync).
+    if not payload.items:
+        return {"updated": 0, "ozon_updated": 0, "ozon_failed": [], "items": []}
+    sku_map = {}
+    for it in payload.items:
+        sku_map[str(it.seller_sku).strip()] = float(it.purchase_cost_cny)
+    skus = list(db.scalars(
+        select(SkuRecord).where(SkuRecord.shop_id == shop_id, SkuRecord.seller_sku.in_(list(sku_map.keys())))
+    ))
+    if not skus:
+        return {"updated": 0, "ozon_updated": 0, "ozon_failed": [], "items": []}
+
+    ozon_failed: list[dict] = []
+    ozon_updated = 0
+    targets = skus
+    shop_row = db.get(Shop, shop_id)
+    currency_code = (payload.currency_code or (shop_row.currency if shop_row else None) or "RUB").upper()
+    do_convert = currency_code == "RUB" and payload.cny_rub_rate and payload.cny_rub_rate > 0
+    if currency_code:
+        from .sync_service import _credentials
+        from .integrations.ozon_seller import OzonSellerClient
+        client_id, api_key = _credentials(db, shop_id)
+        prices = []
+        for sku in skus:
+            net_val = round(sku_map[sku.seller_sku] * payload.cny_rub_rate, 2) if do_convert else sku_map[sku.seller_sku]
+            prices.append({"offer_id": sku.seller_sku, "net_price": str(net_val), "currency_code": currency_code})
+        try:
+            with OzonSellerClient(client_id=client_id, api_key=api_key) as client:
+                resp = client.update_product_prices(prices=prices)
+        except Exception as exc:
+            raise HTTPException(status_code=502, detail=f"Ozon cost update failed: {exc}") from exc
+        results = (resp.get("result") or []) if isinstance(resp, dict) else []
+        ok_offers: set[str] = set()
+        for item in results:
+            offer = str(item.get("offer_id") or "")
+            if item.get("updated"):
+                ok_offers.add(offer)
+                ozon_updated += 1
+            else:
+                ozon_failed.append({"offer_id": offer, "errors": item.get("errors") or []})
+        targets = [s for s in skus if s.seller_sku in ok_offers]
+
+    for sku in targets:
+        sku.purchase_cost_cny = Decimal(str(sku_map[sku.seller_sku]))
+    db.commit()
+    return {
+        "updated": len(targets),
+        "ozon_updated": ozon_updated,
+        "ozon_failed": ozon_failed,
+        "items": [{"seller_sku": s.seller_sku, "purchase_cost_cny": sku_map[s.seller_sku]} for s in skus],
+    }
+
+
 @app.get("/api/v1/shops/{shop_id}/products", response_model=list[ProductRead])
-def list_products(shop_id: int, db: Session = Depends(get_db)) -> list[ProductRecord]:
-    return list(db.scalars(select(ProductRecord).where(ProductRecord.shop_id == shop_id).order_by(ProductRecord.updated_at.desc()).limit(500)))
+def list_products(shop_id: int, keyword: str | None = None, db: Session = Depends(get_db)) -> list[ProductRecord]:
+    stmt = (
+        select(ProductRecord)
+        .options(selectinload(ProductRecord.skus))
+        .where(ProductRecord.shop_id == shop_id)
+    )
+    if keyword and keyword.strip():
+        kw = "%" + keyword.strip() + "%"
+        stmt = stmt.where(or_(ProductRecord.offer_id.ilike(kw), ProductRecord.name.ilike(kw)))
+    return list(db.scalars(stmt.order_by(ProductRecord.updated_at.desc()).limit(500)))
+
+
+@app.post("/api/v1/shops/{shop_id}/skus/bulk-cost")
+def bulk_set_sku_cost(shop_id: int, payload: SkuBulkCostRequest, db: Session = Depends(get_db)) -> dict:
+    """
+    Bulk set purchase cost for listed SKUs.
+    Local DB always updated; when cny_rub_rate is provided the cost is also
+    pushed to Ozon as net_price (cost) via /v1/product/import/prices - this is
+    an update of an existing listing, not a new-product submission.
+    """
+    keyword = (payload.sku_keyword or "").strip()
+    if not keyword:
+        raise HTTPException(status_code=422, detail="sku_keyword must not be empty")
+
+    skus = list(db.scalars(
+        select(SkuRecord).where(SkuRecord.shop_id == shop_id, SkuRecord.seller_sku.ilike("%" + keyword + "%"))
+    ))
+    if not skus:
+        return {"updated": 0, "ozon_updated": 0, "ozon_failed": [], "keyword": keyword, "purchase_cost_cny": payload.purchase_cost_cny}
+
+    ozon_failed: list[dict] = []
+    ozon_updated = 0
+    targets = skus
+    shop_row = db.get(Shop, shop_id)
+    currency_code = (payload.currency_code or (shop_row.currency if shop_row else None) or "RUB").upper()
+    do_convert = currency_code == "RUB" and payload.cny_rub_rate and payload.cny_rub_rate > 0
+    if currency_code:
+        from .sync_service import _credentials
+        from .integrations.ozon_seller import OzonSellerClient
+        client_id, api_key = _credentials(db, shop_id)
+        net_val = round(float(payload.purchase_cost_cny) * payload.cny_rub_rate, 2) if do_convert else float(payload.purchase_cost_cny)
+        prices = [{"offer_id": sku.seller_sku, "net_price": str(net_val), "currency_code": currency_code} for sku in skus]
+        try:
+            with OzonSellerClient(client_id=client_id, api_key=api_key) as client:
+                resp = client.update_product_prices(prices=prices)
+        except Exception as exc:
+            raise HTTPException(status_code=502, detail=f"Ozon cost update failed: {exc}") from exc
+        results = (resp.get("result") or []) if isinstance(resp, dict) else []
+        ok_offers: set[str] = set()
+        for item in results:
+            offer = str(item.get("offer_id") or "")
+            if item.get("updated"):
+                ok_offers.add(offer)
+                ozon_updated += 1
+            else:
+                ozon_failed.append({"offer_id": offer, "errors": item.get("errors") or []})
+        targets = [s for s in skus if s.seller_sku in ok_offers]
+
+    for sku in targets:
+        sku.purchase_cost_cny = Decimal(str(payload.purchase_cost_cny))
+    db.commit()
+    return {
+        "updated": len(targets),
+        "ozon_updated": ozon_updated,
+        "ozon_failed": ozon_failed,
+        "keyword": keyword,
+        "purchase_cost_cny": payload.purchase_cost_cny,
+    }
 
 
 @app.get("/api/v1/shops/{shop_id}/fbs-postings", response_model=list[FbsPostingRead])
 def list_fbs_postings(shop_id: int, status_filter: str | None = None, db: Session = Depends(get_db)) -> list[FbsPostingRecord]:
-    statement = select(FbsPostingRecord).where(FbsPostingRecord.shop_id == shop_id)
+    statement = select(FbsPostingRecord).options(selectinload(FbsPostingRecord.lines)).where(FbsPostingRecord.shop_id == shop_id)
     if status_filter:
         statement = statement.where(FbsPostingRecord.normalized_status == status_filter)
     return list(db.scalars(statement.order_by(FbsPostingRecord.pack_by.asc().nulls_last(), FbsPostingRecord.id.desc()).limit(500)))

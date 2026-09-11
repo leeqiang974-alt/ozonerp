@@ -93,7 +93,7 @@ async function recollectAmazonForMeli(message) {
     return { ok: false, error: "Amazon 重采集请求无效" };
   }
   let tab;
-  let closeTabAfterSuccess = false;
+  let keepTabOpenForHumanCheck = false;
   try {
     const recollectUrl = new URL(sourceUrl);
     recollectUrl.hash = `meli-recollect-source=${sourceProductId}`;
@@ -111,6 +111,7 @@ async function recollectAmazonForMeli(message) {
     }
     if (!captured?.ok) {
       if (captured?.needsHuman) {
+        keepTabOpenForHumanCheck = true;
         await chrome.tabs.update(tab.id, { active: true });
       }
       return { ok: false, error: captured?.error || "Amazon 页面采集失败" };
@@ -125,14 +126,13 @@ async function recollectAmazonForMeli(message) {
     }
     for (const draftId of responseData.draft_ids || []) await notifyMeliErpTabs({ draftId });
     await chrome.tabs.sendMessage(tab.id, { type: "MELI_AMAZON_AUTO_CAPTURE_FINISHED", sourceProductId }).catch(() => {});
-    closeTabAfterSuccess = true;
     return { ok: true, data: responseData };
   } catch (error) {
     return { ok: false, error: error?.message || "本机 Amazon 采集失败" };
   } finally {
-    // Close only the task-created tab after ERP has confirmed the update.
-    // Collection failures and human-verification pages stay open for diagnosis.
-    if (tab?.id && closeTabAfterSuccess) chrome.tabs.remove(tab.id).catch(() => {});
+    // Every unattended task-created tab closes after success, filtering, or a
+    // normal failure. Only Amazon login/captcha pages stay open for the seller.
+    if (tab?.id && !keepTabOpenForHumanCheck) chrome.tabs.remove(tab.id).catch(() => {});
   }
 }
 

@@ -1,4 +1,4 @@
-﻿"""Read-through cache for Ozon listing attributes and dictionary values.
+"""Read-through cache for Ozon listing attributes and dictionary values.
 
 Ozon 类目、属性、字典值是平台全局数据，不以店铺区分。
 全局表 (ozon_global_*) 作为读取主源，店铺表保留用于兼容和同步追踪。
@@ -7,9 +7,10 @@ Ozon 类目、属性、字典值是平台全局数据，不以店铺区分。
 from __future__ import annotations
 
 import json
+import zlib
 from datetime import datetime, timedelta, timezone
 
-from sqlalchemy import select
+from sqlalchemy import select, text
 from sqlalchemy.orm import Session
 
 from .erp_models import (
@@ -24,9 +25,24 @@ from .listing_cache_service import promote_legacy_listing_caches
 CACHE_FOR = timedelta(hours=24)
 
 
+def _advisory_lock(db: Session, category_id: str, type_id: str) -> None:
+    """Serialize per (category_id, type_id) cache writes across processes.
+
+    4-shop concurrent bulk publishing used to race on the global cache
+    ("delete-then-insert" here / "check-then-insert" in the promote helper),
+    surfacing psycopg UniqueViolation on uq_global_attribute_cache.  A
+    Postgres transactional advisory lock makes the sync of the same
+    category/type happen one transaction at a time; released automatically
+    on commit/rollback.
+    """
+    key = zlib.crc32(f"{category_id}:{type_id}".encode("utf-8")) % 2**31
+    db.execute(text("SELECT pg_advisory_xact_lock(:k)"), {"k": key})
+
+
 def get_category_attributes(db: Session, shop_id: int, category_id: str, type_id: str) -> list[dict]:
     """读取全局类目属性缓存；店铺只提供 API 凭据，不参与缓存隔离。"""
     promote_legacy_listing_caches(db, category_id=category_id, type_id=type_id)
+    _advisory_lock(db, category_id, type_id)
     # 1. 先查全局缓存
     global_rows = list(db.scalars(select(OzonGlobalAttributeCacheRecord).where(
         OzonGlobalAttributeCacheRecord.category_id == category_id,

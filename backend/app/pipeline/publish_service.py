@@ -241,10 +241,16 @@ def build_import_payload(db: Session, shop_id: int, source_product_id: int) -> d
     valid_images=list(dict.fromkeys(valid_images))[:15]
 
     # Add Rich Content attribute (id=11254) from images + description
+    # 11254 rich content must never be empty: Ozon rejects empty-text JSON
+    # ("Rich-content JSON не соответствует шаблону").  The pipeline's generated
+    # fields are empty for drafts saved before generation, so fall back to the
+    # draft's own title/description before building the JSON.
+    rich_title = (pipeline.generated_title_ru or "").strip() or (draft.title if draft else "") or ""
+    rich_desc = (pipeline.generated_description_ru or "").strip() or (draft.description if draft else "") or ""
     rich_attr = get_rich_content_attribute(
         image_urls=valid_images,
-        description_ru=pipeline.generated_description_ru or "",
-        title_ru=pipeline.generated_title_ru or "",
+        description_ru=rich_desc,
+        title_ru=rich_title,
     )
     # A number of legacy drafts contain an empty 11254 placeholder.  Treat it
     # as missing and replace it with the generated JSON; otherwise Ozon sees
@@ -270,7 +276,9 @@ def build_import_payload(db: Session, shop_id: int, source_product_id: int) -> d
         saved_ids=saved_vv.get("__ids__") if isinstance(saved_vv.get("__ids__"),dict) else {}
         saved_color_ids=saved_ids.get("商品颜色") if isinstance(saved_ids.get("商品颜色"),list) else []
         if saved_vv.get("商品颜色") and saved_color_ids:
-            color={"value_id":str(saved_color_ids[0]),"value_text":str(saved_vv["商品颜色"]),"name_ru":str(saved_vv.get("颜色名称") or draft_var.name_ru or saved_vv["商品颜色"])}
+            _cv = str(saved_vv["商品颜色"])
+            _cn = str(saved_vv.get("颜色名称") or draft_var.name_ru or saved_vv["商品颜色"])
+            color={"value_id":str(saved_color_ids[0]),"value_text":_COLOR_RU.get(_cv,_cv),"name_ru":_COLOR_RU.get(_cn,_cn)}
         var_pricing = next(
             (p for p in pricing.get("variants", []) if p.get("source_sku") == var.get("source_sku")),
             {},
@@ -301,9 +309,14 @@ def build_import_payload(db: Session, shop_id: int, source_product_id: int) -> d
                 values.append({"dictionary_value_id": int(vid) if str(vid).isdigit() else 0, "value": text})
             if values:
                 item_attributes.append({"complex_id":0,"id":aspect_id,"values":values})
+        # Ozon rejects non-Russian text in colour attrs (BR_chinese_hieroglyphs_in_attribute
+        # on 10097).  The local dict cache stores Chinese names, so translate text
+        # before submitting; the dictionary_value_id (Ozon-side) is unchanged.
+        _ru_val = _COLOR_RU.get(str(color.get("value_text") or ""), str(color.get("value_text") or ""))
+        _ru_name = _COLOR_RU.get(str(color.get("name_ru") or ""), str(color.get("name_ru") or ""))
         item_attributes.extend([
-            {"complex_id":0,"id":"10096","values":[{"dictionary_value_id":color["value_id"],"value":color["value_text"]}]},
-            {"complex_id":0,"id":"10097","values":[{"dictionary_value_id":0,"value":color["name_ru"]}]},
+            {"complex_id":0,"id":"10096","values":[{"dictionary_value_id":color["value_id"],"value":_ru_val}]},
+            {"complex_id":0,"id":"10097","values":[{"dictionary_value_id":0,"value":_ru_name}]},
         ])
         sku_image=(draft_var.image_url if draft_var and draft_var.image_url else var.get("image_url"))
         selected_images = draft_var.image_urls if draft_var and draft_var.image_urls is not None else var.get("image_urls")

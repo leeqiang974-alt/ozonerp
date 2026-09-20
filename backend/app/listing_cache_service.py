@@ -9,7 +9,9 @@ present (including isolated test databases that do not run startup hooks).
 
 from __future__ import annotations
 
-from sqlalchemy import select
+import zlib
+
+from sqlalchemy import select, text
 from sqlalchemy.orm import Session
 
 from .erp_models import (
@@ -20,6 +22,20 @@ from .erp_models import (
     OzonGlobalCategoryCacheRecord,
     OzonGlobalDictValueRecord,
 )
+
+
+def _advisory_lock(db: Session, category_id: str | None, type_id: str | None) -> None:
+    """Serialize per (category_id, type_id) cache writes across processes.
+
+    The 4-shop concurrent bulk pipeline used to race on the global cache:
+    "delete-then-insert" (metadata service) or "check-then-insert"
+    (this helper) produced psycopg UniqueViolation on uq_global_attribute_cache.
+    A Postgres transactional advisory lock makes the sync of the same
+    category/type happen one transaction at a time; it is released
+    automatically on commit/rollback.
+    """
+    key = zlib.crc32(f"{category_id or '*'}:{type_id or '*'}".encode("utf-8")) % 2**31
+    db.execute(text("SELECT pg_advisory_xact_lock(:k)"), {"k": key})
 
 
 def promote_legacy_listing_caches(
@@ -34,6 +50,7 @@ def promote_legacy_listing_caches(
     the caller owns the transaction and can commit together with its normal
     operation.
     """
+    _advisory_lock(db, category_id, type_id)
     scope = (str(category_id) if category_id is not None else "*", str(type_id) if type_id is not None else "*")
     migrated_scopes = db.info.setdefault("legacy_listing_cache_scopes", set())
     if scope in migrated_scopes:

@@ -241,7 +241,16 @@ def source_bundle(db: Session, shop_id: int, source_id: int, creative_group_key:
     if not product: raise ValueError("采集商品不存在或不属于当前店铺")
     variants = list(db.scalars(select(SourceVariantRecord).where(SourceVariantRecord.source_product_id == source_id).order_by(SourceVariantRecord.id)))
     if creative_group_key != PRODUCT_GROUP_KEY:
-        variants = [variant for variant in variants if _source_variant_group(variant)[0] == creative_group_key]
+        all_variants = list(variants)
+        variants = [variant for variant in all_variants if _source_variant_group(variant)[0] == creative_group_key]
+        if not variants:
+            # Frontend submits keys like "款式:value" / "颜色:value" using its own
+            # dimension naming, while backend derives "spec:value" or
+            # "attributeName:value" from scraped data. Fall back to matching the
+            # value part after ':' so the same style group still resolves.
+            key_value = creative_group_key.split(":", 1)[-1].strip()
+            if key_value:
+                variants = [variant for variant in all_variants if _source_variant_group(variant)[1] == key_value]
         if not variants:
             raise ValueError("所选款式不再属于当前采集商品，请刷新变体后重试")
     media = list(db.scalars(select(SourceMediaRecord).where(SourceMediaRecord.source_product_id == source_id).order_by(SourceMediaRecord.sort_order, SourceMediaRecord.id)))
@@ -305,7 +314,7 @@ def plan(product: SourceProductRecord, analysis: dict[str, Any], creative_group_
         hero_exclusive += f" Feature this variant's exclusive attributes on the hero as clean visual emphasis (minimal numeric/color labels only, no invented words): {exclusive_text}. "
     hero_prompt = (common_gpt + hero_exclusive
         + " Premium hero infographic styled like a top Ozon main image: strictly reproduce the reference product's appearance, color, material, structure, proportion and details — do not alter the product itself and do not add features that do not exist; product occupies 65-80% of the frame, sharp edges, real commercial product photography. Layout: bold Russian main title near the top (largest text on the image, e.g. 'Винтажная брошь с кристаллами'); one line of core parameters right under the title (small numbers, e.g. '7,5 см × 6,0 см'); 2-3 short Russian selling-point labels around the product with simple clean pictogram icons (e.g. 'Кристаллы', 'Металл', 'Винтаж') only when true to the product. Keep generous whitespace; no more than ~4 short text blocks.")
-    return [
+    _plan_items = [
         {"slot":"hero","title":"销售首图","prompt":hero_prompt},
         {"slot":"dimensions","title":"尺寸规格","prompt":common_gpt+f" E-commerce dimension infographic, top-down. Only verified dimensions: {dims}. If none, show structure without numbers. Add a small clean block of short Russian specification numbers (e.g. '7,5 см × 6,0 см')."},
         {"slot":"details","title":"结构细节","prompt":common_gpt+" E-commerce detail infographic with one full product and two macro callouts of real visible structure/material. Callouts may carry one short Russian keyword label each (max 2-3 words, true to the product)."},
@@ -315,6 +324,66 @@ def plan(product: SourceProductRecord, analysis: dict[str, Any], creative_group_
         {"slot":"scene_entry","title":"玄关场景","prompt":common_agnes+" Premium believable entryway scene. Product is clearly visible and remains the exact selected style; no other styles in frame."},
         {"slot":"scene_gift","title":"礼赠场景","prompt":common_agnes+" Premium believable gift or seasonal scene only when supported by product truth; otherwise use a neutral lifestyle scene. Preserve the exact selected style."},
     ]
+
+    # Ozon 主图模板注入（01 主图.txt）：模板存在时 hero/dimensions/details/steps
+    # 改用模板段落，{context}/{specs} 由商品分析结果注入；场景四槽保持内置 prompt。
+    _tmpl = _load_ozon_templates()
+    if _tmpl:
+        _context = f"商品名称：{product.title}。"
+        if getattr(product, "material", None):
+            _context += f"材质：{product.material}。"
+        _truth = analysis.get("product_truth") or {}
+        if _truth:
+            _context += "已确认事实：" + json.dumps(_truth, ensure_ascii=False)
+        if creative_group_label:
+            _context += f" 当前款式：{creative_group_label}。仅生成该款式，不得混入其他款式或颜色。"
+        if sku_exclusive_info:
+            _context += " 该 SKU 专属信息：" + json.dumps(sku_exclusive_info, ensure_ascii=False)
+        _dims_obj = analysis.get("dimensions") or {}
+        _specs = (
+            f"尺寸：{_dims_label(_dims_obj)}；材质：{getattr(product, 'material', None) or '未确认'}；"
+            f"数量：{(_truth.get('quantity') if isinstance(_truth, dict) else None) or '未确认'}。"
+        )
+        _slot_map = {"hero": "01", "dimensions": "05", "details": "04", "steps": "03"}
+        for _item in _plan_items:
+            _key = _slot_map.get(_item["slot"])
+            if _key and _tmpl.get(_key):
+                _p = _tmpl[_key].replace("{context}", _context)
+                if "{specs}" in _p:
+                    _p = _p.replace("{specs}", _specs)
+                _item["prompt"] = _p
+    return _plan_items
+
+
+_TEMPLATE_CACHE: dict | None = None
+
+
+def _load_ozon_templates() -> dict:
+    """Load the operator's 01-main-image.txt template (5-section Ozon spec).
+
+    When present, hero/dimensions/details/steps prompts are built from the
+    template sections instead of the built-in English prompts. Returns {} when
+    the template file is missing or unreadable (built-in prompts stay active).
+    """
+    global _TEMPLATE_CACHE
+    if _TEMPLATE_CACHE is not None:
+        return _TEMPLATE_CACHE
+    _TEMPLATE_CACHE = {}
+    path = Path(__file__).resolve().parents[1] / "prompt_templates" / "ozon_main_template.txt"
+    try:
+        text = path.read_text(encoding="utf-8")
+    except Exception:
+        return _TEMPLATE_CACHE
+    import re as _re
+    segments = _re.split(r"\n(?=(?:02|03|04|05)\s)", text)
+    if segments:
+        _TEMPLATE_CACHE["01"] = segments[0].strip()
+    for seg in segments[1:]:
+        key = seg.strip()[:2]
+        if key.isdigit():
+            _TEMPLATE_CACHE[key] = seg.strip()
+    return _TEMPLATE_CACHE
+
 
 
 def _validate_public_image_url(url: str) -> None:
@@ -389,7 +458,7 @@ def generate_one(
     if slot in PRODUCT_FIDELITY_SLOTS:
         configs = _product_first_chain()
     else:
-        configs = image_config_chain()
+        configs = _product_first_chain()
     if not configs:
         raise RuntimeError("IMAGE_API_KEY未配置")
     last_error = None
@@ -457,7 +526,7 @@ def _generate_one_with(
     elif items[0].get("url"):
         _download_generated_result(items[0]["url"], path)
     else: raise RuntimeError("Image 2结果没有url或b64_json")
-    return f"{PUBLIC_PREFIX}/{name}", {**response_meta, "result_type": "b64_json" if items[0].get("b64_json") else "url"}
+    return f"{PUBLIC_PREFIX}/{name}", {**response_meta, "result_type": "b64_json" if items[0].get("b64_json") else "url", "model": model}
 
 
 def _download_generated_result(url: str, path: Path, *, max_seconds: float = 150, max_bytes: int = 30 * 1024 * 1024) -> None:
@@ -557,9 +626,11 @@ def _strip_color_words(text) -> str:
     Color must come only from the reference image."""
     if not isinstance(text, str):
         return ""
+    # 中性色（黑/白/银/灰）是确定性锚点（如"黑色防滑手柄"），保留以免模型丢失
+    # 部件颜色；只剥除"多可选彩色"类词（绿/黄/红/蓝/粉等）防混色。
     for c in ("翠绿", "深绿", "浅绿", "墨绿", "草绿", "绿色", "黄色", "米黄", "杏黄",
-              "红色", "深红", "粉色", "蓝色", "深蓝", "天蓝", "黑色", "白色", "紫色",
-              "棕色", "浅棕", "灰色", "金色", "银色", "橙色", "混色", "渐变", "多色"):
+              "红色", "深红", "粉色", "蓝色", "深蓝", "天蓝", "紫色",
+              "棕色", "浅棕", "金色", "橙色", "混色", "渐变", "多色"):
         text = text.replace(c, "")
     return text
 
@@ -573,7 +644,9 @@ def _ref_color_hint(fileobj) -> str:
         img = Image.open(fileobj).convert("RGB")
         img.thumbnail((160, 160))
         buckets = {}
+        total = 0
         for r, g, b in img.getdata():
+            total += 1
             mx, mn = max(r, g, b), min(r, g, b)
             if mx < 120:
                 continue
@@ -590,6 +663,10 @@ def _ref_color_hint(fileobj) -> str:
             h %= 360
             buckets[int(h // 30) * 30] = buckets.get(int(h // 30) * 30, 0) + 1
         if not buckets:
+            return ""
+        # 彩色像素占比过低的图（不锈钢/黑白/金属反光主导）不输出强制色，
+        # 否则反光暖色会被误判为金色/黄色，导致整产品被强行改色。
+        if sum(buckets.values()) / max(total, 1) < 0.03:
             return ""
         peak = max(buckets, key=buckets.get)
         if 30 <= peak <= 60:
@@ -739,17 +816,20 @@ def generate_set(db: Session, shop_id: int, source_id: int, draft_id: int | None
             except Exception:
                 _ref_hint = ""
         if _ref_hint:
-            color_lock = (f" COLOR LOCK (highest priority, do not violate): the product in the image must be a "
-                          f"clean single color — {_ref_hint}. Render every stone, every metal accent and every "
-                          f"detail in exactly this one color family. Never mix in green, blue, red or any second "
-                          f"color; no multicolor, no two-tone mixing, no color gradients. Ignore any other color "
-                          f"word in this text.")
+            color_lock = (f" COLOR LOCK (highest priority, do not violate): the product's colors come ONLY from "
+                          f"the reference image. Every visible part — handles, metal, stones, fabrics, trims — must "
+                          f"keep exactly its own original color as shown in the reference image ({_ref_hint} is a "
+                          f"hint, not a replacement). Do not change, unify, blend, swap, add or remove any part's "
+                          f"color; no gold/silver plating unless present in the reference; no color gradients. "
+                          f"Color words in this text are anchors only, never substitutes for the reference image.")
         else:
-            color_lock = (" COLOR LOCK (highest priority, do not violate): ignore ALL color words in this text. "
-                          "The product's color comes ONLY from the reference image — copy the reference's exact "
-                          "single color and keep every stone and every metal tone uniform with it. Never blend, "
-                          "mix, add or swap colors; no multicolor, no two-tone mixing, no color gradients between "
-                          "stones, no green-to-yellow mix.")
+            color_lock = (" COLOR LOCK (highest priority, do not violate): the product's colors come ONLY from the "
+                          "reference image. Every visible part — handles, metal, stones, fabrics, trims — must keep "
+                          "exactly its own original color as shown in the reference image. Do not change, unify, "
+                          "blend, swap, add or remove any part's color; do not make a multicolor product monochrome "
+                          "or a monochrome product multicolor; no color gradients; no gold/silver plating unless it "
+                          "is in the reference image. Color words in this text are anchors only, never substitutes "
+                          "for the reference image.")
         for _item in image_plan:
             _item["prompt"] = (_item.get("prompt") or "") + color_lock
         job.analysis_json=json.dumps(analysis,ensure_ascii=False); job.reference_images_json=json.dumps(refs,ensure_ascii=False); job.plan_json=json.dumps(image_plan,ensure_ascii=False); job.usage_json=json.dumps({"analysis":usage},ensure_ascii=False); job.llm_model=llm_config()[2]; job.image_model=image_config()[2]; job.status="generating"; db.commit()
@@ -806,17 +886,23 @@ def generate_set(db: Session, shop_id: int, source_id: int, draft_id: int | None
             job.attempt_history_json = json.dumps(history[-300:], ensure_ascii=False)
         db.commit()
 
-        # Serial generation: max_workers=1 (Agnes image queue is full on concurrency)
+        # Product-fidelity slots (gpt-image-2 first chain) run concurrently;
+        # Agnes scene slots must stay serial (concurrent requests -> 503 queue full).
         from concurrent.futures import ThreadPoolExecutor, as_completed
         slot_results: dict = {}
-        with ThreadPoolExecutor(max_workers=1) as executor:
-            futures = {
-                executor.submit(_generate_slot_with_retry, item["slot"], item["prompt"], refs, job.id): item["slot"]
-                for item in image_plan
-            }
-            for future in as_completed(futures):
-                slot, url, resp_meta, error = future.result()
-                slot_results[slot] = (url, resp_meta, error)
+        fidelity_items = [it for it in image_plan if it["slot"] in PRODUCT_FIDELITY_SLOTS]
+        scene_items = [it for it in image_plan if it["slot"] not in PRODUCT_FIDELITY_SLOTS]
+        for group, workers in ((fidelity_items, 4), (scene_items, 4)):
+            if not group:
+                continue
+            with ThreadPoolExecutor(max_workers=workers) as executor:
+                futures = {
+                    executor.submit(_generate_slot_with_retry, item["slot"], item["prompt"], refs, job.id): item["slot"]
+                    for item in group
+                }
+                for future in as_completed(futures):
+                    slot, url, resp_meta, error = future.result()
+                    slot_results[slot] = (url, resp_meta, error)
 
         # Update database in main thread (thread-safe, no concurrent DB writes)
         for item in image_plan:
@@ -829,6 +915,9 @@ def generate_set(db: Session, shop_id: int, source_id: int, draft_id: int | None
                     entry["state"] = "succeeded"
                     entry["completed_at"] = _timestamp()
                     entry["response"] = resp_meta
+                    _m = (resp_meta or {}).get("model")
+                    if _m:
+                        job.image_model = _m
                     generated = [x for x in generated if x.get("slot") != slot]
                     generated.append({"slot": slot, "title": item["title"], "url": url, "selected": True})
                     generated_this_run += 1

@@ -1,15 +1,17 @@
 from __future__ import annotations
 
 import json
+import os
 import re
 import threading
+from io import StringIO
 from decimal import Decimal
 from datetime import datetime, timedelta, timezone
 from zoneinfo import ZoneInfo
 
-from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException
+from fastapi import APIRouter, BackgroundTasks, Depends, File, HTTPException, UploadFile
 from pydantic import BaseModel, Field
-from sqlalchemy import func, select
+from sqlalchemy import func, select, text
 from sqlalchemy.exc import OperationalError
 from sqlalchemy.orm import Session
 
@@ -2433,3 +2435,286 @@ def submit_batch(batch_id:int,payload:BatchSubmit,db:Session=Depends(get_db))->d
     remaining=db.scalar(select(func.count(AutomationCandidateRecord.id)).where(AutomationCandidateRecord.id.in_(ids),AutomationCandidateRecord.status=="approved")) or 0
     batch.status="submitted" if remaining==0 else "partially_submitted";db.commit()
     return {"batch_id":batch.id,"status":batch.status,"submitted":sum(1 for r in results if r.get("status")=="submitted"),"remaining":remaining,"capacity":capacity,"results":results}
+
+# ---------------------------------------------------------------------------
+# 批量导入采集（v7）: 粘贴 1688 offer 表 → 候选队列 → 插件爬虫自动采集
+# ---------------------------------------------------------------------------
+
+class OfferImportItem(BaseModel):
+    offer_id: str = Field(default="", max_length=64)
+    title: str = Field(default="", max_length=500)
+    source_url: str = Field(default="", max_length=2000)
+    price_min: Decimal | None = Field(default=None, ge=0)
+
+class OfferImportRequest(BaseModel):
+    shop_id: int = Field(gt=0)
+    items: list[OfferImportItem] = Field(min_length=1, max_length=200)
+
+_OFFER_LINK_RE = re.compile(r"/offer/(\d+)")
+
+
+@router.post("/import-offers", status_code=201)
+def import_offers(payload: OfferImportRequest, db: Session = Depends(get_db)) -> dict:
+    """把 1688 offer 表批量导入采集候选队列（queued_detail），
+    由 1688 爬虫插件 worker 自动逐个采集进采集箱。"""
+    if db.get(Shop, payload.shop_id) is None:
+        raise HTTPException(status_code=404, detail="目标 Ozon 店铺不存在")
+
+    # 归一化：优先从链接提取 offer_id
+    cleaned = []
+    for item in payload.items:
+        oid = (item.offer_id or "").strip()
+        if not re.fullmatch(r"\d+", oid):
+            m = _OFFER_LINK_RE.search(item.source_url or "")
+            oid = m.group(1) if m else ""
+        if not re.fullmatch(r"\d+", oid):
+            continue
+        cleaned.append({
+            "offer_id": oid,
+            "title": (item.title or "").strip()[:500],
+            "source_url": (item.source_url or "").strip(),
+            "price_min": item.price_min,
+        })
+    if not cleaned:
+        raise HTTPException(status_code=422, detail="没有可用的 offer_id（需为纯数字或 1688 详情链接）")
+
+    # 查重：已在采集箱(source_products)或候选队列(candidates)的跳过
+    oids = [c["offer_id"] for c in cleaned]
+    src_exist = set(x[0] for x in db.execute(
+        text("SELECT source_product_id FROM source_products WHERE source_platform='1688' AND source_product_id = ANY(:ids)"),
+        {"ids": oids}).fetchall())
+    cand_exist = set(x[0] for x in db.execute(
+        text("SELECT offer_id FROM automation_candidates WHERE offer_id = ANY(:ids)"),
+        {"ids": oids}).fetchall())
+    skipped = []
+    to_insert = []
+    for c in cleaned:
+        if c["offer_id"] in src_exist or c["offer_id"] in cand_exist:
+            skipped.append({"offer_id": c["offer_id"], "reason": "已在采集箱或候选队列"})
+        else:
+            to_insert.append(c)
+
+    if to_insert:
+        tid = db.execute(text("""
+            INSERT INTO automation_tasks
+              (name, keywords_json, excluded_keywords_json, filters_json, daily_target, schedule_time, status)
+            VALUES (:name, '[]', '[]', :filters, :target, '08:05', 'paused')
+            RETURNING id
+        """), {
+            "name": "批量导入采集 (手动)",
+            "filters": json.dumps({"scope": "manual_import", "shop_id": payload.shop_id}, ensure_ascii=False),
+            "target": len(to_insert),
+        }).scalar()
+        rid = db.execute(text("""
+            INSERT INTO automation_runs
+              (task_id, status, discovered_count, inspected_count, qualified_count, collected_count, failed_count, current_stage, error_summary)
+            VALUES (:tid, 'active', :n, 0, 0, 0, 0, 'queued_detail', NULL)
+            RETURNING id
+        """), {"tid": tid, "n": len(to_insert)}).scalar()
+        for c in to_insert:
+            db.execute(text("""
+                INSERT INTO automation_candidates
+                  (run_id, task_id, offer_id, title, image_url, source_url, price_min, sales_90d,
+                   status, rejection_reason, package_json, capture_json, source_record_id, shop_id)
+                VALUES (:rid, :tid, :oid, :title, NULL, :url, :price, 0,
+                        'queued_detail', NULL, NULL, NULL, NULL, :shop)
+            """), {"rid": rid, "tid": tid, "oid": c["offer_id"], "title": c["title"],
+                   "url": c["source_url"], "price": c["price_min"], "shop": payload.shop_id})
+        db.commit()
+        db.flush()
+        db.refresh(db.get(AutomationRunRecord, rid))
+    else:
+        tid, rid = None, None
+
+    return {
+        "ok": True,
+        "shop_id": payload.shop_id,
+        "requested": len(payload.items),
+        "imported": len(to_insert),
+        "skipped": skipped,
+        "task_id": tid,
+        "run_id": rid,
+        "message": f"已入队 {len(to_insert)} 个，插件爬虫将自动采集进采集箱" if to_insert else "全部已在采集箱或候选队列",
+    }
+
+
+def _parse_offer_lines_py(text: str) -> list[dict]:
+    """Python 版整表智能识别（与前端 parseOfferLines 对齐）：
+    任意表头/列序，自动投票出链接列、ID 列、名称列、价格列。"""
+    link_re = re.compile(r"/offer/(\d+)")
+    def is_long_id(v: str) -> bool:
+        return bool(re.fullmatch(r"\d+", v)) and len(v) >= 6
+    def is_price(v: str) -> bool:
+        return bool(re.fullmatch(r"\d+(\.\d+)?", v)) and len(v) <= 10
+    def is_title(v: str) -> bool:
+        return bool(re.search(r"[\u4e00-\u9fff\u0400-\u04ffa-zA-Z]", v)) and not link_re.search(v)
+    rows = [r.strip() for r in StringIO(text or "").read().splitlines() if r.strip()]
+    rows = [[c.strip() for c in re.split(r"[,;\t，；]", r)] for r in rows]
+    if not rows:
+        return []
+    first = rows[0]
+    has_link = any(link_re.search(c) for c in first)
+    has_id = any(is_long_id(c) for c in first)
+    start = 0
+    if not has_link and not has_id and len(rows) > 1:
+        start = 1  # 首行是表头
+    body = rows[start:]
+    if not body:
+        return []
+    max_cols = max(len(r) for r in body)
+    score = {"link": [0] * max_cols, "id": [0] * max_cols, "title": [0] * max_cols, "price": [0] * max_cols}
+    for r in body:
+        for ci in range(max_cols):
+            v = (r[ci] if ci < len(r) else "").strip()
+            if not v:
+                continue
+            if link_re.search(v):
+                score["link"][ci] += 1
+            elif is_long_id(v):
+                score["id"][ci] += 1
+            elif is_price(v):
+                score["price"][ci] += 1
+            elif is_title(v):
+                score["title"][ci] += 1
+    def pick(s: list[int], boost=None) -> int:
+        best, bv = -1, -1
+        for i, v in enumerate(s):
+            if boost and boost[i] > 0:
+                v += boost[i] * 1000
+            if v > bv:
+                bv, best = v, i
+        return best
+    header_words = [str(h).lower() for h in rows[0]] if start == 1 else None
+    def mk_boost(strong, weak):
+        if not header_words:
+            return None
+        return [2 if strong.search(h) else (1 if weak.search(h) else 0) for h in header_words]
+    link_boost = mk_boost(re.compile(r"商品链接|链接|url|网址|offer"), re.compile(r"link"))
+    id_boost = mk_boost(re.compile(r"offer\s*id|货号|编号|编码"), re.compile(r"id"))
+    title_boost = mk_boost(re.compile(r"商品名称|标题|品名|product\s*name|title"), re.compile(r"名称|name"))
+    price_boost = mk_boost(re.compile(r"价格|单价|price"), re.compile(r"价"))
+    link_col = pick(score["link"], link_boost)
+    id_col = -1 if link_col >= 0 else pick(score["id"], id_boost)
+    price_col = pick(score["price"], price_boost)
+    if price_col in (link_col, id_col):
+        score["price"][price_col] = -1
+        price_col = pick(score["price"])
+    title_col = pick(score["title"], title_boost)
+    items, seen = [], set()
+    for r in body:
+        def cell(i: int) -> str:
+            return (r[i] if 0 <= i < len(r) else "") or ""
+        offer_id = title = url = ""
+        price = None
+        if link_col >= 0:
+            m = link_re.search(cell(link_col))
+            if m:
+                offer_id, url = m.group(1), cell(link_col)
+        if not offer_id and id_col >= 0 and is_long_id(cell(id_col)):
+            offer_id = cell(id_col)
+        if not offer_id:
+            for cc in r:
+                m = link_re.search(cc)
+                if m:
+                    offer_id, url = m.group(1), cc
+                    break
+            if not offer_id:
+                n = next((cc for cc in r if is_long_id(cc)), None)
+                if n:
+                    offer_id = n
+        if not offer_id or offer_id in seen:
+            continue
+        seen.add(offer_id)
+        title = cell(title_col) if title_col >= 0 else ""
+        pv = cell(price_col) if price_col >= 0 else ""
+        if is_price(pv) and pv != offer_id:
+            price = float(pv)
+        items.append({"offer_id": offer_id, "title": title, "source_url": url, "price_min": price})
+    return items
+
+
+def _read_offer_file(path: str):
+    """读取 CSV/TXT/XLSX 文件并解析为 offer 条目。返回 (items, 源文本)。"""
+    if not path or not path.strip():
+        raise HTTPException(422, "文件路径不能为空")
+    p = path.strip().strip('"').strip("'")
+    ext = os.path.splitext(p)[1].lower()
+    if ext not in (".csv", ".txt", ".xls", ".xlsx"):
+        raise HTTPException(422, f"不支持的文件类型 {ext or '(无扩展名)'}，仅支持 .csv/.txt/.xls/.xlsx")
+    if not os.path.isfile(p):
+        raise HTTPException(404, f"文件不存在或无法访问：{p}")
+    if ext in (".xls", ".xlsx"):
+        try:
+            from openpyxl import load_workbook
+        except ImportError:
+            raise HTTPException(500, "服务器未安装 openpyxl，无法解析 Excel 文件")
+        wb = load_workbook(p, read_only=True, data_only=True)
+        ws = wb.active
+        rows = []
+        for row in ws.iter_rows(values_only=True):
+            vals = [("" if v is None else str(v).strip()) for v in row]
+            if any(vals):
+                rows.append(",".join(vals))
+        text = "\n".join(rows)
+    else:
+        raw = None
+        for enc in ("utf-8-sig", "utf-8", "gb18030", "cp1252"):
+            try:
+                with open(p, "r", encoding=enc) as f:
+                    raw = f.read()
+                break
+            except (UnicodeDecodeError, UnicodeError):
+                continue
+        if raw is None:
+            with open(p, "rb") as f:
+                raw = f.read().decode("utf-8", errors="replace")
+        text = raw
+    return _parse_offer_lines_py(text), text
+
+
+@router.post("/import-offers/parse-file")
+async def import_offers_parse_file(file: UploadFile = File(...)) -> dict:
+    """上传 CSV/TXT/XLSX 表格，解析出 1688 offer 条目（不写入队列）。"""
+    raw = await file.read()
+    if not raw:
+        raise HTTPException(422, "文件为空")
+    name = file.filename or ""
+    ext = os.path.splitext(name)[1].lower()
+    if ext in (".xls", ".xlsx"):
+        tmp = os.path.join(os.environ.get("TEMP", r"C:\OzonERP"), f"tmp_offer_upload_{os.getpid()}{ext}")
+        with open(tmp, "wb") as f:
+            f.write(raw)
+        try:
+            items, _ = _read_offer_file(tmp)
+        finally:
+            try:
+                os.remove(tmp)
+            except OSError:
+                pass
+    else:
+        text = None
+        for enc in ("utf-8-sig", "gb18030", "cp1252"):
+            try:
+                text = raw.decode(enc)
+                break
+            except (UnicodeDecodeError, UnicodeError):
+                continue
+        if text is None:
+            text = raw.decode("utf-8", errors="replace")
+        items = _parse_offer_lines_py(text)
+    if not items:
+        raise HTTPException(422, "文件中未识别到有效 offer_id（需为纯数字或 1688 详情链接）")
+    return {"ok": True, "items": items, "message": f"识别 {len(items)} 条有效商品（重复/无效行已忽略）"}
+
+
+class OfferPathReadRequest(BaseModel):
+    path: str
+
+
+@router.post("/import-offers/read-path")
+def import_offers_read_path(payload: OfferPathReadRequest) -> dict:
+    """读取本地/共享目录下的 CSV/TXT/XLSX 文件并解析 1688 offer 条目（不写入队列）。"""
+    items, _ = _read_offer_file(payload.path)
+    if not items:
+        raise HTTPException(422, "文件中未识别到有效 offer_id（需为纯数字或 1688 详情链接）")
+    return {"ok": True, "items": items, "message": f"识别 {len(items)} 条有效商品（重复/无效行已忽略）"}

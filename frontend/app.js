@@ -1976,6 +1976,30 @@ async function openBulkCostDialog() {
   } catch (e) { toast(e.message || "批量填成本失败", true); }
 }
 
+async function openBulkVideoDialog() {
+  const shopId = $("#shop-filter").value;
+  if (!shopId) { toast("请先选择一个店铺。", true); return; }
+  const keyword = prompt("输入 SKU 关键词（匹配该店铺下所有包含此关键词的 SKU，如徽章批次）：");
+  if (keyword === null || !keyword.trim()) { toast("已取消", true); return; }
+  const url = prompt("输入视频链接（Yandex Disk / VK Video / RuTube 公开链接）：");
+  if (url === null || !url.trim()) { toast("已取消", true); return; }
+  const payload = { sku_keyword: keyword.trim(), video_url: url.trim() };
+  try {
+    const resp = await fetch(`${apiBase}/api/v1/shops/${shopId}/videos/attach`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(payload),
+    });
+    if (!resp.ok) throw new Error((await resp.json()).detail || "批量挂视频失败");
+    const data = await resp.json();
+    let msg = `匹配 ${data.matched} 个 SKU，已提交挂载 ${data.attached} 个`;
+    if (data.failed && data.failed.length) msg += `，失败 ${data.failed.length} 个`;
+    if (data.task_ids && data.task_ids.length) msg += `；Ozon 任务号 ${data.task_ids.join(", ")}`;
+    toast(msg);
+    await loadOperationalData();
+  } catch (e) { toast(e.message || "批量挂视频失败", true); }
+}
+
 async function saveListingDraft(event) { event.preventDefault(); const shopId = $("#shop-filter").value; if (!shopId) { toast("请先选择一个店铺。", true); return; } if ($("#listing-category").dataset.shopId !== shopId) { toast("店铺已切换，请重新打开草稿并选择类目。", true); return; } const controls = [...event.target.querySelectorAll("[data-listing-attribute]")]; const entries = []; for (const control of controls) { let valueId = ""; let value = control.value; if (control.dataset.attributeKind === "dictionary") { const list = document.getElementById(control.getAttribute("list")); const option = [...(list?.options || [])].find(item => item.value === control.value); valueId = option?.dataset.valueId || ""; value = option?.dataset.valueText || ""; if (control.required && !valueId) { control.setCustomValidity("请输入至少 2 个字，并从 Ozon 搜索结果中选择"); control.reportValidity(); return; } } entries.push({ attributeId: control.dataset.listingAttribute, name: control.dataset.attributeName, kind: control.dataset.attributeKind, value, valueId }); } const data = Object.fromEntries(new FormData(event.target)); const [categoryId, typeId] = String(data.category_choice || "").split(":"); const payload = { offer_id: data.offer_id, title: data.title, category_id: categoryId, type_id: typeId, primary_image_url: data.primary_image_url, attributes: window.ListingAttributes.attributePayloadFromEntries(entries), variants: [{ seller_sku: data.seller_sku, purchase_cost_cny: Number(data.purchase_cost_cny), weight_g: Number(data.weight_g), length_mm: Number(data.length_mm), width_mm: Number(data.width_mm), height_mm: Number(data.height_mm) }] }; try { const response = await fetch(`${apiBase}/api/v1/shops/${shopId}/listing-drafts`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(payload) }); if (!response.ok) throw new Error((await response.json()).detail || "草稿保存失败"); $("#listing-dialog").close(); event.target.reset(); $("#listing-required-attributes").innerHTML = '<span class="listing-attribute-title">选择类目后填写 Ozon 必填属性</span>'; await loadListingDrafts(); toast("草稿与 Ozon 属性已保存；请执行预检后再进入审批。 "); } catch (error) { toast(error.message || "草稿保存失败", true); } }
 async function runReadOnlySync() { const shopId = $("#shop-filter").value; if (!shopId) { toast("请先在顶部选择一个店铺。", true); return; } const now = new Date(); const since = new Date(now.getTime() - 7 * 24 * 60 * 60 * 1000); const requests = [{ path: "products", payload: { limit: 100, last_id: "" } }, { path: "fbs-postings", payload: { since: since.toISOString(), to: now.toISOString(), limit: 100, offset: 0, status: "" } }, { path: "fbs-product-images", payload: null }]; try { $("#run-sync").disabled = true; $("#sync-button").disabled = true; toast("正在只读同步商品、图片和近 7 天 FBS 订单…"); for (const request of requests) { const response = await fetch(`${apiBase}/api/v1/shops/${shopId}/sync/${request.path}`, { method: "POST", headers: { "Content-Type": "application/json" }, body: request.payload ? JSON.stringify(request.payload) : undefined }); if (!response.ok) throw new Error((await response.json()).detail || "同步失败"); } await Promise.all([loadSyncRuns(), loadOperationalData()]); toast("只读同步已完成。 "); } catch (error) { await loadSyncRuns(); toast(error.message || "同步失败，请查看同步记录。", true); } finally { $("#run-sync").disabled = false; $("#sync-button").disabled = false; } }
 async function saveShop(event) { event.preventDefault(); const data = Object.fromEntries(new FormData(event.target)); const shopPayload = { name: data.name, manager_name: data.manager_name || null, legal_entity: data.legal_entity || null, currency: "CNY" }; const credentialPayload = { client_id: data.client_id, api_key: data.api_key, key_label: data.key_label || null }; let createdShop; try { const shopResponse = await fetch(`${apiBase}/api/v1/shops`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(shopPayload) }); if (!shopResponse.ok) throw new Error((await shopResponse.json()).detail || "店铺保存失败"); createdShop = await shopResponse.json(); const credentialResponse = await fetch(`${apiBase}/api/v1/shops/${createdShop.id}/credentials/ozon`, { method: "PUT", headers: { "Content-Type": "application/json" }, body: JSON.stringify(credentialPayload) }); if (!credentialResponse.ok) throw new Error((await credentialResponse.json()).detail || "授权保存失败"); $("#shop-dialog").close(); event.target.reset(); await loadShops(); toast("店铺已接入，下一步可配置仓库并执行只读同步。"); } catch (error) { if (createdShop) await fetch(`${apiBase}/api/v1/shops/${createdShop.id}`, { method: "DELETE" }).catch(() => {}); toast(error.message || "保存失败", true); } }
@@ -2154,3 +2178,155 @@ $("#sync-button").textContent = "↻ 强制校正"; $("#run-sync").textContent =
   });
 })();
 installCategorySelector(); loadShops(); setView(viewFromHash());
+
+// ===== v7 批量导入采集 =====
+function parseOfferLines(text) {
+  // 整表智能识别：任意表头/列序，自动投票出链接列、ID 列、名称列、价格列
+  const linkRe = /\/offer\/(\d+)/;
+  const isNum = v => /^\d+$/.test(v);
+  const isLongId = v => /^\d+$/.test(v) && v.length >= 6;
+  const isPrice = v => /^\d+(\.\d+)?$/.test(v) && v.length <= 10;
+  const isTitle = v => /[\u4e00-\u9fff\u0400-\u04ffa-zA-Z]/.test(v) && !linkRe.test(v);
+  const rows = String(text || "").split(/\r?\n/).map(r => r.trim()).filter(Boolean)
+    .map(r => r.split(/[,;\t，；]/).map(c => c.trim()));
+  if (!rows.length) return [];
+  const first = rows[0];
+  const hasLink = first.some(c => linkRe.test(c));
+  const hasId = first.some(c => isLongId(c));
+  let start = 0;
+  if (!hasLink && !hasId && rows.length > 1) start = 1; // 首行是表头
+  const maxCols = Math.max(...rows.slice(start).map(r => r.length));
+  if (!maxCols) return [];
+  const score = { link: new Array(maxCols).fill(0), id: new Array(maxCols).fill(0), title: new Array(maxCols).fill(0), price: new Array(maxCols).fill(0) };
+  for (let ri = start; ri < rows.length; ri++) {
+    for (let ci = 0; ci < maxCols; ci++) {
+      const v = (rows[ri][ci] || "").trim();
+      if (!v) continue;
+      if (linkRe.test(v)) score.link[ci]++;
+      else if (isLongId(v)) score.id[ci]++;
+      else if (isPrice(v)) score.price[ci]++;
+      else if (isTitle(v)) score.title[ci]++;
+    }
+  }
+  const pick = (s, boost) => { let best = -1, bv = -1; for (let i = 0; i < s.length; i++) { let v = s[i]; if (boost && boost[i] > 0) v += boost[i] * 1000; if (v > bv) { bv = v; best = i; } } return bv > 0 ? best : -1; };
+  // 表头词加权：有表头时优先匹配语义列（链接/ID/名称/价格）
+  const headerWords = start === 1 ? rows[0].map(h => String(h || "").toLowerCase()) : null;
+  const mkBoost = (strongRe, weakRe) => headerWords ? headerWords.map(h => (strongRe.test(h) ? 2 : (weakRe.test(h) ? 1 : 0))) : null;
+  const linkBoost = mkBoost(/商品链接|链接|url|网址|offer/, /link/);
+  const idBoost = mkBoost(/offer\s*id|货号|编号|编码/, /id/);
+  const titleBoost = mkBoost(/商品名称|标题|品名|product\s*name|title/, /名称|name/);
+  const priceBoost = mkBoost(/价格|单价|price/, /价/);
+  const linkCol = pick(score.link, linkBoost);
+  const idCol = linkCol >= 0 ? -1 : pick(score.id, idBoost);
+  let priceCol = pick(score.price, priceBoost);
+  if (priceCol === linkCol || priceCol === idCol) { score.price[priceCol] = -1; priceCol = pick(score.price); }
+  const titleCol = pick(score.title, titleBoost);
+  const items = []; const seen = new Set();
+  for (let ri = start; ri < rows.length; ri++) {
+    const r = rows[ri];
+    const cell = i => (i >= 0 && i < r.length ? r[i] : "") || "";
+    let offerId = "", title = "", price = null, url = "";
+    if (linkCol >= 0) { const m = cell(linkCol).match(linkRe); if (m) { offerId = m[1]; url = cell(linkCol); } }
+    if (!offerId && idCol >= 0 && isLongId(cell(idCol))) offerId = cell(idCol);
+    if (!offerId) {
+      for (const c of r) { const m = c.match(linkRe); if (m) { offerId = m[1]; url = c; break; } }
+      if (!offerId) { const n = r.find(c => isLongId(c)); if (n) offerId = n; }
+    }
+    if (!offerId || seen.has(offerId)) continue;
+    seen.add(offerId);
+    title = titleCol >= 0 ? cell(titleCol) : "";
+    const pv = cell(priceCol >= 0 ? priceCol : -1);
+    if (isPrice(pv) && pv !== offerId) price = parseFloat(pv);
+    items.push({ offer_id: offerId, title, source_url: url, price_min: price });
+  }
+  return items;
+}
+function initImportOffers() {
+  const btn = $("#cb-import-offers"), dialog = $("#import-offers-dialog");
+  if (!btn || !dialog) return;
+  const shopSel = $("#import-offers-shop"), textEl = $("#import-offers-text"),
+        preview = $("#import-offers-preview"), submit = $("#import-offers-submit"),
+        cancel = $("#import-offers-cancel");
+  btn.addEventListener("click", () => {
+    if (!shops.length) { toast("店铺列表未加载，请稍后再试", true); return; }
+    shopSel.innerHTML = shops.map(s => `<option value="${s.id}">${escapeHtml(s.name)}${s.is_active === false ? "（停用）" : ""}</option>`).join("");
+    textEl.value = ""; preview.textContent = "未解析"; submit.disabled = true;
+    const _fi = $("#import-offers-file"), _pi = $("#import-offers-path");
+    if (_fi) _fi.value = ""; if (_pi) _pi.value = "";
+    dialog.showModal();
+  });
+  cancel.addEventListener("click", () => dialog.close());
+  dialog.addEventListener("click", e => { if (e.target === dialog) dialog.close(); });
+  function fillImportOffers(items) {
+    if (!items || !items.length) { toast("未识别到有效商品", true); return; }
+    textEl.value = items.map(it => {
+      const parts = [it.offer_id];
+      if (it.title) parts.push(it.title);
+      if (it.price_min != null && it.price_min !== "") parts.push(it.price_min);
+      return parts.join(",");
+    }).join("\n");
+    textEl.dispatchEvent(new Event("input"));
+  }
+  const fileBtn = $("#import-offers-file-btn"), fileInput = $("#import-offers-file");
+  if (fileBtn && fileInput) {
+    fileBtn.addEventListener("click", () => fileInput.click());
+    fileInput.addEventListener("change", async () => {
+      const f = fileInput.files && fileInput.files[0];
+      if (!f) return;
+      const fd = new FormData(); fd.append("file", f);
+      try {
+        const resp = await fetch(`${apiBase}/api/v1/automation/import-offers/parse-file`, { method: "POST", body: fd });
+        const data = await resp.json().catch(() => ({}));
+        if (!resp.ok) throw new Error(data.detail || "文件解析失败");
+        fillImportOffers(data.items);
+        toast(data.message || "文件解析成功", false);
+      } catch (e) { toast(e.message || "文件解析失败", true); }
+      fileInput.value = "";
+    });
+  }
+  const pathInput = $("#import-offers-path"), pathBtn = $("#import-offers-path-btn");
+  if (pathInput && pathBtn) {
+    pathBtn.addEventListener("click", async () => {
+      const p = (pathInput.value || "").trim();
+      if (!p) { toast("请先输入文件路径", true); return; }
+      try {
+        const resp = await fetch(`${apiBase}/api/v1/automation/import-offers/read-path`, {
+          method: "POST", headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ path: p })
+        });
+        const data = await resp.json().catch(() => ({}));
+        if (!resp.ok) throw new Error(data.detail || "路径读取失败");
+        fillImportOffers(data.items);
+        toast(data.message || "路径读取成功", false);
+      } catch (e) { toast(e.message || "路径读取失败", true); }
+    });
+  }
+  textEl.addEventListener("input", () => {
+    const items = parseOfferLines(textEl.value);
+    if (!items.length) { preview.textContent = "未识别到有效 offer_id"; submit.disabled = true; return; }
+    preview.textContent = `识别 ${items.length} 条有效商品（重复/无效行已忽略）`;
+    submit.disabled = false;
+  });
+  submit.addEventListener("click", async () => {
+    const items = parseOfferLines(textEl.value);
+    if (!items.length) return;
+    const shopId = shopSel.value;
+    if (!shopId) { toast("请先选择目标 Ozon 店铺", true); return; }
+    submit.disabled = true; submit.textContent = "入队中…";
+    try {
+      const response = await fetch(`${apiBase}/api/v1/automation/import-offers`, {
+        method: "POST", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ shop_id: Number(shopId), items })
+      });
+      const data = await response.json().catch(() => ({}));
+      if (!response.ok) throw new Error(data.detail || `入队失败(${response.status})`);
+      toast(data.message || "入队成功", false);
+      dialog.close();
+      loadCollectionBox();
+    } catch (error) {
+      toast(error.message || "入队失败", true);
+      submit.disabled = false; submit.textContent = "入队采集";
+    }
+  });
+}
+initImportOffers();

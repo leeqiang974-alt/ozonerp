@@ -1,4 +1,4 @@
-const button = document.querySelector("#collectButton");
+﻿const button = document.querySelector("#collectButton");
 const statusEl = document.querySelector("#status");
 const includeVideo = document.querySelector("#includeVideo");
 const storeSelect = document.querySelector("#storeSelect");
@@ -13,6 +13,11 @@ const pollWorkerButton = document.querySelector("#pollWorkerButton");
 const skuList = document.querySelector("#skuList");
 const skuToggleButton = document.querySelector("#skuToggleButton");
 const shopScanButton = document.querySelector("#shopScanButton");
+const extensionVersion = document.querySelector("#extensionVersion");
+const meliBrowserIdentity = document.querySelector("#meliBrowserIdentity");
+const meliUnlimitedStatus = document.querySelector("#meliUnlimitedStatus");
+const startMeliUnlimitedButton = document.querySelector("#startMeliUnlimitedButton");
+const stopMeliUnlimitedButton = document.querySelector("#stopMeliUnlimitedButton");
 const EXPECTED_CONTENT_VERSION = "0.7.17";
 let pendingPayload = null;
 let skuVariants = [];
@@ -291,10 +296,88 @@ async function pollWorkerNow() {
   }
 }
 
+function setMeliControlsBusy(busy) {
+  startMeliUnlimitedButton.disabled = busy;
+  stopMeliUnlimitedButton.disabled = busy;
+}
+
+async function refreshMeliUnlimitedStatus() {
+  try {
+    const result = await chrome.runtime.sendMessage({ type: "MELI_UNLIMITED_STATUS" });
+    if (!result?.ok) throw new Error(result?.error || "状态读取失败");
+    const { identity = {}, server = {}, localEnabled = false } = result;
+    const browserVersion = identity.browserVersion ? ` ${identity.browserVersion}` : "";
+    meliBrowserIdentity.textContent = `${identity.browserName || "当前浏览器"}${browserVersion} · 插件 ${identity.extensionVersion || "-"}`;
+    const campaign = server.campaign || {};
+    if (server.active && server.owns_active && localEnabled) {
+      meliUnlimitedStatus.textContent = `运行中：任务 #${campaign.id} 已绑定本浏览器`;
+      meliUnlimitedStatus.className = "meli-unlimited-status running";
+      startMeliUnlimitedButton.disabled = true;
+      stopMeliUnlimitedButton.disabled = false;
+      return;
+    }
+    if (server.active && !server.owns_active) {
+      const owner = campaign.bound_browser_name || "另一个浏览器";
+      const ownerVersion = campaign.bound_browser_version ? ` ${campaign.bound_browser_version}` : "";
+      meliUnlimitedStatus.textContent = `其他浏览器正在执行：${owner}${ownerVersion}（任务 #${campaign.id}）`;
+      meliUnlimitedStatus.className = "meli-unlimited-status occupied";
+      startMeliUnlimitedButton.disabled = false;
+      stopMeliUnlimitedButton.disabled = true;
+      return;
+    }
+    if (server.active && server.owns_active && !localEnabled) {
+      meliUnlimitedStatus.textContent = `服务器仍绑定本浏览器，但本机领取已停止；可点击“停止采集”完成同步`;
+      meliUnlimitedStatus.className = "meli-unlimited-status warning";
+      startMeliUnlimitedButton.disabled = false;
+      stopMeliUnlimitedButton.disabled = false;
+      return;
+    }
+    meliUnlimitedStatus.textContent = campaign.id ? `已停止（最近任务 #${campaign.id}）` : "已停止；服务器暂无可用采集任务";
+    meliUnlimitedStatus.className = "meli-unlimited-status stopped";
+    startMeliUnlimitedButton.disabled = !campaign.id;
+    stopMeliUnlimitedButton.disabled = true;
+  } catch (error) {
+    meliUnlimitedStatus.textContent = error.message || "无法读取无限筛选采集状态";
+    meliUnlimitedStatus.className = "meli-unlimited-status warning";
+    startMeliUnlimitedButton.disabled = false;
+    stopMeliUnlimitedButton.disabled = false;
+  }
+}
+
+async function startMeliUnlimited() {
+  setMeliControlsBusy(true);
+  meliUnlimitedStatus.textContent = "正在绑定当前浏览器并启动...";
+  try {
+    const result = await chrome.runtime.sendMessage({ type: "MELI_UNLIMITED_START" });
+    if (!result?.ok) throw new Error(result?.error || "启动失败");
+    setStatus(`无限筛选采集已绑定到 ${result.identity?.browserName || "当前浏览器"}`, "ok");
+  } catch (error) {
+    setStatus(error.message || "无限筛选采集启动失败", "error");
+  } finally {
+    await refreshMeliUnlimitedStatus();
+  }
+}
+
+async function stopMeliUnlimited() {
+  setMeliControlsBusy(true);
+  meliUnlimitedStatus.textContent = "正在停止本浏览器领取新任务...";
+  try {
+    const result = await chrome.runtime.sendMessage({ type: "MELI_UNLIMITED_STOP" });
+    if (!result?.ok) throw new Error(result?.error || "服务器暂停失败；本浏览器已停止领取新任务");
+    setStatus("无限筛选采集已停止；当前任务允许收尾。", "ok");
+  } catch (error) {
+    setStatus(error.message || "停止失败", "error");
+  } finally {
+    await refreshMeliUnlimitedStatus();
+  }
+}
+
 storeSelect.addEventListener("change", () => saveStoreId(storeSelect.value));
 button.addEventListener("click", collectCurrentProduct);
 shopScanButton.addEventListener("click", startShopScan);
 pollWorkerButton.addEventListener("click", pollWorkerNow);
+startMeliUnlimitedButton.addEventListener("click", startMeliUnlimited);
+stopMeliUnlimitedButton.addEventListener("click", stopMeliUnlimited);
 skuToggleButton.addEventListener("click", () => {
   const nextAll = !allSkuSelected;
   allSkuSelected = nextAll;
@@ -303,4 +386,36 @@ skuToggleButton.addEventListener("click", () => {
 });
 loadStores();
 refreshWorkerStatus();
+extensionVersion.textContent = chrome.runtime.getManifest().version;
+refreshMeliUnlimitedStatus();
 loadPageOptions();
+
+// [Iteration 2026-09-20] Ozon 搜索结果页批量采集
+document.getElementById("ozonBatchButton").addEventListener("click", async () => {
+  const btn = document.getElementById("ozonBatchButton");
+  const statusEl = document.getElementById("ozonBatchStatus");
+  btn.disabled = true;
+  statusEl.textContent = "开始批量采集...";
+
+  // 获取筛选条件
+  const filters = {
+    minPrice: parseInt(document.getElementById("ozonMinPrice").value) || 30,
+    maxPrice: parseInt(document.getElementById("ozonMaxPrice").value) || 100,
+    minRating: parseFloat(document.getElementById("ozonMinRating").value) || 4.6,
+    maxPages: parseInt(document.getElementById("ozonMaxPages").value) || 10,
+  };
+
+  // 发送消息给 content script 执行批量采集
+  const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
+  const response = await chrome.tabs.sendMessage(tab.id, {
+    type: "OZON_BATCH_COLLECT",
+    filters,
+  });
+
+  if (response?.ok) {
+    statusEl.textContent = `完成！采集到 ${response.count} 个产品`;
+  } else {
+    statusEl.textContent = `失败：${response?.error || "未知错误"}`;
+  }
+  btn.disabled = false;
+});

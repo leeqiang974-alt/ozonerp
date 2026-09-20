@@ -3,7 +3,7 @@ let floatingState = { minimized: false, selectedSkuKeys: new Set(), allSelected:
 const SHOP_SCAN_STORAGE_KEY = "ozonErp1688ShopScan";
 // Must change with every collector behaviour change. popup.js uses this
 // handshake to force-replace stale content scripts already living in a tab.
-const COLLECTOR_VERSION = "0.7.17";
+const COLLECTOR_VERSION = "0.7.27"; // [Iteration 2026-09-20] Ozon batch collect: add direct button on page
 let extensionContextAvailable = true;
 
 function getExtensionRuntime() {
@@ -2243,7 +2243,12 @@ function collectOzonDomFallback() {
     packageInfo: extractOzonPackageHint(document.body?.innerText || ""),
     salesHint: extractOzonSalesHint(document.body?.innerText || ""),
     attributes: dedupeBy(attributes, (item) => `${item.name}:${item.value}`).slice(0, 80),
-    description: cleanText(document.body?.innerText || "").slice(0, 4000),
+    // [Iteration 2026-09-20] 修正详情：优先从 webDescription 组件提取
+    description: (() => {
+      const descEl = document.querySelector('[data-widget="webDescription"]');
+      if (descEl) return cleanText(descEl.innerText).slice(0, 4000);
+      return cleanText(document.body?.innerText || "").slice(0, 4000);
+    })(),
     collectedAt: new Date().toISOString(),
   };
 }
@@ -2546,6 +2551,20 @@ async function collectOzonDetail() {
   const title = ozonStructuredTitle(primaryPayload) || fallback.title;
   const price = ozonWidgetPrice(findOzonWidget(primaryStates, "webPrice"), fallback.price);
   const images = primaryImages.length ? primaryImages : fallback.images;
+  const skuVariants = variants.length ? variants : fallback.skuVariants;
+  const attributes = structuredAttributes.length ? structuredAttributes : fallback.attributes;
+  const description = structuredDescription.description || fallback.description;
+
+  // [Iteration 2026-09-20] 自动质量检查（self-improving）
+  const parseIssues = [];
+  if (!title || title.length < 5) parseIssues.push("标题为空或过短");
+  if (images.length < 3) parseIssues.push("图片数量不足（仅 ${images.length} 张）");
+  if (!description || description.length < 50) parseIssues.push("详情描述为空或过短");
+  if (!skuVariants || skuVariants.length === 0) parseIssues.push("未识别到 SKU 变体");
+  if (!attributes || attributes.length < 3) parseIssues.push("属性数量不足（仅 ${attributes?.length || 0} 个）");
+  if (!fallback.category || fallback.category.length < 5) parseIssues.push("分类为空或未识别");
+  if (variants.length === 0) parseIssues.push("结构化页面数据未返回可识别变体，已保留页面变体回退");
+
   return {
     ...fallback,
     title,
@@ -2563,7 +2582,6 @@ async function collectOzonDetail() {
     description: structuredDescription.description || fallback.description,
     ...seller,
     captureSource: "ozon_page_json_v2",
-    parseIssues: variants.length ? [] : ["结构化页面数据未返回可识别变体，已保留页面变体回退"],
   };
 }
 
@@ -2763,5 +2781,122 @@ function dedupeBy(items, keyFn) {
 function sleep(ms) {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
+
+
+
+
+
+
+// [Iteration 2026-09-20] Ozon 搜索结果页批量采集
+chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
+  if (msg.type === "OZON_BATCH_COLLECT") {
+    runOzonBatchCollect(msg.filters).then((count) => {
+      sendResponse({ ok: true, count });
+    }).catch((err) => {
+      sendResponse({ ok: false, error: err.message });
+    });
+    return true; // 异步响应
+  }
+});
+
+// [Iteration 2026-09-20] 批量采集页面进度条
+function showBatchProgress(text) {
+  let el = document.getElementById("ozon-batch-progress");
+  if (!el) {
+    el = document.createElement("div");
+    el.id = "ozon-batch-progress";
+    el.style.cssText = "position: fixed; top: 20px; right: 20px; background: #005bff; color: white; padding: 12px 20px; border-radius: 8px; z-index: 99999; font-size: 14px; box-shadow: 0 4px 12px rgba(0,0,0,0.3);";
+    document.body.appendChild(el);
+  }
+  el.textContent = text;
+}
+
+function hideBatchProgress() {
+  const el = document.getElementById("ozon-batch-progress");
+  if (el) el.remove();
+}
+
+async function runOzonBatchCollect(filters) {
+  const { minPrice, maxPrice, minRating, maxPages } = filters;
+  let collected = 0;
+  let checked = 0;
+
+  showBatchProgress("🚀 Ozon 批量采集开始...");
+  console.log("Ozon 批量采集开始", filters);
+
+  for (let page = 1; page <= maxPages; page++) {
+    showBatchProgress(`📄 第 ${page}/${maxPages} 页...`)
+    console.log(`翻到第 ${page} 页`);
+
+    // 等待页面加载
+    await new Promise((r) => setTimeout(r, 2000));
+
+    // 直接用现有的、已经验证过的函数采集当前页所有产品
+    const products = collectAllVisibleOzonProducts();
+    console.log(`当前页找到 ${products.length} 个产品`);
+
+    for (const p of products) {
+      try {
+        checked++;
+        showBatchProgress(`🔍 已查 ${checked} 个 | ${Math.round(p.price)}₽ ${p.rating}★ | 已采 ${collected}`)
+        console.log(`检查: ${p.title?.slice(0, 30)}... ${p.price}₽, ${p.rating}★`);
+
+        // 转成数字
+        const priceNum = parseFloat(p.price) || 0;
+        const ratingNum = parseFloat(p.rating) || 0;
+
+        console.log(`看到产品: ${p.title?.slice(0, 20)}... price=${p.price}(${priceNum}₽), rating=${p.rating}(${ratingNum}★)`)
+        showBatchProgress(`👀 ${priceNum}₽ ${ratingNum}★ - ${p.title?.slice(0,15)}...`)
+
+        // 按条件筛选
+        if (priceNum < minPrice || priceNum > maxPrice) {
+          console.log(`价格不符合: ${priceNum} 不在 ${minPrice}-${maxPrice}`)
+          continue;
+        }
+        if (ratingNum < minRating) {
+          console.log(`评分不符合: ${ratingNum} < ${minRating}`)
+          continue;
+        }
+
+        // 符合条件，导入到 ERP
+        showBatchProgress(`✅ 符合条件！正在导入到 ERP...`)
+        const result = await importProductToErp(p);
+        if (!result?.error) {
+          collected++;
+          showBatchProgress(`🎉 已导入 ${collected} 个！继续...`)
+          console.log(`导入成功！累计 ${collected} 个`);
+        } else {
+          console.log(`导入失败: ${result.error}`);
+        }
+
+        await new Promise((r) => setTimeout(r, 800)); // 间隔，防反爬
+      } catch (e) {
+        console.error("处理产品失败", p.title, e);
+      }
+    }
+
+    // 点下一页
+    showBatchProgress(`⏳ 翻到下一页...`);
+    // 找下一页按钮
+    const nextBtn = document.querySelector('[data-widget="paginatorNext"], a[href*="page=' + (page + 1) + '"], button[aria-label="Next"]');
+    if (!nextBtn) {
+      console.log("没有下一页了");
+      break;
+    }
+    nextBtn.click();
+  }
+
+  console.log(`批量采集完成，共 ${collected} 个`);
+  showBatchProgress(`🎉 完成！共采集导入 ${collected} 个产品`)
+  setTimeout(hideBatchProgress, 8000);
+  return collected;
+}
+
+
+
+
+
+
+
 
 

@@ -1,4 +1,4 @@
-<!doctype html>
+﻿<!doctype html>
 <html lang="zh-CN">
   <head>
     <meta charset="UTF-8" />
@@ -8,7 +8,7 @@
   </head>
   <body>
     <main>
-      <h1>Ozon ERP 统一采集助手 <small>采集核心 0.7.13</small></h1>
+      <h1>Ozon ERP 统一采集助手 <small>采集核心 <span id="extensionVersion">读取中</span></small></h1>
       <p>一个插件同时处理 1688 货源采集和 Ozon 前台竞品任务，数据会发送到局域网笔记本 Ozon ERP。</p>
       <label class="field">
         <span>归属店铺</span>
@@ -38,6 +38,18 @@
         <span>进入店铺“全部商品”页，静默按30条扫描并去重。</span>
         <button id="shopScanButton" type="button">全店采集</button>
       </section>
+        <section class="shop-scan-box">
+          <strong>Ozon 搜索批量采集</strong>
+          <span>打开 Ozon 搜索结果页，自动翻页采集符合条件的产品。</span>
+          <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 8px; margin: 8px 0;">
+            <label><span>价格下限(₽)</span><input id="ozonMinPrice" type="number" value="30" min="1" style="width: 100%;" /></label>
+            <label><span>价格上限(₽)</span><input id="ozonMaxPrice" type="number" value="100" min="1" style="width: 100%;" /></label>
+            <label><span>最低评分</span><input id="ozonMinRating" type="number" value="4.6" min="0" max="5" step="0.1" style="width: 100%;" /></label>
+            <label><span>翻页数</span><input id="ozonMaxPages" type="number" value="10" min="1" max="50" style="width: 100%;" /></label>
+          </div>
+          <div id="ozonBatchStatus" style="margin: 8px 0; font-size: 12px; color: #666;">准备就绪</div>
+          <button id="ozonBatchButton" type="button" style="width: 100%; background: #005bff; color: white; border: none; padding: 8px; border-radius: 4px; cursor: pointer;">开始批量采集</button>
+        </section>
       <section class="worker-box">
         <div>
           <strong>1688 / Ozon 自动采集后台</strong>
@@ -45,9 +57,23 @@
         </div>
         <button id="pollWorkerButton" type="button">立即检查任务</button>
       </section>
+      <section class="meli-unlimited-box">
+        <div class="meli-unlimited-head">
+          <strong>Amazon 无限筛选采集</strong>
+          <span id="meliBrowserIdentity">正在识别当前浏览器...</span>
+        </div>
+        <div id="meliUnlimitedStatus" class="meli-unlimited-status">正在读取运行状态...</div>
+        <div class="meli-unlimited-actions">
+          <button id="startMeliUnlimitedButton" type="button">开始无限采集</button>
+          <button id="stopMeliUnlimitedButton" class="stop-button" type="button">停止采集</button>
+        </div>
+        <small>在哪个浏览器中点击“开始”，任务就只绑定该浏览器的这个插件实例。停止后当前任务允许收尾，但不会领取下一件。</small>
+      </section>
       <div id="status" class="status">等待采集</div>
       <a href="http://192.168.0.147:5500/" target="_blank">打开笔记本 Ozon ERP</a>
     </main>
     <script src="popup.js"></script>
   </body>
 </html>
+
+

@@ -3,7 +3,7 @@ let floatingState = { minimized: false, selectedSkuKeys: new Set(), allSelected:
 const SHOP_SCAN_STORAGE_KEY = "ozonErp1688ShopScan";
 // Must change with every collector behaviour change. popup.js uses this
 // handshake to force-replace stale content scripts already living in a tab.
-const COLLECTOR_VERSION = "0.7.27"; // [Iteration 2026-09-20] Ozon batch collect: add direct button on page
+const COLLECTOR_VERSION = "0.7.28"; // [Iteration 2026-09-21] Ozon batch collect: re-add button after git pull overwrite
 let extensionContextAvailable = true;
 
 function getExtensionRuntime() {
@@ -485,6 +485,7 @@ function mountOzonListInfo() {
   bar.innerHTML = `
     <div class="ozon-erp-list-bar-title">Ozon ERP 采集</div>
     <button class="ozon-erp-list-bar-btn" id="ozon-erp-import-visible">${isDetailPage ? "采集当前商品" : (isOzonSellerProductsAnalyticsPage() ? "采集当前分析表" : "导入可见商品")}</button>
+      <button class="ozon-erp-list-bar-btn" id="ozon-erp-batch-collect" style="background: #005bff; color: white; margin-left: 8px;">🚀 批量采集</button>
     <span class="ozon-erp-list-bar-status" id="ozon-erp-list-status"></span>
   `;
   document.body.appendChild(bar);
@@ -1285,6 +1286,19 @@ function productSizeWeightStatus(payload = {}) {
     .map((sku, index) => ({ index: index + 1, missing: missingSizeWeightFields(sku) }))
     .filter((item) => item.missing.length);
   if (!productMissing.length && !skuMissing.length) return { ok: true, message: "" };
+
+    // 批量采集按钮
+    bar.querySelector("#ozon-erp-batch-collect").addEventListener("click", async () => {
+      const status = bar.querySelector("#ozon-erp-list-status");
+      status.textContent = "开始批量采集...";
+      try {
+        const count = await runOzonBatchCollect({ minPrice: 30, maxPrice: 100, minRating: 4.6, maxPages: 10 });
+        status.textContent = `批量采集完成，共 ${count} 个`;
+      } catch (e) {
+        status.textContent = `批量采集失败: ${e.message}`;
+      }
+      setTimeout(() => { status.textContent = ""; }, 5000);
+    });
   const parts = [];
   if (productMissing.length) parts.push(`商品缺${productMissing.join("、")}`);
   if (skuMissing.length) parts.push(`${skuMissing.length}个SKU缺尺重`);
@@ -2891,6 +2905,7 @@ async function runOzonBatchCollect(filters) {
   setTimeout(hideBatchProgress, 8000);
   return collected;
 }
+
 
 
 

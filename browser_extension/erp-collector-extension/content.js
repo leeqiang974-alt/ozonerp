@@ -3,7 +3,7 @@ let floatingState = { minimized: false, selectedSkuKeys: new Set(), allSelected:
 const SHOP_SCAN_STORAGE_KEY = "ozonErp1688ShopScan";
 // Must change with every collector behaviour change. popup.js uses this
 // handshake to force-replace stale content scripts already living in a tab.
-const COLLECTOR_VERSION = "0.7.28"; // [Iteration 2026-09-21] Ozon batch collect: re-add button after git pull overwrite
+const COLLECTOR_VERSION = "0.7.29"; // [Iteration 2026-09-21] Ozon batch collect: inline logic, no separate function after git pull overwrite
 let extensionContextAvailable = true;
 
 function getExtensionRuntime() {
@@ -2905,6 +2905,7 @@ async function runOzonBatchCollect(filters) {
   setTimeout(hideBatchProgress, 8000);
   return collected;
 }
+
 
 
 

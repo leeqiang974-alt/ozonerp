@@ -1,9 +1,368 @@
-﻿let pageContext = null;
+// ============ v0.7.61 搜索页独立注入（放在最开头，不依赖任何代码） ============
+(function(){
+  if (!location.hostname.includes("ozon.ru")) return;
+  const isSearch = location.pathname.includes("/category") || location.search.includes("text=") || location.pathname.includes("/search");
+  if (!isSearch) return;
+  let totalRequests = 0;
+  const MAX_REQUESTS = 25;
+  let scrollTimer = null;
+  let running = false;
+  async function processNewCards() {
+    if (running || totalRequests >= MAX_REQUESTS) return;
+    running = true;
+    const cards = Array.from(document.querySelectorAll('a[href*="/product/"]')).map(a => {
+      const m = a.href.match(/-(\d{6,})/);
+      if (!m) return null;
+      let root = a.closest('.tile-clickable-element, [class*="tile"]') || a.parentElement?.parentElement?.parentElement;
+      return root && !root.dataset.ozonInj ? { pid: m[1], root } : null;
+    }).filter(Boolean).slice(0,8);
+    if (!cards.length) { running = false; return; }
+    const pids = [...new Set(cards.map(c=>c.pid))].slice(0, Math.min(cards.length, MAX_REQUESTS - totalRequests));
+    if (!pids.length) { running = false; return; }
+    totalRequests += pids.length;
+    const map = {};
+    const sleep = ms => new Promise(r=>setTimeout(r,ms));
+    for (let i=0;i<pids.length;i+=2) {
+      const batch = pids.slice(i,i+2);
+      const res = await Promise.all(batch.map(async pid=>{
+        try {
+          await sleep(1000+Math.random()*800);
+          const resp = await chrome.runtime.sendMessage({type:"OZON_FETCH_SALES_DATA",productId:pid});
+          return [pid, resp?.ok ? resp.data?.items?.[0] : null];
+        } catch(e){ return [pid,null]; }
+      }));
+      res.forEach(([pid,row])=>{ if(row) map[pid]=row; });
+      await sleep(1800+Math.random()*1000);
+    }
+    cards.forEach(c=>{
+      c.root.dataset.ozonInj = "1";
+      const row = map[c.pid];
+      const b = document.createElement("div");
+      b.style.cssText = "margin:6px 0;padding:7px;background:#f0f5ff;border-radius:5px;font-size:10px;line-height:1.45;color:#333;";
+      if (!row) {
+        b.innerHTML = `<div style="color:#999;">暂无销量数据</div>`;
+      } else {
+        const sales = parseInt(row.soldCount || 0);
+        const revenue = Math.round(parseFloat(row.gmvSum || 0)).toLocaleString();
+        const daily = Math.round(parseFloat(row.avgOrdersOnAccDays || 0)*10)/10;
+        const visitors = parseInt(row.sessionCount || 0);
+        const cartRate = Math.round(parseFloat(row.convToCartPdp || 0)*10)/10;
+        const brand = row.brand || "无品牌";
+        const minPrice = parseInt(row.minSellerPrice || 0);
+        b.innerHTML = `<div style="display:flex;justify-content:space-between;font-weight:700;color:#005bff;font-size:11px;"><span>月销 ${sales}件</span><span>${revenue} ₽</span></div><div style="margin:2px 0;color:#444;">日销${daily} · 访客${visitors} · 加购${cartRate}%</div><div style="color:#444;">品牌:${brand} · 最低 ${minPrice}₽</div><div style="color:#666;">发货:${row.salesSchema||"-"} · 卖家:${row.sellerId||"-"}</div><div style="color:#999;margin-top:2px;">SKU:${c.pid}</div>`;
+      }
+      c.root.appendChild(b);
+    });
+    running = false;
+  }
+  setTimeout(processNewCards, 5000);
+  window.addEventListener("scroll", () => {
+    if (totalRequests >= MAX_REQUESTS) return;
+    clearTimeout(scrollTimer);
+    scrollTimer = setTimeout(processNewCards, 3000);
+  });
+})();
+// ============ 全局：获取 Ozon 商品销量数据（v0.7.44 对标胜利者插件） ============
+async function fetchOzonSalesData(productId) {
+  if (!productId) return null;
+  try {
+    const resp = await chrome.runtime.sendMessage({
+      type: "OZON_FETCH_SALES_DATA",
+      productId: productId
+    });
+    console.log("[Ozon ERP] 接口返回:", resp);
+    if (!resp || !resp.ok) {
+      console.log("[Ozon ERP] 接口失败:", resp?.error);
+      return null;
+    }
+    // 解析seller返回的what_to_sell数据（实测接口直接返回顶层items）
+    const data = resp.data;
+    const rows = data?.items || data?.result?.items || [];
+    if (!Array.isArray(rows) || rows.length === 0) return {
+      monthlySales: 0,
+      monthlyRevenue: 0,
+      dailySales: 0,
+      note: "该商品为新品/无销量数据"
+    };
+    const row = rows[0];
+    return {
+      monthlySales: parseInt(row.soldCount || 0),
+      monthlyRevenue: Math.round(parseFloat(row.gmvSum || 0)),
+      dailySales: Math.round(parseFloat(row.avgOrdersOnAccDays || 0) * 10) / 10,
+      visitors: parseInt(row.sessionCount || 0),
+      cartRate: Math.round(parseFloat(row.convToCartPdp || 0) * 100) / 100,
+      avgPrice: Math.round(parseFloat(row.avgPrice || 0)),
+      stock: parseInt(row.stock || 0),
+      drr: Math.round(parseFloat(row.drr || 0) * 100) / 100,
+      brand: row.brand || "无品牌",
+      category: row.category3 || row.category1 || "-",
+      minSellerPrice: parseInt(row.minSellerPrice || 0),
+      sellerId: row.sellerId || "-",
+      salesType: row.salesSchema || "-",
+      blocked: row.blockedBySeller ? "是（被卖家屏蔽）" : "否"
+    };
+  } catch (e) {
+    console.log("[Ozon ERP] 异常:", e.message);
+    return null;
+  }
+}
+
+async function initOzonProductSidebar() {
+  if (!location.hostname.includes("ozon.ru") || !location.pathname.includes("/product/")) return;
+  if (document.getElementById("ozon-erp-sidebar")) return;
+  const productId = (location.pathname.match(/-(\d{6,})/) || [])[1];
+  if (!productId) return;
+  const sidebar = document.createElement("div");
+  sidebar.id = "ozon-erp-sidebar";
+  sidebar.style.cssText = "position:fixed;top:20px;right:20px;width:320px;background:white;border-radius:12px;box-shadow:0 8px 30px rgba(0,0,0,0.15);z-index:99998;padding:16px;font-family:sans-serif;max-height:90vh;overflow-y:auto;";
+  sidebar.innerHTML = `<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:12px;"><div style="font-weight:600;font-size:16px;color:#333;">📊 Ozon ERP 数据</div><button id="ozon-erp-sidebar-close" style="background:none;border:none;font-size:18px;cursor:pointer;color:#999;">×</button></div><div id="ozon-erp-sidebar-content" style="font-size:13px;color:#666;"><div style="text-align:center;padding:20px;color:#999;">⏳ 正在加载数据...</div></div><div id="ozon-erp-sidebar-actions" style="margin-top:12px;padding-top:10px;border-top:1px solid #eee;"><button id="ozon-mvideo-preview-button" style="width:100%;border:1px solid #7c3aed;background:#f5f3ff;color:#5b21b6;border-radius:8px;padding:8px 10px;font-size:12px;font-weight:600;cursor:pointer;">M.Video 单SKU预览</button><div id="ozon-mvideo-single-preview" style="display:none;margin-top:8px;border:1px solid #ddd6fe;background:#faf5ff;border-radius:8px;padding:9px;font-size:12px;color:#4c1d95;"></div><div id="ozon-embedded-collector" style="margin-top:10px;border:1px solid #f87171;border-radius:8px;overflow:hidden;"><div style="padding:7px 9px;background:#dc2626;color:#fff;font-size:12px;font-weight:700;">Ozon 当前商品采集</div><div style="padding:9px;background:#fff5f5;"><select id="ozon-embedded-store" style="width:100%;box-sizing:border-box;border:1px solid #fca5a5;border-radius:6px;padding:6px;font-size:12px;background:#fff;color:#333;"></select><button id="ozon-embedded-collect" style="width:100%;margin-top:7px;border:none;border-radius:6px;padding:7px;background:#dc2626;color:#fff;font-size:12px;font-weight:700;cursor:pointer;">采集当前商品</button><div id="ozon-embedded-status" style="margin-top:7px;min-height:16px;font-size:11px;line-height:1.4;color:#7f1d1d;"></div></div></div></div>`;
+  document.body.appendChild(sidebar);
+  document.getElementById("ozon-erp-sidebar-close").addEventListener("click", () => sidebar.remove());
+  setupMvideoSinglePreview(sidebar, productId);
+  setupEmbeddedOzonCollector(sidebar);
+  fetchOzonSalesData(productId).then((data) => {
+    const content = document.getElementById("ozon-erp-sidebar-content");
+    if (!data) {
+      content.innerHTML = `<div style="text-align:center;padding:20px;color:#e53e3e;">❌ 请保持卖家后台标签页打开并登录（seller.ozonru.cn 或 seller.ozon.ru）</div>`;
+      return;
+    }
+    content.innerHTML = `
+<div style="margin:8px 0;display:flex;justify-content:space-between;"><span style="color:#999;">品牌</span><span style="font-weight:500;">${data.brand || "-"}</span></div>
+<div style="margin:8px 0;display:flex;justify-content:space-between;"><span style="color:#999;">类目</span><span style="font-weight:500;">${data.category || "-"}</span></div>
+<div style="margin:15px 0;height:1px;background:#eee;"></div>
+<div style="margin:8px 0;display:flex;justify-content:space-between;"><span style="color:#999;">月销量</span><span style="font-weight:600;color:#005bff;">${data.monthlySales || 0} 件</span></div>
+<div style="margin:8px 0;display:flex;justify-content:space-between;"><span style="color:#999;">月销售额</span><span style="font-weight:600;color:#005bff;">${(data.monthlyRevenue || 0).toLocaleString()} ₽</span></div>
+<div style="margin:8px 0;display:flex;justify-content:space-between;"><span style="color:#999;">日销量</span><span style="font-weight:600;">${data.dailySales || 0} 件</span></div>
+<div style="margin:15px 0;height:1px;background:#eee;"></div>
+<div style="margin:8px 0;display:flex;justify-content:space-between;"><span style="color:#999;">月访客数</span><span>${(data.visitors || 0).toLocaleString()}</span></div>
+<div style="margin:8px 0;display:flex;justify-content:space-between;"><span style="color:#999;">详情加购率</span><span>${data.cartRate || 0}%</span></div>
+<div style="margin:8px 0;display:flex;justify-content:space-between;"><span style="color:#999;">均价</span><span>${data.avgPrice || 0} ₽</span></div>
+<div style="margin:8px 0;display:flex;justify-content:space-between;"><span style="color:#999;">当前库存</span><span>${data.stock || 0} 件</span></div>
+<div style="margin:8px 0;display:flex;justify-content:space-between;"><span style="color:#999;">广告费率DRR</span><span>${data.drr || 0}%</span></div>
+<div style="margin:8px 0;display:flex;justify-content:space-between;"><span style="color:#999;">最低卖家价</span><span>${data.minSellerPrice || 0} ₽</span></div>
+<div style="margin:8px 0;display:flex;justify-content:space-between;"><span style="color:#999;">卖家ID</span><span>${data.sellerId}</span></div>
+<div style="margin:8px 0;display:flex;justify-content:space-between;"><span style="color:#999;">发货模式</span><span>${data.salesType}</span></div>
+<div style="margin:8px 0;display:flex;justify-content:space-between;"><span style="color:#999;">是否被屏蔽</span><span style="color:#e53e3e;">${data.blocked}</span></div>
+${data.note ? `<div style="margin:8px 0;color:#999;font-size:12px;">${data.note}</div>` : ""}
+<div style="margin:15px 0;height:1px;background:#eee;"></div>
+<div style="margin:8px 0;display:flex;justify-content:space-between;"><span style="color:#999;">商品ID</span><span>${productId}</span></div>
+`;
+  });
+}
+
+function toFiniteNumber(value) {
+  if (typeof value === "number") return Number.isFinite(value) ? value : null;
+  const text = String(value ?? "").trim().replace(/\s+/g, "");
+  if (!text) return null;
+  let normalized = text;
+  if (/^[+-]?\d{1,3}(?:,\d{3})+(?:\.\d+)?$/.test(normalized)) {
+    normalized = normalized.replace(/,/g, "");
+  } else {
+    normalized = normalized.replace(",", ".");
+  }
+  if (!/^[+-]?\d+(?:\.\d+)?$/.test(normalized)) return null;
+  const number = Number(normalized);
+  return Number.isFinite(number) ? number : null;
+}
+
+function positiveNumber(value) {
+  const number = toFiniteNumber(value);
+  return number !== null && number > 0 ? number : null;
+}
+
+function mmToCm(value) {
+  const number = toFiniteNumber(value);
+  return number === null ? null : number / 10;
+}
+
+function gToKg(value) {
+  const number = toFiniteNumber(value);
+  return number === null ? null : number / 1000;
+}
+
+function selectSingleOzonSku(variants = [], preferredSkuId = "") {
+  if (!Array.isArray(variants)) return { ok: false, error: "SKU 数据格式不正确" };
+  const preferred = String(preferredSkuId ?? "").trim();
+  if (preferred) {
+    const exact = variants.filter((sku) => String(sku?.skuId ?? "").trim() === preferred);
+    if (exact.length === 1) return { ok: true, sku: exact[0] };
+    if (exact.length > 1) return { ok: false, error: `当前 SKU ${preferred} 在采集结果中重复` };
+  }
+  if (variants.length === 1) return { ok: true, sku: variants[0] };
+  if (!variants.length) return { ok: false, error: "未采集到当前商品 SKU" };
+  const candidateIds = variants.map((sku) => String(sku?.skuId || "未知")).join(", ");
+  return { ok: false, error: `无法仅凭当前链接确定唯一 SKU；当前 ${preferred || "未知"}，候选 ${candidateIds}` };
+}
+
+function skuOrPackageNumber(sku, packageInfo, skuKey, packageKey) {
+  return positiveNumber(sku?.[skuKey]) ?? positiveNumber(packageInfo?.[packageKey]);
+}
+
+function buildMvideoSingleSkuPreviewModel(payload = {}, sku = {}, currentSkuId = "") {
+  const packageInfo = payload.packageInfo || {};
+  const packaging = {
+    lengthCm: mmToCm(skuOrPackageNumber(sku, packageInfo, "lengthMm", "lengthMm")),
+    widthCm: mmToCm(skuOrPackageNumber(sku, packageInfo, "widthMm", "widthMm")),
+    heightCm: mmToCm(skuOrPackageNumber(sku, packageInfo, "heightMm", "heightMm")),
+    weightKg: gToKg(skuOrPackageNumber(sku, packageInfo, "weightG", "weightG")),
+  };
+  const marketPriceRub = positiveNumber(sku.priceRub) ?? positiveNumber(payload.price);
+  const purchaseCostCny = null;
+  const salePriceRub = null;
+  const inventory = null;
+  const packageComplete = Object.values(packaging).every((value) => value !== null && value > 0);
+  const gates = [];
+  const addGate = (label, ok, reason) => gates.push({ label, ok: Boolean(ok), reason: ok ? "" : reason });
+  addGate("CNY 采购价", purchaseCostCny !== null, "缺少人工核对的 CNY 采购成本");
+  addGate("M.Video RUB 售价", salePriceRub !== null, "需由定价模型根据尺重和 CNY 采购价生成");
+  addGate("库存", inventory !== null, "发布前必须确认 M.Video 库存");
+  addGate("包装尺重", packageComplete, "包装长宽高和重量必须为有效正数（mm→cm，g→kg）");
+  addGate("标题重构", false, "待模型生成无品牌标题，允许保留型号");
+  addGate("描述重构", false, "待模型生成无品牌描述，允许保留型号");
+  addGate("类目合规预检", false, "待按类目预检证书、TN VED、品牌授权等要求");
+  return {
+    dryRun: true,
+    currentSkuId: String(currentSkuId || ""),
+    skuId: String(sku.skuId || ""),
+    spec: cleanText(sku.spec || ""),
+    sourceTitle: cleanText(payload.title || ""),
+    sourceCategory: cleanText(payload.category || ""),
+    marketPriceRub,
+    marketPriceNote: "Ozon RUB 仅作市场价格证据，不进入 CNY 采购成本",
+    packaging,
+    brand: "无品牌",
+    titleStatus: "待模型重构（去除品牌，保留型号）",
+    descriptionStatus: "待模型重构（去除品牌，保留型号）",
+    complianceStatus: "待按类目预检：证书、TN VED、品牌授权等",
+    purchaseCostCny,
+    salePriceRub,
+    inventory,
+    gates,
+    publishReady: gates.every((gate) => gate.ok),
+  };
+}
+
+function formatPreviewNumber(value, unit = "") {
+  if (value === null || value === undefined) return "未获取";
+  const normalized = Number(value.toFixed(4));
+  return `${normalized.toLocaleString("zh-CN")}${unit ? ` ${unit}` : ""}`;
+}
+
+function previewRow(label, value) {
+  return `<div style="display:flex;justify-content:space-between;gap:8px;margin:5px 0;"><span style="color:#7c3aed;flex:0 0 82px;">${escapeHtml(label)}</span><span style="text-align:right;color:#312e81;font-weight:600;word-break:break-word;">${value}</span></div>`;
+}
+
+function renderMvideoSinglePreview(model) {
+  const gateRows = model.gates.map((gate) => `<div style="display:flex;justify-content:space-between;gap:8px;margin:5px 0;color:${gate.ok ? "#15803d" : "#b42318"};"><span>${gate.ok ? "✅" : "⛔"} ${escapeHtml(gate.label)}</span><span style="text-align:right;font-weight:600;">${gate.ok ? "通过" : escapeHtml(gate.reason)}</span></div>`).join("");
+  return `<div style="padding:6px;margin-bottom:7px;border-radius:6px;background:#fef3c7;color:#92400e;font-weight:700;">Dry-run 预览：不会真实发布</div>
+${previewRow("当前SKU", escapeHtml(model.currentSkuId || model.skuId))}
+${previewRow("规格", escapeHtml(model.spec || "-"))}
+${previewRow("来源标题", escapeHtml(model.sourceTitle || "-"))}
+${previewRow("来源类目", escapeHtml(model.sourceCategory || "-"))}
+${previewRow("Ozon市场价", escapeHtml(formatPreviewNumber(model.marketPriceRub, "₽")))}
+<div style="margin:4px 0 8px;color:#b45309;line-height:1.4;">${escapeHtml(model.marketPriceNote)}</div>
+${previewRow("长×宽×高", escapeHtml(`${formatPreviewNumber(model.packaging.lengthCm, "cm")} × ${formatPreviewNumber(model.packaging.widthCm, "cm")} × ${formatPreviewNumber(model.packaging.heightCm, "cm")}`))}
+${previewRow("重量", escapeHtml(formatPreviewNumber(model.packaging.weightKg, "kg")))}
+${previewRow("品牌", escapeHtml(model.brand))}
+${previewRow("标题", escapeHtml(model.titleStatus))}
+${previewRow("描述", escapeHtml(model.descriptionStatus))}
+${previewRow("合规", escapeHtml(model.complianceStatus))}
+<div style="margin-top:8px;padding-top:7px;border-top:1px solid #ddd6fe;">${gateRows}</div>
+<div style="margin-top:8px;color:${model.publishReady ? "#15803d" : "#b42318"};font-weight:700;">${model.publishReady ? "门禁通过" : "发布门禁未通过"}</div>`;
+}
+
+async function setupMvideoSinglePreview(root, currentSkuId) {
+  const button = root.querySelector("#ozon-mvideo-preview-button");
+  const panel = root.querySelector("#ozon-mvideo-single-preview");
+  if (!button || !panel) return;
+  let loaded = false;
+  let busy = false;
+  button.addEventListener("click", async () => {
+    if (busy) return;
+    if (panel.style.display !== "none") {
+      panel.style.display = "none";
+      button.textContent = "M.Video 单SKU预览";
+      return;
+    }
+    panel.style.display = "block";
+    button.textContent = "收起 M.Video 预览";
+    if (loaded) return;
+    busy = true;
+    button.disabled = true;
+    panel.innerHTML = `<div style="color:#6d28d9;">正在采集并匹配当前单 SKU...</div>`;
+    try {
+      if (pageNeedsOzonHumanCheck()) throw new Error("当前 Ozon 页面需要登录或人工验证，请完成后再试");
+      const payload = await collectOzonDetail();
+      if (!payload.title) throw new Error("商品标题尚未加载完成，请等待页面加载后重试");
+      const resolvedSkuId = String(currentSkuId || ozonProductIdFromUrl(location.href));
+      const selected = selectSingleOzonSku(payload.skuVariants || [], resolvedSkuId);
+      if (!selected.ok) throw new Error(selected.error);
+      const model = buildMvideoSingleSkuPreviewModel(payload, selected.sku, resolvedSkuId);
+      panel.innerHTML = renderMvideoSinglePreview(model);
+      loaded = true;
+    } catch (error) {
+      loaded = false;
+      panel.innerHTML = `<div style="color:#b42318;line-height:1.5;">${escapeHtml(error?.message || "单 SKU 预览失败")}</div>`;
+    } finally {
+      busy = false;
+      button.disabled = false;
+    }
+  });
+}
+
+async function setupEmbeddedOzonCollector(root) {
+  const select = root.querySelector("#ozon-embedded-store");
+  const button = root.querySelector("#ozon-embedded-collect");
+  const status = root.querySelector("#ozon-embedded-status");
+  if (!select || !button || !status) return;
+  await loadStoreOptions(select, status);
+  let busy = false;
+  button.addEventListener("click", async () => {
+    if (busy) return;
+    const storeId = String(select.value || "").trim();
+    if (!storeId) {
+      status.textContent = "请先选择 Ozon 店铺";
+      status.style.color = "#b42318";
+      return;
+    }
+    if (pageNeedsOzonHumanCheck()) {
+      status.textContent = "当前页面需要登录或人工验证，请完成后再采集";
+      status.style.color = "#b42318";
+      return;
+    }
+    busy = true;
+    button.disabled = true;
+    status.style.color = "#7f1d1d";
+    status.textContent = "正在采集当前商品...";
+    try {
+      const payload = await collectOzonDetail();
+      if (!payload.title) throw new Error("商品标题尚未加载完成，请等待页面加载后重试");
+      const { baseUrl } = await getActiveStoreId();
+      const result = await erpRequest("/api/ozon-learning/extension/detail-result", {
+        method: "POST",
+        body: { storeId, payload },
+      }, baseUrl);
+      if (!result?.ok || result.ingested !== true) throw new Error(result?.error || "ERP 未接收该商品");
+      const skuCount = Array.isArray(payload.skuVariants) ? payload.skuVariants.length : 0;
+      status.style.color = "#15803d";
+      status.textContent = `已采集并回传：${skuCount} 个 SKU`;
+    } catch (error) {
+      status.style.color = "#b42318";
+      status.textContent = `采集失败：${error?.message || "未知错误"}`;
+    } finally {
+      busy = false;
+      button.disabled = false;
+    }
+  });
+}
+setTimeout(initOzonProductSidebar, 1500);
+
+let pageContext = null;
 let floatingState = { minimized: false, selectedSkuKeys: new Set(), allSelected: true };
 const SHOP_SCAN_STORAGE_KEY = "ozonErp1688ShopScan";
 // Must change with every collector behaviour change. popup.js uses this
 // handshake to force-replace stale content scripts already living in a tab.
-const COLLECTOR_VERSION = "0.7.29"; // [Iteration 2026-09-21] Ozon batch collect: inline logic, no separate function after git pull overwrite
+const COLLECTOR_VERSION = "0.7.73"; // [Iteration 2026-09-25 v0.7.73] Add embedded Ozon collection and M.Video dry-run single-SKU preview; // [Iteration 2026-09-23 v0.7.72] Fix payload: collectOzonDetail now includes the precise entrypoint packageInfo (it was computed but dropped from the return, so only the weak DOM-text fallback shipped); // [Iteration 2026-09-23 v0.7.71] Fix packageInfo: parse Weight/Dimensions when they are top-level webCharacteristics row sections (no short/long wrapper), as on real PDP; // [Iteration 2026-09-23 v0.7.70] Keep BOTH seller backends seller.ozonru.cn + seller.ozon.ru; background finds the seller tab across both and calls the API via that tab origin; // [Iteration 2026-09-23 v0.7.69] Extract package weight/dimensions from entrypoint webCharacteristics (keys Weight/Dimensions) into packageInfo; [Iteration 2026-09-22 v0.7.68] Read JSON-LD from DOM <script type="application/ld+json"> (composer PDP has no seo widget) so brand/rating/reviewCount/price are captured; [Iteration 2026-09-22 v0.7.67] Ozon PDP: extract product video(s) from composer webGallery.videos (type=pdp only), brand/rating/reviewCount/description from JSON-LD, category from breadCrumbs; [Iteration 2026-09-22] Support new 1688 factory catalog (sale.1688.com/factory) full-shop scan via scroll+DOM, b2b- memberId // [Iteration 2026-09-21] Add seller ID, shipping model, blocked status, full vendor info matching 胜利者 // [Iteration 2026-09-21] Add full product analytics: visitors/cart rate/avg price/stock/DRR/min seller price, same data as 胜利者/上品帮 // [Iteration 2026-09-21] Fix response path: items at top level, map soldCount/gmvSum/avgOrdersOnAccDays fields, verified with real API call // [Iteration 2026-09-21] Fix sales data response parsing, return structured data // [Iteration 2026-09-21] Extract product data directly from public Ozon page, no seller API needed // [Iteration 2026-09-21] Fix duplicate collection: dedup by product_id, only scrape main list, brand default empty
 let extensionContextAvailable = true;
 
 function getExtensionRuntime() {
@@ -485,7 +844,6 @@ function mountOzonListInfo() {
   bar.innerHTML = `
     <div class="ozon-erp-list-bar-title">Ozon ERP 采集</div>
     <button class="ozon-erp-list-bar-btn" id="ozon-erp-import-visible">${isDetailPage ? "采集当前商品" : (isOzonSellerProductsAnalyticsPage() ? "采集当前分析表" : "导入可见商品")}</button>
-      <button class="ozon-erp-list-bar-btn" id="ozon-erp-batch-collect" style="background: #005bff; color: white; margin-left: 8px;">🚀 批量采集</button>
     <span class="ozon-erp-list-bar-status" id="ozon-erp-list-status"></span>
   `;
   document.body.appendChild(bar);
@@ -985,7 +1343,9 @@ function mountFloatingCollector() {
 }
 
 function is1688ShopListPage() {
-  return /page\/offerlist|offerlist_/i.test(location.href);
+  // [Iteration 2026-09-22 v0.7.65] 适配新版工厂店“产品目录”页 sale.1688.com/factory/*.html
+  // （memberId 为 b2b- 加密串、滚动懒加载、无 offerlist URL）；旧版旺铺 /page/offerlist 逻辑保持不变。
+  return /page\/offerlist|offerlist_|1688\.com\/factory\/[a-z0-9_-]+\.html/i.test(location.href);
 }
 
 function shopScanStorageGet() {
@@ -1039,16 +1399,18 @@ async function bindShopScanner(panel) {
       return;
     }
     sendRuntimeMessage({ type: "OZON_ERP_CRAWLER_POLL_NOW" }).catch(() => {});
-    if (wasFinished) {
-      state.finished = true;
-      await shopScanStorageSet(state);
-      button.disabled = false;
-      button.textContent = "采集中...";
-      status.textContent = `发现 ${Object.keys(state.items || {}).length}/${state.total || "?"}，待详情 ${state.queued || 0}，已完整 ${state.collected || 0}`;
-      return;
-    }
+    // [Iteration 2026-09-22 v0.7.66] 修复“重新采集缺失商品”在工厂滚动页失效：旧逻辑在
+    // wasFinished 时补写本地缓存后直接 return，不发 SHOP_SCAN_START，导致页面不回顶滚动、
+    // 采不到懒加载遗漏/新增商品。现补写后统一重新发起扫描：工厂页 scanFactoryByScroll
+    // 总是回顶重滚，旧旺铺分页从第 1 页重扫；扫描中按钮保持禁用，由 finished 回执复位。
     state.finished = false;
-    status.textContent = `从第 ${state.nextPage || 1} 页继续扫描并采集`;
+    if (wasFinished) state.nextPage = 1;
+    await shopScanStorageSet(state);
+    button.disabled = true;
+    button.textContent = "扫描并采集中...";
+    status.textContent = wasFinished
+      ? "重新滚动全店，补采缺失/新增商品…"
+      : `从第 ${state.nextPage || 1} 页继续扫描并采集`;
     window.postMessage({ type: "OZON_ERP_1688_SHOP_SCAN_START", requestId: state.requestId, startPage: state.nextPage || 1, expectedTotal: state.total || 0 }, "*");
   });
 }
@@ -1073,14 +1435,17 @@ async function handleShopScanPage(message) {
   if (!state || state.requestId !== message.requestId || state.shopKey !== shopScanIdentity()) return;
   let duplicateCount = Number(state.duplicateCount || 0);
   state.items ||= {};
+  // [Iteration 2026-09-22 v0.7.66] 重扫会重发整页商品，只把本地未见的新 offer POST 后端；
+  // 已采的本地去重跳过（后端另有 (run_id,offer_id) 幂等兜底），避免整店重复刷请求触发风控。
+  const freshItems = [];
   for (const item of message.items || []) {
     if (state.items[item.offerId]) duplicateCount += 1;
-    else state.items[item.offerId] = item;
+    else { state.items[item.offerId] = item; freshItems.push(item); }
   }
   try {
     const queued = await erpRequest("/api/1688/shop-scan/chunk", {
       method: "POST",
-      body: { storeId: state.storeId, shopKey: state.shopKey, items: message.items || [], total: message.total || state.total || 0, finished: Boolean(message.finished) },
+      body: { storeId: state.storeId, shopKey: state.shopKey, items: freshItems, total: message.total || state.total || 0, finished: Boolean(message.finished) },
     });
     state.runId = queued.runId;
     state.queued = queued.queued;
@@ -1286,19 +1651,6 @@ function productSizeWeightStatus(payload = {}) {
     .map((sku, index) => ({ index: index + 1, missing: missingSizeWeightFields(sku) }))
     .filter((item) => item.missing.length);
   if (!productMissing.length && !skuMissing.length) return { ok: true, message: "" };
-
-    // 批量采集按钮
-    bar.querySelector("#ozon-erp-batch-collect").addEventListener("click", async () => {
-      const status = bar.querySelector("#ozon-erp-list-status");
-      status.textContent = "开始批量采集...";
-      try {
-        const count = await runOzonBatchCollect({ minPrice: 30, maxPrice: 100, minRating: 4.6, maxPages: 10 });
-        status.textContent = `批量采集完成，共 ${count} 个`;
-      } catch (e) {
-        status.textContent = `批量采集失败: ${e.message}`;
-      }
-      setTimeout(() => { status.textContent = ""; }, 5000);
-    });
   const parts = [];
   if (productMissing.length) parts.push(`商品缺${productMissing.join("、")}`);
   if (skuMissing.length) parts.push(`${skuMissing.length}个SKU缺尺重`);
@@ -1897,8 +2249,7 @@ function parseRubPrice(text = "") {
 }
 
 function ozonProductIdFromUrl(url = "") {
-  return String(url || "").match(/\/product\/(?:[^/]+-)?(\d{5,})(?:\/|\?|$)/)?.[1]
-    || String(url || "").match(/\/product\/[^/]+\/(\d+)/)?.[1] || "";
+  return String(url || "").match(/-(\d+)\/?\??/)?.[1] || String(url || "").match(/\/product\/[^/]+\/(\d+)/)?.[1] || "";
 }
 
 function extractOzonCardFromLink(link, index) {
@@ -2153,6 +2504,7 @@ function collectOzonDomFallback() {
   const images = dedupe([...galleryImages, ...document.images]
     .map((image) => normalizeOzonImageUrl(image.currentSrc || image.src))
     .filter(isOzonProductImageUrl)
+    .filter((url) => !/\/s3\/video-\d|\/vod\/video-/i.test(url))
     .slice(0, 80));
 
   // 提取价格
@@ -2257,12 +2609,7 @@ function collectOzonDomFallback() {
     packageInfo: extractOzonPackageHint(document.body?.innerText || ""),
     salesHint: extractOzonSalesHint(document.body?.innerText || ""),
     attributes: dedupeBy(attributes, (item) => `${item.name}:${item.value}`).slice(0, 80),
-    // [Iteration 2026-09-20] 修正详情：优先从 webDescription 组件提取
-    description: (() => {
-      const descEl = document.querySelector('[data-widget="webDescription"]');
-      if (descEl) return cleanText(descEl.innerText).slice(0, 4000);
-      return cleanText(document.body?.innerText || "").slice(0, 4000);
-    })(),
+    description: cleanText(document.body?.innerText || "").slice(0, 4000),
     collectedAt: new Date().toISOString(),
   };
 }
@@ -2283,6 +2630,116 @@ function ozonWidgetImages(gallery) {
   return dedupe((Array.isArray(gallery?.images) ? gallery.images : [])
     .map((item) => normalizeOzonImageUrl(item?.src || item?.url || item?.image?.src || ""))
     .filter(isOzonProductImageUrl));
+}
+
+// [Iteration 2026-09-22 v0.7.67] ---- Ozon PDP video / brand / category / rating ----
+function ozonVideoIdFromUrl(url) {
+  // Standard product CDN: https://v-1.ozone.ru/vod/video-72/<ULID>/asset_3_h264.mp4?type=pdp
+  const m = String(url || "").match(/\/vod\/video-7\d\/([0-9A-Za-z]{16,})\//);
+  return m ? m[1] : "";
+}
+function normalizeOzonVideoEntry(raw) {
+  if (!raw || typeof raw !== "object") return null;
+  const u = String(raw.url || raw.videoUrl || raw.src || "").trim();
+  if (!u || !/\.mp4(\?|$)/i.test(u)) return null;
+  return {
+    url: u,
+    coverUrl: String(raw.coverUrl || raw.previewUrl || raw.cover || "").trim(),
+    title: cleanText(raw.name || raw.title || ""),
+    videoId: String(raw.videoId || raw.uuid || ozonVideoIdFromUrl(u) || "").trim(),
+  };
+}
+// The product's OWN videos only. webGallery.videos carries ?type=pdp; buyer
+// review / recommendation clips (?type=review) must never become product media.
+function ozonPdpVideos(states) {
+  const gallery = findOzonWidget(states, "webGallery");
+  const out = [];
+  const seen = new Set();
+  for (const source of (Array.isArray(gallery?.videos) ? gallery.videos : [])) {
+    const item = normalizeOzonVideoEntry(source);
+    if (!item || !/type=pdp/i.test(item.url) || seen.has(item.url)) continue;
+    seen.add(item.url);
+    out.push(item);
+  }
+  return out;
+}
+// Test contract: prefer the PDP video; fall back to a webListPhotos review clip
+// only when the product has no own video. The collect flow itself uses
+// ozonPdpVideos (strict) so buyer-review clips are never collected as the video.
+function ozonVideoFromStates(states) {
+  const own = ozonPdpVideos(states);
+  if (own.length) return own[0];
+  const photos = findOzonWidget(states, "webListPhotos");
+  for (const media of (Array.isArray(photos?.mediaContent) ? photos.mediaContent : [])) {
+    if (!media || String(media.type || "").toUpperCase() !== "VIDEO") continue;
+    const item = normalizeOzonVideoEntry({ url: media.videoUrl, coverUrl: media.previewUrl, videoId: media.uuid, name: "" });
+    if (item) return item;
+  }
+  return null;
+}
+// [Iteration 2026-09-22 v0.7.68] On PDP the Product JSON-LD is rendered in the DOM as
+// <script type="application/ld+json">; the composer API response has no seo widget, so the
+// previous payload.seo.script path came back empty. Read DOM JSON-LD first (content scripts
+// share the DOM), then fall back to composer seo for older layouts / vm tests.
+function ozonDomJsonLd() {
+  const out = [];
+  try {
+    if (typeof document === "undefined" || !document || !document.querySelectorAll) return out;
+    const nodes = document.querySelectorAll('script[type="application/ld+json"]');
+    Array.prototype.forEach.call(nodes, (node) => {
+      try {
+        const txt = (node.textContent || node.innerText || "").trim();
+        if (!txt) return;
+        const parsed = JSON.parse(txt);
+        const arr = Array.isArray(parsed) ? parsed : [parsed];
+        arr.forEach((o) => { if (o && typeof o === "object") out.push(o); });
+      } catch (_) { /* one malformed ld+json block should not break the rest */ }
+    });
+  } catch (_) { /* document unavailable (vm unit tests) */ }
+  return out;
+}
+function ozonPickProductLd(list) {
+  const arr = Array.isArray(list) ? list : [];
+  return arr.find((o) => {
+    const t = String((o && o["@type"]) || "").toLowerCase();
+    return t === "product" || Boolean(o && (o.brand || o.aggregateRating || o.offers));
+  }) || arr[0] || null;
+}
+function ozonStructuredSeo(payload) {
+  const out = { title: "", brand: "", rating: "", reviewCount: "", description: "", image: "" };
+  try {
+    let data = ozonPickProductLd(ozonDomJsonLd());
+    if (!data) {
+      const script = payload?.seo?.script?.[0]?.innerHTML;
+      data = script ? JSON.parse(script) : null;
+    }
+    out.title = cleanText(data?.name || data?.title || "");
+    const brand = data?.brand;
+    out.brand = cleanText(typeof brand === "object" ? (brand?.name || brand?.brand || "") : brand);
+    const agg = data?.aggregateRating || {};
+    out.rating = cleanText(agg.ratingValue || agg.rating || "");
+    out.reviewCount = cleanText(agg.reviewCount || agg.ratingCount || "");
+    out.description = String(data?.description || "").trim();
+    out.image = cleanText(Array.isArray(data?.image) ? data.image[0] : data?.image);
+  } catch (_) { /* JSON-LD absent */ }
+  return out;
+}
+function ozonStructuredCategory(states, brandName) {
+  const widget = findOzonWidget(states, "breadCrumbs") || findOzonWidget(states, "breadcrumbs");
+  const crumbs = Array.isArray(widget?.breadcrumbs) ? widget.breadcrumbs : [];
+  const parts = crumbs.map((c) => cleanText(c?.text || c?.name || "")).filter(Boolean);
+  // Ozon appends the brand directory as the final crumb; drop it.
+  if (brandName && parts.length && parts[parts.length - 1].toLowerCase() === String(brandName).toLowerCase()) parts.pop();
+  return parts.join(" > ");
+}
+function ozonBrandFromAttributes(attributes) {
+  for (const attr of (attributes || [])) {
+    const name = String(attr?.name || "").trim();
+    if (/^(бренд|brand|торговая марка|изготовитель|品牌)\b/i.test(name) || /бренд|brand|品牌/i.test(name)) {
+      return cleanText(attr?.value || "");
+    }
+  }
+  return "";
 }
 
 function ozonWidgetPrice(priceWidget, fallback = "") {
@@ -2306,6 +2763,50 @@ function ozonStructuredAttributes(states) {
     }
   }
   return dedupeBy(result, (item) => `${item.name}:${item.value}`);
+}
+
+// [Iteration 2026-09-23 v0.7.69] Package weight & dimensions live in the
+// entrypoint webCharacteristics widget (keys "Weight" / "Dimensions"), not in
+// the composer payload. Parse them by language-independent keys (translated
+// names as fallback) into packageInfo, which the backend bridge maps to each
+// variant's weight_g / length_mm / width_mm / height_mm.
+function ozonPackageInfoFromStates(states) {
+  const pkg = { weightG: "", lengthMm: "", widthMm: "", heightMm: "", label: "" };
+  let weightText = "";
+  let dimsText = "";
+  for (const { key, value } of states) {
+    if (!/webcharacteristics|characteristics/i.test(key) || !Array.isArray(value && value.characteristics)) continue;
+    for (const section of value.characteristics) {
+      // [Iteration 2026-09-23 v0.7.71] A section may itself be a single row
+      // ({key,name,values}) with no short/long wrapper (real PDP Weight/
+      // Dimensions). Include the section itself in that case.
+      const blocks = [section && section.short, section && section.long];
+      if (section && (section.key || Array.isArray(section.values))) blocks.push([section]);
+      for (const block of blocks) {
+        if (!Array.isArray(block)) continue;
+        for (const row of block) {
+          const rk = String((row && row.key) || "");
+          const nm = String((row && row.name) || "");
+          const text = cleanText(((row && row.values) || []).map((it) => (it && (it.text || it.value)) || "").filter(Boolean).join(", "));
+          if (!weightText && (/^weight/i.test(rk) || /(вес товара|商品重量|item weight|product weight)/i.test(nm))) weightText = text;
+          if (!dimsText && (/^dimension/i.test(rk) || /(габарит|размеры|dimension|尺寸)/i.test(nm))) dimsText = text;
+        }
+      }
+    }
+  }
+  const wm = String(weightText).match(/\d+(?:[.,]\d+)?/);
+  if (wm) pkg.weightG = wm[0].replace(",", ".");
+  const nums = String(dimsText).match(/\d+(?:[.,]\d+)?/g) || [];
+  if (nums.length >= 3) {
+    pkg.lengthMm = nums[0].replace(",", ".");
+    pkg.widthMm = nums[1].replace(",", ".");
+    pkg.heightMm = nums[2].replace(",", ".");
+  }
+  const parts = [];
+  if (pkg.weightG) parts.push(pkg.weightG + " g");
+  if (pkg.lengthMm && pkg.widthMm && pkg.heightMm) parts.push(pkg.lengthMm + "x" + pkg.widthMm + "x" + pkg.heightMm + " mm");
+  pkg.label = parts.join(" / ");
+  return pkg;
 }
 
 function ozonStructuredDescription(states) {
@@ -2440,39 +2941,13 @@ async function fetchOzonPageJson(productUrl, endpoint = "composer", timeoutMs = 
 
 function ozonStructuredTitle(payload) {
   try {
-    const script = payload?.seo?.script?.[0]?.innerHTML;
-    const data = script ? JSON.parse(script) : {};
+    let data = ozonPickProductLd(ozonDomJsonLd());
+    if (!data) {
+      const script = payload?.seo?.script?.[0]?.innerHTML;
+      data = script ? JSON.parse(script) : null;
+    }
     return cleanText(data?.name || data?.title || "");
   } catch { return ""; }
-}
-
-function ozonVideoFromStates(states) {
-  // Ozon stores the product video(s) in the gallery widget (main `videos`
-  // array) and customer-review videos in webListPhotos mediaContent. Prefer
-  // the pdp video; fall back to a review video only if no pdp video exists.
-  const gallery = findOzonWidget(states, "webGallery");
-  const galleryVideos = Array.isArray(gallery?.videos) ? gallery.videos : [];
-  const pdpVideo = galleryVideos.find((item) => /\.(mp4|m3u8)([?#]|$)/i.test(String(item?.url || "")));
-  if (pdpVideo?.url) {
-    return {
-      url: pdpVideo.url,
-      coverUrl: pdpVideo.coverUrl || "",
-      title: pdpVideo.name || "",
-      videoId: String(pdpVideo?.trackingInfo?.video_view_start?.key || "").slice(0, 200),
-    };
-  }
-  const listPhotos = findOzonWidget(states, "webListPhotos");
-  const mediaContent = Array.isArray(listPhotos?.mediaContent) ? listPhotos.mediaContent : [];
-  const reviewVideo = mediaContent.find((item) => item?.type === "VIDEO" && /\.(mp4|m3u8)([?#]|$)/i.test(String(item?.videoUrl || "")));
-  if (reviewVideo?.videoUrl) {
-    return {
-      url: reviewVideo.videoUrl,
-      coverUrl: reviewVideo.previewUrl || "",
-      title: "",
-      videoId: String(reviewVideo.uuid || "").slice(0, 200),
-    };
-  }
-  return null;
 }
 
 async function collectOzonDetail() {
@@ -2499,24 +2974,6 @@ async function collectOzonDetail() {
   // apart by picture, so each SKU row carries its own image (one SKU per row).
   const aspectDimNames = primaryAspectOptions.map((item) => item.name);
   const currentProductId = ozonProductIdFromUrl(location.href);
-  const primaryVideo = ozonVideoFromStates(primaryStates);
-  // Every SKU owns its own gallery on Ozon (colour × quantity etc.). The
-  // primary composer response only carries the current SKU's image set plus a
-  // single thumbnail per variant, so fetch each remaining SKU's own composer
-  // payload to give every SKU row its real image set (one SKU per row).
-  const skuImagesBySku = new Map();
-  for (const row of primaryAspects) {
-    if (!row.skuId || row.skuId === currentProductId || !row.url || skuImagesBySku.has(row.skuId)) continue;
-    // eslint-disable-next-line no-await-in-loop
-    const payload = await fetchOzonPageJson(row.url);
-    if (!payload) continue;
-    const states = parseOzonWidgetStates(payload);
-    const gallery = findOzonWidget(states, "webGallery");
-    const images = ozonWidgetImages(gallery);
-    if (images.length) skuImagesBySku.set(row.skuId, images);
-    // eslint-disable-next-line no-await-in-loop
-    await new Promise((resolve) => setTimeout(resolve, 250));
-  }
   const variants = [];
   const variantGroups = [];
   const seenSku = new Set();
@@ -2539,14 +2996,13 @@ async function collectOzonDetail() {
     const styleValue = styleProp?.value || properties[0]?.value || "";
     const styleId = styleDimName ? `${styleDimName}:${styleValue}` : (styleValue ? `款式:${styleValue}` : row.skuId);
     const styleLabel = styleValue || styleDimName || "款式";
-    const ownImages = row.skuId === currentProductId ? primaryImages : (skuImagesBySku.get(row.skuId) || []);
     variants.push({
       skuId: row.skuId,
       spec,
-      image: ownImages[0] || row.image || primaryImages[0] || "",
+      image: row.image || primaryImages[0] || "",
       styleId,
       styleLabel,
-      imageUrls: ownImages.length ? ownImages : (row.image ? [row.image] : primaryImages),
+      imageUrls: primaryImages.length ? primaryImages : (row.image ? [row.image] : []),
       priceRub: row.price || "",
     });
     const group = variantGroups.find((item) => item.styleId === styleId);
@@ -2561,24 +3017,24 @@ async function collectOzonDetail() {
   const detailStates = parseOzonWidgetStates(detailPayload || {});
   const structuredDescription = ozonStructuredDescription(detailStates);
   const structuredAttributes = ozonStructuredAttributes(detailStates);
+  const packageInfo = ozonPackageInfoFromStates(detailStates);
   const seller = ozonStructuredSeller([...primaryStates, ...detailStates]);
-  const title = ozonStructuredTitle(primaryPayload) || fallback.title;
+  // [Iteration 2026-09-22 v0.7.67] authoritative brand / rating / reviewCount /
+  // description from the page's JSON-LD, category from breadCrumbs widget.
+  const seo = ozonStructuredSeo(primaryPayload);
+  const attrsForBrand = structuredAttributes.length ? structuredAttributes : fallback.attributes;
+  const brand = seo.brand || ozonBrandFromAttributes(attrsForBrand) || "";
+  const category = ozonStructuredCategory(primaryStates, brand) || fallback.category || "";
+  const scoreWidget = findOzonWidget(primaryStates, "webReviewProductScore") || findOzonWidget(primaryStates, "webSingleProductScore");
+  const rating = seo.rating || cleanText(scoreWidget?.totalScore || "") || fallback.rating || "";
+  const reviewCount = seo.reviewCount || cleanText(scoreWidget?.reviewsCount || "") || fallback.reviewCount || "";
+  // Product's own PDP video(s) only; buyer-review clips are never collected.
+  const pdpVideos = ozonPdpVideos(primaryStates);
+  const video = pdpVideos[0] || null;
+  const title = seo.title || ozonStructuredTitle(primaryPayload) || fallback.title;
   const price = ozonWidgetPrice(findOzonWidget(primaryStates, "webPrice"), fallback.price);
   const images = primaryImages.length ? primaryImages : fallback.images;
-  const skuVariants = variants.length ? variants : fallback.skuVariants;
-  const attributes = structuredAttributes.length ? structuredAttributes : fallback.attributes;
-  const description = structuredDescription.description || fallback.description;
-
-  // [Iteration 2026-09-20] 自动质量检查（self-improving）
-  const parseIssues = [];
-  if (!title || title.length < 5) parseIssues.push("标题为空或过短");
-  if (images.length < 3) parseIssues.push("图片数量不足（仅 ${images.length} 张）");
-  if (!description || description.length < 50) parseIssues.push("详情描述为空或过短");
-  if (!skuVariants || skuVariants.length === 0) parseIssues.push("未识别到 SKU 变体");
-  if (!attributes || attributes.length < 3) parseIssues.push("属性数量不足（仅 ${attributes?.length || 0} 个）");
-  if (!fallback.category || fallback.category.length < 5) parseIssues.push("分类为空或未识别");
-  if (variants.length === 0) parseIssues.push("结构化页面数据未返回可识别变体，已保留页面变体回退");
-
+  const description = structuredDescription.description || seo.description || fallback.description;
   return {
     ...fallback,
     title,
@@ -2586,16 +3042,23 @@ async function collectOzonDetail() {
     image: images[0] || "",
     images,
     mediaComplete: images.length > 0,
-    source_product_id: currentProductId,
-    video: primaryVideo,
     skuVariants: variants.length ? variants : fallback.skuVariants,
     variantGroups,
     detailImages: structuredDescription.detailImages,
     richContent: structuredDescription.richContent,
     attributes: structuredAttributes.length ? structuredAttributes : fallback.attributes,
-    description: structuredDescription.description || fallback.description,
+    description,
+    // [Iteration 2026-09-23 v0.7.72] ship precise entrypoint packageInfo; DOM fallback only when it is absent
+    packageInfo: packageInfo.label ? packageInfo : (fallback.packageInfo && fallback.packageInfo.label ? fallback.packageInfo : packageInfo),
+    brand,
+    category,
+    rating,
+    reviewCount,
+    video,
+    videos: pdpVideos,
     ...seller,
-    captureSource: "ozon_page_json_v2",
+    captureSource: "ozon_page_json_v3",
+    parseIssues: variants.length ? [] : ["结构化页面数据未返回可识别变体，已保留页面变体回退"],
   };
 }
 
@@ -2617,6 +3080,18 @@ if (window.__OZON_ERP_COLLECTOR_TEST__) {
     ozonStructuredDescription,
     ozonStructuredSeller,
     ozonVideoFromStates,
+    ozonPdpVideos,
+    ozonStructuredSeo,
+    ozonStructuredCategory,
+    ozonDomJsonLd,
+    ozonPickProductLd,
+    ozonPackageInfoFromStates,
+    toFiniteNumber,
+    positiveNumber,
+    mmToCm,
+    gToKg,
+    selectSingleOzonSku,
+    buildMvideoSingleSkuPreviewModel,
   });
 }
 
@@ -2795,124 +3270,3 @@ function dedupeBy(items, keyFn) {
 function sleep(ms) {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
-
-
-
-
-
-
-// [Iteration 2026-09-20] Ozon 搜索结果页批量采集
-chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
-  if (msg.type === "OZON_BATCH_COLLECT") {
-    runOzonBatchCollect(msg.filters).then((count) => {
-      sendResponse({ ok: true, count });
-    }).catch((err) => {
-      sendResponse({ ok: false, error: err.message });
-    });
-    return true; // 异步响应
-  }
-});
-
-// [Iteration 2026-09-20] 批量采集页面进度条
-function showBatchProgress(text) {
-  let el = document.getElementById("ozon-batch-progress");
-  if (!el) {
-    el = document.createElement("div");
-    el.id = "ozon-batch-progress";
-    el.style.cssText = "position: fixed; top: 20px; right: 20px; background: #005bff; color: white; padding: 12px 20px; border-radius: 8px; z-index: 99999; font-size: 14px; box-shadow: 0 4px 12px rgba(0,0,0,0.3);";
-    document.body.appendChild(el);
-  }
-  el.textContent = text;
-}
-
-function hideBatchProgress() {
-  const el = document.getElementById("ozon-batch-progress");
-  if (el) el.remove();
-}
-
-async function runOzonBatchCollect(filters) {
-  const { minPrice, maxPrice, minRating, maxPages } = filters;
-  let collected = 0;
-  let checked = 0;
-
-  showBatchProgress("🚀 Ozon 批量采集开始...");
-  console.log("Ozon 批量采集开始", filters);
-
-  for (let page = 1; page <= maxPages; page++) {
-    showBatchProgress(`📄 第 ${page}/${maxPages} 页...`)
-    console.log(`翻到第 ${page} 页`);
-
-    // 等待页面加载
-    await new Promise((r) => setTimeout(r, 2000));
-
-    // 直接用现有的、已经验证过的函数采集当前页所有产品
-    const products = collectAllVisibleOzonProducts();
-    console.log(`当前页找到 ${products.length} 个产品`);
-
-    for (const p of products) {
-      try {
-        checked++;
-        showBatchProgress(`🔍 已查 ${checked} 个 | ${Math.round(p.price)}₽ ${p.rating}★ | 已采 ${collected}`)
-        console.log(`检查: ${p.title?.slice(0, 30)}... ${p.price}₽, ${p.rating}★`);
-
-        // 转成数字
-        const priceNum = parseFloat(p.price) || 0;
-        const ratingNum = parseFloat(p.rating) || 0;
-
-        console.log(`看到产品: ${p.title?.slice(0, 20)}... price=${p.price}(${priceNum}₽), rating=${p.rating}(${ratingNum}★)`)
-        showBatchProgress(`👀 ${priceNum}₽ ${ratingNum}★ - ${p.title?.slice(0,15)}...`)
-
-        // 按条件筛选
-        if (priceNum < minPrice || priceNum > maxPrice) {
-          console.log(`价格不符合: ${priceNum} 不在 ${minPrice}-${maxPrice}`)
-          continue;
-        }
-        if (ratingNum < minRating) {
-          console.log(`评分不符合: ${ratingNum} < ${minRating}`)
-          continue;
-        }
-
-        // 符合条件，导入到 ERP
-        showBatchProgress(`✅ 符合条件！正在导入到 ERP...`)
-        const result = await importProductToErp(p);
-        if (!result?.error) {
-          collected++;
-          showBatchProgress(`🎉 已导入 ${collected} 个！继续...`)
-          console.log(`导入成功！累计 ${collected} 个`);
-        } else {
-          console.log(`导入失败: ${result.error}`);
-        }
-
-        await new Promise((r) => setTimeout(r, 800)); // 间隔，防反爬
-      } catch (e) {
-        console.error("处理产品失败", p.title, e);
-      }
-    }
-
-    // 点下一页
-    showBatchProgress(`⏳ 翻到下一页...`);
-    // 找下一页按钮
-    const nextBtn = document.querySelector('[data-widget="paginatorNext"], a[href*="page=' + (page + 1) + '"], button[aria-label="Next"]');
-    if (!nextBtn) {
-      console.log("没有下一页了");
-      break;
-    }
-    nextBtn.click();
-  }
-
-  console.log(`批量采集完成，共 ${collected} 个`);
-  showBatchProgress(`🎉 完成！共采集导入 ${collected} 个产品`)
-  setTimeout(hideBatchProgress, 8000);
-  return collected;
-}
-
-
-
-
-
-
-
-
-
-
-

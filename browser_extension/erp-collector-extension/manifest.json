@@ -1,7 +1,7 @@
-﻿{
+{
   "manifest_version": 3,
   "name": "Ozon ERP 统一采集助手",
-  "version": "0.7.29",
+  "version": "0.7.73",
   "description": "统一采集 1688、Ozon 与 Amazon 商品，并发送到对应 ERP。",
   "action": {
     "default_title": "Ozon ERP 统一采集助手",
@@ -47,7 +47,9 @@
     "http://192.168.0.147:8000/*",
     "http://localhost:8000/*",
     "http://127.0.0.1:8000/*",
-    "http://127.0.0.1:5000/*"
+    "http://127.0.0.1:5000/*",
+    "https://seller.ozonru.cn/*",
+    "https://*.ozonru.cn/*"
   ],
   "web_accessible_resources": [
     {
@@ -66,7 +68,9 @@
         "https://*.amazon.de/*",
         "https://*.amazon.fr/*",
         "https://*.amazon.it/*",
-        "https://*.amazon.es/*"
+        "https://*.amazon.es/*",
+        "https://seller.ozonru.cn/*",
+        "https://*.ozonru.cn/*"
       ]
     }
   ],
@@ -110,7 +114,9 @@
         "https://*.1688.com/*",
         "https://login.taobao.com/*",
         "https://*.ozon.ru/*",
-        "https://seller.ozon.ru/*"
+        "https://seller.ozon.ru/*",
+        "https://seller.ozonru.cn/*",
+        "https://*.ozonru.cn/*"
       ],
       "js": [
         "content.js"
@@ -119,10 +125,3 @@
     }
   ]
 }
-
-
-
-
-
-
-

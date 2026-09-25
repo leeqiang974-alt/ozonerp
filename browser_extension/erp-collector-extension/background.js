@@ -1,3 +1,12 @@
+// [Iteration 2026-09-25 v0.7.73] Version sync for embedded Ozon collection and M.Video single-SKU dry-run preview.
+// [Iteration 2026-09-23 v0.7.72] (no background logic change; version sync: collectOzonDetail returned payload now includes the precise packageInfo)
+// [Iteration 2026-09-23 v0.7.71] (no background logic change; version sync for packageInfo parser fix in content.js)
+// [Iteration 2026-09-23 v0.7.70] Seller backend: keep BOTH seller.ozonru.cn (new) and seller.ozon.ru; query the seller tab across both domains and call what_to_sell API via that tab's location.origin.
+// [Iteration 2026-09-23 v0.7.69] Extract package weight/dimensions from entrypoint webCharacteristics (Weight/Dimensions) into packageInfo; backend bridge already maps packageInfo to variant weight_g/length/width/height.
+// [Iteration 2026-09-22 v0.7.68] JSON-LD read from DOM ld+json (brand/rating/price); synced with content.js v0.7.68.
+// [Iteration 2026-09-22 v0.7.67] Ozon PDP video/brand/category/rating extraction synced with content.js v0.7.67.
+// [Iteration 2026-09-22 v0.7.66] Factory "rescan missing" re-triggers the scroll scan after resync (was returning early); content only POSTs newly seen offers; background queue logic unchanged.
+// [Iteration 2026-09-22 v0.7.65] Full-shop scan now supports the new 1688 factory catalog (sale.1688.com/factory) via scroll+DOM; background queue logic unchanged.
 // Ozon ERP runs on the dedicated LAN notebook. Amazon CBT collection remains
 // on the separate Mercado Libre ERP queue; the two flows must not mix.
 const ERP_BASE = "http://192.168.0.147:8000";
@@ -6,6 +15,20 @@ const MELI_BASE = "https://ml-erp.woxq.cn";
 const WORKER_ID_KEY = "ozonErpCrawlerWorkerId";
 const HUMAN_CHECK_PAUSED_KEY = "ozonErpHumanCheckPaused";
 let busyByType = {};
+// 【2026-09-22 迭代】记录每个 slot 持锁时间，配合看门狗给僵死任务解锁，
+// 防止单个 Amazon 标签页采集卡死（sendMessage 永不返回）锁死整条串行队列。
+let busySince = {};
+// 【2026-09-22 迭代】通用超时包装：Amazon 采集消息/content script 一旦卡住，
+// 到时强制 reject，由外层 catch 回传 failed、关闭标签页并释放 slot 锁。
+function withTimeout(promise, ms, label) {
+  return new Promise((resolve, reject) => {
+    const timer = setTimeout(() => reject(new Error(label || "操作超时")), ms);
+    Promise.resolve(promise).then(
+      (value) => { clearTimeout(timer); resolve(value); },
+      (error) => { clearTimeout(timer); reject(error); },
+    );
+  });
+}
 let lastWorkerState = {
   status: "idle",
   job: null,
@@ -66,9 +89,21 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
     sendResponse({ ok: true, state: lastWorkerState });
     return false;
   }
+  if (message?.type === "OZON_FETCH_SALES_DATA") {
+    fetchOzonSalesFromSellerTab(message.productId).then(sendResponse);
+    return true;
+  }
   if (message?.type === "OZON_ERP_CRAWLER_POLL_NOW") {
     Promise.all([pollCrawlerJob({ manual: true, slot: 0 }), pollCrawlerJob({ manual: true, slot: 1 })])
       .then(() => sendResponse({ ok: true, state: lastWorkerState }));
+    return true;
+  }
+  // 【2026-09-22 迭代】ERP 页面保活心跳：唤醒被浏览器节流/休眠的 service worker，
+  // 并只驱动美客多 Amazon 采集 slot0（不碰局域网 Ozon slot1）。
+  if (message?.type === "MELI_KEEPALIVE_POLL") {
+    pollCrawlerJob({ slot: 0 })
+      .then(() => sendResponse({ ok: true, state: lastWorkerState }))
+      .catch(() => sendResponse({ ok: true }));
     return true;
   }
   if (message?.type === "OZON_ERP_CRAWLER_RESUME_AFTER_HUMAN") {
@@ -210,24 +245,24 @@ function scheduleCrawlerSlot(slot, delayMs = 1200) {
 async function pollCrawlerJob(options = {}) {
   const slot = Number(options.slot || 0) === 1 ? 1 : 0;
   const pollKey = `poll:${slot}`;
-  if (busyByType[pollKey]) return;
-  busyByType[pollKey] = true;
-  try {
-    const humanPause = await getHumanCheckPause();
-    if (!options.resume && humanPause?.paused) {
-      await setWorkerState({
-        status: "waiting_human",
-        job: humanPause.job || lastWorkerState.job,
-        message: "等待人工验证，自动采集已暂停",
-        lastError: humanPause.message || lastWorkerState.lastError || "等待人工验证",
-        needsHuman: true,
-      });
+  // 【2026-09-22 迭代】看门狗：锁持有超过 150 秒视为上一任务僵死（采集消息
+  // 已有 75 秒超时兜底，此处为双保险），强制解锁让本轮重新领取，避免队列停摆。
+  if (busyByType[pollKey]) {
+    if (busySince[pollKey] && Date.now() - busySince[pollKey] > 150000) {
+      busyByType[pollKey] = false;
+    } else {
       return;
     }
-    await setWorkerState({ status: "checking", job: null, message: "正在检查 ERP 任务", lastError: "", needsHuman: false });
+  }
+  busyByType[pollKey] = true;
+  busySince[pollKey] = Date.now();
+  try {
     const workerId = `${await getWorkerId()}_slot${slot}`;
     let data = { job: null };
 
+    // 【2026-09-22 迭代】Amazon CBT（美客多）采集优先领取，且不受 1688/Ozon
+    // 人工验证暂停标志（ozonErpHumanCheckPaused）影响；否则一次 1688 验证码会把
+    // 美客多夜间挂机一并挡死（该标志曾滞留近一个月导致插件完全不轮询美客多）。
     // Amazon CBT jobs are processed by the local browser extension so the
     // seller's signed-in browser session and human-verification flow are
     // available. Use one Amazon slot only to avoid a request burst.
@@ -243,6 +278,20 @@ async function pollCrawlerJob(options = {}) {
         return;
       }
     }
+
+    // 人工验证暂停只阻断 1688/Ozon 采集（slot1，以及 slot0 没有美客多任务时）。
+    const humanPause = await getHumanCheckPause();
+    if (!options.resume && humanPause?.paused) {
+      await setWorkerState({
+        status: "waiting_human",
+        job: humanPause.job || lastWorkerState.job,
+        message: "等待人工验证，自动采集已暂停（不影响美客多 Amazon 采集）",
+        lastError: humanPause.message || lastWorkerState.lastError || "等待人工验证",
+        needsHuman: true,
+      });
+      return;
+    }
+    await setWorkerState({ status: "checking", job: null, message: "正在检查 ERP 任务", lastError: "", needsHuman: false });
 
     try {
       const ctrl = new AbortController();
@@ -282,6 +331,7 @@ async function pollCrawlerJob(options = {}) {
     await setWorkerState({ status: "error", job: null, message: "ERP 未连接或后台任务失败", lastError: error.message || "ERP 未连接或后台任务失败" });
   } finally {
     busyByType[pollKey] = false;
+    busySince[pollKey] = null;
   }
 }
 
@@ -289,7 +339,9 @@ async function claimMeliAmazonJob(workerId) {
   try {
     const ctrl = new AbortController();
     const tid = setTimeout(() => ctrl.abort(), 8000);
-    const response = await fetch(`${MELI_BASE}/api/imports/amazon-extension/next?worker_id=${encodeURIComponent(workerId)}`, { signal: ctrl.signal });
+    // 【2026-09-22 迭代】continuous 战役在后端绑定被置空后，需要请求显式带上
+    // continuous_enabled=true 才允许领取（否则后端按 worker 绑定过滤会返回空）。
+    const response = await fetch(`${MELI_BASE}/api/imports/amazon-extension/next?worker_id=${encodeURIComponent(workerId)}&continuous_enabled=true`, { signal: ctrl.signal });
     clearTimeout(tid);
     if (!response.ok) return null;
     const data = await response.json();
@@ -306,11 +358,47 @@ async function runMeliAmazonJob(job, workerId) {
     await waitForTabLoad(tab.id);
     await sleep(3500 + Math.floor(Math.random() * 1800));
     await ensureAmazonContentScript(tab.id);
-    const result = await chrome.tabs.sendMessage(tab.id, {
-      type: "COLLECT_MELI_AMAZON_PRODUCT",
-      automatic: true,
-      collectionJobId: job.id,
-    });
+    // [Iteration 2026-09-22] 搜索发现任务（kind=meli_amazon_search）：提取结果页商品链接回传 product_urls
+    if (job.kind === "meli_amazon_search") {
+      // 【2026-09-22 迭代】75 秒硬超时：content script 卡死时强制失败并释放队列
+      const searchResult = await withTimeout(
+        chrome.tabs.sendMessage(tab.id, {
+          type: "EXTRACT_MELI_AMAZON_SEARCH",
+          collectionJobId: job.id,
+        }),
+        75000,
+        "Amazon 搜索页采集超时（75s 无响应），已跳过该任务",
+      );
+      if (searchResult?.needsHuman) {
+        humanCheckDetected = true;
+        await reportHumanCheck(job, tab.id, searchResult.error || "Amazon 页面需要人工验证");
+        await postMeliJobResult(job, workerId, { status: "needs_manual_action", message: searchResult.error || "Amazon 搜索页需要人工验证" });
+        return { keepState: true };
+      }
+      if (!searchResult?.ok) {
+        await postMeliJobResult(job, workerId, { status: "failed", message: searchResult?.error || "Amazon 搜索页解析失败" });
+        return { keepState: false };
+      }
+      const searchResp = await postMeliJobResult(job, workerId, {
+        status: "collected",
+        product_urls: searchResult.product_urls || [],
+      });
+      if (!searchResp.ok) {
+        await setWorkerState({ status: "error", job, message: "Amazon 搜索结果回传失败，任务保留待恢复", lastError: searchResp.error, needsHuman: false });
+        return { keepState: true };
+      }
+      return { keepState: false };
+    }
+    // 【2026-09-22 迭代】75 秒硬超时：content script 卡死时强制失败、关标签页、释放队列
+    const result = await withTimeout(
+      chrome.tabs.sendMessage(tab.id, {
+        type: "COLLECT_MELI_AMAZON_PRODUCT",
+        automatic: true,
+        collectionJobId: job.id,
+      }),
+      75000,
+      "Amazon 详情页采集超时（75s 无响应），已跳过该任务",
+    );
     if (result?.needsHuman) {
       humanCheckDetected = true;
       await reportHumanCheck(job, tab.id, result.error || "Amazon 页面需要人工验证");
@@ -350,6 +438,7 @@ async function postMeliJobResult(job, workerId, result) {
         status: result.status,
         message: result.message || "",
         snapshot: result.snapshot || {},
+        product_urls: result.product_urls || [],
       }),
     });
     const data = await response.json().catch(() => ({}));
@@ -703,6 +792,109 @@ async function fetchOzonDetailFast(url) {
     return { ok: true, payload: product };
   } catch (e) {
     clearTimeout(tid);
+    return { ok: false, error: e.message };
+  }
+}
+
+async function fetchOzonSalesFromSellerTab(productId) {
+  console.log("[Ozon ERP BG] 开始处理请求，productId:", productId);
+  try {
+    const tabs = await chrome.tabs.query({ url: ["https://seller.ozonru.cn/*", "https://seller.ozon.ru/*"] });
+    console.log("[Ozon ERP BG] 找到卖家标签页:", tabs?.length, "个");
+    if (!tabs || tabs.length === 0) {
+      return { ok: false, error: "没找到卖家后台标签页（seller.ozonru.cn / seller.ozon.ru）" };
+    }
+    const sellerTab = tabs[0];
+    console.log("[Ozon ERP BG] 用标签页:", sellerTab.id, sellerTab.url);
+
+    const results = await chrome.scripting.executeScript({
+      target: { tabId: sellerTab.id },
+      func: async (pid) => {
+        // 先从localStorage拿，再从cookie拿，最后硬编码兜底
+        let cid = "";
+        try { cid = localStorage.getItem('ozon_company_id') || ''; } catch (e) {}
+        if (!cid) { const m = document.cookie.match(/(?:^|;\s*)sc_company_id=([^;]+)/); cid = m ? decodeURIComponent(m[1]) : ''; }
+        if (!cid) { cid = "2367028"; } // 硬编码兜底，实测当前店铺company_id
+        console.log("[Ozon ERP BG] company_id:", cid, "sku:", pid);
+
+        const resp = await fetch(location.origin + "/api/site/seller-analytics/what_to_sell/data/v3", {
+          method: "POST",
+          credentials: "include",
+          headers: {
+            "Accept": "application/json",
+            "Content-Type": "application/json",
+            "x-o3-company-id": cid,
+            "x-o3-language": "zh-Hans"
+          },
+          body: JSON.stringify({
+            limit: "50",
+            offset: "0",
+            filter: {
+              stock: "any_stock",
+              period: "monthly",
+              categories: [],
+              sku: String(pid)
+            },
+            sort: { key: "sum_gmv_desc" }
+          })
+        });
+        const data = await resp.json();
+        return { ok: true, status: resp.status, data: data };
+      },
+      args: [productId]
+    });
+    console.log("[Ozon ERP BG] executeScript结果:", results);
+    if (!results || results.length === 0) return { ok: false, error: "executeScript没返回" };
+    return results[0].result;
+  } catch (e) {
+    console.log("[Ozon ERP BG] 总错误:", e.message);
+    return { ok: false, error: e.message };
+  }
+}
+
+
+
+
+
+
+
+
+
+// 批量获取商品销量数据（搜索页用）
+async function batchFetchOzonSalesFromSellerTab(productIds) {
+  try {
+    const tabs = await chrome.tabs.query({ url: ["https://seller.ozonru.cn/*", "https://seller.ozon.ru/*"] });
+    if (!tabs || tabs.length === 0) return { ok: false, error: "没找到卖家后台标签页（seller.ozonru.cn / seller.ozon.ru）" };
+    const sellerTab = tabs[0];
+    const results = await chrome.scripting.executeScript({
+      target: { tabId: sellerTab.id },
+      func: async (pids) => {
+        let cid = localStorage.getItem('ozon_company_id') || '';
+        if (!cid) { const m = document.cookie.match(/(?:^|;\s*)sc_company_id=([^;]+)/); cid = m ? decodeURIComponent(m[1]) : ''; }
+        const resp = await fetch(location.origin + "/api/site/seller-analytics/what_to_sell/data/v3", {
+          method: "POST",
+          credentials: "include",
+          headers: {
+            "Accept": "application/json",
+            "Content-Type": "application/json",
+            "x-o3-company-id": cid,
+            "x-o3-language": "zh-Hans"
+          },
+          body: JSON.stringify({
+            limit: String(Math.min(pids.length, 100)),
+            offset: "0",
+            filter: { stock: "any_stock", period: "monthly", categories: [], skus: pids.map(String) },
+            sort: { key: "sum_gmv_desc" }
+          })
+        });
+        const data = await resp.json();
+        return { ok: true, status: resp.status, data: data };
+      },
+      args: [productIds]
+    });
+    if (!results || results.length === 0) return { ok: false, error: "executeScript无返回" };
+    return results[0].result;
+  } catch (e) {
     return { ok: false, error: e.message };
   }
 }

@@ -180,6 +180,164 @@ function gToKg(value) {
   return number === null ? null : number / 1000;
 }
 
+function createDefaultMvideoPricingParams() {
+  return {
+    cnyToRub: 13.2,
+    usdToRub: 95,
+    targetMargin: 0.25,
+    categoryCommissionRate: 0.15,
+    acquiringFeeRate: 0.015,
+    crossBorderFeeRate: 0.01,
+    advertisingRate: 0,
+    returnLossRate: 0,
+    labelingFeeCny: 1.5,
+    handlingFeeUsd: 0.5,
+    channel: "economy",
+    economy: { perKgUsd: 4.2, per100gUsd: 0.42 },
+    express: { perKgUsd: 7.5, per100gUsd: 0.75 },
+    localDelivery: { upTo1LRub: 50, upTo2LRub: 100, extraPerLRub: 4, capRub: 1490 },
+  };
+}
+
+function mergeMvideoPricingParams(overrides = {}) {
+  const defaults = createDefaultMvideoPricingParams();
+  return {
+    ...defaults,
+    ...overrides,
+    channel: overrides.channel || defaults.channel,
+    economy: { ...defaults.economy, ...overrides.economy },
+    express: { ...defaults.express, ...overrides.express },
+    localDelivery: { ...defaults.localDelivery, ...overrides.localDelivery },
+  };
+}
+
+function roundMoney(value) {
+  return Math.round(Number(value) * 100) / 100;
+}
+
+function mvideoInternationalFreightUsd(weightKg, channel, params) {
+  const weight = positiveNumber(weightKg);
+  if (weight === null) return null;
+  const rate = channel === "express" ? params.express : params.economy;
+  if (weight < 1) return Math.ceil((weight * 1000) / 100) * rate.per100gUsd;
+  return weight * rate.perKgUsd;
+}
+
+function mvideoPackageVolume(lengthCm, widthCm, heightCm) {
+  const length = positiveNumber(lengthCm);
+  const width = positiveNumber(widthCm);
+  const height = positiveNumber(heightCm);
+  if (length === null || width === null || height === null) return null;
+  const rawVolumeL = (length * width * height) / 1000;
+  return {
+    rawVolumeL,
+    billVolumeL: Math.max(1, Math.ceil(rawVolumeL - 1e-9)),
+  };
+}
+
+function mvideoLocalDeliveryRub(billVolumeL, params) {
+  const billVolume = positiveNumber(billVolumeL);
+  if (billVolume === null || billVolume <= 0) return null;
+  let fee;
+  if (billVolume <= 1) fee = params.localDelivery.upTo1LRub;
+  else if (billVolume <= 2) fee = params.localDelivery.upTo2LRub;
+  else fee = params.localDelivery.upTo2LRub + (billVolume - 2) * params.localDelivery.extraPerLRub;
+  return Math.min(fee, params.localDelivery.capRub);
+}
+
+function calculateMvideoPrice(input = {}) {
+  const params = mergeMvideoPricingParams(input.params);
+  const purchaseCostCny = positiveNumber(input.purchaseCostCny);
+  const lengthCm = positiveNumber(input.lengthCm);
+  const widthCm = positiveNumber(input.widthCm);
+  const heightCm = positiveNumber(input.heightCm);
+  const weightKg = positiveNumber(input.weightKg);
+  const targetMargin = toFiniteNumber(input.targetMargin ?? params.targetMargin);
+  const categoryCommissionRate = toFiniteNumber(input.categoryCommissionRate ?? params.categoryCommissionRate);
+  const acquiringFeeRate = toFiniteNumber(input.acquiringFeeRate ?? params.acquiringFeeRate);
+  const crossBorderFeeRate = toFiniteNumber(input.crossBorderFeeRate ?? params.crossBorderFeeRate);
+  const advertisingRate = toFiniteNumber(input.advertisingRate ?? params.advertisingRate);
+  const returnLossRate = toFiniteNumber(input.returnLossRate ?? params.returnLossRate);
+  const channel = String(input.channel || params.channel);
+  const errors = [];
+  if (purchaseCostCny === null) errors.push("CNY 采购价必须是大于 0 的真实采购成本");
+  if (lengthCm === null) errors.push("包装长度必须是大于 0 的 cm 数值");
+  if (widthCm === null) errors.push("包装宽度必须是大于 0 的 cm 数值");
+  if (heightCm === null) errors.push("包装高度必须是大于 0 的 cm 数值");
+  if (weightKg === null) errors.push("包装重量必须是大于 0 的 kg 数值");
+  if (targetMargin === null || targetMargin < 0 || targetMargin >= 1) errors.push("目标净利率必须是 0% 到 100% 之间的数值");
+  for (const [label, rate] of [
+    ["类目佣金率", categoryCommissionRate],
+    ["收单手续费率", acquiringFeeRate],
+    ["境外交易手续费率", crossBorderFeeRate],
+    ["广告费率", advertisingRate],
+    ["退货损耗率", returnLossRate],
+  ]) {
+    if (rate === null || rate < 0 || rate >= 1) errors.push(`${label}必须是 0% 到 100% 之间的数值`);
+  }
+  if (!["economy", "express"].includes(channel)) errors.push("物流渠道必须是 Economy 或 Express");
+  if (errors.length) return { ok: false, errors };
+
+  const volume = mvideoPackageVolume(lengthCm, widthCm, heightCm);
+  const weightG = weightKg * 1000;
+  const freightUsd = mvideoInternationalFreightUsd(weightKg, channel, params);
+  const freightRub = freightUsd * params.usdToRub;
+  const handlingRub = params.handlingFeeUsd * params.usdToRub;
+  const localDeliveryRub = mvideoLocalDeliveryRub(volume.billVolumeL, params);
+  const labelingFeeRub = params.labelingFeeCny * params.cnyToRub;
+  const goodsCostRub = purchaseCostCny * params.cnyToRub;
+  const fixedCostRub = goodsCostRub + freightRub + handlingRub + localDeliveryRub + labelingFeeRub;
+  const variableRate = categoryCommissionRate + acquiringFeeRate + crossBorderFeeRate + advertisingRate + returnLossRate;
+  const breakEvenDenominator = 1 - variableRate;
+  const targetDenominator = breakEvenDenominator - targetMargin;
+  if (breakEvenDenominator <= 0) return { ok: false, errors: ["变动费率合计已达到或超过 100%，无法形成有效售价"] };
+  if (targetDenominator <= 0) return { ok: false, errors: ["目标净利率过高，在当前费率下无法形成有效售价"] };
+
+  const quote = {
+    purchaseCostCny,
+    packaging: { lengthCm, widthCm, heightCm, weightKg },
+    channel,
+    categoryCommissionRate,
+    targetMargin,
+    weightG,
+    rawVolumeL: volume.rawVolumeL,
+    billVolumeL: volume.billVolumeL,
+    goodsCostRub,
+    freightUsd,
+    freightRub,
+    handlingRub,
+    localDeliveryRub,
+    labelingFeeRub,
+    fixedCostRub,
+    variableRate,
+    breakEvenPriceRub: roundMoney(fixedCostRub / breakEvenDenominator),
+    targetPriceRub: roundMoney(fixedCostRub / targetDenominator),
+  };
+  return { ok: true, quote };
+}
+
+function buildMvideoReviewGates(review = {}, priceConfirmed = false) {
+  const purchaseCostCny = positiveNumber(review.purchaseCostCny);
+  const packaging = review.packaging || {};
+  const packageComplete = Boolean(review.packageComplete) || ["lengthCm", "widthCm", "heightCm", "weightKg"].every((key) => positiveNumber(packaging[key]) !== null);
+  const inventory = positiveNumber(review.inventory);
+  const pricing = review.pricing;
+  const gates = [];
+  const addGate = (label, ok, reason) => gates.push({ label, ok: Boolean(ok), reason: ok ? "" : reason });
+  addGate("CNY 采购价", purchaseCostCny !== null, "缺少人工核对的 CNY 采购成本");
+  if (!pricing?.ok) {
+    addGate("M.Video RUB 售价", false, pricing?.errors?.[0] || "需由定价模型根据尺重和 CNY 采购价生成");
+  } else {
+    addGate("M.Video RUB 售价", Boolean(priceConfirmed), priceConfirmed ? "" : "目标售价生成后必须人工明确确认");
+  }
+  addGate("库存", inventory !== null, "发布前必须确认 M.Video 库存");
+  addGate("包装尺重", packageComplete, "包装长宽高和重量必须为有效正数（mm→cm，g→kg）");
+  addGate("标题重构", false, "待模型生成无品牌标题，允许保留型号");
+  addGate("描述重构", false, "待模型生成无品牌描述，允许保留型号");
+  addGate("类目合规预检", false, "待按类目预检证书、TN VED、品牌授权等要求");
+  return gates;
+}
+
 function selectSingleOzonSku(variants = [], preferredSkuId = "") {
   if (!Array.isArray(variants)) return { ok: false, error: "SKU 数据格式不正确" };
   const preferred = String(preferredSkuId ?? "").trim();
@@ -198,7 +356,7 @@ function skuOrPackageNumber(sku, packageInfo, skuKey, packageKey) {
   return positiveNumber(sku?.[skuKey]) ?? positiveNumber(packageInfo?.[packageKey]);
 }
 
-function buildMvideoSingleSkuPreviewModel(payload = {}, sku = {}, currentSkuId = "") {
+function buildMvideoSingleSkuPreviewModel(payload = {}, sku = {}, currentSkuId = "", reviewInput = {}) {
   const packageInfo = payload.packageInfo || {};
   const packaging = {
     lengthCm: mmToCm(skuOrPackageNumber(sku, packageInfo, "lengthMm", "lengthMm")),
@@ -207,19 +365,18 @@ function buildMvideoSingleSkuPreviewModel(payload = {}, sku = {}, currentSkuId =
     weightKg: gToKg(skuOrPackageNumber(sku, packageInfo, "weightG", "weightG")),
   };
   const marketPriceRub = positiveNumber(sku.priceRub) ?? positiveNumber(payload.price);
-  const purchaseCostCny = null;
-  const salePriceRub = null;
-  const inventory = null;
+  const purchaseCostCny = positiveNumber(reviewInput.purchaseCostCny);
+  const inventory = positiveNumber(reviewInput.inventory);
   const packageComplete = Object.values(packaging).every((value) => value !== null && value > 0);
-  const gates = [];
-  const addGate = (label, ok, reason) => gates.push({ label, ok: Boolean(ok), reason: ok ? "" : reason });
-  addGate("CNY 采购价", purchaseCostCny !== null, "缺少人工核对的 CNY 采购成本");
-  addGate("M.Video RUB 售价", salePriceRub !== null, "需由定价模型根据尺重和 CNY 采购价生成");
-  addGate("库存", inventory !== null, "发布前必须确认 M.Video 库存");
-  addGate("包装尺重", packageComplete, "包装长宽高和重量必须为有效正数（mm→cm，g→kg）");
-  addGate("标题重构", false, "待模型生成无品牌标题，允许保留型号");
-  addGate("描述重构", false, "待模型生成无品牌描述，允许保留型号");
-  addGate("类目合规预检", false, "待按类目预检证书、TN VED、品牌授权等要求");
+  const pricing = packageComplete
+    ? calculateMvideoPrice({ purchaseCostCny, ...packaging, channel: reviewInput.channel })
+    : { ok: false, errors: ["缺少完整包装尺重，无法计算 M.Video RUB 售价"] };
+  const salePriceRub = pricing.ok ? pricing.quote.targetPriceRub : null;
+  const priceConfirmed = Boolean(reviewInput.priceConfirmed) && pricing.ok;
+  const gates = buildMvideoReviewGates(
+    { purchaseCostCny, packaging, packageComplete, inventory, pricing },
+    priceConfirmed,
+  );
   return {
     dryRun: true,
     currentSkuId: String(currentSkuId || ""),
@@ -237,6 +394,8 @@ function buildMvideoSingleSkuPreviewModel(payload = {}, sku = {}, currentSkuId =
     purchaseCostCny,
     salePriceRub,
     inventory,
+    priceConfirmed,
+    pricing,
     gates,
     publishReady: gates.every((gate) => gate.ok),
   };
@@ -252,8 +411,13 @@ function previewRow(label, value) {
   return `<div style="display:flex;justify-content:space-between;gap:8px;margin:5px 0;"><span style="color:#7c3aed;flex:0 0 82px;">${escapeHtml(label)}</span><span style="text-align:right;color:#312e81;font-weight:600;word-break:break-word;">${value}</span></div>`;
 }
 
+function renderMvideoGateRows(gates = []) {
+  return gates.map((gate) => `<div style="display:flex;justify-content:space-between;gap:8px;margin:5px 0;color:${gate.ok ? "#15803d" : "#b42318"};"><span>${gate.ok ? "✅" : "⛔"} ${escapeHtml(gate.label)}</span><span style="text-align:right;font-weight:600;">${gate.ok ? "通过" : escapeHtml(gate.reason)}</span></div>`).join("");
+}
+
 function renderMvideoSinglePreview(model) {
-  const gateRows = model.gates.map((gate) => `<div style="display:flex;justify-content:space-between;gap:8px;margin:5px 0;color:${gate.ok ? "#15803d" : "#b42318"};"><span>${gate.ok ? "✅" : "⛔"} ${escapeHtml(gate.label)}</span><span style="text-align:right;font-weight:600;">${gate.ok ? "通过" : escapeHtml(gate.reason)}</span></div>`).join("");
+  const quote = model.pricing?.ok ? model.pricing.quote : null;
+  const gateRows = renderMvideoGateRows(model.gates);
   return `<div style="padding:6px;margin-bottom:7px;border-radius:6px;background:#fef3c7;color:#92400e;font-weight:700;">Dry-run 预览：不会真实发布</div>
 ${previewRow("当前SKU", escapeHtml(model.currentSkuId || model.skuId))}
 ${previewRow("规格", escapeHtml(model.spec || "-"))}
@@ -263,18 +427,102 @@ ${previewRow("Ozon市场价", escapeHtml(formatPreviewNumber(model.marketPriceRu
 <div style="margin:4px 0 8px;color:#b45309;line-height:1.4;">${escapeHtml(model.marketPriceNote)}</div>
 ${previewRow("长×宽×高", escapeHtml(`${formatPreviewNumber(model.packaging.lengthCm, "cm")} × ${formatPreviewNumber(model.packaging.widthCm, "cm")} × ${formatPreviewNumber(model.packaging.heightCm, "cm")}`))}
 ${previewRow("重量", escapeHtml(formatPreviewNumber(model.packaging.weightKg, "kg")))}
+<form id="mvideo-review-form" style="margin:7px 0;padding:8px 0;border-top:1px solid #ddd6fe;border-bottom:1px solid #ddd6fe;">
+<label style="display:block;margin-bottom:7px;color:#5b21b6;font-weight:700;">CNY 采购价
+<input id="mvideo-purchase-cost" type="number" min="0" step="0.01" inputmode="decimal" value="${model.purchaseCostCny === null ? "" : model.purchaseCostCny}" placeholder="人工核对后的人民币采购价" style="display:block;width:100%;box-sizing:border-box;margin-top:4px;border:1px solid #c4b5fd;border-radius:6px;padding:6px;font-size:12px;color:#312e81;">
+</label>
+<label style="display:block;margin-bottom:7px;color:#5b21b6;font-weight:700;">M.Video 库存
+<input id="mvideo-inventory" type="number" min="1" step="1" inputmode="numeric" value="${model.inventory === null ? "" : model.inventory}" placeholder="发布前可售库存" style="display:block;width:100%;box-sizing:border-box;margin-top:4px;border:1px solid #c4b5fd;border-radius:6px;padding:6px;font-size:12px;color:#312e81;">
+</label>
+${previewRow("保本售价", `<span id="mvideo-break-even-price">${quote ? escapeHtml(formatPreviewNumber(quote.breakEvenPriceRub, "₽")) : "待计算"}</span>`)}
+${previewRow("目标售价", `<span id="mvideo-target-price" style="color:#7c3aed;">${quote ? escapeHtml(formatPreviewNumber(quote.targetPriceRub, "₽")) : "待计算"}</span>`)}
+<div id="mvideo-pricing-error" style="display:${quote ? "none" : "block"};margin:6px 0;color:#b42318;line-height:1.4;">${escapeHtml(model.pricing?.ok === false ? model.pricing.errors[0] : "")}</div>
+<label style="display:flex;gap:6px;align-items:flex-start;margin-top:7px;color:#3730a3;font-weight:600;line-height:1.4;">
+<input id="mvideo-price-confirmed" type="checkbox" style="margin-top:2px;" ${quote ? "" : "disabled"} ${model.priceConfirmed ? "checked" : ""}>
+<span>我确认按上述 RUB 目标售价和库存发布</span>
+</label>
+</form>
 ${previewRow("品牌", escapeHtml(model.brand))}
 ${previewRow("标题", escapeHtml(model.titleStatus))}
 ${previewRow("描述", escapeHtml(model.descriptionStatus))}
 ${previewRow("合规", escapeHtml(model.complianceStatus))}
-<div style="margin-top:8px;padding-top:7px;border-top:1px solid #ddd6fe;">${gateRows}</div>
-<div style="margin-top:8px;color:${model.publishReady ? "#15803d" : "#b42318"};font-weight:700;">${model.publishReady ? "门禁通过" : "发布门禁未通过"}</div>`;
+<div id="mvideo-gate-rows" style="margin-top:8px;padding-top:7px;border-top:1px solid #ddd6fe;">${gateRows}</div>
+<div id="mvideo-single-preview-status" style="margin-top:8px;color:${model.publishReady ? "#15803d" : "#b42318"};font-weight:700;">${model.publishReady ? "门禁通过" : "发布门禁未通过"}</div>`;
+}
+
+function updateMvideoSinglePreview(panel, model) {
+  const quote = model.pricing?.ok ? model.pricing.quote : null;
+  const breakEvenEl = panel.querySelector("#mvideo-break-even-price");
+  const targetEl = panel.querySelector("#mvideo-target-price");
+  const errorEl = panel.querySelector("#mvideo-pricing-error");
+  const confirmEl = panel.querySelector("#mvideo-price-confirmed");
+  if (breakEvenEl) breakEvenEl.textContent = quote ? formatPreviewNumber(quote.breakEvenPriceRub, "₽") : "待计算";
+  if (targetEl) targetEl.textContent = quote ? formatPreviewNumber(quote.targetPriceRub, "₽") : "待计算";
+  if (errorEl) {
+    errorEl.textContent = model.pricing?.ok === false ? model.pricing.errors[0] : "";
+    errorEl.style.display = quote ? "none" : "block";
+  }
+  if (confirmEl) {
+    confirmEl.disabled = !quote;
+    confirmEl.checked = Boolean(quote && model.priceConfirmed);
+  }
+  const gateRowsEl = panel.querySelector("#mvideo-gate-rows");
+  if (gateRowsEl) gateRowsEl.innerHTML = renderMvideoGateRows(model.gates);
+  const statusText = panel.querySelector("#mvideo-single-preview-status");
+  if (statusText) {
+    statusText.textContent = model.publishReady ? "门禁通过" : "发布门禁未通过";
+    statusText.style.color = model.publishReady ? "#15803d" : "#b42318";
+  }
 }
 
 async function setupMvideoSinglePreview(root, currentSkuId) {
   const button = root.querySelector("#ozon-mvideo-preview-button");
   const panel = root.querySelector("#ozon-mvideo-single-preview");
   if (!button || !panel) return;
+  const sourceContext = {
+    payload: null,
+    sku: null,
+    currentSkuId: String(currentSkuId || ""),
+    channel: "economy",
+  };
+  const reviewState = {
+    purchaseCostCny: "",
+    inventory: "",
+    priceConfirmed: false,
+  };
+  const buildCurrentModel = () => {
+    if (!sourceContext.payload || !sourceContext.sku) return null;
+    return buildMvideoSingleSkuPreviewModel(
+      sourceContext.payload,
+      sourceContext.sku,
+      sourceContext.currentSkuId,
+      { ...reviewState, channel: sourceContext.channel },
+    );
+  };
+  const refreshPreview = () => {
+    const model = buildCurrentModel();
+    if (model) updateMvideoSinglePreview(panel, model);
+  };
+  panel.addEventListener("submit", (event) => {
+    if (event.target?.id === "mvideo-review-form") event.preventDefault();
+  });
+  panel.addEventListener("input", (event) => {
+    if (event.target?.id === "mvideo-purchase-cost") {
+      reviewState.purchaseCostCny = event.target.value;
+      reviewState.priceConfirmed = false;
+      refreshPreview();
+    } else if (event.target?.id === "mvideo-inventory") {
+      reviewState.inventory = event.target.value;
+      reviewState.priceConfirmed = false;
+      refreshPreview();
+    }
+  });
+  panel.addEventListener("change", (event) => {
+    if (event.target?.id === "mvideo-price-confirmed") {
+      reviewState.priceConfirmed = Boolean(event.target.checked);
+      refreshPreview();
+    }
+  });
   let loaded = false;
   let busy = false;
   button.addEventListener("click", async () => {
@@ -297,8 +545,10 @@ async function setupMvideoSinglePreview(root, currentSkuId) {
       const resolvedSkuId = String(currentSkuId || ozonProductIdFromUrl(location.href));
       const selected = selectSingleOzonSku(payload.skuVariants || [], resolvedSkuId);
       if (!selected.ok) throw new Error(selected.error);
-      const model = buildMvideoSingleSkuPreviewModel(payload, selected.sku, resolvedSkuId);
-      panel.innerHTML = renderMvideoSinglePreview(model);
+      sourceContext.payload = payload;
+      sourceContext.sku = selected.sku;
+      sourceContext.currentSkuId = resolvedSkuId;
+      panel.innerHTML = renderMvideoSinglePreview(buildCurrentModel());
       loaded = true;
     } catch (error) {
       loaded = false;
@@ -362,7 +612,7 @@ let floatingState = { minimized: false, selectedSkuKeys: new Set(), allSelected:
 const SHOP_SCAN_STORAGE_KEY = "ozonErp1688ShopScan";
 // Must change with every collector behaviour change. popup.js uses this
 // handshake to force-replace stale content scripts already living in a tab.
-const COLLECTOR_VERSION = "0.7.73"; // [Iteration 2026-09-25 v0.7.73] Add embedded Ozon collection and M.Video dry-run single-SKU preview; // [Iteration 2026-09-23 v0.7.72] Fix payload: collectOzonDetail now includes the precise entrypoint packageInfo (it was computed but dropped from the return, so only the weak DOM-text fallback shipped); // [Iteration 2026-09-23 v0.7.71] Fix packageInfo: parse Weight/Dimensions when they are top-level webCharacteristics row sections (no short/long wrapper), as on real PDP; // [Iteration 2026-09-23 v0.7.70] Keep BOTH seller backends seller.ozonru.cn + seller.ozon.ru; background finds the seller tab across both and calls the API via that tab origin; // [Iteration 2026-09-23 v0.7.69] Extract package weight/dimensions from entrypoint webCharacteristics (keys Weight/Dimensions) into packageInfo; [Iteration 2026-09-22 v0.7.68] Read JSON-LD from DOM <script type="application/ld+json"> (composer PDP has no seo widget) so brand/rating/reviewCount/price are captured; [Iteration 2026-09-22 v0.7.67] Ozon PDP: extract product video(s) from composer webGallery.videos (type=pdp only), brand/rating/reviewCount/description from JSON-LD, category from breadCrumbs; [Iteration 2026-09-22] Support new 1688 factory catalog (sale.1688.com/factory) full-shop scan via scroll+DOM, b2b- memberId // [Iteration 2026-09-21] Add seller ID, shipping model, blocked status, full vendor info matching 胜利者 // [Iteration 2026-09-21] Add full product analytics: visitors/cart rate/avg price/stock/DRR/min seller price, same data as 胜利者/上品帮 // [Iteration 2026-09-21] Fix response path: items at top level, map soldCount/gmvSum/avgOrdersOnAccDays fields, verified with real API call // [Iteration 2026-09-21] Fix sales data response parsing, return structured data // [Iteration 2026-09-21] Extract product data directly from public Ozon page, no seller API needed // [Iteration 2026-09-21] Fix duplicate collection: dedup by product_id, only scrape main list, brand default empty
+const COLLECTOR_VERSION = "0.7.75"; // [Iteration 2026-09-26 v0.7.75] Bound Ozon structured requests and fetch composer/entrypoint in parallel for M.Video single-SKU preview; // [Iteration 2026-09-26 v0.7.74] M.Video single-SKU human-reviewed pricing, inventory and dry-run gates; // [Iteration 2026-09-25 v0.7.73] Add embedded Ozon collection and M.Video dry-run single-SKU preview; // [Iteration 2026-09-23 v0.7.72] Fix payload: collectOzonDetail now includes the precise entrypoint packageInfo (it was computed but dropped from the return, so only the weak DOM-text fallback shipped); // [Iteration 2026-09-23 v0.7.71] Fix packageInfo: parse Weight/Dimensions when they are top-level webCharacteristics row sections (no short/long wrapper), as on real PDP; // [Iteration 2026-09-23 v0.7.70] Keep BOTH seller backends seller.ozonru.cn + seller.ozon.ru; background finds the seller tab across both and calls the API via that tab origin; // [Iteration 2026-09-23 v0.7.69] Extract package weight/dimensions from entrypoint webCharacteristics (keys Weight/Dimensions) into packageInfo; [Iteration 2026-09-22 v0.7.68] Read JSON-LD from DOM <script type="application/ld+json"> (composer PDP has no seo widget) so brand/rating/reviewCount/price are captured; [Iteration 2026-09-22 v0.7.67] Ozon PDP: extract product video(s) from composer webGallery.videos (type=pdp only), brand/rating/reviewCount/description from JSON-LD, category from breadCrumbs; [Iteration 2026-09-22] Support new 1688 factory catalog (sale.1688.com/factory) full-shop scan via scroll+DOM, b2b- memberId // [Iteration 2026-09-21] Add seller ID, shipping model, blocked status, full vendor info matching 胜利者 // [Iteration 2026-09-21] Add full product analytics: visitors/cart rate/avg price/stock/DRR/min seller price, same data as 胜利者/上品帮 // [Iteration 2026-09-21] Fix response path: items at top level, map soldCount/gmvSum/avgOrdersOnAccDays fields, verified with real API call // [Iteration 2026-09-21] Fix sales data response parsing, return structured data // [Iteration 2026-09-21] Extract product data directly from public Ozon page, no seller API needed // [Iteration 2026-09-21] Fix duplicate collection: dedup by product_id, only scrape main list, brand default empty
 let extensionContextAvailable = true;
 
 function getExtensionRuntime() {
@@ -996,13 +1246,8 @@ async function fetchOzonComposerSnapshot(productUrl) {
   if (!window.__ozonErpPageJsonCache) window.__ozonErpPageJsonCache = new Map();
   if (window.__ozonErpPageJsonCache.has(productUrl)) return window.__ozonErpPageJsonCache.get(productUrl);
   const pending = (async () => {
-    const target = new URL(productUrl);
-    const pagePath = `${target.pathname}${target.search || ""}`;
-    const endpoint = new URL("/api/composer-api.bx/page/json/v2", location.origin);
-    endpoint.searchParams.set("url", pagePath);
-    const response = await fetch(endpoint.toString(), { credentials: "include", headers: { Accept: "application/json" } });
-    if (!response.ok) return null;
-    const payload = await response.json();
+    const payload = await fetchOzonPageJson(productUrl, "composer", 7000);
+    if (!payload) return null;
     return parseOzonComposerPayload(payload);
   })();
   window.__ozonErpPageJsonCache.set(productUrl, pending);
@@ -2952,7 +3197,10 @@ function ozonStructuredTitle(payload) {
 
 async function collectOzonDetail() {
   const fallback = collectOzonDomFallback();
-  const primaryPayload = await fetchOzonPageJson(location.href);
+  const [primaryPayload, detailPayload] = await Promise.all([
+    fetchOzonPageJson(location.href, "composer", 6000),
+    fetchOzonPageJson(location.href, "entrypoint", 6000),
+  ]);
   if (!primaryPayload) return { ...fallback, parseIssues: ["未获取到 Ozon 结构化页面数据，已使用页面可见内容"] };
   const primaryStates = parseOzonWidgetStates(primaryPayload);
   const primaryGallery = findOzonWidget(primaryStates, "webGallery");
@@ -3013,7 +3261,6 @@ async function collectOzonDetail() {
     variants.push({ skuId: currentProductId, spec: cleanText(primaryGallery?.title || `Ozon ${currentProductId}`), image: primaryImages[0] || "", styleId: currentProductId, styleLabel: cleanText(primaryGallery?.title || ""), imageUrls: primaryImages });
     variantGroups.push({ styleId: currentProductId, styleLabel: cleanText(primaryGallery?.title || ""), skuIds: [currentProductId], imageUrls: primaryImages });
   }
-  const detailPayload = await fetchOzonPageJson(location.href, "entrypoint");
   const detailStates = parseOzonWidgetStates(detailPayload || {});
   const structuredDescription = ozonStructuredDescription(detailStates);
   const structuredAttributes = ozonStructuredAttributes(detailStates);
@@ -3091,6 +3338,8 @@ if (window.__OZON_ERP_COLLECTOR_TEST__) {
     mmToCm,
     gToKg,
     selectSingleOzonSku,
+    calculateMvideoPrice,
+    buildMvideoReviewGates,
     buildMvideoSingleSkuPreviewModel,
   });
 }

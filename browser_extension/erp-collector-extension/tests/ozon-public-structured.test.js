@@ -249,9 +249,93 @@ const missingPackageModel = hooks.buildMvideoSingleSkuPreviewModel(
   { skuId: "sku-x" },
   "sku-x",
 );
-assert.equal(
-  new Map(missingPackageModel.gates.map((gate) => [gate.label, gate])).get("包装尺重").ok,
-  false,
+const gateLookup = (value) => new Map(value.gates.map((gate) => [gate.label, gate]));
+assert.equal(gateLookup(missingPackageModel).get("包装尺重").ok, false);
+
+const validReview = {
+  purchaseCostCny: 18.5,
+  inventory: 7,
+  priceConfirmed: true,
+  channel: "economy",
+};
+const pricedModel = hooks.buildMvideoSingleSkuPreviewModel(
+  previewPayload,
+  { skuId: "sku-b", priceRub: 2345 },
+  "sku-b",
+  validReview,
 );
+assert.equal(pricedModel.pricing.ok, true);
+const pricedQuote = pricedModel.pricing.quote;
+assert.equal(pricedQuote.purchaseCostCny, 18.5);
+assert.equal(pricedQuote.packaging.lengthCm, 10);
+assert.equal(pricedQuote.packaging.weightKg, 1);
+assert.ok(pricedQuote.breakEvenPriceRub > 0);
+assert.ok(pricedQuote.targetPriceRub > pricedQuote.breakEvenPriceRub);
+assert.equal(pricedModel.salePriceRub, pricedQuote.targetPriceRub);
+const pricedGates = gateLookup(pricedModel);
+assert.equal(pricedGates.get("CNY 采购价").ok, true);
+assert.equal(pricedGates.get("M.Video RUB 售价").ok, true);
+assert.equal(pricedGates.get("库存").ok, true);
+assert.equal(pricedGates.get("包装尺重").ok, true);
+assert.equal(pricedGates.get("标题重构").ok, false);
+assert.equal(pricedGates.get("描述重构").ok, false);
+assert.equal(pricedGates.get("类目合规预检").ok, false);
+assert.equal(pricedModel.publishReady, false);
+
+const unconfirmedModel = hooks.buildMvideoSingleSkuPreviewModel(
+  previewPayload,
+  { skuId: "sku-b", priceRub: 2345 },
+  "sku-b",
+  { ...validReview, priceConfirmed: false },
+);
+assert.equal(unconfirmedModel.pricing.ok, true);
+assert.equal(gateLookup(unconfirmedModel).get("M.Video RUB 售价").ok, false);
+
+for (const invalidCost of ["", 0, -1, "abc", NaN]) {
+  const invalidCostModel = hooks.buildMvideoSingleSkuPreviewModel(
+    previewPayload,
+    { skuId: "sku-b", priceRub: 2345 },
+    "sku-b",
+    { purchaseCostCny: invalidCost, inventory: 7, priceConfirmed: true },
+  );
+  assert.equal(invalidCostModel.purchaseCostCny, null);
+  assert.equal(invalidCostModel.pricing.ok, false);
+  assert.equal(gateLookup(invalidCostModel).get("CNY 采购价").ok, false);
+}
+
+for (const invalidInventory of ["", 0, -3, "abc", NaN]) {
+  const invalidInventoryModel = hooks.buildMvideoSingleSkuPreviewModel(
+    previewPayload,
+    { skuId: "sku-b", priceRub: 2345 },
+    "sku-b",
+    { purchaseCostCny: 18.5, inventory: invalidInventory, priceConfirmed: true },
+  );
+  assert.equal(invalidInventoryModel.inventory, null);
+  assert.equal(invalidInventoryModel.pricing.ok, true);
+  assert.equal(gateLookup(invalidInventoryModel).get("库存").ok, false);
+}
+
+const marketOnlyModel = hooks.buildMvideoSingleSkuPreviewModel(
+  previewPayload,
+  { skuId: "sku-b", priceRub: 2345 },
+  "sku-b",
+  {},
+);
+assert.equal(marketOnlyModel.marketPriceRub, 2345);
+assert.equal(marketOnlyModel.purchaseCostCny, null);
+assert.equal(marketOnlyModel.pricing.ok, false);
+assert.match(marketOnlyModel.pricing.errors[0], /CNY/);
+assert.equal(gateLookup(marketOnlyModel).get("M.Video RUB 售价").ok, false);
+
+const missingPackagePricedModel = hooks.buildMvideoSingleSkuPreviewModel(
+  { title: "Demo" },
+  { skuId: "sku-x" },
+  "sku-x",
+  { purchaseCostCny: 18.5, inventory: 7, priceConfirmed: true },
+);
+assert.equal(missingPackagePricedModel.pricing.ok, false);
+assert.match(missingPackagePricedModel.pricing.errors[0], /缺少完整包装尺重/);
+assert.equal(gateLookup(missingPackagePricedModel).get("包装尺重").ok, false);
+assert.equal(gateLookup(missingPackagePricedModel).get("M.Video RUB 售价").ok, false);
 
 console.log("ozon structured public-page parser tests passed");

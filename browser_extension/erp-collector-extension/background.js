@@ -1,4 +1,4 @@
-// [Iteration 2026-09-25 v0.7.73] Version sync for embedded Ozon collection and M.Video single-SKU dry-run preview.
+// [Iteration 2026-09-26 v0.7.75] Version sync for bounded parallel Ozon structured requests.
 // [Iteration 2026-09-23 v0.7.72] (no background logic change; version sync: collectOzonDetail returned payload now includes the precise packageInfo)
 // [Iteration 2026-09-23 v0.7.71] (no background logic change; version sync for packageInfo parser fix in content.js)
 // [Iteration 2026-09-23 v0.7.70] Seller backend: keep BOTH seller.ozonru.cn (new) and seller.ozon.ru; query the seller tab across both domains and call what_to_sell API via that tab's location.origin.

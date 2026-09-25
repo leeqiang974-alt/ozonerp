@@ -1,4 +1,4 @@
-﻿const button = document.querySelector("#collectButton");
+const button = document.querySelector("#collectButton");
 const statusEl = document.querySelector("#status");
 const includeVideo = document.querySelector("#includeVideo");
 const storeSelect = document.querySelector("#storeSelect");
@@ -18,7 +18,7 @@ const meliBrowserIdentity = document.querySelector("#meliBrowserIdentity");
 const meliUnlimitedStatus = document.querySelector("#meliUnlimitedStatus");
 const startMeliUnlimitedButton = document.querySelector("#startMeliUnlimitedButton");
 const stopMeliUnlimitedButton = document.querySelector("#stopMeliUnlimitedButton");
-const EXPECTED_CONTENT_VERSION = "0.7.73";
+const EXPECTED_CONTENT_VERSION = "0.7.75";
 let pendingPayload = null;
 let skuVariants = [];
 let selectedSkuKeys = new Set();

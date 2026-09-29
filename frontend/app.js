@@ -1,7 +1,10 @@
 // The operator UI may be served from either the workstation or the notebook,
 // but the durable ERP database and workers live on the dedicated notebook.
 // Never silently fall back to a second localhost backend with a different DB.
-const apiBase = window.ERP_API_BASE || (location.hostname === "192.168.0.147" ? "" : "http://192.168.0.147:8000");
+// The frontend may be opened from any deployment host.  Keep an explicit
+// override for reverse proxies, otherwise call the backend on the same host
+// instead of a retired notebook IP.
+const apiBase = window.ERP_API_BASE || `${location.protocol}//${location.hostname}:8000`;
 let shops = [];
 let allPostings = [];
 let activeOrderFilter = "all";

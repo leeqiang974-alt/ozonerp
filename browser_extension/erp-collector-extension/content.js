@@ -696,6 +696,9 @@ const SHOP_SCAN_STORAGE_KEY = "ozonErp1688ShopScan";
 // Must change with every collector behaviour change. popup.js uses this
 // handshake to force-replace stale content scripts already living in a tab.
 const COLLECTOR_VERSION = "0.7.75"; // [Iteration 2026-09-26 v0.7.75] Bound Ozon structured requests and fetch composer/entrypoint in parallel for M.Video single-SKU preview; // [Iteration 2026-09-26 v0.7.74] M.Video single-SKU human-reviewed pricing, inventory and dry-run gates; // [Iteration 2026-09-25 v0.7.73] Add embedded Ozon collection and M.Video dry-run single-SKU preview; // [Iteration 2026-09-23 v0.7.72] Fix payload: collectOzonDetail now includes the precise entrypoint packageInfo (it was computed but dropped from the return, so only the weak DOM-text fallback shipped); // [Iteration 2026-09-23 v0.7.71] Fix packageInfo: parse Weight/Dimensions when they are top-level webCharacteristics row sections (no short/long wrapper), as on real PDP; // [Iteration 2026-09-23 v0.7.70] Keep BOTH seller backends seller.ozonru.cn + seller.ozon.ru; background finds the seller tab across both and calls the API via that tab origin; // [Iteration 2026-09-23 v0.7.69] Extract package weight/dimensions from entrypoint webCharacteristics (keys Weight/Dimensions) into packageInfo; [Iteration 2026-09-22 v0.7.68] Read JSON-LD from DOM <script type="application/ld+json"> (composer PDP has no seo widget) so brand/rating/reviewCount/price are captured; [Iteration 2026-09-22 v0.7.67] Ozon PDP: extract product video(s) from composer webGallery.videos (type=pdp only), brand/rating/reviewCount/description from JSON-LD, category from breadCrumbs; [Iteration 2026-09-22] Support new 1688 factory catalog (sale.1688.com/factory) full-shop scan via scroll+DOM, b2b- memberId // [Iteration 2026-09-21] Add seller ID, shipping model, blocked status, full vendor info matching 胜利者 // [Iteration 2026-09-21] Add full product analytics: visitors/cart rate/avg price/stock/DRR/min seller price, same data as 胜利者/上品帮 // [Iteration 2026-09-21] Fix response path: items at top level, map soldCount/gmvSum/avgOrdersOnAccDays fields, verified with real API call // [Iteration 2026-09-21] Fix sales data response parsing, return structured data // [Iteration 2026-09-21] Extract product data directly from public Ozon page, no seller API needed // [Iteration 2026-09-21] Fix duplicate collection: dedup by product_id, only scrape main list, brand default empty
+// Increment for every collector behavior change; popup uses this to replace
+// content scripts already running in an Ozon tab.
+const COLLECTOR_HANDSHAKE_VERSION = "0.7.76";
 let extensionContextAvailable = true;
 
 function getExtensionRuntime() {
@@ -3431,7 +3434,7 @@ if (window.__OZON_ERP_COLLECTOR_TEST__) {
 
 getExtensionRuntime()?.onMessage?.addListener?.((message, _sender, sendResponse) => {
   if (message?.type === "PING_1688_COLLECTOR_061") {
-    sendResponse({ ok: true, version: COLLECTOR_VERSION });
+    sendResponse({ ok: true, version: COLLECTOR_HANDSHAKE_VERSION });
     return false;
   }
   if (message?.type === "EXTRACT_1688_OFFER_LINKS") {
@@ -3453,7 +3456,7 @@ getExtensionRuntime()?.onMessage?.addListener?.((message, _sender, sendResponse)
       return false;
     }
     button.click();
-    sendResponse({ ok: true, version: COLLECTOR_VERSION });
+    sendResponse({ ok: true, version: COLLECTOR_HANDSHAKE_VERSION });
     return false;
   }
   if (message?.type === "COLLECT_1688_PRODUCT_RAW") {
@@ -3500,7 +3503,7 @@ getExtensionRuntime()?.onMessage?.addListener?.((message, _sender, sendResponse)
 
 getExtensionRuntime()?.onMessage?.addListener?.((message, _sender, sendResponse) => {
   if (message?.type === "PING_1688_COLLECTOR") {
-    sendResponse({ ok: true, version: COLLECTOR_VERSION });
+    sendResponse({ ok: true, version: COLLECTOR_HANDSHAKE_VERSION });
     return false;
   }
   if (message?.type !== "COLLECT_1688_PRODUCT") return false;

@@ -1,5 +1,7 @@
 // ============ v0.7.61 搜索页独立注入（放在最开头，不依赖任何代码） ============
 (function(){
+  // 已废弃：商品邦德/销量数据卡片不再注入 Ozon 搜索页。
+  return;
   if (!location.hostname.includes("ozon.ru")) return;
   const isSearch = location.pathname.includes("/category") || location.search.includes("text=") || location.pathname.includes("/search");
   if (!isSearch) return;
@@ -605,7 +607,7 @@ async function setupEmbeddedOzonCollector(root) {
     }
   });
 }
-setTimeout(initOzonProductSidebar, 1500);
+// 已废弃：旧“数据侧栏 + 单 SKU 预览 + 嵌入采集框”会与当前采集入口重叠，禁止初始化。
 
 let pageContext = null;
 let floatingState = { minimized: false, selectedSkuKeys: new Set(), allSelected: true };
@@ -654,7 +656,6 @@ if (isOzonSellerPage()) {
 }
 if (isOzonPage()) {
   injectOzonNetworkReader();
-  mountOzonListInfo();
 }
 window.addEventListener("message", (event) => {
   if (event.source !== window) return;

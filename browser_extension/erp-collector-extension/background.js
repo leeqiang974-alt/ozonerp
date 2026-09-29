@@ -89,10 +89,6 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
     sendResponse({ ok: true, state: lastWorkerState });
     return false;
   }
-  if (message?.type === "OZON_FETCH_SALES_DATA") {
-    fetchOzonSalesFromSellerTab(message.productId).then(sendResponse);
-    return true;
-  }
   if (message?.type === "OZON_ERP_CRAWLER_POLL_NOW") {
     Promise.all([pollCrawlerJob({ manual: true, slot: 0 }), pollCrawlerJob({ manual: true, slot: 1 })])
       .then(() => sendResponse({ ok: true, state: lastWorkerState }));

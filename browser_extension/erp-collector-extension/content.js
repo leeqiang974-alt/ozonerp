@@ -654,7 +654,6 @@ if (isOzonSellerPage()) {
 }
 if (isOzonPage()) {
   injectOzonNetworkReader();
-  mountOzonListInfo();
 }
 window.addEventListener("message", (event) => {
   if (event.source !== window) return;

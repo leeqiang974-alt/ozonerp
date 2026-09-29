@@ -62,7 +62,77 @@
     scrollTimer = setTimeout(processNewCards, 3000);
   });
 })();
-// ============ 全局：获取 Ozon 商品销量数据（v0.7.44 对标胜利者插件） ============
+function sellerAnalyticsValue(row, aliases) {
+  if (!row || typeof row !== "object") return "";
+  const normalized = new Map(Object.entries(row).map(([key, value]) => [String(key).replace(/[^a-z0-9]/gi, "").toLowerCase(), value]));
+  for (const alias of aliases) {
+    const value = normalized.get(String(alias).replace(/[^a-z0-9]/gi, "").toLowerCase());
+    if (value !== undefined && value !== null && value !== "") return value;
+  }
+  return "";
+}
+
+function sellerAnalyticsPackageInfo(row) {
+  const weightValue = sellerAnalyticsValue(row, ["packageWeight", "packageWeightG", "weightG", "weight", "packageMass"]);
+  const dimensionsValue = sellerAnalyticsValue(row, ["packageDimensions", "dimensions", "dimension", "size"]);
+  const packageInfo = { weightG: "", lengthMm: "", widthMm: "", heightMm: "", label: "", source: "seller_analytics" };
+  const weightText = String(weightValue || "");
+  const weight = weightText.match(/\d+(?:[.,]\d+)?/);
+  if (weight) {
+    const amount = Number(weight[0].replace(",", "."));
+    packageInfo.weightG = /(?:kg|кг)/i.test(weightText) ? Math.round(amount * 1000) : Math.round(amount);
+  }
+  const dimensionText = String(dimensionsValue || "");
+  const dimensions = dimensionText.match(/\d+(?:[.,]\d+)?/g) || [];
+  if (dimensions.length >= 3) {
+    const factor = /(?:cm|см)/i.test(dimensionText) ? 10 : 1;
+    [packageInfo.lengthMm, packageInfo.widthMm, packageInfo.heightMm] = dimensions.slice(0, 3).map((value) => Math.round(Number(value.replace(",", ".")) * factor));
+  }
+  const parts = [];
+  if (packageInfo.weightG) parts.push(`${packageInfo.weightG} g`);
+  if (packageInfo.lengthMm && packageInfo.widthMm && packageInfo.heightMm) parts.push(`${packageInfo.lengthMm}×${packageInfo.widthMm}×${packageInfo.heightMm} mm`);
+  packageInfo.label = parts.join(" / ");
+  return packageInfo;
+}
+
+function sellerAnalyticsDetails(row) {
+  const fields = [
+    ["rFBS佣金", ["rfbsCommission", "rfbsCommissionRate"]], ["FBP佣金", ["fbpCommission", "fbpCommissionRate"]],
+    ["月销量", ["soldCount", "monthlySales"]], ["月销售额", ["gmvSum", "monthlyGmv"]], ["日销量", ["avgOrdersOnAccDays", "dailySales"]], ["日销售额", ["dailyGmv"]],
+    ["月销售动态", ["salesDynamics", "salesDynamic", "salesDynamicsPercent"]], ["商品卡片浏览量", ["sessionCount", "cardPv", "productCardViews"]],
+    ["商品卡片加购率", ["convToCartPdp", "cartRatePdp"]], ["搜索和目录浏览量", ["searchPv", "searchViews"]], ["搜索和目录加购率", ["cartRateSearch", "convToCartSearch"]],
+    ["点击率", ["clickRate"]], ["参与促销天数", ["promoDays", "promotionDays"]], ["参与促销的折扣", ["promoDiscount", "promotionDiscount"]],
+    ["促销活动的转化率", ["promoConversion", "promotionConversion"]], ["付费推广天数", ["paidPromotionDays"]], ["广告费率DRR", ["drr"]],
+    ["成交率", ["conversionRate", "conversion"]], ["退货取消率", ["returnCancelRate", "returnRate"]], ["平均价格", ["avgPrice"]],
+    ["包装重量", ["packageWeight", "packageWeightG", "weightG", "weight"]], ["长宽高(mm)", ["packageDimensions", "dimensions"]],
+    ["发货模式", ["salesSchema"]], ["跟卖者", ["sellerName", "sellerId"]], ["跟卖最低价", ["minSellerPrice"]], ["上架时间", ["publishedAt", "createdAt"]],
+  ];
+  const details = [];
+  const usedKeys = new Set();
+  for (const [label, aliases] of fields) {
+    const value = sellerAnalyticsValue(row, aliases);
+    if (value === "" || value === null || value === undefined) continue;
+    aliases.forEach((alias) => usedKeys.add(String(alias).replace(/[^a-z0-9]/gi, "").toLowerCase()));
+    details.push({ label, value: Array.isArray(value) || typeof value === "object" ? JSON.stringify(value) : String(value) });
+  }
+  for (const [key, value] of Object.entries(row || {})) {
+    const normalized = String(key).replace(/[^a-z0-9]/gi, "").toLowerCase();
+    if (usedKeys.has(normalized) || value === "" || value === null || value === undefined || typeof value === "object") continue;
+    details.push({ label: key, value: String(value), raw: true });
+  }
+  return details;
+}
+
+function mergePackageInfo(preferred = {}, fallback = {}) {
+  const merged = {};
+  for (const key of ["weightG", "lengthMm", "widthMm", "heightMm"]) merged[key] = positiveNumber(preferred[key]) ?? positiveNumber(fallback[key]) ?? "";
+  const parts = [];
+  if (merged.weightG) parts.push(`${merged.weightG} g`);
+  if (merged.lengthMm && merged.widthMm && merged.heightMm) parts.push(`${merged.lengthMm}×${merged.widthMm}×${merged.heightMm} mm`);
+  return { ...fallback, ...merged, label: parts.join(" / "), source: preferred.source || fallback.source || "" };
+}
+
+// ============ 全局：获取 Ozon 商品销量数据（只读 Seller Analytics） ============
 async function fetchOzonSalesData(productId) {
   if (!productId) return null;
   try {
@@ -85,7 +155,7 @@ async function fetchOzonSalesData(productId) {
       note: "该商品为新品/无销量数据"
     };
     const row = rows[0];
-    return {
+    const result = {
       monthlySales: parseInt(row.soldCount || 0),
       monthlyRevenue: Math.round(parseFloat(row.gmvSum || 0)),
       dailySales: Math.round(parseFloat(row.avgOrdersOnAccDays || 0) * 10) / 10,
@@ -99,8 +169,13 @@ async function fetchOzonSalesData(productId) {
       minSellerPrice: parseInt(row.minSellerPrice || 0),
       sellerId: row.sellerId || "-",
       salesType: row.salesSchema || "-",
-      blocked: row.blockedBySeller ? "是（被卖家屏蔽）" : "否"
+      blocked: row.blockedBySeller ? "是（被卖家屏蔽）" : "否",
+      packageInfo: sellerAnalyticsPackageInfo(row),
+      details: sellerAnalyticsDetails(row),
     };
+    window.__ozonErpSellerAnalytics ||= new Map();
+    window.__ozonErpSellerAnalytics.set(String(productId), result);
+    return result;
   } catch (e) {
     console.log("[Ozon ERP] 异常:", e.message);
     return null;
@@ -147,6 +222,9 @@ ${data.note ? `<div style="margin:8px 0;color:#999;font-size:12px;">${data.note}
 <div style="margin:15px 0;height:1px;background:#eee;"></div>
 <div style="margin:8px 0;display:flex;justify-content:space-between;"><span style="color:#999;">商品ID</span><span>${productId}</span></div>
 `;
+    const alreadyShown = new Set(["月销量", "月销售额", "日销量", "商品卡片浏览量", "商品卡片加购率", "平均价格", "广告费率DRR", "跟卖最低价", "发货模式"]);
+    const fullDetails = (data.details || []).filter((item) => !alreadyShown.has(item.label)).map((item) => `<div style="margin:6px 0;display:flex;justify-content:space-between;gap:8px;"><span style="color:#999;">${escapeHtml(item.label)}</span><span style="font-weight:500;text-align:right;word-break:break-word;">${escapeHtml(item.value)}</span></div>`).join("");
+    if (fullDetails) content.insertAdjacentHTML("beforeend", `<div style="margin:15px 0;height:1px;background:#eee;"></div><div style="font-size:12px;font-weight:700;color:#333;margin-bottom:6px;">Seller Analytics 完整字段</div>${fullDetails}`);
   });
 }
 
@@ -543,6 +621,11 @@ async function setupMvideoSinglePreview(root, currentSkuId) {
       const payload = await collectOzonDetail();
       if (!payload.title) throw new Error("商品标题尚未加载完成，请等待页面加载后重试");
       const resolvedSkuId = String(currentSkuId || ozonProductIdFromUrl(location.href));
+      const cachedAnalytics = window.__ozonErpSellerAnalytics?.get(resolvedSkuId);
+      const sellerAnalytics = cachedAnalytics || await fetchOzonSalesData(resolvedSkuId);
+      if (sellerAnalytics?.packageInfo?.label) {
+        payload.packageInfo = mergePackageInfo(sellerAnalytics.packageInfo, payload.packageInfo || {});
+      }
       const selected = selectSingleOzonSku(payload.skuVariants || [], resolvedSkuId);
       if (!selected.ok) throw new Error(selected.error);
       sourceContext.payload = payload;
@@ -3332,6 +3415,9 @@ if (window.__OZON_ERP_COLLECTOR_TEST__) {
     ozonDomJsonLd,
     ozonPickProductLd,
     ozonPackageInfoFromStates,
+    sellerAnalyticsPackageInfo,
+    sellerAnalyticsDetails,
+    mergePackageInfo,
     toFiniteNumber,
     positiveNumber,
     mmToCm,

@@ -194,6 +194,11 @@ for (const invalid of ["", null, undefined, "abc", "abc123", NaN, Infinity]) {
 assert.equal(hooks.positiveNumber(0), null);
 assert.equal(hooks.positiveNumber(-3), null);
 
+const sellerPackage = hooks.sellerAnalyticsPackageInfo({ packageWeight: "115 g", packageDimensions: "102 * 102 * 47" });
+assert.deepEqual(JSON.parse(JSON.stringify(sellerPackage)), { weightG: 115, lengthMm: 102, widthMm: 102, heightMm: 47, label: "115 g / 102×102×47 mm", source: "seller_analytics" });
+const sellerMergedPackage = hooks.mergePackageInfo(sellerPackage, { weightG: 50, lengthMm: 10, widthMm: 10, heightMm: 10 });
+assert.deepEqual(JSON.parse(JSON.stringify(sellerMergedPackage)), { weightG: 115, lengthMm: 102, widthMm: 102, heightMm: 47, label: "115 g / 102×102×47 mm", source: "seller_analytics" });
+
 const twoSkus = [{ skuId: "sku-a" }, { skuId: "sku-b" }];
 assert.deepEqual(
   JSON.parse(JSON.stringify(hooks.selectSingleOzonSku(twoSkus, "sku-b"))),

@@ -1304,7 +1304,7 @@ def _run_bulk_listing_pilot(batch_id: int, max_items: int, submit_after_prepare:
             db.commit()
             return
         fixed = {str(row.get("attribute_id")): row for row in rules.get("attributes", [])}
-        eligible_statuses = ["queued"] if not submit_after_prepare else ["queued", "prepared", "failed"]
+        eligible_statuses = ["queued"] if not submit_after_prepare else ["queued", "prepared", "failed", "waiting_quota"]
         shop_capacity: dict[int, int] = {}
         eligible_shop_ids: set[int] = set()
         if submit_after_prepare:
@@ -1361,7 +1361,7 @@ def _run_bulk_listing_pilot(batch_id: int, max_items: int, submit_after_prepare:
             items = list(db.scalars(item_query.order_by(BulkListingBatchItemRecord.id).limit(max_items)))
         elif submit_after_prepare:
             primary = list(db.scalars(item_query.where(
-                BulkListingBatchItemRecord.status.in_(["queued", "prepared"]),
+                BulkListingBatchItemRecord.status.in_(["queued", "prepared", "waiting_quota"]),
             ).order_by(BulkListingBatchItemRecord.id).limit(max_items)))
             if len(primary) < max_items:
                 backfill = list(db.scalars(item_query.where(

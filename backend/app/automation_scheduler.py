@@ -5,7 +5,7 @@ import json
 from datetime import datetime, timedelta
 from zoneinfo import ZoneInfo
 
-from sqlalchemy import select
+from sqlalchemy import or_, select
 
 from .automation_service import execute_task
 from .database import SessionLocal
@@ -17,11 +17,19 @@ from .erp_models import (
 from sqlalchemy import func
 from .pipeline.publish_service import poll_task_status
 from .pipeline.publish_service import submit_to_ozon
-from .automation_routes import mark_bulk_items_for_ozon_feedback, _queue_draft_stock_sync
+from .automation_routes import (
+    _queue_draft_stock_sync,
+    _run_bulk_listing_pilot,
+    mark_bulk_items_for_ozon_feedback,
+)
 
 _stop = threading.Event()
 _thread: threading.Thread | None = None
 _allow_external_writes = False
+# Keep a quota-recovery probe bounded.  The actual Ozon capacity is re-read by
+# the batch worker before it claims anything, so this is only a cadence guard;
+# it never treats a local clock as proof that a platform quota has reset.
+_bulk_auto_resume_not_before: dict[int, datetime] = {}
 
 
 def _is_ozon_daily_quota_error(message: object) -> bool:
@@ -37,6 +45,51 @@ def _next_future_run(schedule_time: str, now: datetime) -> datetime:
     while next_run <= now:
         next_run += timedelta(days=1)
     return next_run
+
+
+def _resume_quota_waiting_bulk_batches(db, now: datetime | None = None) -> int:
+    """Resume opted-in bulk batches only after a fresh live-capacity check.
+
+    ``auto_continue_next_day`` was persisted on the batch but was not consumed
+    by the scheduler.  Do not re-submit historical Ozon tasks: the worker only
+    selects rows without an ``ozon_task_id`` and verifies each target shop's
+    current Ozon capacity before doing any external write.
+    """
+    if not _allow_external_writes:
+        return 0
+    current = now or datetime.now(ZoneInfo("Asia/Shanghai"))
+    batches = list(db.scalars(select(BulkListingBatchRecord).where(
+        BulkListingBatchRecord.status == "waiting_quota",
+        BulkListingBatchRecord.auto_continue_next_day.is_(True),
+    )))
+    resumed = 0
+    for batch in batches:
+        retry_at = _bulk_auto_resume_not_before.get(batch.id)
+        if retry_at is not None and current < retry_at:
+            continue
+        actionable = db.scalar(select(BulkListingBatchItemRecord.id).where(
+            BulkListingBatchItemRecord.batch_id == batch.id,
+            BulkListingBatchItemRecord.ozon_task_id.is_(None),
+            or_(
+                BulkListingBatchItemRecord.status.in_(("queued", "prepared", "waiting_quota")),
+                (BulkListingBatchItemRecord.status == "failed") & (BulkListingBatchItemRecord.attempts < 3),
+            ),
+        ).limit(1))
+        if actionable is None:
+            continue
+        # Persist the gate before spawning, so the 30-second scheduler cannot
+        # launch a second worker for the same batch.
+        batch.status = "running"
+        db.commit()
+        _bulk_auto_resume_not_before[batch.id] = current + timedelta(minutes=10)
+        threading.Thread(
+            target=_run_bulk_listing_pilot,
+            args=(batch.id, 40, True, "system-auto-resume"),
+            daemon=True,
+            name=f"bulk-auto-resume-{batch.id}",
+        ).start()
+        resumed += 1
+    return resumed
 
 
 def _feedback_rows(result: dict) -> list[dict]:
@@ -485,6 +538,14 @@ def _loop() -> None:
                 task.next_run_at = _next_future_run(task.schedule_time, now); db.commit()
                 try: execute_task(db, task)
                 except Exception: continue
+            # A bulk batch has its own state machine, not an automation-task
+            # schedule.  Resume only batches that the operator explicitly
+            # opted into, and let the worker check Ozon's live quota before it
+            # processes any unsubmitted row.
+            try:
+                _resume_quota_waiting_bulk_batches(db, now)
+            except Exception:
+                db.rollback()
             # Poll submitted Ozon imports. A prior operator approval authorizes
             # this worker to apply only deterministic local fixes and resubmit
             # within the bounded auto-repair policy; quota and ambiguous/image

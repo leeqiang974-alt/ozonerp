@@ -31,6 +31,25 @@ def test_search_jxhy_products_uses_official_endpoint(monkeypatch):
     assert result["total"] == 1
     assert result["items"][0]["offer_id"] == "9"
 
+
+def test_search_jxhy_retries_transient_timeout(monkeypatch):
+    monkeypatch.setenv("OPEN1688_APP_KEY", "4910210")
+    monkeypatch.setenv("OPEN1688_APP_SECRET", "secret")
+    monkeypatch.setenv("OPEN1688_ACCESS_TOKEN", "token")
+    monkeypatch.setattr("app.integrations.open1688.time.sleep", lambda _: None)
+    calls = 0
+
+    def handler(_: httpx.Request) -> httpx.Response:
+        nonlocal calls
+        calls += 1
+        if calls < 3:
+            raise httpx.ReadTimeout("temporary read timeout")
+        return httpx.Response(200, json={"pageNum": 1, "pageSize": 20, "totalRecords": 0, "result": []})
+
+    result = search_jxhy_products("收纳", transport=httpx.MockTransport(handler))
+    assert calls == 3
+    assert result["total"] == 0
+
 def test_exchange_authorization_code_saves_token_encrypted(monkeypatch, tmp_path):
     import app.integrations.open1688 as module
     monkeypatch.setattr(module, "CONFIG_FILE", tmp_path / "open1688.json")

@@ -9,6 +9,7 @@ import os
 from pathlib import Path
 from urllib.parse import urlencode, urlparse, parse_qs
 import re
+import time
 from typing import Any
 
 import httpx
@@ -50,6 +51,34 @@ def exchange_code(code_or_url: str, *, transport=None) -> dict:
 
 class Open1688Error(RuntimeError):
     pass
+
+
+_SEARCH_TIMEOUT = httpx.Timeout(connect=10.0, read=45.0, write=20.0, pool=10.0)
+_SEARCH_ATTEMPTS = 3
+
+
+def _search_request_with_retry(url: str, *, params: dict[str, str], transport=None) -> httpx.Response:
+    """Make a bounded, read-only search request resilient to transient 1688 failures.
+
+    Search is the first step of a scheduled automation run.  A single short
+    network stall must not fail an entire 08:05 task.  Only timeout/network
+    failures and upstream 5xx responses are retried; authentication, request,
+    and business errors remain immediate failures.
+    """
+    last_error: Exception | None = None
+    for attempt in range(1, _SEARCH_ATTEMPTS + 1):
+        try:
+            with httpx.Client(timeout=_SEARCH_TIMEOUT, transport=transport) as client:
+                response = client.get(url, params=params)
+            if response.status_code < 500 or attempt == _SEARCH_ATTEMPTS:
+                return response
+            last_error = Open1688Error(f"1688 HTTP {response.status_code}")
+        except (httpx.TimeoutException, httpx.NetworkError) as exc:
+            last_error = exc
+            if attempt == _SEARCH_ATTEMPTS:
+                break
+        time.sleep(0.5 * attempt)
+    raise Open1688Error(f"1688 搜索请求在 {_SEARCH_ATTEMPTS} 次尝试后仍失败：{last_error}") from last_error
 
 
 def configuration_status() -> dict[str, Any]:
@@ -136,8 +165,11 @@ def search_jxhy_products(keyword: str, page_num: int = 1, page_size: int = 20, *
     if filters: params["filters"] = [value for value in filters if value]
     if rule_ids: params["ruleIds"] = [value for value in rule_ids if value]
     params["_aop_signature"] = sign_path(path, params, secret)
-    with httpx.Client(timeout=15, transport=transport) as client:
-        response = client.get(f"https://gw.open.1688.com/openapi/{path}", params={k: _stringify(v) for k, v in params.items()})
+    response = _search_request_with_retry(
+        f"https://gw.open.1688.com/openapi/{path}",
+        params={k: _stringify(v) for k, v in params.items()},
+        transport=transport,
+    )
     try:
         payload = response.json()
     except ValueError as exc:

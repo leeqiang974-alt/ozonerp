@@ -9,8 +9,8 @@
 // [Iteration 2026-09-22 v0.7.65] Full-shop scan now supports the new 1688 factory catalog (sale.1688.com/factory) via scroll+DOM; background queue logic unchanged.
 // Ozon ERP runs on the dedicated LAN notebook. Amazon CBT collection remains
 // on the separate Mercado Libre ERP queue; the two flows must not mix.
-const ERP_BASE = "http://192.168.0.147:8000";
-const ERP_ALLOWED_HOSTS = new Set(["192.168.0.147", "127.0.0.1", "localhost"]);
+const ERP_BASE = "http://192.168.0.109:8000";
+const ERP_ALLOWED_HOSTS = new Set(["192.168.0.109"]);
 const MELI_BASE = "https://ml-erp.woxq.cn";
 const WORKER_ID_KEY = "ozonErpCrawlerWorkerId";
 const HUMAN_CHECK_PAUSED_KEY = "ozonErpHumanCheckPaused";
@@ -195,7 +195,7 @@ function resolveErpUrl(baseUrl, path) {
   const origin = new URL(baseUrl || ERP_BASE);
   const allowed = origin.protocol === "http:" && ERP_ALLOWED_HOSTS.has(origin.hostname) && origin.port === "8000";
   if (!allowed) {
-    throw new Error("Ozon 插件只允许连接局域网笔记本 ERP http://192.168.0.147:8000");
+    throw new Error("Ozon 插件只允许连接生产 ERP http://192.168.0.109:8000");
   }
   if (!String(path || "").startsWith("/api/")) throw new Error("ERP 请求路径不合法");
   return new URL(path, origin).toString();
@@ -220,7 +220,7 @@ async function proxyErpRequest(message) {
     }
     return { ok: true, status: response.status, url, data };
   } catch (error) {
-    return { ok: false, status: 0, url, error: `无法连接笔记本 Ozon ERP：${error?.message || "网络请求失败"}。请确认 http://192.168.0.147:8000/health 可打开。` };
+    return { ok: false, status: 0, url, error: `无法连接生产 Ozon ERP：${error?.message || "网络请求失败"}。请确认 http://192.168.0.109:8000/health 可打开。` };
   }
 }
 

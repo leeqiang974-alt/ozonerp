@@ -67,3 +67,36 @@ def test_quota_waiting_batch_does_not_resume_without_operator_opt_in(monkeypatch
 
         assert scheduler._resume_quota_waiting_bulk_batches(db) == 0
         assert db.get(BulkListingBatchRecord, batch.id).status == "waiting_quota"
+
+
+def test_reconciled_ready_batch_also_resumes_when_opted_in(monkeypatch):
+    engine = create_engine("sqlite://")
+    Base.metadata.create_all(engine)
+    started = []
+
+    class ThreadStub:
+        def __init__(self, **kwargs):
+            started.append(kwargs)
+
+        def start(self):
+            return None
+
+    monkeypatch.setattr(scheduler.threading, "Thread", ThreadStub)
+    monkeypatch.setattr(scheduler, "_allow_external_writes", True)
+    scheduler._bulk_auto_resume_not_before.clear()
+    with Session(engine) as db:
+        batch = BulkListingBatchRecord(
+            name="回算后待继续", source_shop_key="source", status="ready_to_continue",
+            auto_continue_next_day=True,
+        )
+        db.add(batch)
+        db.commit()
+        db.add(BulkListingBatchItemRecord(
+            batch_id=batch.id, source_product_id=1, assigned_shop_id=1,
+            status="waiting_quota",
+        ))
+        db.commit()
+
+        assert scheduler._resume_quota_waiting_bulk_batches(db) == 1
+        assert db.get(BulkListingBatchRecord, batch.id).status == "running"
+        assert len(started) == 1

@@ -907,10 +907,10 @@ async function getActiveStoreId() {
       storeId: cfg.selectedStoreId || "1",
       // Ozon collection is handled by the dedicated LAN notebook. Do not
       // route it through the separate Mercado Libre ERP service.
-      baseUrl: "http://192.168.0.147:8000",
+      baseUrl: "http://192.168.0.109:8000",
     };
   } catch (e) {
-    return { storeId: "1", baseUrl: "http://192.168.0.147:8000" };
+    return { storeId: "1", baseUrl: "http://192.168.0.109:8000" };
   }
 }
 
@@ -1414,7 +1414,7 @@ function mountFloatingCollector() {
         </div>
       </div>
       <div class="ozon-erp-head-actions">
-        <a class="ozon-erp-link" href="http://192.168.0.147:5500/" target="_blank" title="打开笔记本 ERP">ERP</a>
+        <a class="ozon-erp-link" href="http://192.168.0.109:5500/" target="_blank" title="打开生产 ERP">ERP</a>
         <button type="button" id="ozon-erp-toggle" title="缩小">-</button>
       </div>
     </div>

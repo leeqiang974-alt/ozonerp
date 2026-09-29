@@ -59,7 +59,11 @@ def _resume_quota_waiting_bulk_batches(db, now: datetime | None = None) -> int:
         return 0
     current = now or datetime.now(ZoneInfo("Asia/Shanghai"))
     batches = list(db.scalars(select(BulkListingBatchRecord).where(
-        BulkListingBatchRecord.status == "waiting_quota",
+        # Startup reconciliation may turn an old quota-only wait into
+        # ``ready_to_continue`` once the observed reset window has passed.
+        # Both states mean the same thing for an explicitly opted-in batch:
+        # probe live Ozon capacity before claiming a local row.
+        BulkListingBatchRecord.status.in_(("waiting_quota", "ready_to_continue")),
         BulkListingBatchRecord.auto_continue_next_day.is_(True),
     )))
     resumed = 0

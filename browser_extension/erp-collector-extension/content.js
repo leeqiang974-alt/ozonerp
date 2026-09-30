@@ -186,6 +186,25 @@ function mergePackageInfo(preferred = {}, fallback = {}) {
   return { ...fallback, ...merged, label: parts.join(" / "), source: preferred.source || fallback.source || "" };
 }
 
+function packageInfoFromRenderedOzonPanel(text) {
+  const source = String(text || "");
+  const packageInfo = { weightG: "", lengthMm: "", widthMm: "", heightMm: "", label: "", source: "ozon_panel" };
+  const weightMatch = source.match(/(?:包装重量|包裹重量|重量)\s*[:：]?\s*(\d+(?:[.,]\d+)?)\s*(kg|кг|g|г)?/i);
+  if (weightMatch) {
+    const amount = Number(weightMatch[1].replace(",", "."));
+    packageInfo.weightG = /^(?:kg|кг)$/i.test(weightMatch[2] || "") ? Math.round(amount * 1000) : Math.round(amount);
+  }
+  const dimensionsMatch = source.match(/(?:长宽高(?:\s*\(\s*mm\s*\))?|尺寸(?:，|,)?\s*毫米?)\s*[:：]?\s*(\d+(?:[.,]\d+)?)\s*(?:[×x*])\s*(\d+(?:[.,]\d+)?)\s*(?:[×x*])\s*(\d+(?:[.,]\d+)?)/i);
+  if (dimensionsMatch) {
+    [, packageInfo.lengthMm, packageInfo.widthMm, packageInfo.heightMm] = dimensionsMatch.map((value, index) => index ? Math.round(Number(String(value).replace(",", "."))) : value);
+  }
+  const parts = [];
+  if (packageInfo.weightG) parts.push(`${packageInfo.weightG} g`);
+  if (packageInfo.lengthMm && packageInfo.widthMm && packageInfo.heightMm) parts.push(`${packageInfo.lengthMm}×${packageInfo.widthMm}×${packageInfo.heightMm} mm`);
+  packageInfo.label = parts.join(" / ");
+  return packageInfo;
+}
+
 // ============ 全局：获取 Ozon 商品销量数据（只读 Seller Analytics） ============
 async function fetchOzonSalesData(productId) {
   if (!productId) return null;
@@ -671,9 +690,11 @@ async function setupMvideoSinglePreview(root, currentSkuId) {
       const resolvedSkuId = String(currentSkuId || ozonProductIdFromUrl(location.href));
       const cachedAnalytics = window.__ozonErpSellerAnalytics?.get(resolvedSkuId);
       const sellerAnalytics = cachedAnalytics || await fetchOzonSalesData(resolvedSkuId);
-      if (sellerAnalytics?.packageInfo?.label) {
-        payload.packageInfo = mergePackageInfo(sellerAnalytics.packageInfo, payload.packageInfo || {});
-      }
+      const renderedPanelPackage = packageInfoFromRenderedOzonPanel(root.querySelector("#ozon-erp-sidebar-content")?.innerText || "");
+      payload.packageInfo = mergePackageInfo(
+        renderedPanelPackage.label ? renderedPanelPackage : (sellerAnalytics?.packageInfo || {}),
+        mergePackageInfo(sellerAnalytics?.packageInfo || {}, payload.packageInfo || {}),
+      );
       const selected = selectSingleOzonSku(payload.skuVariants || [], resolvedSkuId);
       if (!selected.ok) throw new Error(selected.error);
       sourceContext.payload = payload;
@@ -746,7 +767,7 @@ const SHOP_SCAN_STORAGE_KEY = "ozonErp1688ShopScan";
 const COLLECTOR_VERSION = "0.7.75"; // [Iteration 2026-09-26 v0.7.75] Bound Ozon structured requests and fetch composer/entrypoint in parallel for M.Video single-SKU preview; // [Iteration 2026-09-26 v0.7.74] M.Video single-SKU human-reviewed pricing, inventory and dry-run gates; // [Iteration 2026-09-25 v0.7.73] Add embedded Ozon collection and M.Video dry-run single-SKU preview; // [Iteration 2026-09-23 v0.7.72] Fix payload: collectOzonDetail now includes the precise entrypoint packageInfo (it was computed but dropped from the return, so only the weak DOM-text fallback shipped); // [Iteration 2026-09-23 v0.7.71] Fix packageInfo: parse Weight/Dimensions when they are top-level webCharacteristics row sections (no short/long wrapper), as on real PDP; // [Iteration 2026-09-23 v0.7.70] Keep BOTH seller backends seller.ozonru.cn + seller.ozon.ru; background finds the seller tab across both and calls the API via that tab origin; // [Iteration 2026-09-23 v0.7.69] Extract package weight/dimensions from entrypoint webCharacteristics (keys Weight/Dimensions) into packageInfo; [Iteration 2026-09-22 v0.7.68] Read JSON-LD from DOM <script type="application/ld+json"> (composer PDP has no seo widget) so brand/rating/reviewCount/price are captured; [Iteration 2026-09-22 v0.7.67] Ozon PDP: extract product video(s) from composer webGallery.videos (type=pdp only), brand/rating/reviewCount/description from JSON-LD, category from breadCrumbs; [Iteration 2026-09-22] Support new 1688 factory catalog (sale.1688.com/factory) full-shop scan via scroll+DOM, b2b- memberId // [Iteration 2026-09-21] Add seller ID, shipping model, blocked status, full vendor info matching 胜利者 // [Iteration 2026-09-21] Add full product analytics: visitors/cart rate/avg price/stock/DRR/min seller price, same data as 胜利者/上品帮 // [Iteration 2026-09-21] Fix response path: items at top level, map soldCount/gmvSum/avgOrdersOnAccDays fields, verified with real API call // [Iteration 2026-09-21] Fix sales data response parsing, return structured data // [Iteration 2026-09-21] Extract product data directly from public Ozon page, no seller API needed // [Iteration 2026-09-21] Fix duplicate collection: dedup by product_id, only scrape main list, brand default empty
 // Increment for every collector behavior change; popup uses this to replace
 // content scripts already running in an Ozon tab.
-const COLLECTOR_HANDSHAKE_VERSION = "0.7.77";
+const COLLECTOR_HANDSHAKE_VERSION = "0.7.78";
 let extensionContextAvailable = true;
 
 function getExtensionRuntime() {
@@ -3469,6 +3490,7 @@ if (window.__OZON_ERP_COLLECTOR_TEST__) {
     sellerAnalyticsPackageInfo,
     sellerAnalyticsDetails,
     mergePackageInfo,
+    packageInfoFromRenderedOzonPanel,
     toFiniteNumber,
     positiveNumber,
     mmToCm,

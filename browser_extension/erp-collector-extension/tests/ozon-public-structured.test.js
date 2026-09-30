@@ -209,6 +209,8 @@ const nestedSellerPackage = hooks.sellerAnalyticsPackageInfo({
   },
 });
 assert.deepEqual(JSON.parse(JSON.stringify(nestedSellerPackage)), { weightG: 115, lengthMm: 102, widthMm: 102, heightMm: 47, label: "115 g / 102×102×47 mm", source: "seller_analytics" });
+const renderedPanelPackage = hooks.packageInfoFromRenderedOzonPanel("包装重量：115 g\n长宽高(mm)：102 * 102 * 47");
+assert.deepEqual(JSON.parse(JSON.stringify(renderedPanelPackage)), { weightG: 115, lengthMm: 102, widthMm: 102, heightMm: 47, label: "115 g / 102×102×47 mm", source: "ozon_panel" });
 
 const twoSkus = [{ skuId: "sku-a" }, { skuId: "sku-b" }];
 assert.deepEqual(

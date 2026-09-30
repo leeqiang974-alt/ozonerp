@@ -198,6 +198,17 @@ const sellerPackage = hooks.sellerAnalyticsPackageInfo({ packageWeight: "115 g",
 assert.deepEqual(JSON.parse(JSON.stringify(sellerPackage)), { weightG: 115, lengthMm: 102, widthMm: 102, heightMm: 47, label: "115 g / 102×102×47 mm", source: "seller_analytics" });
 const sellerMergedPackage = hooks.mergePackageInfo(sellerPackage, { weightG: 50, lengthMm: 10, widthMm: 10, heightMm: 10 });
 assert.deepEqual(JSON.parse(JSON.stringify(sellerMergedPackage)), { weightG: 115, lengthMm: 102, widthMm: 102, heightMm: 47, label: "115 g / 102×102×47 mm", source: "seller_analytics" });
+const nestedSellerPackage = hooks.sellerAnalyticsPackageInfo({
+  product: {
+    package: {
+      weight: { value: "0.115", unit: "kg" },
+      lengthMm: 102,
+      widthMm: 102,
+      heightMm: 47,
+    },
+  },
+});
+assert.deepEqual(JSON.parse(JSON.stringify(nestedSellerPackage)), { weightG: 115, lengthMm: 102, widthMm: 102, heightMm: 47, label: "115 g / 102×102×47 mm", source: "seller_analytics" });
 
 const twoSkus = [{ skuId: "sku-a" }, { skuId: "sku-b" }];
 assert.deepEqual(
@@ -237,7 +248,8 @@ assert.equal(model.publishReady, false);
 const gateMap = new Map(model.gates.map((gate) => [gate.label, gate]));
 assert.equal(gateMap.get("CNY 采购价").ok, false);
 assert.equal(gateMap.get("M.Video RUB 售价").ok, false);
-assert.equal(gateMap.get("库存").ok, false);
+assert.equal(gateMap.get("库存").ok, true);
+assert.equal(model.inventory, 999);
 assert.equal(gateMap.get("标题重构").ok, false);
 assert.equal(gateMap.get("描述重构").ok, false);
 assert.equal(gateMap.get("类目合规预检").ok, false);
@@ -315,9 +327,9 @@ for (const invalidInventory of ["", 0, -3, "abc", NaN]) {
     "sku-b",
     { purchaseCostCny: 18.5, inventory: invalidInventory, priceConfirmed: true },
   );
-  assert.equal(invalidInventoryModel.inventory, null);
+  assert.equal(invalidInventoryModel.inventory, 999);
   assert.equal(invalidInventoryModel.pricing.ok, true);
-  assert.equal(gateLookup(invalidInventoryModel).get("库存").ok, false);
+  assert.equal(gateLookup(invalidInventoryModel).get("库存").ok, true);
 }
 
 const marketOnlyModel = hooks.buildMvideoSingleSkuPreviewModel(

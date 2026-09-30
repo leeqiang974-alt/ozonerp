@@ -62,31 +62,85 @@
     scrollTimer = setTimeout(processNewCards, 3000);
   });
 })();
+function sellerAnalyticsKey(value) {
+  return String(value || "").replace(/[^a-z0-9]/gi, "").toLowerCase();
+}
+
+function sellerAnalyticsEntries(value, prefix = "", entries = [], seen = new WeakSet()) {
+  if (value === null || value === undefined || value === "") return entries;
+  if (typeof value !== "object") {
+    if (prefix) entries.push({ key: prefix, value });
+    return entries;
+  }
+  if (seen.has(value)) return entries;
+  seen.add(value);
+  if (prefix) entries.push({ key: prefix, value });
+  if (Array.isArray(value)) {
+    value.forEach((item, index) => sellerAnalyticsEntries(item, `${prefix}${prefix ? "." : ""}${index}`, entries, seen));
+    return entries;
+  }
+  for (const [key, nestedValue] of Object.entries(value)) {
+    sellerAnalyticsEntries(nestedValue, `${prefix}${prefix ? "." : ""}${key}`, entries, seen);
+  }
+  return entries;
+}
+
 function sellerAnalyticsValue(row, aliases) {
   if (!row || typeof row !== "object") return "";
-  const normalized = new Map(Object.entries(row).map(([key, value]) => [String(key).replace(/[^a-z0-9]/gi, "").toLowerCase(), value]));
-  for (const alias of aliases) {
-    const value = normalized.get(String(alias).replace(/[^a-z0-9]/gi, "").toLowerCase());
+  const wanted = aliases.map(sellerAnalyticsKey);
+  const direct = new Map(Object.entries(row).map(([key, value]) => [sellerAnalyticsKey(key), value]));
+  for (const alias of wanted) {
+    const value = direct.get(alias);
     if (value !== undefined && value !== null && value !== "") return value;
+  }
+  const entries = sellerAnalyticsEntries(row);
+  for (const alias of wanted) {
+    const matched = entries.find(({ key }) => {
+      const normalized = sellerAnalyticsKey(key);
+      return normalized === alias || normalized.endsWith(alias);
+    });
+    if (matched) return matched.value;
   }
   return "";
 }
 
+function sellerAnalyticsMeasurementText(value) {
+  if (value === null || value === undefined || value === "") return "";
+  if (typeof value !== "object") return String(value);
+  const amount = sellerAnalyticsValue(value, ["value", "amount", "number", "weight", "mass", "grams", "gram"]);
+  const unit = sellerAnalyticsValue(value, ["unit", "units", "measure", "measurementUnit"]);
+  return `${amount ?? ""} ${unit ?? ""}`.trim();
+}
+
 function sellerAnalyticsPackageInfo(row) {
-  const weightValue = sellerAnalyticsValue(row, ["packageWeight", "packageWeightG", "weightG", "weight", "packageMass"]);
-  const dimensionsValue = sellerAnalyticsValue(row, ["packageDimensions", "dimensions", "dimension", "size"]);
+  const weightValue = sellerAnalyticsValue(row, ["packageWeight", "packageWeightG", "weightG", "weightGrams", "productWeight", "weight", "packageMass"]);
+  const dimensionsValue = sellerAnalyticsValue(row, ["packageDimensions", "dimensionsMm", "dimensions", "dimension", "size"]);
   const packageInfo = { weightG: "", lengthMm: "", widthMm: "", heightMm: "", label: "", source: "seller_analytics" };
-  const weightText = String(weightValue || "");
+  const weightText = sellerAnalyticsMeasurementText(weightValue);
   const weight = weightText.match(/\d+(?:[.,]\d+)?/);
   if (weight) {
     const amount = Number(weight[0].replace(",", "."));
     packageInfo.weightG = /(?:kg|кг)/i.test(weightText) ? Math.round(amount * 1000) : Math.round(amount);
   }
-  const dimensionText = String(dimensionsValue || "");
+  const dimensionText = sellerAnalyticsMeasurementText(dimensionsValue);
   const dimensions = dimensionText.match(/\d+(?:[.,]\d+)?/g) || [];
   if (dimensions.length >= 3) {
     const factor = /(?:cm|см)/i.test(dimensionText) ? 10 : 1;
     [packageInfo.lengthMm, packageInfo.widthMm, packageInfo.heightMm] = dimensions.slice(0, 3).map((value) => Math.round(Number(value.replace(",", ".")) * factor));
+  }
+  if (!(packageInfo.lengthMm && packageInfo.widthMm && packageInfo.heightMm)) {
+    const length = sellerAnalyticsValue(row, ["packageLengthMm", "lengthMm", "packageLength", "length"]);
+    const width = sellerAnalyticsValue(row, ["packageWidthMm", "widthMm", "packageWidth", "width"]);
+    const height = sellerAnalyticsValue(row, ["packageHeightMm", "heightMm", "packageHeight", "height"]);
+    const unitText = `${sellerAnalyticsMeasurementText(length)} ${sellerAnalyticsMeasurementText(width)} ${sellerAnalyticsMeasurementText(height)}`;
+    const factor = /(?:cm|см)/i.test(unitText) ? 10 : 1;
+    const toMm = (value) => {
+      const match = sellerAnalyticsMeasurementText(value).match(/\d+(?:[.,]\d+)?/);
+      return match ? Math.round(Number(match[0].replace(",", ".")) * factor) : "";
+    };
+    packageInfo.lengthMm = toMm(length);
+    packageInfo.widthMm = toMm(width);
+    packageInfo.heightMm = toMm(height);
   }
   const parts = [];
   if (packageInfo.weightG) parts.push(`${packageInfo.weightG} g`);
@@ -444,7 +498,7 @@ function buildMvideoSingleSkuPreviewModel(payload = {}, sku = {}, currentSkuId =
   };
   const marketPriceRub = positiveNumber(sku.priceRub) ?? positiveNumber(payload.price);
   const purchaseCostCny = positiveNumber(reviewInput.purchaseCostCny);
-  const inventory = positiveNumber(reviewInput.inventory);
+  const inventory = positiveNumber(reviewInput.inventory) ?? 999;
   const packageComplete = Object.values(packaging).every((value) => value !== null && value > 0);
   const pricing = packageComplete
     ? calculateMvideoPrice({ purchaseCostCny, ...packaging, channel: reviewInput.channel })
@@ -509,15 +563,13 @@ ${previewRow("重量", escapeHtml(formatPreviewNumber(model.packaging.weightKg, 
 <label style="display:block;margin-bottom:7px;color:#5b21b6;font-weight:700;">CNY 采购价
 <input id="mvideo-purchase-cost" type="number" min="0" step="0.01" inputmode="decimal" value="${model.purchaseCostCny === null ? "" : model.purchaseCostCny}" placeholder="人工核对后的人民币采购价" style="display:block;width:100%;box-sizing:border-box;margin-top:4px;border:1px solid #c4b5fd;border-radius:6px;padding:6px;font-size:12px;color:#312e81;">
 </label>
-<label style="display:block;margin-bottom:7px;color:#5b21b6;font-weight:700;">M.Video 库存
-<input id="mvideo-inventory" type="number" min="1" step="1" inputmode="numeric" value="${model.inventory === null ? "" : model.inventory}" placeholder="发布前可售库存" style="display:block;width:100%;box-sizing:border-box;margin-top:4px;border:1px solid #c4b5fd;border-radius:6px;padding:6px;font-size:12px;color:#312e81;">
-</label>
+${previewRow("M.Video 库存", `${escapeHtml(String(model.inventory))}（系统默认）`)}
 ${previewRow("保本售价", `<span id="mvideo-break-even-price">${quote ? escapeHtml(formatPreviewNumber(quote.breakEvenPriceRub, "₽")) : "待计算"}</span>`)}
 ${previewRow("目标售价", `<span id="mvideo-target-price" style="color:#7c3aed;">${quote ? escapeHtml(formatPreviewNumber(quote.targetPriceRub, "₽")) : "待计算"}</span>`)}
 <div id="mvideo-pricing-error" style="display:${quote ? "none" : "block"};margin:6px 0;color:#b42318;line-height:1.4;">${escapeHtml(model.pricing?.ok === false ? model.pricing.errors[0] : "")}</div>
 <label style="display:flex;gap:6px;align-items:flex-start;margin-top:7px;color:#3730a3;font-weight:600;line-height:1.4;">
 <input id="mvideo-price-confirmed" type="checkbox" style="margin-top:2px;" ${quote ? "" : "disabled"} ${model.priceConfirmed ? "checked" : ""}>
-<span>我确认按上述 RUB 目标售价和库存发布</span>
+<span>我确认按上述 RUB 目标售价发布（库存固定为 999）</span>
 </label>
 </form>
 ${previewRow("品牌", escapeHtml(model.brand))}
@@ -565,7 +617,7 @@ async function setupMvideoSinglePreview(root, currentSkuId) {
   };
   const reviewState = {
     purchaseCostCny: "",
-    inventory: "",
+    inventory: 999,
     priceConfirmed: false,
   };
   const buildCurrentModel = () => {
@@ -587,10 +639,6 @@ async function setupMvideoSinglePreview(root, currentSkuId) {
   panel.addEventListener("input", (event) => {
     if (event.target?.id === "mvideo-purchase-cost") {
       reviewState.purchaseCostCny = event.target.value;
-      reviewState.priceConfirmed = false;
-      refreshPreview();
-    } else if (event.target?.id === "mvideo-inventory") {
-      reviewState.inventory = event.target.value;
       reviewState.priceConfirmed = false;
       refreshPreview();
     }
@@ -698,7 +746,7 @@ const SHOP_SCAN_STORAGE_KEY = "ozonErp1688ShopScan";
 const COLLECTOR_VERSION = "0.7.75"; // [Iteration 2026-09-26 v0.7.75] Bound Ozon structured requests and fetch composer/entrypoint in parallel for M.Video single-SKU preview; // [Iteration 2026-09-26 v0.7.74] M.Video single-SKU human-reviewed pricing, inventory and dry-run gates; // [Iteration 2026-09-25 v0.7.73] Add embedded Ozon collection and M.Video dry-run single-SKU preview; // [Iteration 2026-09-23 v0.7.72] Fix payload: collectOzonDetail now includes the precise entrypoint packageInfo (it was computed but dropped from the return, so only the weak DOM-text fallback shipped); // [Iteration 2026-09-23 v0.7.71] Fix packageInfo: parse Weight/Dimensions when they are top-level webCharacteristics row sections (no short/long wrapper), as on real PDP; // [Iteration 2026-09-23 v0.7.70] Keep BOTH seller backends seller.ozonru.cn + seller.ozon.ru; background finds the seller tab across both and calls the API via that tab origin; // [Iteration 2026-09-23 v0.7.69] Extract package weight/dimensions from entrypoint webCharacteristics (keys Weight/Dimensions) into packageInfo; [Iteration 2026-09-22 v0.7.68] Read JSON-LD from DOM <script type="application/ld+json"> (composer PDP has no seo widget) so brand/rating/reviewCount/price are captured; [Iteration 2026-09-22 v0.7.67] Ozon PDP: extract product video(s) from composer webGallery.videos (type=pdp only), brand/rating/reviewCount/description from JSON-LD, category from breadCrumbs; [Iteration 2026-09-22] Support new 1688 factory catalog (sale.1688.com/factory) full-shop scan via scroll+DOM, b2b- memberId // [Iteration 2026-09-21] Add seller ID, shipping model, blocked status, full vendor info matching 胜利者 // [Iteration 2026-09-21] Add full product analytics: visitors/cart rate/avg price/stock/DRR/min seller price, same data as 胜利者/上品帮 // [Iteration 2026-09-21] Fix response path: items at top level, map soldCount/gmvSum/avgOrdersOnAccDays fields, verified with real API call // [Iteration 2026-09-21] Fix sales data response parsing, return structured data // [Iteration 2026-09-21] Extract product data directly from public Ozon page, no seller API needed // [Iteration 2026-09-21] Fix duplicate collection: dedup by product_id, only scrape main list, brand default empty
 // Increment for every collector behavior change; popup uses this to replace
 // content scripts already running in an Ozon tab.
-const COLLECTOR_HANDSHAKE_VERSION = "0.7.76";
+const COLLECTOR_HANDSHAKE_VERSION = "0.7.77";
 let extensionContextAvailable = true;
 
 function getExtensionRuntime() {

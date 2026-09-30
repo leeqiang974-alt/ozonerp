@@ -252,9 +252,9 @@ assert.equal(gateMap.get("CNY 采购价").ok, false);
 assert.equal(gateMap.get("M.Video RUB 售价").ok, false);
 assert.equal(gateMap.get("库存").ok, true);
 assert.equal(model.inventory, 999);
-assert.equal(gateMap.get("标题重构").ok, false);
-assert.equal(gateMap.get("描述重构").ok, false);
-assert.equal(gateMap.get("类目合规预检").ok, false);
+assert.equal(gateMap.has("标题重构"), false);
+assert.equal(gateMap.has("描述重构"), false);
+assert.equal(gateMap.has("类目合规预检"), false);
 assert.equal(gateMap.get("包装尺重").ok, true);
 
 const payloadPriceFallback = hooks.buildMvideoSingleSkuPreviewModel(
@@ -296,10 +296,10 @@ assert.equal(pricedGates.get("CNY 采购价").ok, true);
 assert.equal(pricedGates.get("M.Video RUB 售价").ok, true);
 assert.equal(pricedGates.get("库存").ok, true);
 assert.equal(pricedGates.get("包装尺重").ok, true);
-assert.equal(pricedGates.get("标题重构").ok, false);
-assert.equal(pricedGates.get("描述重构").ok, false);
-assert.equal(pricedGates.get("类目合规预检").ok, false);
-assert.equal(pricedModel.publishReady, false);
+assert.equal(pricedGates.has("标题重构"), false);
+assert.equal(pricedGates.has("描述重构"), false);
+assert.equal(pricedGates.has("类目合规预检"), false);
+assert.equal(pricedModel.publishReady, true);
 
 const unconfirmedModel = hooks.buildMvideoSingleSkuPreviewModel(
   previewPayload,
